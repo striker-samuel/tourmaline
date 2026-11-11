@@ -32,6 +32,22 @@ Windows or Linux NAS, plus per-workstation caches. A local/offline alternative
 is covered in the last section. Requires Python 3.10+; the code uses the
 standard library only. Tkinter is optional for the graphical installers.
 
+## Full source verification
+
+The normal scanner uses file size and modification time to skip unchanged
+files. After restoring files, syncing from external DCC tools, or suspecting
+timestamp-preserving edits, run a full verification scan on the NAS:
+
+```bash
+python3 tools/shared_asset_server.py --config /etc/tourmaline/shared-assets.json scan --verify
+```
+
+This rehashes every discovered source and records a new revision when the
+content differs; it can be expensive for large shares. Ordinary background
+scans retain their faster metadata-based behavior. Archived blobs are
+installed without replacing existing digest-named files and are checked
+against their SHA-256 before reuse.
+
 ## Design and identity boundaries
 
 | Layer | Files | Identity | Purpose |

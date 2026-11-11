@@ -109,6 +109,21 @@ class Archive:
                 h.update(chunk)
         return h.hexdigest()
 
+    @classmethod
+    def install_blob(cls, temp: str, target: Path, digest: str):
+        """Install immutable bytes without overwriting a concurrent writer."""
+        target.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            # The temporary file and archive are on the same filesystem.
+            # Hard-link creation is atomic and fails if the digest exists.
+            os.link(temp, target)
+        except FileExistsError:
+            pass
+        # Do not trust an existing digest-named file blindly: it may be
+        # corrupted or have been replaced outside the repository.
+        if cls.digest(target) != digest:
+            raise OSError("archive blob SHA-256 mismatch")
+
     def discover(self):
         # No constraints on artist directory layout or filename extensions.
         for folder, dirs, names in os.walk(self.source, followlinks=False):
@@ -149,16 +164,14 @@ class Archive:
                 return None
             digest = h.hexdigest()
             target = self.blob(self.archive, digest)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if not target.exists():
-                os.replace(temp, target)
+            self.install_blob(temp, target, digest)
             return digest, copied
         except OSError:
             return None
         finally:
             Path(temp).unlink(missing_ok=True)
 
-    def scan(self):
+    def scan(self, verify=False):
         if not self.source.is_dir():
             raise OSError("share unavailable; previous revisions were retained")
         outcome = {"captured": 0, "unchanged": 0, "pending": 0, "missing": 0}
@@ -170,7 +183,7 @@ class Archive:
                 try:
                     st = path.stat()
                     previous = known.get(rel)
-                    if (previous is not None and not previous["missing"]
+                    if (not verify and previous is not None and not previous["missing"]
                             and previous["size"] == st.st_size
                             and previous["mtime_ns"] == st.st_mtime_ns):
                         outcome["unchanged"] += 1

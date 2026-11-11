@@ -68,6 +68,32 @@ class SharedRepositoryTests(unittest.TestCase):
         self.assertNotIn("content_ids", tables)
         self.assertFalse((self.source / "characters" / "hero.ma.meta").exists())
 
+    def test_verification_scan_detects_same_size_same_timestamp_edits(self):
+        source = self.put("textures/normal.png", b"first")
+        self.store.scan()
+        source_id = self.store.sources()[0]["asset_id"]
+        original = source.stat()
+        source.write_bytes(b"other")
+        os.utime(source, ns=(original.st_atime_ns, original.st_mtime_ns))
+        self.assertEqual(self.store.scan()["captured"], 0)
+        self.assertEqual(self.store.scan(verify=True)["captured"], 1)
+        self.assertEqual(len(self.store.source_revisions(source_id)), 2)
+
+    def test_corrupt_archive_blob_cannot_be_reused_for_publication(self):
+        self.put("mesh.obj", b"source")
+        self.store.scan()
+        source_id = self.store.sources()[0]["asset_id"]
+        content = b"published"
+        sha = hashlib.sha256(content).hexdigest()
+        blob = self.store.blob(self.archive, sha)
+        blob.parent.mkdir(parents=True, exist_ok=True)
+        blob.write_bytes(b"corrupted")
+        with self.assertRaisesRegex(OSError, "SHA-256 mismatch"):
+            self.store.publish(source_id, 1, "mesh", "", "mesh.glb",
+                               io.BytesIO(content), len(content))
+        self.assertEqual(blob.read_bytes(), b"corrupted")
+        self.assertEqual(self.store.products(source_id), [])
+
     def test_unambiguous_move_preserves_identity_but_copy_does_not(self):
         source = self.put("old/rock.obj", b"same rock")
         self.store.scan()
