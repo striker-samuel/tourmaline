@@ -41,7 +41,8 @@ void MeshletHistoryRecord(GPU_PTR(GsTemporalHistory) history,uint capacity,
             history.Get().entries[at].generation=gen;
             history.Get().entries[at].clusterId=clusterId;
             DeviceMemoryBarrier();
-            InterlockedExchange(history.Get().entries[at].state,2u);
+            uint ignored;
+            InterlockedExchange(history.Get().entries[at].state, 2u, ignored);
             return;
         }
         // Duplicate complete keys are okay; concurrent reservations of the
