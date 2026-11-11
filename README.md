@@ -58,16 +58,16 @@ The optional [asset repository](docs/asset_repository_manual.md) manages working
 Tourmaline separates **authoring**, **content builds**, and **game execution**. Content does not need to be cooked by launching the editor.
 
 ```mermaid
-flowchart TD
+flowchart LR
     A["📦 Source assets<br/>glTF · textures · WAV"]
-    B["🗃️ Import & asset database<br/>Persistent GUIDs · Asset records"]
+    B["🗃️ Import & asset database<br/>Asset GUIDs"]
     C["✏️ Scene authoring<br/>.tour · .tourAnim"]
     D["⚙️ Project.exe + .tourrecipe<br/>Resolve · Cook · Bake · Pack"]
 
     E["project.h<br/>Typed C++ asset IDs"]
     F[".tapp + .pak<br/>Manifest · Cooked archives"]
 
-    G["🎮 Native C++ game / App host<br/>Application logic · Scene runtime"]
+    G["🎮 Native C++ game / App host<br/>C++ application · Scene runtime"]
     H["💎 Vulkan renderer<br/>Fully featured GPU-driven 3D renderer"]
 
     A --> B --> C --> D
