@@ -2435,6 +2435,12 @@ class WorldRenderer : public IRenderer {
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterVsModule{};
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterFsModule{};
     smvk::ShaderProgram m_gpuSceneRasterProgram{};
+    // GI-specific lit FS twins for the SAME indexed/task GPU Scene work.
+    // The base mesh-lit FS does not sample the scene's baked convex volumes.
+    // Index = GIVariant (0 none, 2 regular probes, 3 convex volumes).
+    std::array<smvk::Holder<smvk::ShaderModuleHandle>, 4> m_gpuSceneGiFsModules{};
+    std::array<smvk::ShaderProgram, 4> m_gpuSceneRasterGiPrograms{};
+    std::array<smvk::ShaderProgram, 4> m_gpuSceneTaskGiPrograms{};
     smvk::ShaderProgram m_gpuSceneRasterDepthProgram{};
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterGbufferFsModule{};
     smvk::ShaderProgram m_gpuSceneRasterGbufferProgram{};

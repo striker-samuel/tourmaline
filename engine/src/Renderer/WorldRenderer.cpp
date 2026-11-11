@@ -11551,6 +11551,51 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     }
     m_renderViews.Upload(*m_context, fb.frameIndex);
 
+    // GPU Scene GI variants: same mesh-compatible fragment ABI as the
+    // GI-free path. Sponza's convex volumes require the .gi3 permutation.
+    // Compile/load only the active variant, and NEVER admit GPU ownership
+    // with the GI-free shader if its required GI module is unavailable.
+    const uint32_t gpuSceneGiVariant = static_cast<uint32_t>(GetActiveGIVariant());
+    if (s_gpuSceneRaster && (gpuSceneGiVariant == 2u || gpuSceneGiVariant == 3u)) {
+        const uint32_t gi = gpuSceneGiVariant;
+        try {
+            if (m_gpuSceneGiFsModules[gi].empty()) {
+                const char* path = gi == 2u
+                    ? "content/shaders/gfxmesh_lit.frag.hlsl.gi2.spv"
+                    : "content/shaders/gfxmesh_lit.frag.hlsl.gi3.spv";
+                m_gpuSceneGiFsModules[gi] =
+                    m_context->CreateShaderModule(smvk::shaders::Read(path), "GpuSceneGiFS");
+            }
+            if (!m_gpuSceneGiFsModules[gi].empty()) {
+                smvk::Shader fs{.module = m_gpuSceneGiFsModules[gi],
+                                .entryPoint = "mainPS",
+                                .stage = smvk::ShaderStage::Fragment};
+                if (!m_gpuSceneRasterVsModule.empty() &&
+                    m_gpuSceneRasterGiPrograms[gi].shaderCount != 2) {
+                    smvk::Shader vs{.module = m_gpuSceneRasterVsModule,
+                                    .entryPoint = "mainVS",
+                                    .stage = smvk::ShaderStage::Vertex};
+                    m_gpuSceneRasterGiPrograms[gi] = {.shaders = {vs, fs}, .shaderCount = 2};
+                }
+                if (!m_gpuSceneTaskAsModule.empty() && !m_gpuSceneTaskMsModule.empty() &&
+                    m_gpuSceneTaskGiPrograms[gi].shaderCount != 3) {
+                    smvk::Shader as{.module = m_gpuSceneTaskAsModule,
+                                    .entryPoint = "mainAS", .stage = smvk::ShaderStage::Task};
+                    smvk::Shader ms{.module = m_gpuSceneTaskMsModule,
+                                    .entryPoint = "mainMS", .stage = smvk::ShaderStage::Mesh};
+                    m_gpuSceneTaskGiPrograms[gi] = {.shaders = {as, ms, fs}, .shaderCount = 3};
+                }
+            }
+        } catch (...) {
+            // Missing GI is an admission failure, not a shading downgrade.
+        }
+    }
+    const bool gpuSceneGiReady = gpuSceneGiVariant == 0u ||
+        ((gpuSceneGiVariant == 2u || gpuSceneGiVariant == 3u) &&
+         m_gpuSceneRasterGiPrograms[gpuSceneGiVariant].shaderCount == 2 &&
+         (!s_gpuSceneTaskMesh || !smvk::SupportsMeshShaders() ||
+          m_gpuSceneTaskGiPrograms[gpuSceneGiVariant].shaderCount == 3));
+
     // GPU Scene validation (off by default): separate relative-space view
     // built from the existing absolute-world frustum. The production
     // RenderView, GfxDraw/HZB and indirect chain are NEVER modified.
@@ -11562,7 +11607,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
          (m_gpuSceneRasterMaskedDepthProgram.shaderCount == 2 &&
           m_gpuSceneRasterMaskedGbufferProgram.shaderCount == 2)) &&
         !ShaderLodActive() && !m_wireframe && m_debugView == ViewMode::Lit &&
-        GetActiveGIVariant() == engine::GIVariant::None;
+        gpuSceneGiReady;
     // KD diagnostic: the full raster-mode breakdown (the temporal gate
     // downstream only names its own conditions - this names every reason
     // the cutover can sit out, whole-world eligibility and the GI-variant
@@ -15601,6 +15646,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     }
     const bool sceneRasterActive = m_gpuSceneRasterDrawActive;
     const bool sceneTaskActive = m_gpuSceneTaskMeshActive;
+    const uint32_t sceneGiVariant = gpuSceneGiVariant;
     const bool sceneTaskTemporalActive = taskTemporalActive;
     const auto sceneTaskPlan = m_gpuSceneTaskMeshPlan;
     const bool sceneRasterTwoSided = m_gpuSceneRasterDoubleSidedCount != 0;
@@ -15621,6 +15667,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                gfxSlot,
                                sceneRasterActive,
                                sceneTaskActive,
+                               sceneGiVariant,
                                sceneTaskTemporalActive,
                                sceneTaskPlan,
                                sceneRasterTwoSided,
@@ -16066,12 +16113,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                           1u,
                                           sizeof(tour::gpu_scene::TaskMeshIndirectCommand));
             };
-            drawTaskBin(0u, m_gpuSceneTaskMainProgram, smvk::CullMode::Back, msaaSettings);
+            auto& sceneTaskLit = sceneGiVariant == 0u
+                ? m_gpuSceneTaskMainProgram : m_gpuSceneTaskGiPrograms[sceneGiVariant];
+            drawTaskBin(0u, sceneTaskLit, smvk::CullMode::Back, msaaSettings);
             if (sceneRasterTwoSided)
-                drawTaskBin(1u, m_gpuSceneTaskMainProgram, smvk::CullMode::None, msaaSettings);
+                drawTaskBin(1u, sceneTaskLit, smvk::CullMode::None, msaaSettings);
             const bool taskA2c =
-                useMsaa && m_msaaAlphaToCoverage && m_gpuSceneTaskMaskedA2cProgram.shaderCount == 3;
-            auto& masked = taskA2c ? m_gpuSceneTaskMaskedA2cProgram : m_gpuSceneTaskMainProgram;
+                sceneGiVariant == 0u && useMsaa && m_msaaAlphaToCoverage &&
+                m_gpuSceneTaskMaskedA2cProgram.shaderCount == 3;
+            auto& masked = taskA2c ? m_gpuSceneTaskMaskedA2cProgram : sceneTaskLit;
             const auto taskMsaa = taskA2c ? smvk::MSAASettings::Count2A2C() : msaaSettings;
             if (sceneRasterMasked)
                 drawTaskBin(2u, masked, smvk::CullMode::Back, taskMsaa);
@@ -16086,8 +16136,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             }
         }
         if (sceneRasterActive && sceneRasterCommandCount > 0 && !sceneTaskActive) {
+            auto& sceneIndexedLit = sceneGiVariant == 0u
+                ? m_gpuSceneRasterProgram : m_gpuSceneRasterGiPrograms[sceneGiVariant];
             cmd.BindStaticVertexFmt();
-            cmd.BindRenderPipeline(m_gpuSceneRasterProgram,
+            cmd.BindRenderPipeline(sceneIndexedLit,
                                    smvk::VertexLayoutId::Static,
                                    opaqueDepth,
                                    noStencil,
@@ -16141,7 +16193,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             drawBin(0u);
             if (sceneRasterTwoSided) {
                 // One extra PSO bind for the entire class, never per object.
-                cmd.BindRenderPipeline(m_gpuSceneRasterProgram,
+                cmd.BindRenderPipeline(sceneIndexedLit,
                                        smvk::VertexLayoutId::Static,
                                        opaqueDepth,
                                        noStencil,
@@ -16152,10 +16204,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             }
             // The lit FS already applies the material's baseColor texture
             // alpha cutoff, using the flat per-work material ID at location 7.
-            const bool sceneMaskedA2c = useMsaa && m_msaaAlphaToCoverage &&
+            const bool sceneMaskedA2c = sceneGiVariant == 0u &&
+                                        useMsaa && m_msaaAlphaToCoverage &&
                                         m_gpuSceneRasterMaskedA2cProgram.shaderCount == 2;
             auto& sceneMaskedProgram =
-                sceneMaskedA2c ? m_gpuSceneRasterMaskedA2cProgram : m_gpuSceneRasterProgram;
+                sceneMaskedA2c ? m_gpuSceneRasterMaskedA2cProgram : sceneIndexedLit;
             const auto sceneMaskedMsaa =
                 sceneMaskedA2c ? smvk::MSAASettings::Count2A2C() : msaaSettings;
             if (sceneRasterMasked) {
