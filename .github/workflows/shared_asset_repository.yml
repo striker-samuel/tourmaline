@@ -3,6 +3,8 @@ name: Shared asset repository
 on:
   push:
     paths:
+      - 'tools/offline_asset_service.py'
+      - 'tools/tests/test_offline_asset_service.py'
       - 'tools/shared_asset_repository.py'
       - 'tools/asset_permissions.py'
       - 'tools/tests/test_asset_permissions.py'
@@ -27,6 +29,10 @@ on:
       - '.github/workflows/shared_asset_repository.yml'
   pull_request:
     paths:
+      - 'tools/asset_permissions.py'
+      - 'tools/tests/test_asset_permissions.py'
+      - 'tools/offline_asset_service.py'
+      - 'tools/tests/test_offline_asset_service.py'
       - 'tools/shared_asset_repository.py'
       - 'tools/asset_read_presence.py'
       - 'tools/asset_consumers_dashboard.html'
