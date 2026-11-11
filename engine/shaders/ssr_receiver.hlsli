@@ -50,7 +50,7 @@
 struct SsrReceiverData { uint v[SSR_RAY_LIST_CAP]; };
 
 // Pack the thin G-buffer sample (RGBA8-unorm semantics: xy = oct
-// normal, z = roughness, w = metal) into one 32-bit word. round() on
+// normal, z = roughness, w = continuous metallic) into one 32-bit word. round() on
 // the saturated channels matches the RGBA8_UNorm target's quantization
 // (the pack must round-trip the same texel the G-buffer would have
 // stored).
