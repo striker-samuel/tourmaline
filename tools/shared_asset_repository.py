@@ -467,7 +467,8 @@ def handler_for_shared(store, token, consumer_ttl_seconds=90, registry=None):
                             report["open_assets"] = [entry for entry in report["open_assets"]
                                 if self.visible(
                                     entry["id"] if entry["kind"] == "source" else
-                                    store.product_source_id(entry["id"]))]
+                                    store.product_source_id(entry["id"]),
+                                    "source.read" if entry["kind"] == "source" else "product.read")]
                         for field in ("username", "workstation", "mode"):
                             selected = query.get(field, [None])[0]
                             if selected is not None:
@@ -481,7 +482,8 @@ def handler_for_shared(store, token, consumer_ttl_seconds=90, registry=None):
                             session["reads"] = [read for read in session["reads"]
                                 if self.visible(
                                     read["id"] if read["kind"] == "source" else
-                                    store.product_source_id(read["id"]))]
+                                    store.product_source_id(read["id"]),
+                                    "source.read" if read["kind"] == "source" else "product.read")]
                         result["consumers"] = [session for session in result["consumers"]
                                                if session["reads"]]
                     return self.reply(result)
@@ -562,7 +564,8 @@ def handler_for_shared(store, token, consumer_ttl_seconds=90, registry=None):
                         for read in readers._normalize(body.get("reads")):
                             kind, ident, version, mode = read
                             source_id = ident if kind == "source" else store.product_source_id(ident)
-                            if not self.visible(source_id):
+                            if not self.visible(source_id,
+                                    "source.read" if kind == "source" else "product.read"):
                                 return self.reply({"error": "forbidden"}, 403)
                             if mode == "publish" and not self.visible(
                                     source_id, "product.publish"):
