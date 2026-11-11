@@ -1714,6 +1714,7 @@ struct PipelineKeyHash {
             HashValue(seed, binding.attributes.size());
             for (const VertexAttribute& attribute : binding.attributes) {
                 HashEnum(seed, attribute.semantic);
+                HashValue(seed, attribute.location);
                 HashEnum(seed, attribute.format);
                 HashValue(seed, attribute.offset);
             }
