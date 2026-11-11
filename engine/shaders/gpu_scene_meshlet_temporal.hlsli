@@ -11,13 +11,14 @@ uint MeshletHistoryHash(uint slot,uint gen,uint clusterId) {
     h=(h^(clusterId*0x27d4eb2du))*0x165667b1u;
     return h^(h>>16u);
 }
-bool MeshletHistoryContains(GsTemporalHistory history,uint capacity,
+bool MeshletHistoryContains(GPU_PTR(GsTemporalHistory) history,uint capacity,
                             uint slot,uint gen,uint clusterId) {
     if(capacity==0u || capacity>GS_TEMPORAL_HASH_LIMIT ||
        (capacity&(capacity-1u))!=0u) return false;
     uint base=MeshletHistoryHash(slot,gen,clusterId)&(capacity-1u);
     [loop] for(uint step=0u;step<GS_TEMPORAL_PROBES;++step) {
-        const GsTemporalEntry e=history.entries[(base+step)&(capacity-1u)];
+        const GsTemporalEntry e=history.Get().entries[(base+step)&(capacity-1u)];
+        if(e.state==0u) return false; // completed table: insertion stops at first empty
         if(e.state==2u && e.slot==slot &&
            e.generation==gen && e.clusterId==clusterId)
             return true;
@@ -34,21 +35,21 @@ void MeshletHistoryRecord(GsTemporalHistory history,uint capacity,
         uint previous=0u;
         // 0=empty, 1=being initialized, 2=ready. No spinning on state=1:
         // another lane may be the initializer in the SAME warp.
-        InterlockedCompareExchange(history.entries[at].state,0u,1u,previous);
+        InterlockedCompareExchange(history.Get().entries[at].state,0u,1u,previous);
         if(previous==0u) {
-            history.entries[at].slot=slot;
-            history.entries[at].generation=gen;
-            history.entries[at].clusterId=clusterId;
+            history.Get().entries[at].slot=slot;
+            history.Get().entries[at].generation=gen;
+            history.Get().entries[at].clusterId=clusterId;
             DeviceMemoryBarrier();
-            InterlockedExchange(history.entries[at].state,2u);
+            InterlockedExchange(history.Get().entries[at].state,2u);
             return;
         }
         // Duplicate complete keys are okay; concurrent reservations of the
         // same key may occupy multiple slots but never cause false matches.
         if(previous==2u &&
-           history.entries[at].slot==slot &&
-           history.entries[at].generation==gen &&
-           history.entries[at].clusterId==clusterId) return;
+           history.Get().entries[at].slot==slot &&
+           history.Get().entries[at].generation==gen &&
+           history.Get().entries[at].clusterId==clusterId) return;
     }
-    InterlockedOr(history.overflow,1u);
+    InterlockedOr(history.Get().overflow,1u);
 }

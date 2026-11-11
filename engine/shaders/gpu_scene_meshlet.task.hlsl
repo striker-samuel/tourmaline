@@ -138,7 +138,7 @@ void mainAS(uint3 groupId : SV_GroupID,
                 keep=!ConeCulled(c,inst,view);
             if (keep && temporal) {
                 const bool prior=p.historyValid!=0u &&
-                    MeshletHistoryContains(p.historyPrevious.Get(),p.historyCapacity,
+                    MeshletHistoryContains(p.historyPrevious,p.historyCapacity,
                                            work.identity.x,work.identity.y,clusterId);
                 if (pc.temporalPhase==1u) {
                     // Only previously visible meshlets seed the depth target.
@@ -152,7 +152,7 @@ void mainAS(uint3 groupId : SV_GroupID,
                     // Main consumes the EXACT current-frame survivor set.
                     // Overflow must fail open rather than drop geometry.
                     keep=p.historyCurrent.Get().overflow!=0u ||
-                         MeshletHistoryContains(p.historyCurrent.Get(),p.historyCapacity,
+                         MeshletHistoryContains(p.historyCurrent,p.historyCapacity,
                                                 work.identity.x,work.identity.y,clusterId);
                 }
             } else if(keep && p.hizValid!=0u) {
@@ -160,7 +160,7 @@ void mainAS(uint3 groupId : SV_GroupID,
             }
         }
         if (keep && temporal && pc.temporalPhase<=2u)
-            MeshletHistoryRecord(p.historyCurrent.Get(),p.historyCapacity,
+            MeshletHistoryRecord(p.historyCurrent,p.historyCapacity,
                                  work.identity.x,work.identity.y,clusterId);
     }
 
