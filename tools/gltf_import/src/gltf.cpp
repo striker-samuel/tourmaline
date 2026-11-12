@@ -1265,6 +1265,15 @@ static GltfMaterial ExtractMaterial(const tinygltf::Model& model, int materialIn
         }
     }
 
+    // Tourmaline cloth extension: opt in to The Order: 1886 velvet BRDF.
+    // Standard glTF surfaces remain unchanged unless explicitly tagged.
+    if (auto it = m.extensions.find("SMVK_materials_clothSheen");
+        it != m.extensions.end() && it->second.IsObject()) {
+        const auto& obj = it->second.Get<tinygltf::Value::Object>();
+        if (auto f = obj.find("enabled"); f != obj.end() && f->second.IsBool())
+            mat.clothSheen = f->second.Get<bool>();
+    }
+
     // KHR_materials_pbrSpecularGlossiness fallback (FBX2glTF assets such as
     // Bistro: 234/254 materials carry ONLY this extension, no core
     // pbrMetallicRoughness textures). diffuseTexture/diffuseFactor map onto
