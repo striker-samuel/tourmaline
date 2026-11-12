@@ -12,9 +12,13 @@ whose transformed world-space AABB has a longest edge of at least 2 scene units
 (metres when the scene uses metres). This includes parent transforms,
 rotation and nonuniform scaling; shared geometry qualifies if any instance
 is large enough. The volume itself remains mesh-local. The same rule applies
-to cook-time LOD sibling preparation. Project-derived assets use their
-serialized node hierarchy; later scene override transforms are not part
-of the source asset's import-time derivation.
+to cook-time LOD sibling preparation. Recipe builds replay each
+scene's final `.tour` overrides, including reparenting and scale, before
+deciding whether to bake an SDF for a shared geometry family. The Cook
+stage likewise re-evaluates its LOD candidates after replay: an enlarged
+mesh can gain siblings, while a small prop loses unnecessary siblings.
+Standalone source imports still use the source model's own hierarchy,
+because no scene overlay is available at that stage.
 Recipe builds include these bytes in the owning scene pak as
 `PakAssetKind::Sdf = 20`. Consumers can read the raw sidecar via
 `PakBackend::TryRead` and `ParseSdfAsset`. The optional static SDF
