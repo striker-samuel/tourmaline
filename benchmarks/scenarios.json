@@ -442,6 +442,174 @@
       "frames": 180
     },
     {
+      "id": "bistro-volumetric-low",
+      "label": "Bistro volumetric fog, Low preset (8 steps)",
+      "subsystem": "volumetric",
+      "notes": "The raymarched-fog quality ladder (engine VolumetricQuality::Low = 8 march steps) over the minimal pass graph + 96-light crowd. The preset is recorded as the raw TOURMALINE_VOLUMETRIC_STEPS knob; fog engages only with the scene's authored density or a TOURMALINE_VOLUMETRIC_DENSITY pin.",
+      "source_args": [
+        "--pak",
+        "content/paks/bistro.pak"
+      ],
+      "app_args": [
+        "--without=deferred,ao,ssr,ssgi,contact,bloom,dof,particles",
+        "--with=volumetric"
+      ],
+      "camera": {
+        "position": [
+          24.26,
+          1.82,
+          -9.52
+        ],
+        "forward": [
+          -0.947,
+          -0.022,
+          -0.321
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "24.26,1.82,-9.52",
+        "TOURMALINE_CAM_FWD": "-0.947,-0.022,-0.321",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_AO": "off",
+        "TOURMALINE_SSR": "0",
+        "TOURMALINE_SSGI": "0",
+        "TOURMALINE_VOLUMETRIC": "1",
+        "TOURMALINE_DS": "0",
+        "TOURMALINE_DLSS": "off",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_FP_MASKS": "1",
+        "TOURMALINE_LIGHT_CROWD": "96",
+        "TOURMALINE_VOLUMETRIC_STEPS": "8"
+      },
+      "frames": 180
+    },
+    {
+      "id": "bistro-volumetric-medium",
+      "label": "Bistro volumetric fog, Medium preset (16 steps)",
+      "subsystem": "volumetric",
+      "notes": "The raymarched-fog quality ladder (engine VolumetricQuality::Medium = 16 march steps) over the minimal pass graph + 96-light crowd. The preset is recorded as the raw TOURMALINE_VOLUMETRIC_STEPS knob; fog engages only with the scene's authored density or a TOURMALINE_VOLUMETRIC_DENSITY pin.",
+      "source_args": [
+        "--pak",
+        "content/paks/bistro.pak"
+      ],
+      "app_args": [
+        "--without=deferred,ao,ssr,ssgi,contact,bloom,dof,particles",
+        "--with=volumetric"
+      ],
+      "camera": {
+        "position": [
+          24.26,
+          1.82,
+          -9.52
+        ],
+        "forward": [
+          -0.947,
+          -0.022,
+          -0.321
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "24.26,1.82,-9.52",
+        "TOURMALINE_CAM_FWD": "-0.947,-0.022,-0.321",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_AO": "off",
+        "TOURMALINE_SSR": "0",
+        "TOURMALINE_SSGI": "0",
+        "TOURMALINE_VOLUMETRIC": "1",
+        "TOURMALINE_DS": "0",
+        "TOURMALINE_DLSS": "off",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_FP_MASKS": "1",
+        "TOURMALINE_LIGHT_CROWD": "96",
+        "TOURMALINE_VOLUMETRIC_STEPS": "16"
+      },
+      "frames": 180
+    },
+    {
+      "id": "bistro-volumetric-high",
+      "label": "Bistro volumetric fog, High preset (32 steps)",
+      "subsystem": "volumetric",
+      "notes": "The raymarched-fog quality ladder (engine VolumetricQuality::High = 32 march steps) over the minimal pass graph + 96-light crowd. The preset is recorded as the raw TOURMALINE_VOLUMETRIC_STEPS knob; fog engages only with the scene's authored density or a TOURMALINE_VOLUMETRIC_DENSITY pin.",
+      "source_args": [
+        "--pak",
+        "content/paks/bistro.pak"
+      ],
+      "app_args": [
+        "--without=deferred,ao,ssr,ssgi,contact,bloom,dof,particles",
+        "--with=volumetric"
+      ],
+      "camera": {
+        "position": [
+          24.26,
+          1.82,
+          -9.52
+        ],
+        "forward": [
+          -0.947,
+          -0.022,
+          -0.321
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "24.26,1.82,-9.52",
+        "TOURMALINE_CAM_FWD": "-0.947,-0.022,-0.321",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_AO": "off",
+        "TOURMALINE_SSR": "0",
+        "TOURMALINE_SSGI": "0",
+        "TOURMALINE_VOLUMETRIC": "1",
+        "TOURMALINE_DS": "0",
+        "TOURMALINE_DLSS": "off",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_FP_MASKS": "1",
+        "TOURMALINE_LIGHT_CROWD": "96",
+        "TOURMALINE_VOLUMETRIC_STEPS": "32"
+      },
+      "frames": 180
+    },
+    {
+      "id": "bistro-volumetric-ultra",
+      "label": "Bistro volumetric fog, Ultra preset (64 steps)",
+      "subsystem": "volumetric",
+      "notes": "The raymarched-fog quality ladder (engine VolumetricQuality::Ultra = 64 march steps) over the minimal pass graph + 96-light crowd. The preset is recorded as the raw TOURMALINE_VOLUMETRIC_STEPS knob; fog engages only with the scene's authored density or a TOURMALINE_VOLUMETRIC_DENSITY pin.",
+      "source_args": [
+        "--pak",
+        "content/paks/bistro.pak"
+      ],
+      "app_args": [
+        "--without=deferred,ao,ssr,ssgi,contact,bloom,dof,particles",
+        "--with=volumetric"
+      ],
+      "camera": {
+        "position": [
+          24.26,
+          1.82,
+          -9.52
+        ],
+        "forward": [
+          -0.947,
+          -0.022,
+          -0.321
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "24.26,1.82,-9.52",
+        "TOURMALINE_CAM_FWD": "-0.947,-0.022,-0.321",
+        "TOURMALINE_AA": "off",
+        "TOURMALINE_AO": "off",
+        "TOURMALINE_SSR": "0",
+        "TOURMALINE_SSGI": "0",
+        "TOURMALINE_VOLUMETRIC": "1",
+        "TOURMALINE_DS": "0",
+        "TOURMALINE_DLSS": "off",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_FP_MASKS": "1",
+        "TOURMALINE_LIGHT_CROWD": "96",
+        "TOURMALINE_VOLUMETRIC_STEPS": "64"
+      },
+      "frames": 180
+    },
+    {
       "id": "bistro-fp-lights-96-full",
       "label": "Bistro 96 lights + heavy feature stack",
       "subsystem": "mixed",
