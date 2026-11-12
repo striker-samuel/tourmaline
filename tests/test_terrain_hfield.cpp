@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -187,6 +188,16 @@ int main() {
                                "\"hTileSize\": 1024.0, \"hRes\": 1024, \"gBlock\": 512.0, "
                                "\"packing\": \"rg16\"}"; // 8x8 S-tiles
         Check(!ParseTerrainJson(badSGrid, m, err), "hfield.json-reject-sgrid-not-16x16");
+        const char* scaled = "{\"baseY\": -40, \"range\": 420, "
+                             "\"worldSize\": 8192, \"origin\": [-2048, -2048], "
+                             "\"hTileSize\": 2048, \"hRes\": 1024, \"gBlock\": 512, "
+                             "\"packing\": \"rg16\"}";
+        Check(!ParseTerrainJson(scaled, m, err), "hfield.json-reject-scaled-world");
+        const char* overflow = "{\"baseY\": 1e999, \"range\": 420, "
+                               "\"worldSize\": 4096, \"origin\": [-2048, -2048], "
+                               "\"hTileSize\": 1024, \"hRes\": 1024, \"gBlock\": 256, "
+                               "\"packing\": \"rg16\"}";
+        Check(!ParseTerrainJson(overflow, m, err), "hfield.json-reject-nonfinite");
     }
     // Naming helpers match the generator.
     Check(HTileName(0, 0) == "h_00_00", "hfield.name-h");
@@ -236,6 +247,16 @@ int main() {
             SerializeTerrainMeta(bad, mm, badBlob);
             Check(!ParseTerrainMetaBlob(badBlob, back, mmBack),
                   "hfield.metablob-reject-sgrid-not-16x16");
+            bad = m;
+            bad.worldSize = 8192.0f; bad.hTileSize = 2048.0f; bad.gBlock = 512.0f;
+            SerializeTerrainMeta(bad, mm, badBlob);
+            Check(!ParseTerrainMetaBlob(badBlob, back, mmBack),
+                  "hfield.metablob-reject-scaled-world");
+            bad = m;
+            bad.originX = std::numeric_limits<float>::infinity();
+            SerializeTerrainMeta(bad, mm, badBlob);
+            Check(!ParseTerrainMetaBlob(badBlob, back, mmBack),
+                  "hfield.metablob-reject-nonfinite");
         }
     }
 

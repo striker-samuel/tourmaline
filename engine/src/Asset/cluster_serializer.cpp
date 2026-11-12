@@ -705,7 +705,7 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
                 if (uri.empty())
                     uri = "<cluster-local>#mesh." + std::to_string(h.index());
                 bvhUriByPoolIndex[bci].emplace(h.index(), uri);
-                const StaticMeshUpload* upload = bcluster.GetRetainedUpload(h);
+                const MeshData* upload = bcluster.GetRetainedUpload(h);
                 const StaticMesh* mesh = const_cast<Cluster&>(bcluster).staticMeshes.get(h);
                 if (!upload && !mesh)
                     continue; // stale pool entry: the mesh pass below fails loudly
@@ -758,7 +758,7 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
             // Full vertex/index payloads only exist when the cluster was
             // imported with retained uploads (cooker path). Runtime clusters
             // hold GPU-side allocations only and cannot be serialized.
-            const StaticMeshUpload* upload = cluster.GetRetainedUpload(h);
+            const MeshData* upload = cluster.GetRetainedUpload(h);
             if (!upload)
                 return fail("no retained upload for mesh: " + uri +
                             " (import with Cluster::SetRetainUploads(true) to cook paks)");
@@ -833,7 +833,7 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
             std::vector<PackedVertexLightmap> lightmap(upload->vertices.size());
             bool charted = false;
             for (size_t v = 0; v < upload->vertices.size(); ++v) {
-                PackStaticVertex(upload->vertices[v], positions[v], shading[v], lightmap[v]);
+                PackMeshVertex(upload->vertices[v], positions[v], shading[v], lightmap[v]);
                 if (upload->vertices[v].chartId != 0xFFFFFFFFu)
                     charted = true;
             }
@@ -917,7 +917,7 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
             // The stream rides the retained upload (the import post pass
             // fills it - GltfToSceneImporter::BuildSkinData).
             {
-                const StaticMeshUpload* up = cluster.GetRetainedUpload(h);
+                const MeshData* up = cluster.GetRetainedUpload(h);
                 const std::vector<PackedSkinInfluences>& skin = up ? up->skin : kEmptySkinStream;
                 PutU32(blob, static_cast<uint32_t>(skin.size()));
                 if (!skin.empty())
@@ -3101,7 +3101,7 @@ std::unique_ptr<Cluster> DeserializeCluster(ResourceManager& ctx,
     // Two phases: parse ALL blobs first (a malformed blob now fails before
     // ANY upload is staged — the old loop could fail mid-way with half the
     // meshes already queued in the streamer), then ONE batched upload:
-    // UploadStaticMeshes packs a single SoA blob per heap and issues three
+    // UploadMeshes packs a single SoA blob per heap and issues three
     // BulkCopyBuffer calls (table-driven; 512MB blobs internally — one
     // memcpy pass + one submit + one barrier set per blob instead of three
     // streamer calls per mesh). The caller issues ctx.FlushUploads().
@@ -3139,7 +3139,7 @@ std::unique_ptr<Cluster> DeserializeCluster(ResourceManager& ctx,
         if (!c.ok || vertexCount == 0 || vertexCount > 16 * 1024 * 1024 ||
             indexCount > 64 * 1024 * 1024 || surfaceCount > 4096)
             return fail("truncated/insane mesh header: " + e->path);
-        StaticMeshUpload upload;
+        MeshData upload;
         upload.surfaces.reserve(surfaceCount);
         for (uint32_t s = 0; s < surfaceCount; ++s) {
             Surface surf;
@@ -3376,7 +3376,7 @@ std::unique_ptr<Cluster> DeserializeCluster(ResourceManager& ctx,
             }
             deferredByPakId.emplace_back();
             const ClusterStaticMeshHandle h = handles[up++];
-            // UploadStaticMeshes fills AABB only; restore the cooked sphere
+            // UploadMeshes fills AABB only; restore the cooked sphere
             // and the lightmap chunk (rides the draw ring to the lit
             // fragment).
             if (StaticMesh* m = cluster->staticMeshes.get(h)) {

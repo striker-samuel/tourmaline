@@ -385,7 +385,7 @@ uint32_t Cluster::AllocOfflineTextureId() {
     return offlineNextTextureId_++;
 }
 
-const StaticMeshUpload* Cluster::GetRetainedUpload(ClusterStaticMeshHandle handle) const {
+const MeshData* Cluster::GetRetainedUpload(ClusterStaticMeshHandle handle) const {
     if (!handle.valid())
         return nullptr;
     const auto it = retainedUploads_.find(handle.index());

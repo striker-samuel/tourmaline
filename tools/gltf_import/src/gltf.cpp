@@ -5,6 +5,7 @@
 
 #include <Engine/Asset/asset_registry.h>
 #include <Engine/Asset/mesh_optimizer.h>
+#include <Engine/Asset/mesh_preparation_policy.h>
 #include <Engine/Renderer/texture_streamer.h>
 #include <Engine/Renderer/vertex_pack.h>
 #include <Engine/Utils/texture_loader.h>
@@ -81,6 +82,7 @@ struct GltfMaterial {
     // SMVK_materials_contactShadows.receive (default receive):
     // materials that must not pick up the sun contact march.
     bool receiveContactShadows = true;
+    bool clothSheen = false;
 };
 bool starts_with(const std::string& s, const char* prefix) {
     return s.rfind(prefix, 0) == 0;
@@ -1264,6 +1266,15 @@ static GltfMaterial ExtractMaterial(const tinygltf::Model& model, int materialIn
         }
     }
 
+    // Tourmaline cloth extension: opt in to The Order: 1886 velvet BRDF.
+    // Standard glTF surfaces remain unchanged unless explicitly tagged.
+    if (auto it = m.extensions.find("SMVK_materials_clothSheen");
+        it != m.extensions.end() && it->second.IsObject()) {
+        const auto& obj = it->second.Get<tinygltf::Value::Object>();
+        if (auto f = obj.find("enabled"); f != obj.end() && f->second.IsBool())
+            mat.clothSheen = f->second.Get<bool>();
+    }
+
     // KHR_materials_pbrSpecularGlossiness fallback (FBX2glTF assets such as
     // Bistro: 234/254 materials carry ONLY this extension, no core
     // pbrMetallicRoughness textures). diffuseTexture/diffuseFactor map onto
@@ -1827,6 +1838,7 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
     ci.doubleSided = mat.doubleSided;
     ci.castsShadows = mat.castsShadows;
     ci.receiveContactShadows = mat.receiveContactShadows;
+    ci.clothSheen = mat.clothSheen;
     // Far-LOD shading program (see ShaderLodPolicy): DEFAULT OFF — the
     // derivation only runs when the derive config opts in
     // (DeriveConfig::shaderLods / setDeriveShaderLods). The cheap
@@ -1867,10 +1879,10 @@ smvk::ClusterLightHandle GltfToSceneImporter::getOrCreateLight(int gltfLightInde
     return slot;
 }
 
-static smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model,
+static smvk::MeshData SurfaceDataFromGltfPrimitive(const tinygltf::Model& model,
                                                            const tinygltf::Primitive& primitive,
                                                            int coordFix) {
-    smvk::StaticMeshUpload data;
+    smvk::MeshData data;
     // AABB. for culling
     {
         auto it = primitive.attributes.find("POSITION");
@@ -1910,7 +1922,7 @@ static smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model
     auto& posAcc = model.accessors[primitive.attributes.at("POSITION")];
     data.vertices.reserve(posAcc.count);
     for (size_t i = 0; i < posAcc.count; ++i) {
-        smvk::ImportStaticVertex v{};
+        smvk::MeshVertex v{};
         v.pos = readVec3F(model, posAcc, i);
         v.color = {1.0f, 1.0f, 1.0f, 1.0f};
         v.texCoord = {0.0f, 0.0f};            // will fill if UVs exist
@@ -1989,7 +2001,7 @@ static smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model
 // Packs a primitive's JOINTS_0/WEIGHTS_0 into the PackedSkinInfluences stream
 // (top-4 renormalized RGBA8; joint ids in the glTF JOINTS_0 order = the
 // cluster Skeleton joint table). Built in the POSITION-accessor order,
-// parallel to the mesh upload's vertices, so OptimizeStaticMeshUpload can
+// parallel to the mesh upload's vertices, so OptimizeMeshData can
 // keep it in lockstep through the vertex remap. Returns false for an
 // unskinned primitive (missing/invalid attributes or empty).
 static bool PackVertexSkinStream(const tinygltf::Model& model,
@@ -2079,7 +2091,7 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
 
     // Attach the skin stream BEFORE the meshopt pass so the weld +
     // vertex-fetch remaps carry it in lockstep with `data.vertices`
-    // (OptimizeStaticMeshUpload remaps `skin` alongside). A stream
+    // (OptimizeMeshData remaps `skin` alongside). A stream
     // attached after optimization would be in ACCESSOR order while the
     // vertices are reordered - bind-pose masks it (all joints = bind) but
     // animation scatters the weights into spikes.
@@ -2102,7 +2114,7 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
             cfg.overdraw = false;
         smvk::MeshOptStats optStats;
         const size_t inVerts = data.vertices.size();
-        if (OptimizeStaticMeshUpload(
+        if (OptimizeMeshData(
                 data, cfg, static_cast<uint32_t>(gltfMeshIndex), &optStats, &lod)) {
 #ifndef NDEBUG
             std::cout << "MeshOpt mesh." << gltfMeshIndex << "/prim." << primitiveIndex
@@ -2152,9 +2164,35 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
     // silently freezing at LOD-switch distance. Skipping the siblings
     // here keeps every draw on the streamed base mesh, which is also
     // the GPU-driven raster eligibility shape (single-level chains).
+    // Evaluate ALL authored instances, not the raw primitive dimensions.
+    // A shared mesh needs derived siblings if any placement is large in
+    // scene/world space. Node local transforms are traversed from roots.
+    bool largePlacedInstance = false;
+    std::vector<uint8_t> visited(model.nodes.size(), 0);
+    std::vector<uint8_t> child(model.nodes.size(), 0);
+    for (const auto& n : model.nodes)
+        for (int c : n.children)
+            if (c >= 0 && size_t(c) < child.size()) child[size_t(c)] = 1;
+    auto visit = [&](auto&& self, int idx, const glm::mat4& parent) -> void {
+        if (idx < 0 || size_t(idx) >= model.nodes.size() || visited[size_t(idx)])
+            return;
+        visited[size_t(idx)] = 1;
+        const auto& n = model.nodes[size_t(idx)];
+        const glm::mat4 world = parent * GetNodeLocalTransform(n);
+        if (n.mesh == gltfMeshIndex &&
+            smvk::EligibleForSpatialDerivatives(data.aabbMin, data.aabbMax,
+                                                 data.indices.size(), world, skinned))
+            largePlacedInstance = true;
+        for (int c : n.children) self(self, c, world);
+    };
+    for (size_t i = 0; i < model.nodes.size(); ++i)
+        if (!child[i]) visit(visit, int(i), glm::mat4(1.0f));
+    // Handle orphan/cyclic malformed inputs conservatively.
+    for (size_t i = 0; i < model.nodes.size(); ++i)
+        if (!visited[i]) visit(visit, int(i), glm::mat4(1.0f));
     std::vector<smvk::CookedLod> lodChain;
     if (meshOptConfig.generateLods && data.skin.empty() && !data.vertices.empty() &&
-        !data.indices.empty()) {
+        largePlacedInstance) {
         // Alpha cutout (MASK) and blended foliage sample coverage from the
         // base-color alpha via the UVs: positions-only simplify collapses
         // quad borders and stretches UVs, flashing background through the
@@ -2175,7 +2213,7 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
         }
     }
 
-    slot = cluster.UploadStaticMesh(data);
+    slot = cluster.UploadMesh(data);
 
     if (!modelUriBase.empty()) {
         const smvk::StringViewT uri = smvk::MakeSubUri(
@@ -2202,7 +2240,7 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
         // direct, unculled by frustum/HZB (freeze-view leak).
         for (size_t li = 0; li < lodChain.size(); ++li) {
             const smvk::CookedLod& kept = lodChain[li];
-            const auto lh = cluster.UploadStaticMesh(kept.upload);
+            const auto lh = cluster.UploadMesh(kept.upload);
             if (!lh.valid())
                 continue;
             const smvk::StringViewT lodUri =
@@ -2499,7 +2537,7 @@ int GltfToSceneImporter::BuildSkinData() {
             continue;
         const tinygltf::Primitive& prim = gm.primitives[size_t(r.primitiveIndex)];
         // The stream attached in getOrCreateMesh (BEFORE the meshopt pass)
-        // already rode OptimizeStaticMeshUpload's vertex remap, so it is in
+        // already rode OptimizeMeshData's vertex remap, so it is in
         // FINAL vertex order - prefer it. The accessor-order pack is the
         // fallback for an unoptimized mesh (no reorder => the orders agree).
         std::vector<smvk::PackedSkinInfluences> stream;
@@ -2734,16 +2772,16 @@ size_t BuildFromMeshAsset(
         matOf = entry.matOf;
     } else {
         // 1) Geometry uploads (base blobs + LOD sibling blobs, AoS via the
-        // inverse pack — UploadStaticMesh handles cook + GPU + streaming).
+        // inverse pack — UploadMesh handles cook + GPU + streaming).
         auto makeUpload = [](const smvk::assets::MeshAsset::Geometry& g) {
-            smvk::StaticMeshUpload up{};
+            smvk::MeshData up{};
             up.vertices.resize(g.positions.size());
             // Uncharted blobs carry NO lightmap stream (count-gated on disk);
             // the unpack uses an all-uncharted record for those (the inverse
             // pack's sentinel round-trips to chartId 0xFFFFFFFF anyway).
             const smvk::PackedVertexLightmap lmNone{};
             for (size_t v = 0; v < g.positions.size(); ++v)
-                smvk::UnpackStaticVertex(g.positions[v],
+                smvk::UnpackMeshVertex(g.positions[v],
                                          g.shading[v],
                                          !g.lightmap.empty() ? g.lightmap[v] : lmNone,
                                          up.vertices[v]);
@@ -2756,7 +2794,7 @@ size_t BuildFromMeshAsset(
             up.skin = g.skin;
             return up;
         };
-        std::vector<smvk::StaticMeshUpload> uploads;
+        std::vector<smvk::MeshData> uploads;
         uploads.reserve(asset.geometry.size());
         for (const auto& g : asset.geometry)
             uploads.push_back(makeUpload(g));
@@ -2765,7 +2803,7 @@ size_t BuildFromMeshAsset(
                 uploads.push_back(makeUpload(s.geo));
         if (uploads.empty())
             return 0;
-        handles = cluster.UploadStaticMeshes(uploads);
+        handles = cluster.UploadMeshes(uploads);
         if (handles.size() != uploads.size())
             return 0;
     }
@@ -2891,6 +2929,7 @@ size_t BuildFromMeshAsset(
         info.doubleSided = m.info.doubleSided;
         info.castsShadows = m.info.castsShadows;
         info.receiveContactShadows = m.info.receiveContactShadows;
+        info.clothSheen = m.info.clothSheen;
         auto loadTex = [&](const smvk::assets::MaterialAsset::TexRef& t,
                            smvk::TextureHandle& slot) {
             if (t.path.empty())

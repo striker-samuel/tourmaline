@@ -60,7 +60,7 @@
 
 #include <Engine/App/cluster.h>
 #include <Engine/GI/bake.h>       // GiTraceScene (the reach sweep)
-#include <Engine/Renderer/mesh.h> // StaticMeshUpload
+#include <Engine/Renderer/mesh.h> // MeshData
 #include <Engine/Scene/scene.h>
 
 #include <array>

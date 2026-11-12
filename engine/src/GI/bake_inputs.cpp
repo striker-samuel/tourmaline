@@ -226,7 +226,7 @@ BakeCellGrid BuildBakeCellGrid(Cluster& cluster) {
         const ClusterStaticMeshHandle meshHandle = cluster.staticMeshes.getHandle(row.mesh);
         if (!meshHandle.valid())
             continue;
-        const StaticMeshUpload* upload = cluster.GetRetainedUpload(meshHandle);
+        const MeshData* upload = cluster.GetRetainedUpload(meshHandle);
         if (!upload || upload->vertices.empty() || upload->indices.empty())
             continue;
         const MaterialRow* matRow = FindMaterial(scene, node);
@@ -247,7 +247,7 @@ BakeCellGrid BuildBakeCellGrid(Cluster& cluster) {
         // 128-byte POD) + the material's non-values fields.
         Hasher leaf;
         leaf.feed("mesh");
-        leaf.feed(upload->vertices.data(), upload->vertices.size() * sizeof(ImportStaticVertex));
+        leaf.feed(upload->vertices.data(), upload->vertices.size() * sizeof(MeshVertex));
         leaf.feed(upload->indices.data(), upload->indices.size() * sizeof(uint32_t));
         leaf.feedPod(g);
         leaf.feedPod(mat->values);

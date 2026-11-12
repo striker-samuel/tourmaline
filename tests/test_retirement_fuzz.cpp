@@ -6,7 +6,7 @@
 // Vulkan context - no swapchain, no presentation.
 //
 // What is fuzzed (the three retirement legs + the drain):
-//   * Cluster mesh heap ranges: UploadStaticMesh / UploadStaticMeshes /
+//   * Cluster mesh heap ranges: UploadMesh / UploadMeshes /
 //     UploadStaticMeshesDirect (incl. degenerate entries -> the all-or-nothing
 //     carve-loop rollback) + DestroyMesh, whose virtual-block frees must be
 //     RETIREMENT-ORDERED (DeferDestroy), never in place.
@@ -358,7 +358,7 @@ int main() {
     // 0 indices = index-free mesh (the no-index-allocation path).
     const auto randIdx = [&]() { return uint32_t(rng() % (kMaxIdx + 1)); };
 
-    const auto fillUpload = [&](smvk::StaticMeshUpload& up, uint32_t vc, uint32_t ic) {
+    const auto fillUpload = [&](smvk::MeshData& up, uint32_t vc, uint32_t ic) {
         up.vertices.resize(vc);
         up.indices.resize(ic);
         for (uint32_t v = 0; v < vc; ++v) {
@@ -454,10 +454,10 @@ int main() {
             // Single upload (sometimes degenerate: 0 vertices -> clean {}).
             op = "uploadSingle";
             const bool degenerate = (rng() % 10) == 0;
-            smvk::StaticMeshUpload up;
+            smvk::MeshData up;
             if (!degenerate)
                 fillUpload(up, randVerts(), randIdx());
-            const auto h = cluster->UploadStaticMesh(up);
+            const auto h = cluster->UploadMesh(up);
             if (degenerate != h.empty()) {
                 char d[96];
                 std::snprintf(d,
@@ -476,13 +476,13 @@ int main() {
             op = "uploadBatch";
             const size_t n = 1 + size_t(rng() % 6);
             const bool withDegenerate = n > 1 && (rng() % 3) == 0;
-            std::vector<smvk::StaticMeshUpload> ups(n);
+            std::vector<smvk::MeshData> ups(n);
             for (size_t i = 0; i < n; ++i) {
                 const bool deg = withDegenerate && i == n / 2;
                 if (!deg)
                     fillUpload(ups[i], randVerts(), randIdx());
             }
-            const auto hs = cluster->UploadStaticMeshes(ups);
+            const auto hs = cluster->UploadMeshes(ups);
             if (withDegenerate) {
                 if (!hs.empty())
                     Fail("uploadBatch all-or-nothing",
@@ -575,9 +575,9 @@ int main() {
             destroyEntry(size_t(rng() % m.entries.size()));
         } else {
             op = "uploadSingle*";
-            smvk::StaticMeshUpload up;
+            smvk::MeshData up;
             fillUpload(up, randVerts(), randIdx());
-            addMesh(cluster->UploadStaticMesh(up),
+            addMesh(cluster->UploadMesh(up),
                     uint32_t(up.vertices.size()),
                     uint32_t(up.indices.size()));
         }

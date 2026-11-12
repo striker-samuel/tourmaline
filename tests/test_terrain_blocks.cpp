@@ -100,7 +100,7 @@ int main() {
         for (const auto& v : b.verts)
             bPos.push_back(v.pos);
         std::vector<uint32_t> idx;
-        BuildBlockIndices(4, idx, bPos);
+        BuildBlockIndices(4, idx);
         Check(idx.size() == 96 + 96, "blocks.bake-counts-indices");
         // Flat heights -> surface y all equal, AABB exact.
         const float wantY = -40.0f + 0.5f * 420.0f;
@@ -145,6 +145,37 @@ int main() {
                 outOk = false;
         }
         Check(outOk, "blocks.skirts-face-outward");
+    }
+    // Shared topology must face outward without a position span (all LODs).
+    for (uint32_t quads : {64u, 32u, 16u}) {
+        std::vector<uint32_t> idx;
+        BuildBlockIndices(quads, idx);
+        const uint32_t row = quads + 1, surf = row * row;
+        bool outward = true;
+        for (uint32_t ring = 0; ring < 4; ++ring)
+            for (uint32_t i = 0; i < quads; ++i) {
+                auto pos = [&](uint32_t id) {
+                    if (id < surf)
+                        return glm::vec3(float(id % row), 0.0f, float(id / row));
+                    const uint32_t r = (id - surf) / row;
+                    const uint32_t e = (id - surf) % row;
+                    return glm::vec3(float(r < 2 ? e : (r == 2 ? 0 : quads)),
+                                     -3.0f,
+                                     float(r < 2 ? (r == 0 ? 0 : quads) : e));
+                };
+                const size_t off = size_t(quads) * quads * 6 +
+                                   (size_t(ring) * quads + i) * 6;
+                const glm::vec3 a = pos(idx[off]), bb = pos(idx[off + 1]),
+                                cc = pos(idx[off + 2]);
+                const glm::vec3 n = glm::cross(bb - a, cc - a);
+                const glm::vec3 away = ring == 0 ? glm::vec3(0, 0, -1)
+                    : ring == 1 ? glm::vec3(0, 0, 1)
+                    : ring == 2 ? glm::vec3(-1, 0, 0) : glm::vec3(1, 0, 0);
+                outward &= glm::dot(n, away) > 0.0f;
+            }
+        Check(outward, quads == 64 ? "blocks.l0-skirt-outward"
+                       : quads == 32 ? "blocks.l1-skirt-outward"
+                                     : "blocks.l2-far-skirt-outward");
     }
     // Sloped field: normals tilt, AABB spans the slope.
     {

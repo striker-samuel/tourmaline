@@ -24,7 +24,7 @@ bool EditorApp::ExtractPlacementMesh(uint32_t worldNode,
     // geometry the picker uses — uniform across glTF imports and pak
     // loads), transformed to world space by the node's global.
     out = PlacementMeshData{};
-    const smvk::StaticMeshUpload* up = NodeMeshUpload(worldNode);
+    const smvk::MeshData* up = NodeMeshUpload(worldNode);
     if (!up || !m_world)
         return false;
     const size_t vcount = up->vertices.size();

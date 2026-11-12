@@ -53,7 +53,7 @@ StaticMergeResult CollapseStaticSubtrees(Cluster& cluster, const StaticMergeOpti
     struct BakedGroup {
         uint32_t matKey = UINT32_MAX;
         std::vector<uint32_t> srcNodes;
-        StaticMeshUpload upload;
+        MeshData upload;
     };
     std::vector<BakedGroup> baked;
     baked.reserve(groups.size());
@@ -77,7 +77,7 @@ StaticMergeResult CollapseStaticSubtrees(Cluster& cluster, const StaticMergeOpti
                 result.err = "CollapseStaticSubtrees: stale mesh handle";
                 return result;
             }
-            const StaticMeshUpload* src = cluster.GetRetainedUpload(h);
+            const MeshData* src = cluster.GetRetainedUpload(h);
             if (!src) {
                 result.err = "CollapseStaticSubtrees: no retained upload "
                              "(import with SetRetainUploads(true)/cook mode)";
@@ -93,8 +93,8 @@ StaticMergeResult CollapseStaticSubtrees(Cluster& cluster, const StaticMergeOpti
                 normalMat = glm::transpose(glm::inverse(glm::mat3(global)));
 
             const uint32_t base = (uint32_t)g.upload.vertices.size();
-            for (const ImportStaticVertex& v : src->vertices) {
-                ImportStaticVertex b = v;
+            for (const MeshVertex& v : src->vertices) {
+                MeshVertex b = v;
                 const glm::vec4 wp = global * glm::vec4(v.pos, 1.0f);
                 b.pos = glm::vec3(wp);
                 b.normal = glm::normalize(normalMat * v.normal);
@@ -122,14 +122,14 @@ StaticMergeResult CollapseStaticSubtrees(Cluster& cluster, const StaticMergeOpti
         return result;
     }
 
-    // Upload each group as one block. UploadStaticMesh assigns GPU regions
+    // Upload each group as one block. UploadMesh assigns GPU regions
     // (or CPU-only geometry in cook mode); vertices are already world-baked
     // so the new nodes use identity transforms.
     int groupIdx = 0;
     for (auto& g : baked) {
-        const ClusterStaticMeshHandle h = cluster.UploadStaticMesh(g.upload);
+        const ClusterStaticMeshHandle h = cluster.UploadMesh(g.upload);
         if (!h.valid()) {
-            result.err = "CollapseStaticSubtrees: UploadStaticMesh failed";
+            result.err = "CollapseStaticSubtrees: UploadMesh failed";
             return result;
         }
         const std::string uri =
