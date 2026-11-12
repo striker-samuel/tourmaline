@@ -4108,6 +4108,11 @@ class WorldRenderer : public IRenderer {
     bool m_giOctahedralArmed = false;
     smvk::ShaderProgram m_octaProgramGi[4];
     smvk::ShaderProgram m_octaProgramGiStd[4];
+    // Hybrid twins (giHybridCompile=1): octahedral diffuse + SG rough
+    // specular crossover. Forged + selected when TOURMALINE_GI_HYBRID=1.
+    bool m_giHybridArmed = false;
+    smvk::ShaderProgram m_hybridProgramGi[4];
+    smvk::ShaderProgram m_hybridProgramGiStd[4];
     // Linear-HDR diffuse-irradiance capture twins (giExportIrradianceCompile
     // =1, optionally + giOctaCompile=1): forged + selected when
     // TOURMALINE_GI_EXPORT_IRRADIANCE=1.

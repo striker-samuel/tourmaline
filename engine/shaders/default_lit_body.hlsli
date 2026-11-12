@@ -1536,8 +1536,47 @@ float envVis = 1.0f;
 
     // Convex volumes: the SG path blends 9 lobes then evaluates diffuse +
     // specular; the octahedral path (giOctaCompile) fetches pre-evaluated
-    // diffuse per corner and drops the SG specular crossover (cubemap-only).
-    if (giOctaCompile != 0u)
+    // diffuse per corner and drops the SG specular crossover (cubemap-only);
+    // the hybrid path (giHybridCompile) keeps the octahedral diffuse but
+    // restores the SG roughW specular crossover, fetching SG coefficients
+    // ONLY on the rough (roughW > 0) subset.
+    if (giHybridCompile != 0u)
+    {
+        float3 octaE;
+        float volTrans = 1.0;
+        bool volHit = false;
+        SgGiVolumeCompositeOctahedral(frame, SgGiVolumeTileMask(frame, clipPos.xy),
+            IN.worldPos, N, octaE, volTrans, volHit);
+        E = octaE;
+        E += irradiance * (iblOn * volTrans); // analytic sky diffuse base
+        covered = volHit;
+        if (covered)
+        {
+            const float3 giE = E * giScale;
+            giSource = 4u;
+            bakedE = giE;
+            envVis = SpecularOcclusionFromGI(giE, giScale, N, frame.env, shadingRoughness);
+            ambientSpec = envSpec * envVis;
+            if (!isBlendMat)
+                ambient += kD * baseColor * (giE / PI) * occlusion;
+            // SG specular crossover, GATED: the expensive 9-lobe fetch only
+            // runs on the rough subset (roughW > 0). The crossover math
+            // matches the SG path below exactly.
+            const float roughW = saturate((shadingRoughness - 0.45f) / 0.25f);
+            if (roughW > 0.0f)
+            {
+                float3 specAmps[SG_GI_LOBES];
+                float specTrans;
+                bool specHit;
+                SgGiVolumeComposite(frame, SgGiVolumeTileMask(frame, clipPos.xy), IN.worldPos,
+                    specAmps, specTrans, specHit);
+                const float3 giSpecular =
+                    SgGiSpecular(specAmps, R, shadingRoughness) * giScale * Fenv * occlusion;
+                ambientSpec = lerp(ambientSpec, giSpecular, roughW);
+            }
+        }
+    }
+    else if (giOctaCompile != 0u)
     {
         float3 octaE;
         float volTrans = 1.0;

@@ -166,10 +166,12 @@ smvk::ShaderProgram& WorldRenderer::MainLitProgramFor(uint32_t materialId) {
     if (giVar != GIVariant::None) {
         smvk::ShaderProgram& gi = m_resources.mainProgramGi[gv];
         if (gi.shaderCount == 2) {
-            // The irradiance capture composes with the path choice (SG or
-            // octahedral): a second spec flips SPEC_GI_EXPORT_IRRADIANCE on
-            // top of the path spec.
-            const uint32_t expSpec2 = m_giOctahedralArmed ? tour::kSpecGiOctahedral : 0u;
+            // The irradiance capture composes with the path choice (SG,
+            // octahedral, or hybrid): a second spec flips
+            // SPEC_GI_EXPORT_IRRADIANCE on top of the path spec.
+            const uint32_t expSpec2 = m_giOctahedralArmed ? tour::kSpecGiOctahedral
+                                      : m_giHybridArmed   ? tour::kSpecGiHybrid
+                                                          : 0u;
             if (!layered && m_resources.mainProgramGiStd[gv].shaderCount == 2) {
                 if (m_giExportIrradianceArmed)
                     return SpecProgramFor(m_resources.mainProgramGiStd[gv],
@@ -179,6 +181,14 @@ smvk::ShaderProgram& WorldRenderer::MainLitProgramFor(uint32_t materialId) {
                                           true,
                                           m_exportProgramGi,
                                           m_exportProgramGiStd);
+                if (m_giHybridArmed)
+                    return SpecProgramFor(m_resources.mainProgramGiStd[gv],
+                                          tour::kSpecGiHybrid,
+                                          0u,
+                                          gv,
+                                          true,
+                                          m_hybridProgramGi,
+                                          m_hybridProgramGiStd);
                 if (m_giVolumeStatsArmed)
                     return SpecProgramFor(m_resources.mainProgramGiStd[gv],
                                           tour::kSpecGiStats,
@@ -213,6 +223,14 @@ smvk::ShaderProgram& WorldRenderer::MainLitProgramFor(uint32_t materialId) {
                                       false,
                                       m_exportProgramGi,
                                       m_exportProgramGiStd);
+            if (m_giHybridArmed)
+                return SpecProgramFor(gi,
+                                      tour::kSpecGiHybrid,
+                                      0u,
+                                      gv,
+                                      false,
+                                      m_hybridProgramGi,
+                                      m_hybridProgramGiStd);
             if (m_giVolumeStatsArmed)
                 return SpecProgramFor(gi,
                                       tour::kSpecGiStats,
@@ -1465,6 +1483,13 @@ bool WorldRenderer::onAttach() {
     if (const char* octaEnv = std::getenv("TOURMALINE_GI_OCTAHEDRAL")) {
         if (std::atoi(octaEnv) == 1)
             m_giOctahedralArmed = true;
+    }
+    // Hybrid path: octahedral diffuse + SG rough specular crossover (the
+    // 9-lobe fetch wrapped inside the roughW > 0 branch).
+    //   TOURMALINE_GI_HYBRID=1
+    if (const char* hybridEnv = std::getenv("TOURMALINE_GI_HYBRID")) {
+        if (std::atoi(hybridEnv) == 1)
+            m_giHybridArmed = true;
     }
     // Linear-HDR diffuse-irradiance capture: the lit pass writes E (GI +
     // sky fallback, before albedo) to outEnvSpec, read back after the

@@ -214,6 +214,9 @@ inline constexpr uint32_t kSpecGiOctahedral = 24;
 // Linear-HDR diffuse-irradiance capture (TOURMALINE_GI_EXPORT_IRRADIANCE).
 // Must match common.hlsli SPEC_GI_EXPORT_IRRADIANCE.
 inline constexpr uint32_t kSpecGiExportIrradiance = 25;
+// Hybrid path (TOURMALINE_GI_HYBRID=1). Must match common.hlsli
+// SPEC_GI_HYBRID.
+inline constexpr uint32_t kSpecGiHybrid = 26;
 
 struct MaterialCreateInfo {
     // Primary PBR textures – baseColorTexture == diffuse for backward compat.
