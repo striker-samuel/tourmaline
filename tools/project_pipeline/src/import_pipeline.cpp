@@ -21,6 +21,7 @@
 #include <system_error>
 
 #include <gltf_import/asset_export.h>
+#include <Engine/Asset/mesh_preparation_policy.h>
 #include <gltf_import/gltf.h>
 #include <gltf_import/source_formats.h>
 
@@ -433,7 +434,9 @@ bool ImportProjectAsset(const ImportRequest& request, ImportResult& out, std::st
         // LOD gate): they never count as chainable here, or the
         // "requested but derived nothing" rule below would fire on a
         // fully-skinned family that correctly skipped its siblings.
-        if (g.indices.size() / 3 > 100 && g.skin.empty())
+        if (g.indices.size() / 3 > 100 &&
+            smvk::EligibleForSpatialDerivatives(g.aabbMin, g.aabbMax,
+                                                 g.indices.size(), !g.skin.empty()))
             ++chainableBlobs;
     }
     for (const auto& chain : asset.lodChains)
