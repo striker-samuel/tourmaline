@@ -349,8 +349,7 @@ void GiVolume::PackGpuLayersBc6h(std::vector<uint8_t> out[9]) const {
             std::vector<uint16_t> slice(size_t(w4) * h4 * 3, uint16_t(0));
             std::vector<uint8_t> blocks;
             blocks.reserve(sliceBlocks);
-            for (uint32_t job = nextJob.fetch_add(1); job < jobs;
-                 job = nextJob.fetch_add(1)) {
+            for (uint32_t job = nextJob.fetch_add(1); job < jobs; job = nextJob.fetch_add(1)) {
                 const uint32_t lobe = job / nz;
                 const uint32_t z = job % nz;
                 std::fill(slice.begin(), slice.end(), uint16_t(0));
@@ -396,8 +395,7 @@ void GiVolume::PackGpuLayersBc6h(std::vector<uint8_t> out[9]) const {
                     }
                 blocks.clear();
                 Bc6hEncodeImage(slice.data(), w4, h4, blocks);
-                std::memcpy(out[lobe].data() + size_t(z) * sliceBlocks,
-                            blocks.data(), sliceBlocks);
+                std::memcpy(out[lobe].data() + size_t(z) * sliceBlocks, blocks.data(), sliceBlocks);
             }
         }));
     for (auto& future : futures)
@@ -1328,13 +1326,12 @@ bool BakeGiVolume(const GiTraceScene& scene,
                         // rejection data — see the hoisted block above).
                         // A miss = the cap = open; the pre-zeroed array
                         // already carries the blocked zeros for the
-                        // invalid set.
+                        // invalid set. SOLID-ONLY: transmissive (glass)
+                        // triangles are skipped so a pane never shortens
+                        // a probe's reach (SolidObstacleDistance).
                         for (uint32_t k = 0; k < 6; ++k) {
-                            TriangleBvh::Hit vh;
                             outVolume.vis[size_t(v) * 6 + k] =
-                                scene.Bvh().Raycast(pos, kVisAxes[k], visCap, vh)
-                                    ? std::min(vh.t, visCap)
-                                    : visCap;
+                                scene.SolidObstacleDistance(pos, kVisAxes[k], visCap);
                         }
                     } else {
                         ++invalid;

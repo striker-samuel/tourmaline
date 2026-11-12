@@ -115,6 +115,12 @@ struct GiTraceMaterial {
     glm::vec3 emissive{0.0f};     // HDR radiance (emissiveFactor * strength * texture)
     glm::vec3 transmission{0.0f}; // > 0: transmissive (glass): rays pass
                                   // THROUGH the surface, tinted per pass
+    // Transmissive (AlphaMode::Blend glass): the surface passes light
+    // (tinted) and must NOT register as a solid occluder for the
+    // through-wall visibility bake — a probe on one side of a pane still
+    // "sees" through it. Explicit (not inferred from transmission != 0):
+    // a black-tinted glass has transmission == 0 but still passes light.
+    bool transmissive = false;
     // The WEAVE-CLOTH marker (set by the intern from the ALPHA MODE - MASK
     // + GiSceneBuildOptions::maskTransmissive; the Blend glass stays
     // false): the hit shades like an opaque one (whatever albedo the
@@ -298,6 +304,38 @@ class GiTraceScene {
 
     bool Occluded(const glm::vec3& from, const glm::vec3& dir, float dist) const {
         return bvh_.AnyHit(from, dir, dist);
+    }
+
+    // Distance from `origin` along `dir` to the closest SOLID (non-
+    // transmissive) triangle, capped at `dist` (returned on a miss / an
+    // all-transmissive ray). The through-wall visibility bake uses this
+    // instead of a raw Bvh().Raycast so glass (transmissive == true)
+    // never shortens a probe's obstacle distance — light passes a pane,
+    // so a probe does not "see a wall" through it. Bounded (a stack of
+    // panes): transmissive hits step past and re-cast; after kMaxPasses
+    // panes the ray reads as open (degenerate many-pane stacks are
+    // pathological content).
+    float SolidObstacleDistance(const glm::vec3& origin, const glm::vec3& dir, float dist) const {
+        constexpr uint32_t kMaxPasses = 32;
+        glm::vec3 o = origin;
+        float remaining = dist;
+        for (uint32_t pass = 0; pass < kMaxPasses; ++pass) {
+            TriangleBvh::Hit h;
+            if (!bvh_.Raycast(o, dir, remaining, h))
+                return dist; // no solid obstacle: open to the cap
+            const uint32_t mat = h.tri < triMaterial.size() ? triMaterial[h.tri] : 0xFFFFFFFFu;
+            const bool trans = mat < materials.size() && materials[mat].transmissive;
+            if (!trans)
+                return dist - remaining + std::min(h.t, remaining);
+            // Step past the pane and keep walking (an epsilon so the
+            // re-cast does not re-hit the same surface at t == 0).
+            const float step = std::max(h.t, 1e-4f) + 1e-4f;
+            if (step >= remaining)
+                return dist;
+            o += dir * step;
+            remaining -= step;
+        }
+        return dist;
     }
 
     // One NEE sample of every static spot at a diffuse vertex

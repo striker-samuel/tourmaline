@@ -1407,6 +1407,88 @@ void TestGiVolume() {
               "GI volume wall-scene far sample covered");
         (void)amps; // the photometric content is zero by construction
     }
+    // ---- Bake: a TRANSMISSIVE pane does NOT occlude visibility ----
+    // The same thin slab as the wall test, but with the transmissive
+    // (glass) material: the through-wall visibility bake must read the
+    // pane as OPEN (the cap distance) — light passes glass, so a probe
+    // does not "see a wall" through it. The cells straddling the pane
+    // stay CLEAN (the runtime's fast path), unlike the solid-wall twin.
+    {
+        GiTraceScene scene;
+        const glm::vec3 q[] = {
+            glm::vec3(0.05f, 0.0f, -1.5f),
+            glm::vec3(0.05f, 3.0f, -1.5f),
+            glm::vec3(0.05f, 3.0f, 1.5f),
+            glm::vec3(0.05f, 0.0f, 1.5f),
+            glm::vec3(-0.05f, 0.0f, -1.5f),
+            glm::vec3(-0.05f, 3.0f, -1.5f),
+            glm::vec3(-0.05f, 3.0f, 1.5f),
+            glm::vec3(-0.05f, 0.0f, 1.5f),
+        };
+        for (const glm::vec3& p : q)
+            scene.positions.push_back(p);
+        auto quad = [&](size_t a, size_t b, size_t c, size_t d) {
+            scene.indices.push_back(uint32_t(a));
+            scene.indices.push_back(uint32_t(b));
+            scene.indices.push_back(uint32_t(c));
+            scene.indices.push_back(uint32_t(a));
+            scene.indices.push_back(uint32_t(c));
+            scene.indices.push_back(uint32_t(d));
+        };
+        quad(0, 1, 2, 3); // +x face
+        quad(4, 7, 6, 5); // -x face
+        GiTraceMaterial glass;
+        glass.albedo = glm::vec3(0.0f);
+        glass.transmission = glm::vec3(0.5f); // a tinted pane
+        glass.transmissive = true;
+        scene.materials = {glass};
+        scene.triMaterial.assign(scene.indices.size() / 3, 0);
+        scene.skyIntensity = 0.0f;
+        scene.Finalize();
+        GiVolumeDef def;
+        def.planes = GiVolumeBoxPlanes(glm::vec3(-2.5f, 0.0f, -1.5f), glm::vec3(2.5f, 3.0f, 1.5f));
+        GiVolumeBakeConfig cfg{};
+        cfg.captureDirs = 64;
+        cfg.maxBounces = 0;
+        cfg.smoothingPasses = 0;
+        cfg.threadCount = 2;
+        GiVolume baked;
+        GiVolumeBakeStats stats;
+        Check(BakeGiVolume(scene, def, 0.5f, cfg, baked, stats, nullptr),
+              "GI volume glass-pane bake runs");
+        const uint32_t nx = baked.dims[0];
+        const float cap = cfg.visibilityMaxDistance;
+        const auto probeAt = [&](float x, float y, float z) -> int {
+            const glm::vec3 rel = (glm::vec3(x, y, z) - baked.gridMin) / baked.spacing;
+            const int ix = int(std::lround(rel.x - 0.5f));
+            const int iy = int(std::lround(rel.y - 0.5f));
+            const int iz = int(std::lround(rel.z - 0.5f));
+            if (ix < 0 || iy < 0 || iz < 0 || ix >= int(baked.dims[0]) ||
+                iy >= int(baked.dims[1]) || iz >= int(baked.dims[2]))
+                return -1;
+            return int((uint64_t(iz) * baked.dims[1] + uint64_t(iy)) * nx + uint64_t(ix));
+        };
+        bool glassOpen = true;
+        {
+            const int p = probeAt(0.25f, 1.5f, 0.0f);
+            if (p < 0) {
+                glassOpen = false;
+            } else {
+                for (uint32_t k = 0; k < 6; ++k)
+                    if (baked.vis[size_t(p) * 6 + k] < cap - 1e-3f)
+                        glassOpen = false; // the pane must not shorten any axis
+            }
+        }
+        Check(glassOpen, "GI volume glass-pane probe reads open through the pane");
+        bool glassClean = baked.visCellClean.size() == size_t(baked.VoxelCount());
+        if (glassClean) {
+            const int sLeft = probeAt(-0.25f, 1.5f, 0.0f);
+            const int sRight = probeAt(0.25f, 1.5f, 0.0f);
+            glassClean = sLeft >= 0 && sRight >= 0 && baked.visCellClean[size_t(sLeft)] &&
+                         baked.visCellClean[size_t(sRight)];
+        }
+        Check(glassClean, "GI volume glass-pane cells stay clean");
+    }
     // ---- Bake: floor-plane scene (bounce radiance over geometry) ----
     {
         GiTraceScene scene;
@@ -3173,8 +3255,7 @@ void TestGiVolumeBc6hRoundTrip() {
             for (uint32_t y = 0; y < 4; ++y)
                 for (uint32_t x = 0; x < 4; ++x)
                     for (uint32_t l = 0; l < 9; ++l) {
-                        const float t = 0.1f * float(l + 1) +
-                                        0.03f * float(x + y * 4 + z * 16);
+                        const float t = 0.1f * float(l + 1) + 0.03f * float(x + y * 4 + z * 16);
                         small.coeffs[((size_t(z) * 4 + y) * 4 + x) * kSgLobeCount + l] =
                             glm::vec3(t, t * 0.8f, t * 0.5f);
                     }

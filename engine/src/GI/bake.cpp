@@ -1071,7 +1071,11 @@ void AssembleTraceScene(const ::Scene& scene,
             // Transmissive (glass): the trace scene carries it as a
             // pass-through attenuator — rays continue through the
             // surface, tinted by baseColor (bake-side only; runtime
-            // cost unchanged). No diffuse bounce for these.
+            // cost unchanged). No diffuse bounce for these. The explicit
+            // transmissive flag keeps the through-wall visibility bake
+            // from treating the pane as a solid occluder (see
+            // GiTraceScene::SolidObstacleDistance).
+            gm.transmissive = true;
             gm.transmission = base;
             gm.albedo = glm::vec3(0.0f);
             gm.emissive = glm::vec3(0.0f);
@@ -1153,7 +1157,8 @@ void AssembleTraceScene(const ::Scene& scene,
             if (glm::all(glm::equal(o.albedo, gm.albedo)) &&
                 glm::all(glm::equal(o.emissive, gm.emissive)) &&
                 glm::all(glm::equal(o.transmission, gm.transmission)) && o.weave == gm.weave &&
-                o.baseTexId == gm.baseTexId && glm::all(glm::equal(o.baseTexMul, gm.baseTexMul)) &&
+                o.transmissive == gm.transmissive && o.baseTexId == gm.baseTexId &&
+                glm::all(glm::equal(o.baseTexMul, gm.baseTexMul)) &&
                 o.transTexId == gm.transTexId &&
                 glm::all(glm::equal(o.transTexMul, gm.transTexMul)) &&
                 o.transAlphaCutoff == gm.transAlphaCutoff && o.metallic == gm.metallic &&
