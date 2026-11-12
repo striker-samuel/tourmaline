@@ -3096,7 +3096,7 @@ void TestClusterSerializeCook() {
             PackedVertexPosition pos{};
             PackedVertexShading shade{};
             PackedVertexLightmap lm{};
-            PackStaticVertex(quad.vertices[v], pos, shade, lm);
+            PackMeshVertex(quad.vertices[v], pos, shade, lm);
             streamsOk = streamsOk &&
                         memcmp(pay.data() + posOff + v * sizeof(PackedVertexPosition),
                                &pos,
