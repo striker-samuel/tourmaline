@@ -487,7 +487,7 @@ struct MeshVertex {
 // must never diverge. The lightmap word pair packs unconditionally;
 // the STREAM decision (whether the mesh carves a lightmap range at
 // all) happens at allocation — any chartId != 0xFFFFFFFF.
-inline void PackStaticVertex(const MeshVertex& src,
+inline void PackMeshVertex(const MeshVertex& src,
                              PackedVertexPosition& pos,
                              PackedVertexShading& shade,
                              PackedVertexLightmap& lm) noexcept {
@@ -503,7 +503,7 @@ inline void PackStaticVertex(const MeshVertex& src,
 // Inverse pack (the .mesh-asset cook path rebuilds AoS uploads from
 // the packed SoA streams; lossy exactly like the GPU fetch, so the
 // round trip is byte-stable).
-inline void UnpackStaticVertex(const PackedVertexPosition& pos,
+inline void UnpackMeshVertex(const PackedVertexPosition& pos,
                                const PackedVertexShading& shade,
                                const PackedVertexLightmap& lm,
                                MeshVertex& out) noexcept {
@@ -574,7 +574,7 @@ using ::tour::PackedSkinInfluences;
 using ::tour::PackedVertexLightmap;
 using ::tour::PackedVertexPosition;
 using ::tour::PackedVertexShading;
-using ::tour::PackStaticVertex;
+using ::tour::PackMeshVertex;
 using ::tour::PackTerrainFarVertex;
 using ::tour::PackTerrainVertex;
 using ::tour::ShaderLodPolicy;
@@ -585,7 +585,7 @@ using ::tour::TerrainFarVertex;
 using ::tour::TerrainVertex;
 using ::tour::TerrainVertexSrc;
 using ::tour::TransparentMode;
-using ::tour::UnpackStaticVertex;
+using ::tour::UnpackMeshVertex;
 } // namespace smvk
 
 // Engine-owned vertex layout definitions now live in Renderer/vertex_layouts.h.
