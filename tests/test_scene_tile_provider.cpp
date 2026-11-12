@@ -235,6 +235,21 @@ int main() {
                   wp::SelectCubemapCascade(v, 300.0) == 2 &&
                   wp::SelectCubemapCascade(v, 512.0) == 3,
               "cubemap distance tiers terminate at IBL/sky without baking");
+        // Per-tier budgets are independent: a dense near tier can be
+        // granted more probes without multiplying every far-tier cost.
+        v.cascades[0].maxProbesPerCell = 8;
+        v.cascades[1].maxProbesPerCell = 16;
+        v.cascades[2].maxProbesPerCell = 32;
+        std::vector<wp::CubemapTileCaptureSet> tiered;
+        check(wp::PlanCubemapTileCaptures(v, {}, tiered, err) &&
+                  tiered.size() == 6 &&
+                  tiered[0].probes.size() <= 8 &&
+                  tiered[1].probes.size() <= 16 &&
+                  tiered[2].probes.size() <= 32 &&
+                  tiered[3].probes.size() <= 8 &&
+                  tiered[4].probes.size() <= 16 &&
+                  tiered[5].probes.size() <= 32,
+              "cubemap cascade budgets bound each tile and tier separately");
         v.cascades[1].outerRadiusMeters = 32.0f;
         const size_t oldSize = sets.size();
         check(!wp::PlanCubemapTileCaptures(v, {}, sets, err) &&
