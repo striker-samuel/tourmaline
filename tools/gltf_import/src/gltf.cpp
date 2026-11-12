@@ -82,6 +82,7 @@ struct GltfMaterial {
     // SMVK_materials_contactShadows.receive (default receive):
     // materials that must not pick up the sun contact march.
     bool receiveContactShadows = true;
+    bool clothSheen = false;
 };
 bool starts_with(const std::string& s, const char* prefix) {
     return s.rfind(prefix, 0) == 0;
@@ -1265,6 +1266,15 @@ static GltfMaterial ExtractMaterial(const tinygltf::Model& model, int materialIn
         }
     }
 
+    // Tourmaline cloth extension: opt in to The Order: 1886 velvet BRDF.
+    // Standard glTF surfaces remain unchanged unless explicitly tagged.
+    if (auto it = m.extensions.find("SMVK_materials_clothSheen");
+        it != m.extensions.end() && it->second.IsObject()) {
+        const auto& obj = it->second.Get<tinygltf::Value::Object>();
+        if (auto f = obj.find("enabled"); f != obj.end() && f->second.IsBool())
+            mat.clothSheen = f->second.Get<bool>();
+    }
+
     // KHR_materials_pbrSpecularGlossiness fallback (FBX2glTF assets such as
     // Bistro: 234/254 materials carry ONLY this extension, no core
     // pbrMetallicRoughness textures). diffuseTexture/diffuseFactor map onto
@@ -1828,6 +1838,7 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
     ci.doubleSided = mat.doubleSided;
     ci.castsShadows = mat.castsShadows;
     ci.receiveContactShadows = mat.receiveContactShadows;
+    ci.clothSheen = mat.clothSheen;
     // Far-LOD shading program (see ShaderLodPolicy): DEFAULT OFF — the
     // derivation only runs when the derive config opts in
     // (DeriveConfig::shaderLods / setDeriveShaderLods). The cheap
@@ -2918,6 +2929,7 @@ size_t BuildFromMeshAsset(
         info.doubleSided = m.info.doubleSided;
         info.castsShadows = m.info.castsShadows;
         info.receiveContactShadows = m.info.receiveContactShadows;
+        info.clothSheen = m.info.clothSheen;
         auto loadTex = [&](const smvk::assets::MaterialAsset::TexRef& t,
                            smvk::TextureHandle& slot) {
             if (t.path.empty())

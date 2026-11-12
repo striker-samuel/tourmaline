@@ -273,6 +273,7 @@ float MaterialChannelSample(float4 rgba, int channel)
 // lerps or sanitizes .w (the layered material blends consume .rgb
 // only) and the pak serializer copies the struct verbatim.
 #define MATERIAL_RECEIVE_CONTACT_SHADOWS (1u << 0)
+#define MATERIAL_CLOTH_SHEEN           (1u << 1)
 
 struct MaterialsBuffer
 {

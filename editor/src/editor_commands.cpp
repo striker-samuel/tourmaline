@@ -153,6 +153,11 @@ void EditorApp::ReadSharedMatAttr(uint32_t matWorld,
         num = mat->doubleSided ? 1.0 : 0.0;
     else if (attr == "castsShadows")
         num = mat->castsShadows ? 1.0 : 0.0;
+    else if (attr == "clothSheen")
+        num = (smvk::MaterialFlagsFromWord(mat->values.emissiveFactor.w) &
+               tour::kMaterialFlagClothSheen) != 0
+                  ? 1.0
+                  : 0.0;
     else if (attr == "contactShadows")
         num = (smvk::MaterialFlagsFromWord(mat->values.emissiveFactor.w) &
                smvk::kMaterialFlagReceiveContactShadows) != 0
@@ -228,10 +233,13 @@ void EditorApp::WriteSharedMatAttr(uint32_t matWorld,
         mat->doubleSided = (num != 0.0);
     else if (attr == "castsShadows")
         mat->castsShadows = (num != 0.0);
-    else if (attr == "contactShadows")
-        mat->values.emissiveFactor.w =
-            smvk::MaterialFlagsToWord((num != 0.0) ? smvk::kMaterialFlagReceiveContactShadows : 0u);
-    else if (attr == "alphaMode") {
+    else if (attr == "contactShadows" || attr == "clothSheen") {
+        const uint32_t bit = attr == "contactShadows" ? smvk::kMaterialFlagReceiveContactShadows
+                                                      : tour::kMaterialFlagClothSheen;
+        uint32_t flags = smvk::MaterialFlagsFromWord(mat->values.emissiveFactor.w);
+        flags = num != 0.0 ? (flags | bit) : (flags & ~bit);
+        mat->values.emissiveFactor.w = smvk::MaterialFlagsToWord(flags);
+    } else if (attr == "alphaMode") {
         mat->alphaMode = (num < 0.5)   ? smvk::AlphaMode::Opaque
                          : (num < 1.5) ? smvk::AlphaMode::Mask
                                        : smvk::AlphaMode::Blend;
@@ -2982,8 +2990,7 @@ bool EditorApp::WriteNodeLightAttr(uint32_t node,
         if (node >= scene.hierarchy.size())
             return false;
         EnsureNodeMetadata(scene);
-        scene.metadata[node].lightLayerMask =
-            uint32_t(std::clamp(num, 0.0, 4294967295.0));
+        scene.metadata[node].lightLayerMask = uint32_t(std::clamp(num, 0.0, 4294967295.0));
         return true;
     }
     auto lit = FindLight(scene, node);

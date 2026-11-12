@@ -1146,7 +1146,8 @@ smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterial(const MaterialCreateIn
     // receive-contact-shadows bit rides the old pad.
     values.emissiveFactor = glm::vec4(
         info.emissiveFactor,
-        MaterialFlagsToWord(info.receiveContactShadows ? kMaterialFlagReceiveContactShadows : 0u));
+        MaterialFlagsToWord((info.receiveContactShadows ? kMaterialFlagReceiveContactShadows : 0u) |
+                            (info.clothSheen ? tour::kMaterialFlagClothSheen : 0u)));
     // values.ambient keeps the MaterialValues default (0,0,0,0): the legacy
     // sky-ambient floor is off by default; ambient comes from the env/IBL
     // block instead. See comment in mesh.h.
