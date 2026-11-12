@@ -457,16 +457,42 @@ static bool BakePlanSdfs(const Project& project, const BuildPlan& plan, std::str
             err = "SDF cannot read '" + name + "': " + err;
             return false;
         }
+        // Gather effective asset-space transforms for every geometry instance.
+        // The same mesh-local grid is reused for every placement; one large
+        // instance makes it worthwhile to bake the shared SDF.
+        std::vector<glm::mat4> globals(mesh.nodes.size(), glm::mat4(1.0f));
+        std::vector<uint8_t> computed(mesh.nodes.size(), 0);
+        auto globalFor = [&](auto&& self, size_t node) -> glm::mat4 {
+            if (node >= mesh.nodes.size()) return glm::mat4(1.0f);
+            if (computed[node] == 2) return globals[node];
+            if (computed[node] == 1) return glm::mat4(1.0f); // malformed cycle
+            computed[node] = 1;
+            const int32_t parent = mesh.nodes[node].parent;
+            const glm::mat4 local = node < mesh.locals.size() ? mesh.locals[node] : glm::mat4(1.0f);
+            globals[node] = (parent >= 0 && size_t(parent) < mesh.nodes.size()
+                                 ? self(self, size_t(parent)) : glm::mat4(1.0f)) * local;
+            computed[node] = 2;
+            return globals[node];
+        };
+        for (size_t node = 0; node < mesh.nodes.size(); ++node)
+            globalFor(globalFor, node);
+        std::vector<uint8_t> eligible(mesh.geometry.size(), 0);
+        for (const auto& instance : mesh.instances) {
+            if (instance.geometry >= mesh.geometry.size() || instance.node >= globals.size())
+                continue;
+            const auto& geo = mesh.geometry[instance.geometry];
+            if (smvk::EligibleForSpatialDerivatives(geo.aabbMin, geo.aabbMax,
+                                                     geo.indices.size(), globals[instance.node],
+                                                     !geo.skin.empty()))
+                eligible[instance.geometry] = 1;
+        }
         // (::tour::asset — the leading :: is required inside smvk::project,
         // where tour.h's `namespace tour = ::tour::asset` alias shadows the
         // global tour namespace).
         ::tour::asset::SdfAsset baked;
-        for (const auto& geometry : mesh.geometry) {
-            if (geometry.indices.empty() || geometry.positions.empty() ||
-                !smvk::EligibleForSpatialDerivatives(geometry.aabbMin,
-                                                     geometry.aabbMax,
-                                                     geometry.indices.size(),
-                                                     !geometry.skin.empty()))
+        for (size_t gi = 0; gi < mesh.geometry.size(); ++gi) {
+            const auto& geometry = mesh.geometry[gi];
+            if (!eligible[gi] || geometry.indices.empty() || geometry.positions.empty())
                 continue;
             std::vector<glm::vec3> positions;
             positions.reserve(geometry.positions.size());
