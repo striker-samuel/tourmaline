@@ -497,9 +497,11 @@ void EditorApp::DrawMaterialBody(uint32_t mat) {
         }
         {
             const bool cloth = (smvk::MaterialFlagsFromWord(m->values.emissiveFactor.w) &
-                                smvk::kMaterialFlagClothSheen) != 0;
-            if (attr::Bool("Cloth sheen", cloth,
-                           "The Order: 1886 velvet microfiber BRDF; roughness controls fuzz width")) {
+                                tour::kMaterialFlagClothSheen) != 0;
+            if (attr::Bool(
+                    "Cloth sheen",
+                    cloth,
+                    "The Order: 1886 velvet microfiber BRDF; roughness controls fuzz width")) {
                 EditCmd c{};
                 c.verb = EditVerb::SetMatAttr;
                 c.matWorld = mat;
