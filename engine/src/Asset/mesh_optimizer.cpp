@@ -17,6 +17,7 @@
 
 #include <Engine/App/cluster.h>
 #include <Engine/Asset/meshlet.h>
+#include <Engine/Asset/mesh_preparation_policy.h>
 #include <Engine/GI/triangle_bvh.h>
 #include <Engine/Scene/scene.h>
 
@@ -935,6 +936,10 @@ bool CookLodSiblings(Cluster& cluster,
             continue; // a sibling itself: chains grow from base meshes only
         const StaticMeshUpload* upload = cluster.GetRetainedUpload(handle);
         if (!upload || upload->vertices.empty() || upload->indices.empty())
+            continue;
+        // Do not prepare hierarchical LOD siblings for small prop meshes.
+        if (!EligibleForSpatialDerivatives(upload->aabbMin, upload->aabbMax,
+                                            upload->indices.size()))
             continue;
         // Idempotence: already-cooked chains stay untouched.
         if (auto hit = cluster.GetMeshLod(LodSiblingUri(uri, 1)); hit && hit->lodIndex == 1)
