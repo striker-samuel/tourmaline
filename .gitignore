@@ -489,6 +489,9 @@ FodyWeavers.xsd
 # Local agent/dev notes (documentation not for the repo).
 /notes/
 
+# Color-science / GI math writeup (learning reference, not repo content).
+/COLOR_SCIENCE_GI_NOTES.txt
+
 # --- CMake-generated Visual Studio files (never commit) ---
 # This repo is CMake-based (CMakeLists.txt is the source of truth).
 # In-source configures pollute the tree with these; always build out-of-source.
