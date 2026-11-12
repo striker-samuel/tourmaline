@@ -1435,6 +1435,51 @@ void TestLightVerbs() {
 // system types (material/file/image) parse, validate, and skip
 // at replay; legacy createLight/createTerrain/createTransform lines
 // load unchanged.
+void TestGiVolumePrecisionRoundTrip() {
+    // A first-time bake hashes the in-memory OBB transform, while Pak
+    // replays SaveTour output. All float components must be bit-identical
+    // after serialization or a valid GI bake is incorrectly marked stale.
+    smvk::tour::Doc doc;
+    smvk::tour::Command create{};
+    create.verb = smvk::tour::Verb::CreateGiVolume;
+    create.node = 0;
+    create.text = "HighPrecisionOBB";
+    create.vec = glm::vec3(1.23456788f, -12.3456783f, 0.000123456789f);
+    create.svec = glm::vec3(8.12345695f, 4.98765421f, 6.1357913f);
+    create.vec4 = glm::vec4(3.0f, 0.456789136f, 0.123456791f, 0.234567896f);
+    doc.commands.push_back(create);
+    smvk::tour::Command size{};
+    size.verb = smvk::tour::Verb::SetGiVolumeAttr;
+    size.node = smvk::tour::kCreateGiVolumeRefBase;
+    size.text = "size";
+    size.vec4 = glm::vec4(7.87654352f, 3.23456788f, 5.34567881f, 0.0f);
+    doc.commands.push_back(size);
+    smvk::tour::Command rotation{};
+    rotation.verb = smvk::tour::Verb::SetGiVolumeAttr;
+    rotation.node = smvk::tour::kCreateGiVolumeRefBase;
+    rotation.text = "rotation";
+    rotation.vec4 = glm::vec4(13.123456f, 27.876543f, -41.234567f, 0.0f);
+    doc.commands.push_back(rotation);
+
+    std::string err;
+    Check(smvk::tour::SaveTour(TempTour(), doc, err),
+          "GI volume precise save");
+    smvk::tour::Doc reloaded;
+    Check(smvk::tour::LoadTour(TempTour(), reloaded, err),
+          "GI volume precise load");
+    if (reloaded.commands.size() != doc.commands.size()) {
+        Check(false, "GI volume precise command count");
+        return;
+    }
+    Check(reloaded.commands[0].vec == create.vec &&
+              reloaded.commands[0].svec == create.svec &&
+              reloaded.commands[0].vec4 == create.vec4,
+          "GI volume create OBB and settings bit-exact roundtrip");
+    Check(reloaded.commands[1].vec4 == size.vec4 &&
+              reloaded.commands[2].vec4 == rotation.vec4,
+          "GI volume size/rotation attr bit-exact roundtrip");
+}
+
 void TestGiVolumeVerbs() {
     // Authored GI volumes: createGiVolume/setGiVolumeAttr round-trip
     // through the .tour file, then replay onto a offline cluster (create
@@ -4727,6 +4772,7 @@ int main() {
     TestTourReferences();
     TestLightVerbs();
     TestTerrainVerbs();
+    TestGiVolumePrecisionRoundTrip();
     TestGiVolumeVerbs();
     TestCubemapVerbs();
     TestCreateParentSentinel();
