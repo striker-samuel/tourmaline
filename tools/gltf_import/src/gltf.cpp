@@ -2743,7 +2743,7 @@ size_t BuildFromMeshAsset(
             // pack's sentinel round-trips to chartId 0xFFFFFFFF anyway).
             const smvk::PackedVertexLightmap lmNone{};
             for (size_t v = 0; v < g.positions.size(); ++v)
-                smvk::UnpackStaticVertex(g.positions[v],
+                smvk::UnpackMeshVertex(g.positions[v],
                                          g.shading[v],
                                          !g.lightmap.empty() ? g.lightmap[v] : lmNone,
                                          up.vertices[v]);
