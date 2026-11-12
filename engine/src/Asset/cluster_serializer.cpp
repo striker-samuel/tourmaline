@@ -833,7 +833,7 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
             std::vector<PackedVertexLightmap> lightmap(upload->vertices.size());
             bool charted = false;
             for (size_t v = 0; v < upload->vertices.size(); ++v) {
-                PackStaticVertex(upload->vertices[v], positions[v], shading[v], lightmap[v]);
+                PackMeshVertex(upload->vertices[v], positions[v], shading[v], lightmap[v]);
                 if (upload->vertices[v].chartId != 0xFFFFFFFFu)
                     charted = true;
             }
