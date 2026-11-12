@@ -3,6 +3,8 @@
 // Headless scene tile residency tests; integrator runs these via CTest.
 
 #include <Engine/WorldPartition/SceneTileProvider.h>
+#include <Engine/WorldPartition/CubemapTileProvider.h>
+#include <Engine/WorldPartition/CubemapCapturePlanning.h>
 #include <Engine/WorldPartition/StreamTicketLedger.h>
 #include <cstdlib>
 #include <iostream>
@@ -213,6 +215,71 @@ int main() {
               "clear never resets ticket generations");
         check(fourth.has_value() && ledger.Accept(7, *fourth) &&
               ledger.PendingCount() == 0, "valid completion clears pending");
+    }
+    {
+        // Bounded octree capture planning follows the WorldPartition grid,
+        // supports negative coordinates, and has an implicit sky tier.
+        wp::CubemapCaptureVolume v{};
+        v.min = {-2.0f, 1.0f, 0.0f};
+        v.max = {2.0f, 5.0f, 2.0f};
+        v.cascades = {{64.0f, 2.0f}, {256.0f, 3.0f}, {512.0f, 5.0f}};
+        std::vector<wp::CubemapTileCaptureSet> sets;
+        std::string err;
+        check(wp::PlanCubemapTileCaptures(v, {}, sets, err) &&
+                  sets.size() == 6 && sets.front().cell.x == -1 &&
+                  sets.back().cell.x == 0 && sets.back().cascade == 2,
+              "cubemap tile planning splits at negative/positive world-cell seam");
+        check(wp::SelectCubemapCascade(v, 1.0) == 0 &&
+                  wp::SelectCubemapCascade(v, 100.0) == 1 &&
+                  wp::SelectCubemapCascade(v, 300.0) == 2 &&
+                  wp::SelectCubemapCascade(v, 512.0) == 3,
+              "cubemap distance tiers terminate at IBL/sky without baking");
+        v.cascades[1].outerRadiusMeters = 32.0f;
+        const size_t oldSize = sets.size();
+        check(!wp::PlanCubemapTileCaptures(v, {}, sets, err) &&
+                  sets.size() == oldSize,
+              "invalid cascade config leaves existing captures untouched");
+    }
+    {
+        // Cubemap capture tiles participate in the shared partition frame
+        // lifecycle, but retain independent, ticket-checked GPU residency.
+        wp::CubemapTileProvider cubes;
+        wp::CubemapCaptureTile one{};
+        one.tile.world = 99;
+        one.tile.cell = {0, 0};
+        one.captureSetId = 123;
+        check(cubes.SetManifest(99, {one}), "cubemap capture manifest accepted");
+        uint64_t ticket = 0;
+        int requestCount = 0, retireCount = 0;
+        cubes.SetCallbacks(
+            [&](const wp::CubemapCaptureTile&, uint64_t issued) {
+                ticket = issued;
+                ++requestCount;
+            },
+            [&](const wp::CubemapCaptureTile&) {
+                ++retireCount;
+                return true;
+            });
+        wp::WorldPartition part;
+        part.AddProvider(&cubes);
+        wp::StreamingInterest interest{};
+        interest.world = 99;
+        interest.layerMask = wp::StreamLayerBit(wp::StreamLayer::Environment);
+        interest.position = {100.0, 0.0, 100.0};
+        interest.radiusMeters = 0;
+        part.SetInterests(&interest, 1);
+        part.UpdateFrame(1);
+        part.UpdateFrame(2);
+        check(requestCount == 1 && cubes.PendingCount() == 1,
+              "cubemap tile request is deduplicated");
+        check(!cubes.Activate(one.tile, ticket + 1) &&
+                  cubes.Activate(one.tile, ticket) && cubes.ResidentCount() == 1,
+              "cubemap tile rejects incorrect completion ticket");
+        interest.position = {600.0, 0.0, 600.0};
+        part.SetInterests(&interest, 1);
+        part.UpdateFrame(3);
+        check(retireCount == 1 && cubes.ResidentCount() == 0,
+              "cubemap tile retires after losing streaming interest");
     }
     std::cout << "scene_tile_provider failures=" << failures << "\n";
     return failures ? EXIT_FAILURE : EXIT_SUCCESS;
