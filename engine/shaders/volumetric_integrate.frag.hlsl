@@ -126,7 +126,11 @@ float VolIgn(float2 px)
 float VolPhaseHg(float cosT, float g)
 {
     float g2 = g * g;
-    float denom = pow(max(1.0 + g2 - 2.0 * g * cosT, 1e-4), 1.5);
+    // x^1.5 = x * sqrt(x): skips the generic pow's log2/exp2 SFU pair. The
+    // phase is evaluated once per pixel (the sun) AND once per light per
+    // march refresh, so the transcendental was on the hot per-segment path.
+    float x = max(1.0 + g2 - 2.0 * g * cosT, 1e-4);
+    float denom = x * sqrt(x);
     return (1.0 - g2) / max(denom, 1e-4);
 }
 
@@ -158,7 +162,11 @@ float3 VolLightInScatter(ForwardPlusLight pl, float3 pos, float3 rayDir)
     if (pl.range > 0.0f)
     {
         const float x = dist / max(pl.range, 1e-6f);
-        window_ = pow(saturate(1.0f - x * x * x * x), 2.0f);
+        // Frostbite windowed falloff (1 - x^4)^2, the multiply form: pow
+        // with a constant integer exponent may not fold to multiplies, and
+        // this runs once per light per march refresh.
+        const float t = saturate(1.0f - (x * x) * (x * x));
+        window_ = t * t;
     }
     const float atten = window_ / max(4.0f * kVolPi * dist * dist, 1e-2f);
     float3 plColor = pl.color.rgb * pl.intensity;
@@ -236,6 +244,14 @@ float SampleFogSunCSM(float3 wpos, float4x4 view)
     float viewDepth = max(-mul(view, float4(wpos, 1.0)).z, 0.0);
     int first = SelectCascadeGpu(viewDepth, vp.cascadeBuffer, vp.numCascades);
 
+    // BDA discipline (see shadows.hlsli SelectCascadeGpu): do NOT hoist
+    // vp.cascadeBuffer.Get() into a by-value local - DirectionalCascadeBuffer
+    // carries a 512 B dynamically-indexed cascade array, which forces the
+    // aggregate into local/scratch storage (the "Local Memory Load/Store"
+    // stall). Read the selected cascade's fields through the pointer
+    // (narrow computed-offset loads) instead.
+    SamplerState smp = samplers[NonUniformResourceIndex(vp.samplerIndex)];
+
     [loop]
     for (int k = first; k < int(vp.numCascades); ++k)
     {
@@ -261,7 +277,6 @@ float SampleFogSunCSM(float3 wpos, float4x4 view)
             vp.cascadeBuffer.Get().dir.cascades[k].uvClampMin,
             vp.cascadeBuffer.Get().dir.cascades[k].uvClampMax);
 
-        SamplerState smp = samplers[NonUniformResourceIndex(vp.samplerIndex)];
         float storedDepth = textures[vp.shadowDepthIndex]
             .SampleLevel(smp, atlasUV, 0.0).r;
 
