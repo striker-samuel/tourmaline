@@ -6,12 +6,14 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cctype>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
+#include <thread>
 #include <system_error>
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -58,12 +60,62 @@ fs::path FindCatalog() {
     return {};
 }
 
+// Keep exporter-side validation in sync with perf_harness.select_scenario.
+// The benchmark runner accepts cooked sources followed by optional scene selectors.
+bool ValidSourceArgs(const std::vector<std::string>& args) {
+    if (args.empty() || args.size() % 2 != 0)
+        return false;
+    int projects = 0, paks = 0;
+    for (size_t i = 0; i < args.size(); i += 2) {
+        const auto& flag = args[i];
+        const auto& value = args[i + 1];
+        if (value.empty() || value == "." || value == ".." ||
+            value.rfind("--", 0) == 0)
+            return false;
+        if (flag == "--project")
+            ++projects;
+        else if (flag == "--pak")
+            ++paks;
+        else if (flag != "--scene" && flag != "--scene-index")
+            return false;
+    }
+    return (projects == 1 && paks == 0) || (projects == 0 && paks > 0);
+}
+
+// create_directory is atomic across processes. Hold the lock while loading,
+// choosing an ID and replacing the catalog, not just during the final rename.
+struct CatalogLock {
+    fs::path path;
+    bool owned = false;
+    explicit CatalogLock(fs::path lockPath) : path(std::move(lockPath)) {
+        for (int attempt = 0; attempt < 40; ++attempt) {
+            std::error_code error;
+            owned = fs::create_directory(path, error);
+            if (owned || error)
+                return;
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+    }
+    ~CatalogLock() {
+        if (owned) {
+            std::error_code ignored;
+            fs::remove(path, ignored);
+        }
+    }
+    CatalogLock(const CatalogLock&) = delete;
+    CatalogLock& operator=(const CatalogLock&) = delete;
+};
+
 } // namespace
 
 bool Save(const Scenario& scenario, std::string& message) {
     const std::string baseId = Slug(scenario.label);
-    if (baseId.empty() || scenario.sourceArgs.empty() || scenario.frames < 1) {
+    if (baseId.empty() || scenario.frames < 1) {
         message = "Enter a label and launch a cooked pak/project scene.";
+        return false;
+    }
+    if (!ValidSourceArgs(scenario.sourceArgs)) {
+        message = "Invalid source arguments: expected cooked --pak/--project and optional scene selectors.";
         return false;
     }
     const fs::path catalog = FindCatalog();
@@ -73,6 +125,11 @@ bool Save(const Scenario& scenario, std::string& message) {
         return false;
     }
     try {
+        CatalogLock lock(fs::path(catalog.string() + ".lock"));
+        if (!lock.owned) {
+            message = "Scenario catalog is locked by another export (or a stale .lock directory).";
+            return false;
+        }
         nlohmann::json root;
         {
             std::ifstream input(catalog);
@@ -97,8 +154,10 @@ bool Save(const Scenario& scenario, std::string& message) {
                     return true;
             return false;
         };
-        while (occupied(id))
-            id = baseId + "-" + std::to_string(suffix++);
+        while (occupied(id)) {
+            const std::string suffixText = "-" + std::to_string(suffix++);
+            id = baseId.substr(0, 64 - suffixText.size()) + suffixText;
+        }
 
         nlohmann::json entry = {
             {"id", id},
@@ -280,7 +339,8 @@ void WorldRenderer::ExportBenchmarkScenario() {
     pass("dof", m_passes.dof && m_dofEnabled);
     pass("ssr", m_passes.ssr);
     pass("bloom", m_passes.bloom && m_bloomEnabled);
-    pass("exposure", m_passes.exposure && m_autoExposureEnabled);
+    // Benchmark always pins auto-exposure off, including the pass graph.
+    pass("exposure", false);
     pass("msaa", m_passes.msaa);
     pass("skydome", m_passes.skydome);
     pass("ui", m_passes.ui);
