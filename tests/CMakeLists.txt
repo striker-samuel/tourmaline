@@ -1616,3 +1616,9 @@ add_executable(GpuSceneHlodTests test_gpu_scene_hlod.cpp)
 target_include_directories(GpuSceneHlodTests PRIVATE ${CMAKE_SOURCE_DIR}/engine/include)
 set_target_properties(GpuSceneHlodTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME gpu_scene_hlod_tests COMMAND GpuSceneHlodTests)
+
+# Device-free GPU Scene producer/batch publication contracts.
+add_executable(ProceduralBatchRegistryTests test_gpu_scene_procedural_batches.cpp)
+target_include_directories(ProceduralBatchRegistryTests PRIVATE ${CMAKE_SOURCE_DIR}/engine/include)
+set_target_properties(ProceduralBatchRegistryTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME procedural_batch_registry_tests COMMAND ProceduralBatchRegistryTests)
