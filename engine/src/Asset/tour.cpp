@@ -16,6 +16,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iterator>
+#include <limits>
 #include <random>
 #include <regex>
 #include <set>
@@ -218,6 +219,14 @@ static bool IsLogicalNodeVerb(Verb v) {
 }
 
 static void WriteCommandLine(std::ostream& f, const Command& c, const char* indent) {
+    // The GI bake unit hash folds the authored OBB's full float matrix
+    // bitwise. Default stream precision (6 significant digits) loses
+    // float bits at SaveTour, so the pak's replayed-volume hash differed
+    // from the first bake. Emit all GI-volume float operands with enough
+    // digits to round-trip a binary32 value exactly.
+    const auto previousPrecision = f.precision();
+    if (c.verb == Verb::CreateGiVolume || c.verb == Verb::SetGiVolumeAttr)
+        f << std::setprecision(std::numeric_limits<float>::max_digits10);
     f << indent;
     switch (c.verb) {
     case Verb::Rename:
@@ -728,6 +737,7 @@ static void WriteCommandLine(std::ostream& f, const Command& c, const char* inde
     if (!c.name.empty() && !IsGenericNodeVerb(c.verb))
         f << " // " << c.name;
     f << ";\n";
+    f.precision(previousPrecision);
 }
 
 } // namespace
