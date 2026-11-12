@@ -272,7 +272,9 @@ class SubprocessStageAdapter final : public StageAdapter {
                          "--cubemap",
                          a.cubemap ? "on" : "off",
                          "--lightmap",
-                         a.lightmap ? "on" : "off"},
+                         a.lightmap ? "on" : "off",
+                         "--lods",
+                         a.lods ? "on" : "off"},
                         err);
     }
     int GiBaker(const GiBakerStageArgs& a, std::string& err) override {
@@ -759,6 +761,7 @@ bool ExecuteBuildPlan(const Project& project,
             stage.tour = tourAbs.lexically_normal().generic_string();
             stage.cubemap = pak.bakeCubemaps;
             stage.lightmap = false; // the deprecated path stays off
+            stage.lods = plan.importLods;
             stage.registryDir = options.registryDir;
             const int rc = adapter.Cook(stage, err);
             if (rc != 0) {
