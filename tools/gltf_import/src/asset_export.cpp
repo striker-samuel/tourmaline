@@ -1707,7 +1707,7 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
                 g.uriFragment = (hash != std::string::npos) ? u.substr(hash + 1) : std::string();
                 if (auto ml = cluster->GetMeshMeshlets(uri))
                     g.meshlets = std::move(*ml);
-                if (const smvk::StaticMeshUpload* up = cluster->GetRetainedUpload(h)) {
+                if (const smvk::MeshData* up = cluster->GetRetainedUpload(h)) {
                     g.positions.resize(up->vertices.size());
                     g.shading.resize(up->vertices.size());
                     g.lightmap.resize(up->vertices.size());
@@ -1751,7 +1751,7 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
                             (sh != std::string::npos) ? su.substr(sh + 1) : std::string();
                         if (auto ml = cluster->GetMeshMeshlets(sibUri))
                             s.geo.meshlets = std::move(*ml);
-                        if (const smvk::StaticMeshUpload* up = cluster->GetRetainedUpload(*sibH)) {
+                        if (const smvk::MeshData* up = cluster->GetRetainedUpload(*sibH)) {
                             s.geo.positions.resize(up->vertices.size());
                             s.geo.shading.resize(up->vertices.size());
                             s.geo.lightmap.resize(up->vertices.size());
