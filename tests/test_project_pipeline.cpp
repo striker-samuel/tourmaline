@@ -29,6 +29,7 @@
 #include <project_pipeline/build_plan.h>
 #include <project_pipeline/import_pipeline.h>
 #include <project_pipeline/project.h>
+#include <project_pipeline/project_resource_path.h>
 #include <project_pipeline/project_catalog.h>
 #include <project_pipeline/project_recipe.h>
 #include <project_pipeline/recipe_resolver.h>
@@ -4592,6 +4593,44 @@ void TestPlansHeaderEmission() {
     fs::remove_all(tmp, ec);
 }
 
+void TestProjectResourcePaths() {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::absolute(fs::path("resource_path_test_project"));
+    smvk::project::ResolvedProjectResource resolved;
+    std::string err;
+    const auto resolve = [&](const std::string& input) {
+        return smvk::project::ResolveProjectResource(
+            root.generic_string(), input, resolved, err);
+    };
+    Check(resolve("models/bistro/bistro.geometry") &&
+              resolved.contentRelative == "models/bistro/bistro.geometry" &&
+              resolved.projectVfs == "content/models/bistro/bistro.geometry" &&
+              resolved.stageRoot == root.generic_string(),
+          "resourcepath.content-relative");
+    Check(resolve("content/models/bistro/bistro.geometry") &&
+              resolved.contentRelative == "models/bistro/bistro.geometry" &&
+              resolved.projectVfs == "content/models/bistro/bistro.geometry",
+          "resourcepath.legacy-project-relative");
+    Check(resolve((root / "content/models/bistro/bistro.geometry").generic_string()) &&
+              resolved.contentRelative == "models/bistro/bistro.geometry",
+          "resourcepath.absolute-project-host");
+    Check(!resolve("content/content/models/bistro/bistro.geometry") &&
+              err.find("duplicate") != std::string::npos,
+          "resourcepath.duplicate-content-prefix-refused");
+    Check(!resolve("../outside.geometry") &&
+              err.find("escapes") != std::string::npos,
+          "resourcepath.traversal-refused");
+    Check(!resolve((root.parent_path() / "outside.geometry").generic_string()) &&
+              err.find("escapes") != std::string::npos,
+          "resourcepath.absolute-outside-refused");
+    Check(!resolve("") && !err.empty(), "resourcepath.empty-refused");
+    // A directory whose *name* contains 'content' is not treated as
+    // a mount marker; root derivation is based on path components.
+    Check(resolve((root / "content/models/contention/mesh.geometry").generic_string()) &&
+              resolved.projectVfs == "content/models/contention/mesh.geometry",
+          "resourcepath.no-substring-search");
+}
+
 int main(int argc, char** argv) {
     if (argc > 0 && argv[0])
         g_argv0 = argv[0];
@@ -4601,6 +4640,7 @@ int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     setvbuf(stderr, nullptr, _IONBF, 0);
     std::cout << std::unitbuf;
+    TestProjectResourcePaths();
     TestProjectModel();
     TestImportLifecycle();
     TestFingerprint();
