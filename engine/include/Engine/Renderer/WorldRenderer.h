@@ -4118,6 +4118,13 @@ class WorldRenderer : public IRenderer {
     bool m_giFixedEnvVisArmed = false;
     smvk::ShaderProgram m_fixedEnvVisProgramGi[4];
     smvk::ShaderProgram m_fixedEnvVisProgramGiStd[4];
+    // Constant / raw-envSpec export twins (capture-alignment diagnostics).
+    bool m_giExportConstantArmed = false;
+    smvk::ShaderProgram m_exportConstantProgramGi[4];
+    smvk::ShaderProgram m_exportConstantProgramGiStd[4];
+    bool m_giExportEnvSpecArmed = false;
+    smvk::ShaderProgram m_exportEnvSpecProgramGi[4];
+    smvk::ShaderProgram m_exportEnvSpecProgramGiStd[4];
     // Linear-HDR diffuse-irradiance capture twins (giExportIrradianceCompile
     // =1, optionally + giOctaCompile=1): forged + selected when
     // TOURMALINE_GI_EXPORT_IRRADIANCE=1.

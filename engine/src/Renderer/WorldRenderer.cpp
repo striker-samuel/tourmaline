@@ -197,6 +197,22 @@ smvk::ShaderProgram& WorldRenderer::MainLitProgramFor(uint32_t materialId) {
                                           true,
                                           m_fixedEnvVisProgramGi,
                                           m_fixedEnvVisProgramGiStd);
+                if (m_giExportConstantArmed)
+                    return SpecProgramFor(m_resources.mainProgramGiStd[gv],
+                                          tour::kSpecGiExportConstant,
+                                          0u,
+                                          gv,
+                                          true,
+                                          m_exportConstantProgramGi,
+                                          m_exportConstantProgramGiStd);
+                if (m_giExportEnvSpecArmed)
+                    return SpecProgramFor(m_resources.mainProgramGiStd[gv],
+                                          tour::kSpecGiExportEnvSpec,
+                                          0u,
+                                          gv,
+                                          true,
+                                          m_exportEnvSpecProgramGi,
+                                          m_exportEnvSpecProgramGiStd);
                 if (m_giVolumeStatsArmed)
                     return SpecProgramFor(m_resources.mainProgramGiStd[gv],
                                           tour::kSpecGiStats,
@@ -247,6 +263,22 @@ smvk::ShaderProgram& WorldRenderer::MainLitProgramFor(uint32_t materialId) {
                                       false,
                                       m_fixedEnvVisProgramGi,
                                       m_fixedEnvVisProgramGiStd);
+            if (m_giExportConstantArmed)
+                return SpecProgramFor(gi,
+                                      tour::kSpecGiExportConstant,
+                                      0u,
+                                      gv,
+                                      false,
+                                      m_exportConstantProgramGi,
+                                      m_exportConstantProgramGiStd);
+            if (m_giExportEnvSpecArmed)
+                return SpecProgramFor(gi,
+                                      tour::kSpecGiExportEnvSpec,
+                                      0u,
+                                      gv,
+                                      false,
+                                      m_exportEnvSpecProgramGi,
+                                      m_exportEnvSpecProgramGiStd);
             if (m_giVolumeStatsArmed)
                 return SpecProgramFor(gi,
                                       tour::kSpecGiStats,
@@ -1514,6 +1546,21 @@ bool WorldRenderer::onAttach() {
     if (const char* fixedEnvVis = std::getenv("TOURMALINE_GI_FIXED_ENVVIS")) {
         if (std::atoi(fixedEnvVis) == 1)
             m_giFixedEnvVisArmed = true;
+    }
+    // Capture-alignment diagnostics: write a constant / the raw cubemap
+    // specular to outEnvSpec. The env-var value is the output directory
+    // (same convention as TOURMALINE_GI_EXPORT_IRRADIANCE).
+    if (const char* cEnv = std::getenv("TOURMALINE_GI_EXPORT_CONSTANT")) {
+        if (cEnv[0] != '\0') {
+            m_giExportConstantArmed = true;
+            m_giExportIrradianceDir = cEnv;
+        }
+    }
+    if (const char* eEnv = std::getenv("TOURMALINE_GI_EXPORT_ENVSPEC")) {
+        if (eEnv[0] != '\0') {
+            m_giExportEnvSpecArmed = true;
+            m_giExportIrradianceDir = eEnv;
+        }
     }
     // Linear-HDR diffuse-irradiance capture: the lit pass writes E (GI +
     // sky fallback, before albedo) to outEnvSpec, read back after the
@@ -10120,7 +10167,8 @@ void WorldRenderer::PollCaptureReadback() {
     } else if (m_sequenceReadbackPending) {
         m_sequenceReadbackPending = false;
         ExportSequenceScreenshot(m_captureExtent);
-    } else if (m_giExportIrradianceArmed || m_giExportSpecularArmed) {
+    } else if (m_giExportIrradianceArmed || m_giExportSpecularArmed || m_giExportConstantArmed ||
+               m_giExportEnvSpecArmed) {
         ExportIrradianceCapture(m_captureExtent);
     } else {
         ExportScreenshot(m_captureExtent);

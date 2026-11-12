@@ -220,6 +220,12 @@ inline constexpr uint32_t kSpecGiHybrid = 26;
 // Fixed-envVis diagnostic (TOURMALINE_GI_FIXED_ENVVIS=1). Must match
 // common.hlsli SPEC_GI_FIXED_ENVVIS.
 inline constexpr uint32_t kSpecGiFixedEnvVis = 27;
+// Constant export (TOURMALINE_GI_EXPORT_CONSTANT=1). Must match
+// common.hlsli SPEC_GI_EXPORT_CONSTANT.
+inline constexpr uint32_t kSpecGiExportConstant = 28;
+// Raw envSpec export (TOURMALINE_GI_EXPORT_ENVSPEC=1). Must match
+// common.hlsli SPEC_GI_EXPORT_ENVSPEC.
+inline constexpr uint32_t kSpecGiExportEnvSpec = 29;
 
 struct MaterialCreateInfo {
     // Primary PBR textures – baseColorTexture == diffuse for backward compat.

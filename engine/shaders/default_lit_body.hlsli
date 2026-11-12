@@ -1901,7 +1901,11 @@ float envVis = 1.0f;
     // unused (0). Sanitize like the color (the probe content x Fenv can
     // exceed the half max). SPEC_GI_EXPORT_IRRADIANCE swaps the payload for
     // the linear-HDR diffuse irradiance + covered flag instead.
-    if (giExportIrradianceCompile != 0u)
+    if (giExportConstantCompile != 0u)
+        OUT.outEnvSpec = float4(1.0, 1.0, 1.0, 1.0);
+    else if (giExportEnvSpecCompile != 0u)
+        OUT.outEnvSpec = float4(envSpec, 1.0);
+    else if (giExportIrradianceCompile != 0u)
         OUT.outEnvSpec = float4(giExportE, giExportCovered);
     else
         OUT.outEnvSpec = float4(
