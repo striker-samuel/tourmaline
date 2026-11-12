@@ -5,6 +5,7 @@
 
 #include <Engine/Asset/asset_registry.h>
 #include <Engine/Asset/mesh_optimizer.h>
+#include <Engine/Asset/mesh_preparation_policy.h>
 #include <Engine/Renderer/texture_streamer.h>
 #include <Engine/Renderer/vertex_pack.h>
 #include <Engine/Utils/texture_loader.h>
@@ -81,6 +82,7 @@ struct GltfMaterial {
     // SMVK_materials_contactShadows.receive (default receive):
     // materials that must not pick up the sun contact march.
     bool receiveContactShadows = true;
+    bool clothSheen = false;
 };
 bool starts_with(const std::string& s, const char* prefix) {
     return s.rfind(prefix, 0) == 0;
@@ -1264,6 +1266,15 @@ static GltfMaterial ExtractMaterial(const tinygltf::Model& model, int materialIn
         }
     }
 
+    // Tourmaline cloth extension: opt in to The Order: 1886 velvet BRDF.
+    // Standard glTF surfaces remain unchanged unless explicitly tagged.
+    if (auto it = m.extensions.find("SMVK_materials_clothSheen");
+        it != m.extensions.end() && it->second.IsObject()) {
+        const auto& obj = it->second.Get<tinygltf::Value::Object>();
+        if (auto f = obj.find("enabled"); f != obj.end() && f->second.IsBool())
+            mat.clothSheen = f->second.Get<bool>();
+    }
+
     // KHR_materials_pbrSpecularGlossiness fallback (FBX2glTF assets such as
     // Bistro: 234/254 materials carry ONLY this extension, no core
     // pbrMetallicRoughness textures). diffuseTexture/diffuseFactor map onto
@@ -1827,6 +1838,7 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
     ci.doubleSided = mat.doubleSided;
     ci.castsShadows = mat.castsShadows;
     ci.receiveContactShadows = mat.receiveContactShadows;
+    ci.clothSheen = mat.clothSheen;
     // Far-LOD shading program (see ShaderLodPolicy): DEFAULT OFF — the
     // derivation only runs when the derive config opts in
     // (DeriveConfig::shaderLods / setDeriveShaderLods). The cheap
@@ -2152,9 +2164,35 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
     // silently freezing at LOD-switch distance. Skipping the siblings
     // here keeps every draw on the streamed base mesh, which is also
     // the GPU-driven raster eligibility shape (single-level chains).
+    // Evaluate ALL authored instances, not the raw primitive dimensions.
+    // A shared mesh needs derived siblings if any placement is large in
+    // scene/world space. Node local transforms are traversed from roots.
+    bool largePlacedInstance = false;
+    std::vector<uint8_t> visited(model.nodes.size(), 0);
+    std::vector<uint8_t> child(model.nodes.size(), 0);
+    for (const auto& n : model.nodes)
+        for (int c : n.children)
+            if (c >= 0 && size_t(c) < child.size()) child[size_t(c)] = 1;
+    auto visit = [&](auto&& self, int idx, const glm::mat4& parent) -> void {
+        if (idx < 0 || size_t(idx) >= model.nodes.size() || visited[size_t(idx)])
+            return;
+        visited[size_t(idx)] = 1;
+        const auto& n = model.nodes[size_t(idx)];
+        const glm::mat4 world = parent * GetNodeLocalTransform(n);
+        if (n.mesh == gltfMeshIndex &&
+            smvk::EligibleForSpatialDerivatives(data.aabbMin, data.aabbMax,
+                                                 data.indices.size(), world, skinned))
+            largePlacedInstance = true;
+        for (int c : n.children) self(self, c, world);
+    };
+    for (size_t i = 0; i < model.nodes.size(); ++i)
+        if (!child[i]) visit(visit, int(i), glm::mat4(1.0f));
+    // Handle orphan/cyclic malformed inputs conservatively.
+    for (size_t i = 0; i < model.nodes.size(); ++i)
+        if (!visited[i]) visit(visit, int(i), glm::mat4(1.0f));
     std::vector<smvk::CookedLod> lodChain;
     if (meshOptConfig.generateLods && data.skin.empty() && !data.vertices.empty() &&
-        !data.indices.empty()) {
+        largePlacedInstance) {
         // Alpha cutout (MASK) and blended foliage sample coverage from the
         // base-color alpha via the UVs: positions-only simplify collapses
         // quad borders and stretches UVs, flashing background through the
@@ -2891,6 +2929,7 @@ size_t BuildFromMeshAsset(
         info.doubleSided = m.info.doubleSided;
         info.castsShadows = m.info.castsShadows;
         info.receiveContactShadows = m.info.receiveContactShadows;
+        info.clothSheen = m.info.clothSheen;
         auto loadTex = [&](const smvk::assets::MaterialAsset::TexRef& t,
                            smvk::TextureHandle& slot) {
             if (t.path.empty())

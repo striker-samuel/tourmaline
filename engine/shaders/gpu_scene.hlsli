@@ -37,6 +37,7 @@ struct GpuSceneSubmesh {
 // Additional GPU raster classification in Instance.refs.w.
 #define GPU_SCENE_INSTANCE_DOUBLE_SIDED (1u << 12)
 #define GPU_SCENE_INSTANCE_MASKED (1u << 10)
+#define GPU_SCENE_INSTANCE_DITHER_CLOSEUP (1u << 13)
 // GPU_STRUCT_NAME(GpuSceneInstance)
 struct GpuSceneInstance {
     DoubleFloat3 worldPosition;

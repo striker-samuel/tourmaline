@@ -17,6 +17,7 @@
 
 #include <Engine/App/cluster.h>
 #include <Engine/Asset/meshlet.h>
+#include <Engine/Asset/mesh_preparation_policy.h>
 #include <Engine/GI/triangle_bvh.h>
 #include <Engine/Scene/scene.h>
 
@@ -936,9 +937,25 @@ bool CookLodSiblings(Cluster& cluster,
         const MeshData* upload = cluster.GetRetainedUpload(handle);
         if (!upload || upload->vertices.empty() || upload->indices.empty())
             continue;
-        // Idempotence: already-cooked chains stay untouched.
-        if (auto hit = cluster.GetMeshLod(LodSiblingUri(uri, 1)); hit && hit->lodIndex == 1)
+        // Consider every world-space instance of this shared mesh.
+        bool largeInstance = false;
+        for (const MeshRow& instance : scene.tables.meshes) {
+            if (instance.mesh == meshIdx && instance.node < scene.globalTransform.size() &&
+                EligibleForSpatialDerivatives(upload->aabbMin, upload->aabbMax,
+                                              upload->indices.size(),
+                                              scene.globalTransform[instance.node])) {
+                largeInstance = true;
+                break;
+            }
+        }
+        if (!largeInstance)
             continue;
+        // Idempotence: already-cooked chains stay untouched.
+        if (auto hit = cluster.GetMeshLod(LodSiblingUri(uri, 1)); hit && hit->lodIndex == 1) {
+            const auto existing = cluster.FindMeshByUri(LodSiblingUri(uri, 1));
+            if (existing && cluster.staticMeshes.get(*existing))
+                continue;
+        }
         // LOD0 marker (serializer fallback semantics when unregistered).
         LodInfo lod0;
         if (auto hit = cluster.GetMeshLod(uri))

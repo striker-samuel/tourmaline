@@ -127,7 +127,7 @@ struct BuildPlan {
     std::string entryPak;   // the pak owning the entry scene
     bool bakeGi = false;
     bool bakeCubemaps = false;
-    bool bakeSdf = false;
+    bool bakeSdf = true;
     // The recipe's geometry-import (derivation) settings, enforced by the
     // build's import-freshness stage: a recipe-pinned no-LOD artifact
     // stays fresh instead of being re-derived with the default chain.

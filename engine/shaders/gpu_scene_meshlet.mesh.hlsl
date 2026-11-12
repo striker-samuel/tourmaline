@@ -42,6 +42,7 @@ struct GsInstanceFrame {
     float3 originHigh;          // view.origin.high.xyz
     float3 originLow;           // view.origin.low.xyz
     uint meshMaterial;          // inst.refs.z
+    uint ditherCloseup;         // inst.refs.w, subtree-inherited fade
 };
 
 GsInstanceFrame MakeInstanceFrame(GpuSceneInstance inst, GsRasterView view) {
@@ -58,6 +59,7 @@ GsInstanceFrame MakeInstanceFrame(GpuSceneInstance inst, GsRasterView view) {
     f.originHigh = view.origin.high.xyz;
     f.originLow = view.origin.low.xyz;
     f.meshMaterial = inst.refs.z;
+    f.ditherCloseup = (inst.refs.w & GPU_SCENE_INSTANCE_DITHER_CLOSEUP) != 0u ? 1u : 0u;
     return f;
 }
 
@@ -101,7 +103,7 @@ GsMeshVertex FetchVertex(uint vertexId,
     v.lightmapUv=0.0f;
     v.lmChunk=0xffffffffu;
     v.meshMaterial=f.meshMaterial;
-    v.ditherCloseup=0u;
+    v.ditherCloseup=f.ditherCloseup;
     v.userData=0u;
     v.lightLayerMask=0xffffffffu;
     return v;
