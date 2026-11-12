@@ -1,12 +1,16 @@
 # Mesh-local signed-distance assets (experimental)
 
-Tourmaline now has an **opt-in CPU distance-field bake** for derived
-`.geometry` families. Add `bake sdf on` in a `.tourrecipe` header,
-before any `[pak]` sections. Default is off. Each imported family is
+Tourmaline enables **CPU distance-field baking by default** for derived
+`.geometry` families. Add `bake sdf off` in a `.tourrecipe` header,
+before any `[pak]` sections to disable it. Each imported family is
 baked **after Cook** and **before Pak**, producing a sibling
 `<path>.geometry.sdf`. The existing `.geometry`, meshlets, LODs, and
 material/scene identity remain unchanged. One file contains volumes for
-every nonempty base primitive, keyed by its stable mesh URI fragment.
+eligible non-prop base primitives, keyed by stable mesh URI fragment.
+The shared spatial-derivative gate requires an unskinned triangle mesh
+with a mesh-local AABB longest edge of at least 2 model units; smaller
+prop-like meshes do not receive an SDF. The same gate is used when
+preparing cook-time hierarchical LOD siblings.
 Recipe builds include these bytes in the owning scene pak as
 `PakAssetKind::Sdf = 20`. Consumers can read the raw sidecar via
 `PakBackend::TryRead` and `ParseSdfAsset`. The optional static SDF
@@ -69,7 +73,7 @@ features; do not treat these queries as exact collision predicates.
 Enable SSR and the **Static SDF off-screen reflections** checkbox in
 the Rendering panel, or set `TOURMALINE_SSR=1` and
 `TOURMALINE_SDF_REFLECTIONS=1` for a headless A/B run. Both the
-scene's `.tourrecipe` `bake sdf on` and a recooked pak are required.
+scene's SDF-enabled recipe (the default) and a recooked pak are required.
 With no valid baked SDFs the renderer runs exactly its original SSR
 path; the GPU SDF fallback is **off by default**. The system does not
 require Vulkan hardware ray-query extensions.
