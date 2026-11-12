@@ -448,6 +448,16 @@ else()
   set(SHADER_DEBUG_INFO_ON OFF)
 endif()
 
+# --- Nsight Graphics SDK integration -------------------------------------------
+# Procedural Graphics Capture / GPU Trace triggering + Vulkan frame boundaries
+# from inside the engine (Engine/Utils/nsight_gfx.h). The SDK is header-only
+# and vendored under external/nsight_graphics_sdk (Apache-2.0); this option
+# gates its compile + the TOURMALINE_NGFX_SDK macro. OFF keeps the no-op stubs
+# so shipping/custom builds never reference the NVIDIA headers. The SDK's
+# library loading resolves the Nsight Graphics install at RUNTIME (no install
+# needed to compile).
+option(TOURMALINE_NGFX_SDK "Enable the Nsight Graphics SDK integration" OFF)
+
 # --- Optick profiler ----------------------------------------------------------
 option(ENABLE_OPTICK "Enable Optick CPU/GPU profiling" ON)
 if(ENABLE_OPTICK)

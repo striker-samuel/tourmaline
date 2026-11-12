@@ -17,9 +17,13 @@
 // #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/Memory/arena.h>
 #include <Engine/Profile/profile.h>
+#include <Engine/Utils/nsight_gfx.h>
 #include <Engine/platform.h>
 
 bool tour::App::Run() {
+    // Nsight Graphics SDK: initialize BEFORE the graphics context exists
+    // (the SDK contract). No-op in builds without TOURMALINE_NGFX_SDK.
+    tour::nsight_gfx::Initialize();
     if (!Initialize()) {
         std::cerr << "[App] initialization failed — exiting\n";
         Shutdown();
@@ -309,6 +313,12 @@ void tour::App::DrawFrame() {
         if (element)
             element->onRender(frame);
     m_swapchain->EndAndPresentFramebuffer(fb);
+    // Nsight Graphics SDK: procedural capture/trace trigger, polled once per
+    // frame (1-based). Frame-boundary marking is opt-in via
+    // TOURMALINE_NGFX_BOUNDARY for headless/non-present workloads and is not
+    // driven here (the App presents, so capture/trace delimit on Present).
+    static uint64_t s_nsightFrame = 0;
+    tour::nsight_gfx::Poll(++s_nsightFrame);
 }
 
 void tour::App::UpdateVrrFrameLimit() {

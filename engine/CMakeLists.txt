@@ -38,6 +38,15 @@ add_library(engine STATIC ${ENGINE_SRC})
 # Engine and RHI consume the same Core/Memory API.
 target_link_libraries(engine PUBLIC tourmaline_core)
 
+# Nsight Graphics SDK integration (Engine/Utils/nsight_gfx.*): opt-in. The
+# PRIVATE definition + include only touch the engine TU that actually reads
+# the vendored NVIDIA headers; consumers just call the no-NGFX public seam.
+if(TOURMALINE_NGFX_SDK)
+  target_compile_definitions(engine PRIVATE TOURMALINE_NGFX_SDK)
+  target_include_directories(engine PRIVATE
+      ${TOURMALINE_SOURCE_DIR}/external/nsight_graphics_sdk/include)
+endif()
+
 target_include_directories(engine
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include

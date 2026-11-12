@@ -92,3 +92,49 @@ python3 tools/perf_harness.py trace --scenario bistro-ssr-stress \
   --exe out/build/linux-Dev/Benchmark --trace-frames 10 \
   --capture-dir /mnt/fast-captures --scratch-dir /mnt/nvme-temp
 ```
+
+## In-app Nsight Graphics SDK (procedural capture/trace)
+
+The header-only Nsight Graphics SDK (vendored under
+`external/nsight_graphics_sdk`, Apache-2.0) lets the engine trigger a Graphics
+Capture or GPU Trace procedurally, with no GUI/CLI launch. Build it in with
+`-DTOURMALINE_NGFX_SDK=ON` (off by default; shipping/custom builds compile the
+no-op stubs in `Engine/Utils/nsight_gfx.*` and never see the NVIDIA headers).
+
+The seam is `Engine/Utils/nsight_gfx.h` (`tour::nsight_gfx`), wired into
+`App::Run` (Initialize, before the graphics context) and `App::DrawFrame`
+(Poll, once per frame). Exactly ONE activity initializes per process, chosen
+from the pins:
+
+| Pin | Effect |
+| --- | --- |
+| `TOURMALINE_NGFX_CAPTURE_FRAME=<n>` | Graphics Capture: request a 1-frame capture at frame n (delimiter = Present) |
+| `TOURMALINE_NGFX_TRACE_START=<n>` / `TOURMALINE_NGFX_TRACE_END=<m>` | GPU Trace: start at frame n, stop at frame m |
+| `TOURMALINE_NGFX_BOUNDARY=1` | opt into `NGFX_FrameBoundary_Vulkan` marking (headless/non-present workloads) |
+
+Example (capture frame 42 of the duck scene):
+```powershell
+$env:TOURMALINE_NGFX_CAPTURE_FRAME='42'
+& out/build/x64-Release-ShaderDebug/App.exe --pak content/paks/duck131072.pak --scene scene
+```
+
+The SDK loads the Nsight Graphics libraries at RUNTIME (the install is found by
+the load callback, `NGFX_LoadLib_NoVerification` — dev only), so the build needs
+no Nsight install.
+
+## MCP server CLI (`tools/nsight_mcp.py`)
+
+Nsight Graphics 2026.4+ ships `ngfx-mcp.exe`, a Model Context Protocol server
+that lets agents inspect captures and analyze GPU traces. The thin
+`tools/nsight_mcp.py` wrapper locates it and issues minimal MCP requests:
+
+```powershell
+python tools/nsight_mcp.py locate                       # print the ngfx-mcp.exe path
+python tools/nsight_mcp.py serve --profile workflow      # launch the HTTP server (127.0.0.1:7661/mcp)
+python tools/nsight_mcp.py list-tools                    # query the advertised tools
+python tools/nsight_mcp.py inspect out/nsight-sdbg-bistro/App_...ngfx-gputrace --question "list the draw calls"
+```
+
+Override the auto-detected server with `--mcp PATH` or `TOURMALINE_NSIGHT_MCP`.
+The Workflow profile is a compact capture/analysis surface; the Native profile
+(`--profile native`, stdio by default) exposes the broader experimental catalog.
