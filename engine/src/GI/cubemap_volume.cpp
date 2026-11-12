@@ -329,11 +329,30 @@ void GiVolume::PackGpuLayersBc6h(std::vector<uint8_t> out[9]) const {
         out[l].clear();
     if (coeffs.size() != size_t(VoxelCount()) * kSgLobeCount)
         return; // no field (a blocks-loaded volume re-packs nothing)
-    std::vector<uint16_t> slice(size_t(w4) * h4 * 3, uint16_t(0));
-    std::vector<uint8_t> blocks;
-    for (uint32_t lobe = 0; lobe < 9; ++lobe) {
-        out[lobe].reserve(lobeBytes);
-        for (uint32_t z = 0; z < nz; ++z) {
+
+    // Every (lobe, Z slice) is independent. Allocate the final ordered
+    // blobs once, then let workers encode directly into disjoint slice
+    // ranges. Each worker owns its staging buffers; no vector resizes or
+    // append operations race with other workers.
+    for (uint32_t l = 0; l < 9; ++l)
+        out[l].resize(lobeBytes);
+    constexpr uint32_t kLobes = 9;
+    const uint32_t jobs = kLobes * nz;
+    const uint32_t hwThreads = std::max(1u, std::thread::hardware_concurrency());
+    const uint32_t workers = std::min(hwThreads, jobs);
+    std::atomic<uint32_t> nextJob{0};
+    ThreadPool pool(workers);
+    std::vector<std::future<void>> futures;
+    futures.reserve(workers);
+    for (uint32_t worker = 0; worker < workers; ++worker)
+        futures.push_back(pool.enqueue([&] {
+            std::vector<uint16_t> slice(size_t(w4) * h4 * 3, uint16_t(0));
+            std::vector<uint8_t> blocks;
+            blocks.reserve(sliceBlocks);
+            for (uint32_t job = nextJob.fetch_add(1); job < jobs;
+                 job = nextJob.fetch_add(1)) {
+                const uint32_t lobe = job / nz;
+                const uint32_t z = job % nz;
             std::fill(slice.begin(), slice.end(), uint16_t(0));
             for (uint32_t y = 0; y < ny; ++y)
                 for (uint32_t x = 0; x < nx; ++x) {
@@ -375,11 +394,14 @@ void GiVolume::PackGpuLayersBc6h(std::vector<uint8_t> out[9]) const {
                             slice[t + 2] = PackHalf(avg.b);
                         }
                 }
-            blocks.clear();
-            Bc6hEncodeImage(slice.data(), w4, h4, blocks);
-            out[lobe].insert(out[lobe].end(), blocks.begin(), blocks.end());
-        }
-    }
+                blocks.clear();
+                Bc6hEncodeImage(slice.data(), w4, h4, blocks);
+                std::memcpy(out[lobe].data() + size_t(z) * sliceBlocks,
+                            blocks.data(), sliceBlocks);
+            }
+        }));
+    for (auto& future : futures)
+        future.get();
 }
 
 bool GiVolume::DecodeBc6hCoeffs(std::string& err) {
