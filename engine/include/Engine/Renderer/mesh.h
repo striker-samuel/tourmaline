@@ -106,6 +106,7 @@ namespace tour {
 // the pak serializer copies the struct verbatim.
 // -------------------------------------------------------------------------
 inline constexpr uint32_t kMaterialFlagReceiveContactShadows = 1u << 0;
+inline constexpr uint32_t kMaterialFlagClothSheen = 1u << 1; // Order: 1886 velvet BRDF
 // Receive the sun contact march's visibility (Engine/Rendergraph/
 // contact_shadow.h): off for materials that must not pick it up
 // (mirror-like surfaces, emissive props); the cascade shadow is
@@ -240,6 +241,8 @@ struct MaterialCreateInfo {
     // march's visibility. Rides the emissiveFactor.w flags word as
     // kMaterialFlagReceiveContactShadows (see the MaterialValues note).
     bool receiveContactShadows = true;
+    // Opt-in fabric microfiber response, serialized in the existing flags word.
+    bool clothSheen = false;
     // Far-LOD shading program (see ShaderLodPolicy): the farthest
     // cooked level may use the cheap vertex-lit program. DEFAULT
     // OFF — the glTF importer only derives this when the derive
