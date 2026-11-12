@@ -213,6 +213,14 @@ smvk::ShaderProgram& WorldRenderer::MainLitProgramFor(uint32_t materialId) {
                                           true,
                                           m_exportEnvSpecProgramGi,
                                           m_exportEnvSpecProgramGiStd);
+                if (m_giExportDiagArmed)
+                    return SpecProgramFor(m_resources.mainProgramGiStd[gv],
+                                          tour::kSpecGiExportDiag,
+                                          0u,
+                                          gv,
+                                          true,
+                                          m_exportDiagProgramGi,
+                                          m_exportDiagProgramGiStd);
                 if (m_giVolumeStatsArmed)
                     return SpecProgramFor(m_resources.mainProgramGiStd[gv],
                                           tour::kSpecGiStats,
@@ -279,6 +287,14 @@ smvk::ShaderProgram& WorldRenderer::MainLitProgramFor(uint32_t materialId) {
                                       false,
                                       m_exportEnvSpecProgramGi,
                                       m_exportEnvSpecProgramGiStd);
+            if (m_giExportDiagArmed)
+                return SpecProgramFor(gi,
+                                      tour::kSpecGiExportDiag,
+                                      0u,
+                                      gv,
+                                      false,
+                                      m_exportDiagProgramGi,
+                                      m_exportDiagProgramGiStd);
             if (m_giVolumeStatsArmed)
                 return SpecProgramFor(gi,
                                       tour::kSpecGiStats,
@@ -1560,6 +1576,12 @@ bool WorldRenderer::onAttach() {
         if (eEnv[0] != '\0') {
             m_giExportEnvSpecArmed = true;
             m_giExportIrradianceDir = eEnv;
+        }
+    }
+    if (const char* dEnv = std::getenv("TOURMALINE_GI_EXPORT_DIAG")) {
+        if (dEnv[0] != '\0') {
+            m_giExportDiagArmed = true;
+            m_giExportIrradianceDir = dEnv;
         }
     }
     // Linear-HDR diffuse-irradiance capture: the lit pass writes E (GI +
@@ -10168,7 +10190,7 @@ void WorldRenderer::PollCaptureReadback() {
         m_sequenceReadbackPending = false;
         ExportSequenceScreenshot(m_captureExtent);
     } else if (m_giExportIrradianceArmed || m_giExportSpecularArmed || m_giExportConstantArmed ||
-               m_giExportEnvSpecArmed) {
+               m_giExportEnvSpecArmed || m_giExportDiagArmed) {
         ExportIrradianceCapture(m_captureExtent);
     } else {
         ExportScreenshot(m_captureExtent);

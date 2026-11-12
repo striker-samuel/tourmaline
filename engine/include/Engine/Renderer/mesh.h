@@ -226,6 +226,9 @@ inline constexpr uint32_t kSpecGiExportConstant = 28;
 // Raw envSpec export (TOURMALINE_GI_EXPORT_ENVSPEC=1). Must match
 // common.hlsli SPEC_GI_EXPORT_ENVSPEC.
 inline constexpr uint32_t kSpecGiExportEnvSpec = 29;
+// Diagnostic export (TOURMALINE_GI_EXPORT_DIAG=1). Must match
+// common.hlsli SPEC_GI_EXPORT_DIAG.
+inline constexpr uint32_t kSpecGiExportDiag = 30;
 
 struct MaterialCreateInfo {
     // Primary PBR textures – baseColorTexture == diffuse for backward compat.

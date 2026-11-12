@@ -4125,6 +4125,10 @@ class WorldRenderer : public IRenderer {
     bool m_giExportEnvSpecArmed = false;
     smvk::ShaderProgram m_exportEnvSpecProgramGi[4];
     smvk::ShaderProgram m_exportEnvSpecProgramGiStd[4];
+    // Diagnostic export twins (giExportDiagCompile=1): occlusion/envVis/roughW.
+    bool m_giExportDiagArmed = false;
+    smvk::ShaderProgram m_exportDiagProgramGi[4];
+    smvk::ShaderProgram m_exportDiagProgramGiStd[4];
     // Linear-HDR diffuse-irradiance capture twins (giExportIrradianceCompile
     // =1, optionally + giOctaCompile=1): forged + selected when
     // TOURMALINE_GI_EXPORT_IRRADIANCE=1.

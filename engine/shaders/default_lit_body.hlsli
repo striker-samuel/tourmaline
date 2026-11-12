@@ -1905,6 +1905,9 @@ float envVis = 1.0f;
         OUT.outEnvSpec = float4(1.0, 1.0, 1.0, 1.0);
     else if (giExportEnvSpecCompile != 0u)
         OUT.outEnvSpec = float4(envSpec, 1.0);
+    else if (giExportDiagCompile != 0u)
+        OUT.outEnvSpec = float4(occlusion, envVis,
+                                saturate((shadingRoughness - 0.45f) / 0.25f), 1.0);
     else if (giExportIrradianceCompile != 0u)
         OUT.outEnvSpec = float4(giExportE, giExportCovered);
     else

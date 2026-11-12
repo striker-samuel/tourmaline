@@ -64,6 +64,10 @@
 // Raw envSpec export (TOURMALINE_GI_EXPORT_ENVSPEC=1): write the unmodified
 // cubemap specular to outEnvSpec — isolates the cubemap path.
 #define SPEC_GI_EXPORT_ENVSPEC 29
+// Diagnostic export (TOURMALINE_GI_EXPORT_DIAG=1): write (occlusion, envVis,
+// roughW, 1) to outEnvSpec, isolating the AO / specular-occlusion / crossover
+// terms between SG and Oct8.
+#define SPEC_GI_EXPORT_DIAG   30
 
 //#define kBinding_Textures 0
 //#define kBinding_Samplers 1
@@ -1021,6 +1025,7 @@ uint decalCount;                                         // 776 0 = decals off
 [[vk::constant_id(SPEC_GI_FIXED_ENVVIS)]] const uint giFixedEnvVisCompile = 0; // 0=GI-derived envVis, 1=envVis=1
 [[vk::constant_id(SPEC_GI_EXPORT_CONSTANT)]] const uint giExportConstantCompile = 0; // 0=normal, 1=write float3(1,1,1)
 [[vk::constant_id(SPEC_GI_EXPORT_ENVSPEC)]] const uint giExportEnvSpecCompile = 0; // 0=normal, 1=write raw envSpec
+[[vk::constant_id(SPEC_GI_EXPORT_DIAG)]] const uint giExportDiagCompile = 0; // 0=normal, 1=write (occlusion, envVis, roughW)
 
 #if !defined(TONEMAP_PASS) && !defined(BLOOM_PASS) && !defined(MOTIONBLUR_PASS) && !defined(MOTIONBLUR_TILES_PASS) && !defined(MOTIONBLUR_TILEDILATE_PASS) && !defined(SSAO_PASS) && !defined(GTAO_PASS) && !defined(SAO_PASS) && !defined(FORWARDPLUS_PASS) && !defined(UI_PASS) && !defined(GFXFILTER_PASS) && !defined(GFXFILTERED_PASS) && !defined(HZB_PASS) && !defined(GFXSEED_PASS) && !defined(EXPOSURE_PASS) && !defined(SMAA_PASS) && !defined(DS_PASS) && !defined(EVSM_BLUR_PASS) && !defined(EVSM_RESOLVE_PASS) && !defined(SDSM_STATS_PASS) && !defined(DOF_PASS) && !defined(SSR_PASS) && !defined(VOLUMETRIC_PASS) && !defined(VOLUMETRIC_COMPOSITE_PASS) && !defined(PARTICLES_PASS) && !defined(UVFLAT1_PASS) && !defined(DEFAULT_DIRECT_PASS) && !defined(SHADOW_DIRECT_PASS) && !defined(PLACEMENT_INSTANCED_PASS) && !defined(PROBEBALL_PASS) && !defined(GIPROBE_PASS) && !defined(SPD_PASS) && !defined(GFXMESH_PASS) && !defined(GFXBATCHCULL_PASS) && !defined(GFXDRAWCULL_PASS) && !defined(GFXSKINBOUNDS_PASS) && !defined(GFXSKINNING_PASS) && !defined(GFXCONEDEBUG_PASS) && !defined(TERRAIN_NOPC) && !defined(PROBEPREMIX_WEIGHTS_PASS) && !defined(PROBEPREMIX_MIX_PASS) && !defined(GFXSKINNING_PASS) && !defined(MATBALL_PASS) && !defined(SSGI_DIFFUSE_PASS) && !defined(GODRAYS_PASS) && !defined(CONTACT_SHADOW_PASS) && !defined(PLANAR_REFLECTION_PASS) && !defined(GPU_SCENE_RASTER_HIZCULL_PASS)
 // ENGINE_HAS_PC: this translation unit sees the scene-wide `pc` push
