@@ -426,7 +426,29 @@ bool ImportProjectAsset(const ImportRequest& request, ImportResult& out, std::st
     // the LOD rule fires only when CHAINABLE geometry (enough triangles
     // to simplify) produced no chain at all.
     uint32_t blobsWithMeshlets = 0, lodLevels = 0, chainableBlobs = 0;
-    for (const auto& g : asset.geometry) {
+    std::vector<glm::mat4> globals(asset.nodes.size(), glm::mat4(1.0f));
+    for (size_t i = 0; i < asset.nodes.size(); ++i) {
+        glm::mat4 world(1.0f);
+        std::vector<size_t> chain;
+        int32_t node = int32_t(i);
+        while (node >= 0 && size_t(node) < asset.nodes.size() && chain.size() < asset.nodes.size()) {
+            chain.push_back(size_t(node));
+            node = asset.nodes[size_t(node)].parent;
+        }
+        for (auto it = chain.rbegin(); it != chain.rend(); ++it)
+            if (*it < asset.locals.size()) world *= asset.locals[*it];
+        globals[i] = world;
+    }
+    std::vector<uint8_t> eligible(asset.geometry.size(), 0);
+    for (const auto& instance : asset.instances) {
+        if (instance.geometry >= asset.geometry.size() || instance.node >= globals.size()) continue;
+        const auto& g = asset.geometry[instance.geometry];
+        if (smvk::EligibleForSpatialDerivatives(g.aabbMin, g.aabbMax,
+                                                 g.indices.size(), globals[instance.node],
+                                                 !g.skin.empty())) eligible[instance.geometry] = 1;
+    }
+    for (size_t gi = 0; gi < asset.geometry.size(); ++gi) {
+        const auto& g = asset.geometry[gi];
         if (!g.meshlets.empty())
             ++blobsWithMeshlets;
         // SKINNED blobs are deliberately single-level (the simplifier
@@ -434,9 +456,7 @@ bool ImportProjectAsset(const ImportRequest& request, ImportResult& out, std::st
         // LOD gate): they never count as chainable here, or the
         // "requested but derived nothing" rule below would fire on a
         // fully-skinned family that correctly skipped its siblings.
-        if (g.indices.size() / 3 > 100 &&
-            smvk::EligibleForSpatialDerivatives(g.aabbMin, g.aabbMax,
-                                                 g.indices.size(), !g.skin.empty()))
+        if (g.indices.size() / 3 > 100 && eligible[gi])
             ++chainableBlobs;
     }
     for (const auto& chain : asset.lodChains)
