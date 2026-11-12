@@ -937,9 +937,18 @@ bool CookLodSiblings(Cluster& cluster,
         const StaticMeshUpload* upload = cluster.GetRetainedUpload(handle);
         if (!upload || upload->vertices.empty() || upload->indices.empty())
             continue;
-        // Do not prepare hierarchical LOD siblings for small prop meshes.
-        if (!EligibleForSpatialDerivatives(upload->aabbMin, upload->aabbMax,
-                                            upload->indices.size()))
+        // Consider every world-space instance of this shared mesh.
+        bool largeInstance = false;
+        for (const MeshRow& instance : scene.tables.meshes) {
+            if (instance.mesh == meshIdx && instance.node < scene.globalTransform.size() &&
+                EligibleForSpatialDerivatives(upload->aabbMin, upload->aabbMax,
+                                              upload->indices.size(),
+                                              scene.globalTransform[instance.node])) {
+                largeInstance = true;
+                break;
+            }
+        }
+        if (!largeInstance)
             continue;
         // Idempotence: already-cooked chains stay untouched.
         if (auto hit = cluster.GetMeshLod(LodSiblingUri(uri, 1)); hit && hit->lodIndex == 1)
