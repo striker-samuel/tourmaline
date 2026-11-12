@@ -36,7 +36,8 @@ static int usage() {
     std::fprintf(stderr,
                  "usage: cubemap_plan <content-dir> <geometry-vfs-path> "
                  "[minX minY minZ maxX maxY maxZ] [--budget N] [--sweep]\n"
-                 "  --budget N: max probes per world cell and tier\n"
+                 "  --budget N: default max probes per world cell and tier\n"
+                 "  --tier-budgets near mid far: explicit per-cascade maxima\n"
                  "  --sweep: budgets 128, 256, 512 and 1024 (one BVH build)\n");
     return 2;
 }
@@ -75,6 +76,21 @@ int main(int argc, char** argv) {
     }
     bool sweep = false;
     bool explicitBudget = false;
+    bool explicitTiers = false;
+    uint32_t tierBudgets[3]{};
+    // No signed/zero/overflow budgets, regardless of host unsigned width.
+    const auto parseBudget = [](const std::string& raw, uint32_t& value) {
+        if (raw.empty() || raw[0] == '-')
+            return false;
+        char* tail = nullptr;
+        errno = 0;
+        const unsigned long parsed = std::strtoul(raw.c_str(), &tail, 10);
+        if (errno == ERANGE || tail == raw.c_str() || *tail != '\0' ||
+            parsed == 0 || parsed > std::numeric_limits<uint32_t>::max())
+            return false;
+        value = static_cast<uint32_t>(parsed);
+        return true;
+    };
     for (int i = next; i < argc; ++i) {
         const std::string option = argv[i];
         if (option == "--sweep") {
@@ -86,26 +102,36 @@ int main(int argc, char** argv) {
             }
             explicitBudget = true;
             const std::string raw = argv[++i];
-            char* tail = nullptr;
-            errno = 0;
-            const unsigned long parsed = std::strtoul(raw.c_str(), &tail, 10);
-            if (errno == ERANGE || tail == raw.c_str() || *tail != '\0' ||
-                raw[0] == '-' || parsed == 0 ||
-                parsed > std::numeric_limits<uint32_t>::max()) {
+            if (!parseBudget(raw, volume.maxProbesPerCell)) {
                 std::fprintf(stderr, "invalid positive --budget: %s\n", raw.c_str());
                 return 2;
             }
-            volume.maxProbesPerCell = static_cast<uint32_t>(parsed);
+        } else if (option == "--tier-budgets" && i + 3 < argc) {
+            if (explicitTiers) {
+                std::fprintf(stderr, "--tier-budgets specified more than once\n");
+                return 2;
+            }
+            explicitTiers = true;
+            for (uint32_t tier = 0; tier < 3; ++tier) {
+                const std::string raw = argv[++i];
+                if (!parseBudget(raw, tierBudgets[tier])) {
+                    std::fprintf(stderr, "invalid tier budget: %s\n", raw.c_str());
+                    return 2;
+                }
+            }
         } else {
             std::fprintf(stderr, "unknown or incomplete option: %s\n", option.c_str());
             return usage();
         }
     }
-    if (sweep && explicitBudget) {
+    if (sweep && (explicitBudget || explicitTiers)) {
         std::fprintf(stderr, "--sweep cannot be combined with --budget\n");
         return 2;
     }
     volume.cascades = {{64.0f, 2.0f}, {256.0f, 3.0f}, {512.0f, 5.0f}};
+    if (explicitTiers)
+        for (uint32_t tier = 0; tier < 3; ++tier)
+            volume.cascades[tier].maxProbesPerCell = tierBudgets[tier];
 
     // ---- Build the offline cluster from the .geometry artifact (the
     // same derive path the GiBaker's --in-vfs lane uses).
@@ -196,15 +222,18 @@ int main(int argc, char** argv) {
             const auto it = previous.find(key);
             const auto* prior = it == previous.end() ? nullptr : it->second;
             const auto quality = wp::AnalyzeCubemapCaptureQuality(set, prior);
+            const uint32_t tierBudget = volume.cascades[set.cascade].maxProbesPerCell
+                ? volume.cascades[set.cascade].maxProbesPerCell : budget;
             totalProbes += set.probes.size();
             if (quality.equivalentToPrevious)
                 ++equivalentTiers;
             std::printf("  cell (%lld,%lld) cascade %u target=%.1fm: "
-                        "%zu probes (%.1f%% budget); influence radius "
+                        "%zu probes (%.1f%% of %u budget); influence radius "
                         "min/median/max=%.2f/%.2f/%.2fm",
                         (long long)set.cell.x, (long long)set.cell.z,
                         set.cascade, (double)volume.cascades[set.cascade].densityMeters,
-                        set.probes.size(), 100.0 * double(set.probes.size()) / double(budget),
+                        set.probes.size(), 100.0 * double(set.probes.size()) / double(tierBudget),
+                        tierBudget,
                         (double)quality.minInfluenceMeters,
                         (double)quality.medianInfluenceMeters,
                         (double)quality.maxInfluenceMeters);
