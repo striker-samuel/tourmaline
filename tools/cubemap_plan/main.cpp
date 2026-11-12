@@ -35,7 +35,7 @@ namespace fs = std::filesystem;
 static int usage() {
     std::fprintf(stderr,
                  "usage: cubemap_plan <content-dir> <geometry-vfs-path> "
-                 "[minX minY minZ maxX maxY maxZ] [--budget N] [--sweep]\n"
+                 "[minX minY minZ maxX maxY maxZ] [--budget N] [--tier-budgets near mid far] [--sweep]\n"
                  "  --budget N: default max probes per world cell and tier\n"
                  "  --tier-budgets near mid far: explicit per-cascade maxima\n"
                  "  --sweep: budgets 128, 256, 512 and 1024 (one BVH build)\n");
@@ -52,7 +52,8 @@ int main(int argc, char** argv) {
     // Bounds are an optional six-number group; a negative X is valid.
     int next = 3;
     if (next < argc && std::string(argv[next]) != "--budget" &&
-        std::string(argv[next]) != "--sweep") {
+        std::string(argv[next]) != "--sweep" &&
+        std::string(argv[next]) != "--tier-budgets") {
         if (argc - next < 6)
             return usage();
         float values[6]{};
@@ -125,7 +126,7 @@ int main(int argc, char** argv) {
         }
     }
     if (sweep && (explicitBudget || explicitTiers)) {
-        std::fprintf(stderr, "--sweep cannot be combined with --budget\n");
+        std::fprintf(stderr, "--sweep cannot be combined with explicit budgets\n");
         return 2;
     }
     volume.cascades = {{64.0f, 2.0f}, {256.0f, 3.0f}, {512.0f, 5.0f}};
@@ -210,7 +211,7 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "plan failed at budget %u: %s\n", budget, error.c_str());
             return 1;
         }
-        std::printf("cubemap plan: budget=%u per cell/tier, %zu capture sets, "
+        std::printf("cubemap plan: default budget=%u per cell/tier, %zu capture sets, "
                     "%zu tiers; BVH=%u triangles\n",
                     budget, sets.size(), volume.cascades.size(),
                     (unsigned)traceScene.Bvh().TriangleCount());
