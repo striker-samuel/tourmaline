@@ -81,6 +81,7 @@ struct GltfMaterial {
     // SMVK_materials_contactShadows.receive (default receive):
     // materials that must not pick up the sun contact march.
     bool receiveContactShadows = true;
+    bool clothSheen = false;
 };
 bool starts_with(const std::string& s, const char* prefix) {
     return s.rfind(prefix, 0) == 0;
@@ -1827,6 +1828,7 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
     ci.doubleSided = mat.doubleSided;
     ci.castsShadows = mat.castsShadows;
     ci.receiveContactShadows = mat.receiveContactShadows;
+    ci.clothSheen = mat.clothSheen;
     // Far-LOD shading program (see ShaderLodPolicy): DEFAULT OFF — the
     // derivation only runs when the derive config opts in
     // (DeriveConfig::shaderLods / setDeriveShaderLods). The cheap
@@ -2891,6 +2893,7 @@ size_t BuildFromMeshAsset(
         info.doubleSided = m.info.doubleSided;
         info.castsShadows = m.info.castsShadows;
         info.receiveContactShadows = m.info.receiveContactShadows;
+        info.clothSheen = m.info.clothSheen;
         auto loadTex = [&](const smvk::assets::MaterialAsset::TexRef& t,
                            smvk::TextureHandle& slot) {
             if (t.path.empty())
