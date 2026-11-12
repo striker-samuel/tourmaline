@@ -8,9 +8,13 @@ baked **after Cook** and **before Pak**, producing a sibling
 material/scene identity remain unchanged. One file contains volumes for
 eligible non-prop base primitives, keyed by stable mesh URI fragment.
 The shared spatial-derivative gate requires an unskinned triangle mesh
-with a mesh-local AABB longest edge of at least 2 model units; smaller
-prop-like meshes do not receive an SDF. The same gate is used when
-preparing cook-time hierarchical LOD siblings.
+whose transformed world-space AABB has a longest edge of at least 2 scene units
+(metres when the scene uses metres). This includes parent transforms,
+rotation and nonuniform scaling; shared geometry qualifies if any instance
+is large enough. The volume itself remains mesh-local. The same rule applies
+to cook-time LOD sibling preparation. Project-derived assets use their
+serialized node hierarchy; later scene override transforms are not part
+of the source asset's import-time derivation.
 Recipe builds include these bytes in the owning scene pak as
 `PakAssetKind::Sdf = 20`. Consumers can read the raw sidecar via
 `PakBackend::TryRead` and `ParseSdfAsset`. The optional static SDF
