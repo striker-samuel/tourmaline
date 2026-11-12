@@ -457,7 +457,7 @@ static bool BakePlanSdfs(const Project& project,
     std::set<std::string> eligibleSceneMeshes;
     auto canonicalFamily = [](std::string file) {
         for (char& c : file)
-            if (c == '\\\\') c = '/';
+            if (c == '\\') c = '/';
         fs::path p(file);
         p.replace_extension(".geometry");
         file = p.lexically_normal().generic_string();
