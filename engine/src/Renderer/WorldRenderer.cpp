@@ -183,7 +183,11 @@ smvk::ShaderProgram& WorldRenderer::MainLitProgramFor(uint32_t materialId) {
                                       : m_giHybridArmed     ? tour::kSpecGiHybrid
                                       : m_giCoeffConstArmed ? tour::kSpecGiCoeffConst
                                                             : 0u;
-            const uint32_t envVisSpec = m_giFixedEnvVisArmed ? tour::kSpecGiFixedEnvVis : 0u;
+            // fixed-envVis is a RUNTIME flag bit (FrameUniforms::flags),
+            // not a specialization constant — the spec-constant form made
+            // the octahedral specular export non-deterministic. So it no
+            // longer occupies a spec slot here.
+            const uint32_t envVisSpec = 0u;
             const uint32_t exportSpec = m_giExportIrradianceArmed   ? tour::kSpecGiExportIrradiance
                                         : m_giExportConstantArmed   ? tour::kSpecGiExportConstant
                                         : m_giExportRawEnvSpecArmed ? tour::kSpecGiExportRawEnvSpec
@@ -4946,6 +4950,11 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
         data.flags |= kFrameFlagNormalFix;
     if (m_normalFixDebug)
         data.flags |= kFrameFlagNormalFixDebug;
+    // Fixed-envVis diagnostic (runtime flag bit, NOT a spec constant — see
+    // FRAME_FLAG_GI_FIXED_ENVVIS in common.hlsli for why the spec-constant
+    // form was non-deterministic).
+    if (m_giFixedEnvVisArmed)
+        data.flags |= kFrameFlagGiFixedEnvVis;
 
     // Deferred shadows: consumer-side BDAs + the frame's on/off flag.
     // DsActive() is the single gate shared with the phase-1 upload and

@@ -54,9 +54,11 @@
 // specular crossover, with the SG coefficient fetch wrapped inside the
 // roughW > 0 branch (the 72-load path only runs on rough pixels).
 #define SPEC_GI_HYBRID        26
-// Fixed-envVis diagnostic (TOURMALINE_GI_FIXED_ENVVIS=1): force
-// SpecularOcclusionFromGI to 1 in the GI volume paths, isolating the
-// occlusion coupling from the specular representation.
+// [27 RESERVED] — was the fixed-envVis spec constant (SPEC_GI_FIXED_ENVVIS).
+// Fixed-envVis moved to a runtime flag bit (FRAME_FLAG_GI_FIXED_ENVVIS) after
+// the spec-constant form made the octahedral specular export non-deterministic
+// (DXC dead-coded SpecularOcclusionFromGI when the constant folded to 1). The
+// ID stays reserved so the shared specialization ABI never renumbers.
 #define SPEC_GI_FIXED_ENVVIS   27
 // Constant export (TOURMALINE_GI_EXPORT_CONSTANT=1): write float3(1,1,1) to
 // outEnvSpec — proves the capture/mask/pixel alignment independent of shading.
@@ -613,6 +615,14 @@ struct DsVizParams
 // so the disease and the medicine can be inspected apart).
 #define FRAME_FLAG_NORMAL_FIX (uint64_t(2))
 #define FRAME_FLAG_NORMAL_FIX_DEBUG (uint64_t(4))
+// Fixed-envVis diagnostic (TOURMALINE_GI_FIXED_ENVVIS=1): force
+// SpecularOcclusionFromGI to 1 in the GI volume paths. A RUNTIME flag bit,
+// NOT a specialization constant: the earlier spec-constant form let DXC
+// dead-code the SpecularOcclusionFromGI call when the constant folded to 1,
+// and that compilation change made the octahedral specular export
+// non-deterministic (the diagnostic's own run-to-run instability). A
+// uniform branch keeps the compilation identical whatever the flag value.
+#define FRAME_FLAG_GI_FIXED_ENVVIS (uint64_t(8))
 
 // World env tiles (Engine/WorldPartition/WorldEnvTiles.h — the runtime
 // rework of the old OBB-volume zone system): the zone LOOK records (48 B
@@ -1032,7 +1042,7 @@ uint decalCount;                                         // 776 0 = decals off
 [[vk::constant_id(SPEC_GI_OCTAHEDRAL)]] const uint giOctaCompile = 0; // 0=SG diffuse, 1=octahedral diffuse atlas
 [[vk::constant_id(SPEC_GI_EXPORT_IRRADIANCE)]] const uint giExportIrradianceCompile = 0; // 0=env-spec export, 1=irradiance export
 [[vk::constant_id(SPEC_GI_HYBRID)]] const uint giHybridCompile = 0; // 0=SG or octahedral, 1=octahedral diffuse + SG rough specular
-[[vk::constant_id(SPEC_GI_FIXED_ENVVIS)]] const uint giFixedEnvVisCompile = 0; // 0=GI-derived envVis, 1=envVis=1
+// (SPEC_GI_FIXED_ENVVIS = 27 reserved — fixed-envVis is now FRAME_FLAG_GI_FIXED_ENVVIS)
 [[vk::constant_id(SPEC_GI_EXPORT_CONSTANT)]] const uint giExportConstantCompile = 0; // 0=normal, 1=write float3(1,1,1)
 [[vk::constant_id(SPEC_GI_EXPORT_ENVSPEC)]] const uint giExportEnvSpecCompile = 0; // 0=normal, 1=write raw envSpec
 [[vk::constant_id(SPEC_GI_EXPORT_DIAG)]] const uint giExportDiagCompile = 0; // 0=normal, 1=write (occlusion, envVis, roughW)

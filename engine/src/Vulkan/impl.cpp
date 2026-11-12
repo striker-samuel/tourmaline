@@ -12136,7 +12136,15 @@ smvk::PipelineBundle smvk::detail::vulkan::VulkanPipelineCache::BuildGraphicsPip
 
         auto& dst = colorBlendAttachments[i];
 
-        dst.blendEnable = key.blend.blendState.blendEnable;
+        // Aux MRT exports (aoTerm, envSpec, and any secondary data target)
+        // are DATA EXPORTS for the AO/SSR compose, never color
+        // accumulation. They must OVERWRITE even when the material's
+        // color blends (Add / AlphaBlend): applying the global blendEnable
+        // to every attachment let additive materials accumulate across
+        // overlapping fragments, so the diagnostic export's known-value
+        // round-trip read back Nx the written value (overdraw + additive
+        // blend). The color target (i == 0) keeps the material blend.
+        dst.blendEnable = (i == 0) ? key.blend.blendState.blendEnable : false;
 
         dst.srcColorBlendFactor = toVkSrcBlendFactor(src.srcColorBlendFactor);
 

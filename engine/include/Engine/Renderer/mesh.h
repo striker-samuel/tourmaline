@@ -217,8 +217,8 @@ inline constexpr uint32_t kSpecGiExportIrradiance = 25;
 // Hybrid path (TOURMALINE_GI_HYBRID=1). Must match common.hlsli
 // SPEC_GI_HYBRID.
 inline constexpr uint32_t kSpecGiHybrid = 26;
-// Fixed-envVis diagnostic (TOURMALINE_GI_FIXED_ENVVIS=1). Must match
-// common.hlsli SPEC_GI_FIXED_ENVVIS.
+// [27 RESERVED] — was the fixed-envVis spec constant. Fixed-envVis is now a
+// runtime flag bit (kFrameFlagGiFixedEnvVis); the ID stays reserved.
 inline constexpr uint32_t kSpecGiFixedEnvVis = 27;
 // Constant export (TOURMALINE_GI_EXPORT_CONSTANT=1). Must match
 // common.hlsli SPEC_GI_EXPORT_CONSTANT.

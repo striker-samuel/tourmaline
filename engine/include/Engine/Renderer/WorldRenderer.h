@@ -814,6 +814,10 @@ static constexpr uint64_t kFrameFlagNormalFix = 1ull << 1;
 // the correction bit so the disease (off) and the residue (on) can be
 // viewed apart.
 static constexpr uint64_t kFrameFlagNormalFixDebug = 1ull << 2;
+// Fixed-envVis diagnostic (TOURMALINE_GI_FIXED_ENVVIS=1): force
+// SpecularOcclusionFromGI to 1. Runtime flag bit (not a spec constant);
+// the spec-constant form was non-deterministic (see common.hlsli).
+static constexpr uint64_t kFrameFlagGiFixedEnvVis = 1ull << 3;
 
 // ---- GI volume layer table contract (docs/gi_volume_perf_investigation.md
 // §1.1): the per-volume layer slot table carries 10 slots per volume (9
@@ -4116,11 +4120,11 @@ class WorldRenderer : public IRenderer {
     bool m_giHybridArmed = false;
     smvk::ShaderProgram m_hybridProgramGi[4];
     smvk::ShaderProgram m_hybridProgramGiStd[4];
-    // Fixed-envVis diagnostic twins (giFixedEnvVisCompile=1, optionally +
-    // giOctaCompile=1): forged + selected when TOURMALINE_GI_FIXED_ENVVIS=1.
+    // Fixed-envVis diagnostic: a runtime FrameUniforms flag bit
+    // (kFrameFlagGiFixedEnvVis), NOT a spec constant (the spec-constant
+    // form was non-deterministic). m_giFixedEnvVisArmed only gates the
+    // flag write; no dedicated pipeline twins.
     bool m_giFixedEnvVisArmed = false;
-    smvk::ShaderProgram m_fixedEnvVisProgramGi[4];
-    smvk::ShaderProgram m_fixedEnvVisProgramGiStd[4];
     // Constant / raw-envSpec export twins (capture-alignment diagnostics).
     bool m_giExportConstantArmed = false;
     smvk::ShaderProgram m_exportConstantProgramGi[4];
