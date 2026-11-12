@@ -2141,7 +2141,7 @@ void TestTerrainUpload() {
     p.height = 5.0f;
     p.freq = 0.05f;
     p.seed = 42;
-    smvk::StaticMeshUpload up;
+    smvk::MeshData up;
     Check(BuildTerrainUpload(p, up), "place.terr.upload-ok");
     Check(up.vertices.size() == 81, "place.terr.vert-count");
     Check(up.indices.size() == 8u * 8u * 6u, "place.terr.index-count");
@@ -2156,7 +2156,7 @@ void TestTerrainUpload() {
     Check(up.aabbMin.y >= 0.0f && up.aabbMax.y <= 5.0f, "place.terr.height-range");
     // Normals unit, indices in range, UVs in [0,1].
     bool blobOk = true;
-    for (const smvk::ImportStaticVertex& v : up.vertices) {
+    for (const smvk::MeshVertex& v : up.vertices) {
         if (std::abs(glm::length(v.normal) - 1.0f) > 1e-4f) {
             blobOk = false;
             break;
@@ -2182,7 +2182,7 @@ void TestTerrainUpload() {
         Check(fn.y > 0.0f, "place.terr.winding-up");
     }
     // Determinism: identical positions on rebuild.
-    smvk::StaticMeshUpload up2;
+    smvk::MeshData up2;
     Check(BuildTerrainUpload(p, up2), "place.terrain.rebuild-ok");
     bool same = up2.vertices.size() == up.vertices.size();
     if (same) {
@@ -2199,7 +2199,7 @@ void TestTerrainUpload() {
     bool match = true;
     for (uint32_t z = 0; z + 1 < 9; ++z)
         for (uint32_t x = 0; x + 1 < 9; ++x) {
-            const smvk::ImportStaticVertex& v = up.vertices[z * 9 + x];
+            const smvk::MeshVertex& v = up.vertices[z * 9 + x];
             const float h = hf.sampleHeight(10.0f + v.pos.x, 20.0f + v.pos.z);
             if (std::abs(h - v.pos.y) > 1e-4f) {
                 match = false;
@@ -2231,7 +2231,7 @@ void TestTerrainGroups() {
     // Edge continuity: tile00's last COLUMN (global x=32) matches tile
     // (1,0)'s first column — same global samples => identical heights
     // and normals across the shared border.
-    smvk::StaticMeshUpload t00, t10;
+    smvk::MeshData t00, t10;
     Check(BuildTerrainTileUpload(g, 0, 0, t00), "place.tgroup.upload00");
     Check(BuildTerrainTileUpload(g, 1, 0, t10), "place.tgroup.upload10");
     Check(t00.vertices.size() == 33u * 33u, "place.tgroup.tile-verts");
@@ -2249,10 +2249,10 @@ void TestTerrainGroups() {
     }
     Check(edge, "place.tgroup.edge-continuity");
     // Degenerate tile index rejected.
-    smvk::StaticMeshUpload dummy;
+    smvk::MeshData dummy;
     Check(!BuildTerrainTileUpload(g, 2, 0, dummy), "place.tgroup.bad-tile");
     // 1x1 group == legacy single-node upload (same vertex count/AABB).
-    smvk::StaticMeshUpload single, t11;
+    smvk::MeshData single, t11;
     Check(BuildTerrainTileUpload(g, 1, 1, t11), "place.tgroup.upload11");
     Check(BuildTerrainUpload(g.params, single), "place.tgroup.single-ok");
     Check(single.vertices.size() == 65u * 65u, "place.tgroup.single-verts");
@@ -2286,7 +2286,7 @@ void TestTerrainGroups() {
     // normal + world XZ). Vertex world pos = groupOrigin + tileOrigin
     // + local — the caller positioning contract.
     {
-        smvk::StaticMeshUpload t[4];
+        smvk::MeshData t[4];
         glm::vec2 org[4];
         uint32_t w[4];
         bool built = true;
@@ -2327,7 +2327,7 @@ void TestTerrainGroups() {
         // Same contract along Z (tiles (0,tz) vs (0,tz+1)).
         bool seamZ = true;
         for (uint32_t tz = 0; tz + 1 < 4 && seamZ; ++tz) {
-            smvk::StaticMeshUpload za, zb;
+            smvk::MeshData za, zb;
             if (!BuildTerrainTileUpload(g4, 0, tz, za) ||
                 !BuildTerrainTileUpload(g4, 0, tz + 1, zb)) {
                 seamZ = false;
@@ -2342,7 +2342,7 @@ void TestTerrainGroups() {
         }
         Check(seamZ, "place.tgroup.nondiv-z-seam");
         // The full group span is covered exactly: [0, size] on both axes.
-        smvk::StaticMeshUpload last;
+        smvk::MeshData last;
         Check(BuildTerrainTileUpload(g4, 3, 3, last), "place.tgroup.nondiv-last");
         const glm::vec2 lastOrg = TerrainTileOrigin(g4, 3, 3);
         Check(std::abs(lastOrg.x + last.aabbMax.x - 64.0f) < 1e-4f &&
@@ -2359,7 +2359,7 @@ void TestTerrainGroups() {
         gu.tilesZ = 3; // 64/3 -> 21|21|22 intervals (NOT divisible)
         bool seam = true;
         for (uint32_t tz = 0; tz + 1 < 3 && seam; ++tz) {
-            smvk::StaticMeshUpload za, zb;
+            smvk::MeshData za, zb;
             if (!BuildTerrainTileUpload(gu, 0, tz, za) ||
                 !BuildTerrainTileUpload(gu, 0, tz + 1, zb)) {
                 seam = false;
@@ -2379,7 +2379,7 @@ void TestTerrainGroups() {
         gm.params.size = 64.0f;
         gm.params.res = 2; // ONE interval: only a 1x1 split is valid
         gm.heights = BuildTerrainHeights(gm.params);
-        smvk::StaticMeshUpload up;
+        smvk::MeshData up;
         gm.tilesX = 1;
         gm.tilesZ = 1;
         Check(BuildTerrainTileUpload(gm, 0, 0, up) && up.vertices.size() == 4u,

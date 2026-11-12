@@ -33,6 +33,7 @@
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/compression.h>
 #include <Engine/Asset/mesh_optimizer.h>
+#include <Engine/Asset/mesh_preparation_policy.h>
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Asset/pak_pager.h>
@@ -59,6 +60,37 @@ void Check(bool cond, const std::string& name) {
         ++g_failures;
         std::cout << "FAIL " << name << "\n";
     }
+}
+
+void TestSpatialDerivativeWorldSizing() {
+    const glm::vec3 mn(0.0f), mx(1.0f);
+    const glm::mat4 identity(1.0f);
+    Check(!smvk::EligibleForSpatialDerivatives(mn, mx, 6, identity),
+          "derivatives.local-unit-small");
+    glm::mat4 enlarged(1.0f);
+    enlarged[0][0] = 3.0f;
+    Check(smvk::EligibleForSpatialDerivatives(mn, mx, 6, enlarged),
+          "derivatives.world-scaled-up");
+    glm::mat4 downscaled(1.0f);
+    downscaled[0][0] = 0.01f;
+    Check(!smvk::EligibleForSpatialDerivatives(glm::vec3(0.0f),
+                                                glm::vec3(100.0f, 1.0f, 1.0f),
+                                                6, downscaled),
+          "derivatives.world-scaled-down");
+    glm::mat4 negativeScale(1.0f);
+    negativeScale[2][2] = -3.0f;
+    Check(smvk::EligibleForSpatialDerivatives(mn, mx, 6, negativeScale),
+          "derivatives.negative-scale");
+    glm::mat4 parent(1.0f);
+    parent[0][0] = 0.01f;
+    glm::mat4 child(1.0f);
+    child[0][0] = 300.0f;
+    Check(smvk::EligibleForSpatialDerivatives(mn, mx, 6, parent * child),
+          "derivatives.parent-child-transform");
+    Check(!smvk::EligibleForSpatialDerivatives(mn, mx, 6, enlarged, true),
+          "derivatives.skinned-rejected");
+    Check(!smvk::EligibleForSpatialDerivatives(mn, mx, 5, enlarged),
+          "derivatives.invalid-triangles-rejected");
 }
 
 void TestVfsNormalize() {
@@ -1651,10 +1683,10 @@ void TestPakBackendServesTextures() {
     Check(dir.size() == 1 && dir[0] == "textures/brick.ktx2", "pakbackend.listdir");
 }
 
-smvk::StaticMeshUpload MakeQuad() {
-    smvk::StaticMeshUpload u;
+smvk::MeshData MakeQuad() {
+    smvk::MeshData u;
     for (int i = 0; i < 4; ++i) {
-        smvk::ImportStaticVertex v{};
+        smvk::MeshVertex v{};
         v.pos = {(i & 1) ? 1.0f : 0.0f, (i & 2) ? 1.0f : 0.0f, 0.0f};
         v.color = {1, 1, 1, 1};
         v.texCoord = {v.pos.x, v.pos.y};
@@ -1676,11 +1708,11 @@ smvk::StaticMeshUpload MakeQuad() {
 // parameterization without error. chartOf receives one chart id per
 // vertex (parallel to the vertices); each vertex also carries its id
 // in chartId, like a stamped cook upload.
-smvk::StaticMeshUpload MakeTwoChartGrid(std::vector<uint32_t>& chartOf) {
+smvk::MeshData MakeTwoChartGrid(std::vector<uint32_t>& chartOf) {
     chartOf.clear();
-    smvk::StaticMeshUpload u;
+    smvk::MeshData u;
     auto vert = [&](float x, float y, uint32_t chart, float cu, float cv) {
-        smvk::ImportStaticVertex v{};
+        smvk::MeshVertex v{};
         v.pos = {x, y, 0.0f};
         v.color = {1, 1, 1, 1};
         v.texCoord = {x * 0.5f, y * 0.5f};
@@ -1728,7 +1760,7 @@ void TestMeshOpt() {
     auto quad = MakeQuad();
     smvk::MeshOptStats stats;
     smvk::LodInfo lod;
-    Check(smvk::OptimizeStaticMeshUpload(quad, cfg, 7, &stats, &lod), "meshopt.quad.ok");
+    Check(smvk::OptimizeMeshData(quad, cfg, 7, &stats, &lod), "meshopt.quad.ok");
     Check(quad.vertices.size() == 4 && quad.indices.size() == 6, "meshopt.quad.topology");
     Check(stats.triangles == 2 && stats.lodGroupId == 7, "meshopt.quad.stats");
     Check(stats.acmrAfter > 0.0f && stats.acmrAfter <= stats.acmrBefore + 1e-5f,
@@ -1743,20 +1775,20 @@ void TestMeshOpt() {
     dup.vertices.push_back(dup.vertices[2]);
     dup.indices = {4, 5, 6, 0, 2, 3};
     smvk::MeshOptStats ws;
-    Check(smvk::OptimizeStaticMeshUpload(dup, cfg, 0, &ws, nullptr), "meshopt.weld.ok");
+    Check(smvk::OptimizeMeshData(dup, cfg, 0, &ws, nullptr), "meshopt.weld.ok");
     Check(ws.outVertices == 4, "meshopt.weld.merged");
 
     // Degenerate input fails softly.
-    smvk::StaticMeshUpload empty;
+    smvk::MeshData empty;
     smvk::LodInfo elod;
-    Check(!smvk::OptimizeStaticMeshUpload(empty, cfg, 0, nullptr, &elod), "meshopt.empty.false");
+    Check(!smvk::OptimizeMeshData(empty, cfg, 0, nullptr, &elod), "meshopt.empty.false");
     Check(elod.lodIndex == 0, "meshopt.empty.lodmarker");
 
     // Disabled config leaves data untouched.
     auto q2 = MakeQuad();
     smvk::MeshOptConfig off;
     off.enabled = false;
-    Check(!smvk::OptimizeStaticMeshUpload(q2, off, 0), "meshopt.disabled.false");
+    Check(!smvk::OptimizeMeshData(q2, off, 0), "meshopt.disabled.false");
     Check(q2.vertices.size() == 4, "meshopt.disabled.untouched");
 }
 
@@ -1768,9 +1800,9 @@ void TestSmoothNormalRepair() {
     // (0,1,0) fallback, which disagrees with both faces (dot == 0) and
     // shades black where it interpolates backwards (NdotL <= 0 kills
     // the sun, the GI SH samples the dark lobe).
-    smvk::StaticMeshUpload u;
+    smvk::MeshData u;
     auto vert = [&](float x, float y, float z) {
-        smvk::ImportStaticVertex v{};
+        smvk::MeshVertex v{};
         v.pos = {x, y, z};
         v.color = {1, 1, 1, 1};
         v.texCoord = {x, y};
@@ -1805,9 +1837,9 @@ void TestSmoothNormalRepair() {
     // Clean single-sided quad (consistent CCW winding — note MakeQuad
     // itself mixes windings, so this control builds its own): pure
     // accumulation, repair must not fire (exact +Z preserved).
-    smvk::StaticMeshUpload q;
+    smvk::MeshData q;
     for (int i = 0; i < 4; ++i) {
-        smvk::ImportStaticVertex v{};
+        smvk::MeshVertex v{};
         v.pos = {(i & 1) ? 1.0f : 0.0f, (i & 2) ? 1.0f : 0.0f, 0.0f};
         v.color = {1, 1, 1, 1};
         v.texCoord = {v.pos.x, v.pos.y};
@@ -1825,11 +1857,11 @@ void TestSmoothNormalRepair() {
               "smoothnorm.repair.clean");
 }
 
-smvk::StaticMeshUpload MakeGrid(int n) {
-    smvk::StaticMeshUpload u;
+smvk::MeshData MakeGrid(int n) {
+    smvk::MeshData u;
     for (int iy = 0; iy <= n; ++iy)
         for (int ix = 0; ix <= n; ++ix) {
-            smvk::ImportStaticVertex v{};
+            smvk::MeshVertex v{};
             v.pos = {(float)ix, (float)iy, 0.1f * sinf((float)ix * 0.7f) * cosf((float)iy * 0.7f)};
             v.color = {1, 1, 1, 1};
             v.texCoord = {(float)ix / n, (float)iy / n};
@@ -1851,11 +1883,11 @@ smvk::StaticMeshUpload MakeGrid(int n) {
 // Flat grid with adversarial checker UVs: geometrically a perfect plane
 // (positions-only simplify would nuke it for ~zero error) but every edge
 // spans the full texture, so any collapse destroys the parameterization.
-smvk::StaticMeshUpload MakeCheckerGrid(int n) {
-    smvk::StaticMeshUpload u;
+smvk::MeshData MakeCheckerGrid(int n) {
+    smvk::MeshData u;
     for (int iy = 0; iy <= n; ++iy)
         for (int ix = 0; ix <= n; ++ix) {
-            smvk::ImportStaticVertex v{};
+            smvk::MeshVertex v{};
             v.pos = {(float)ix, (float)iy, 0.0f};
             v.color = {1, 1, 1, 1};
             const float c = ((ix + iy) & 1) ? 1.0f : 0.0f;
@@ -1995,7 +2027,7 @@ void TestLodChain() {
     }
 
     // Degenerate input fails softly.
-    smvk::StaticMeshUpload empty;
+    smvk::MeshData empty;
     std::vector<smvk::CookedLod> deg;
     Check(!smvk::BuildLodChainForUpload(empty, cfg, deg), "lod.empty.false");
 
@@ -2157,7 +2189,7 @@ void TestLodSelection() {
         auto cluster = std::make_unique<Cluster>(nullptr);
         cluster->SetOfflineMode(true);
         auto q = MakeQuad();
-        const auto mh = cluster->UploadStaticMesh(q);
+        const auto mh = cluster->UploadMesh(q);
         const std::string uri = "models/q.gltf#mesh.4/prim.0";
         cluster->RegisterMeshUri(uri, mh);
         LodInfo lod0;
@@ -2166,7 +2198,7 @@ void TestLodSelection() {
         lod0.candidateCount = 2;
         lod0.triCount = 2;
         cluster->RegisterMeshLod(uri, lod0);
-        const auto h1 = cluster->UploadStaticMesh(q);
+        const auto h1 = cluster->UploadMesh(q);
         const smvk::StringViewT uri1 = LodSiblingUri(uri, 1);
         cluster->RegisterMeshUri(uri1, h1);
         LodInfo lod1;
@@ -2377,7 +2409,7 @@ void TestLodSelection() {
         // the re-resolve, so look the two meshes up by URI.)
         {
             Cluster& c = *world.clusters.front();
-            const auto h2 = c.UploadStaticMesh(q);
+            const auto h2 = c.UploadMesh(q);
             const std::string uri2 = "models/q.gltf#mesh.5/prim.0";
             c.RegisterMeshUri(uri2, h2);
             const int n2 = addNode(c.scene, 0, 2);
@@ -2476,7 +2508,7 @@ void TestLodLightmapAudit() {
     // catastrophic atlas-smear shape) — counted on every triangle, no
     // projection needed (chart-id mismatch flags it).
     {
-        smvk::StaticMeshUpload mix;
+        smvk::MeshData mix;
         mix.vertices = {grid.vertices[0],
                         grid.vertices[9],
                         grid.vertices[11],
@@ -2499,7 +2531,7 @@ void TestCookLodSiblingsLightmap() {
     cluster->SetOfflineMode(true);
     std::vector<uint32_t> chartOf;
     auto grid = MakeTwoChartGrid(chartOf);
-    const auto mh = cluster->UploadStaticMesh(grid);
+    const auto mh = cluster->UploadMesh(grid);
     const std::string uri = "models/lm.gltf#mesh.0/prim.0";
     cluster->RegisterMeshUri(uri, mh);
     {
@@ -2550,16 +2582,16 @@ void TestCookLodSiblingsLightmap() {
         const StaticMesh* sib = cluster->staticMeshes.get(*sibH);
         Check(sib && sib->lmChunk == 9, "lmlod.sib.lmchunk");
         Check(sib && sib->lmChartXforms.size() == 2, "lmlod.sib.xforms");
-        const StaticMeshUpload* up = cluster->GetRetainedUpload(*sibH);
+        const MeshData* up = cluster->GetRetainedUpload(*sibH);
         Check(up && !up->indices.empty(), "lmlod.sib.retained");
         bool spansOk = true;
         bool chartsOk = true;
         bool anyUv = false;
         if (up) {
             for (size_t t = 0; t + 2 < up->indices.size() / 3; ++t) {
-                const ImportStaticVertex& va = up->vertices[up->indices[t * 3 + 0]];
-                const ImportStaticVertex& vb = up->vertices[up->indices[t * 3 + 1]];
-                const ImportStaticVertex& vc = up->vertices[up->indices[t * 3 + 2]];
+                const MeshVertex& va = up->vertices[up->indices[t * 3 + 0]];
+                const MeshVertex& vb = up->vertices[up->indices[t * 3 + 1]];
+                const MeshVertex& vc = up->vertices[up->indices[t * 3 + 2]];
                 // Core invariant: no sibling triangle mixes charts.
                 if (va.chartId != vb.chartId || va.chartId != vc.chartId) {
                     chartsOk = false;
@@ -2596,7 +2628,7 @@ void TestCookLodSiblingsLightmap() {
     // cook (positions-only path) and carry no lightmap chunk.
     std::vector<uint32_t> chartOf2;
     auto grid2 = MakeTwoChartGrid(chartOf2);
-    const auto mh2 = cluster->UploadStaticMesh(grid2);
+    const auto mh2 = cluster->UploadMesh(grid2);
     const std::string uri2 = "models/lm.gltf#mesh.1/prim.0";
     cluster->RegisterMeshUri(uri2, mh2);
     const int n2 = addNode(cluster->scene, root, 1);
@@ -2622,19 +2654,19 @@ void TestLightmapChartTable() {
     cluster->SetOfflineMode(true);
     std::vector<uint32_t> chartOf;
     auto gridA = MakeTwoChartGrid(chartOf);
-    const auto mhA = cluster->UploadStaticMesh(gridA);
+    const auto mhA = cluster->UploadMesh(gridA);
     cluster->RegisterMeshUri("models/lm.gltf#mesh.0/prim.0", mhA);
     cluster->staticMeshes.get(mhA)->lmChunk = 9;
     const std::vector<glm::vec4> xformsA = {{0.5f, 0.5f, 0.0f, 0.0f}, {0.5f, 0.5f, 0.5f, 0.0f}};
     cluster->staticMeshes.get(mhA)->lmChartXforms = xformsA;
     auto gridB = MakeQuad();
-    const auto mhB = cluster->UploadStaticMesh(gridB);
+    const auto mhB = cluster->UploadMesh(gridB);
     cluster->RegisterMeshUri("models/lm.gltf#mesh.1/prim.0", mhB);
     cluster->staticMeshes.get(mhB)->lmChunk = 5;
     const std::vector<glm::vec4> xformsB = {{0.25f, 0.25f, 0.25f, 0.5f}};
     cluster->staticMeshes.get(mhB)->lmChartXforms = xformsB;
     auto gridC = MakeQuad();
-    const auto mhC = cluster->UploadStaticMesh(gridC);
+    const auto mhC = cluster->UploadMesh(gridC);
     cluster->RegisterMeshUri("models/lm.gltf#mesh.2/prim.0", mhC);
     MaterialCreateInfo ci{};
     const auto matH = cluster->CreateMaterial(ci);
@@ -2687,7 +2719,7 @@ void TestLightmapChartTable() {
     // CPU mirror of the VS unpack (atlasUv = chartUv * xy + zw) lands
     // inside the owning chart's rect for a stamped vertex.
     {
-        const ImportStaticVertex& v = gridA.vertices[6]; // chart 1 corner
+        const MeshVertex& v = gridA.vertices[6]; // chart 1 corner
         const glm::vec4& xf = world.lmChartTable[baseA + v.chartId];
         const glm::vec2 atlas = v.texCoord2 * glm::vec2(xf.x, xf.y) + glm::vec2(xf.z, xf.w);
         Check(v.chartId == 1, "lmchart.vert.chart");
@@ -2764,7 +2796,7 @@ void TestClusterSerializeCook() {
 
     // Mesh (cook path retains uploads for serialization).
     auto quad = MakeQuad();
-    const ClusterStaticMeshHandle mh = cluster->UploadStaticMesh(quad);
+    const ClusterStaticMeshHandle mh = cluster->UploadMesh(quad);
     Check(mh.valid(), "cook.mesh.handle");
     Check(cluster->GetRetainedUpload(mh) != nullptr, "cook.mesh.retained");
     Check(cluster->GetRetainedUpload(mh)->vertices.size() == 4, "cook.mesh.retained.verts");
@@ -3096,7 +3128,7 @@ void TestClusterSerializeCook() {
             PackedVertexPosition pos{};
             PackedVertexShading shade{};
             PackedVertexLightmap lm{};
-            PackStaticVertex(quad.vertices[v], pos, shade, lm);
+            PackMeshVertex(quad.vertices[v], pos, shade, lm);
             streamsOk = streamsOk &&
                         memcmp(pay.data() + posOff + v * sizeof(PackedVertexPosition),
                                &pos,
@@ -3177,7 +3209,7 @@ void TestMeshlets() {
           "meshlet.disabled.false");
     Check(empty.empty(), "meshlet.disabled.empty");
     // Degenerate input fails softly.
-    smvk::StaticMeshUpload deg;
+    smvk::MeshData deg;
     Check(!smvk::BuildMeshletsForUpload(deg, cfg, &empty, nullptr, nullptr), "meshlet.empty.false");
 
     // Containment invariant: every cooked bound sphere must contain its
@@ -3185,11 +3217,11 @@ void TestMeshlets() {
     // violation false-culls visible meshlets). Grid + one long sliver
     // forces disparate verts into shared meshlets (cf. sponza prim.49).
     {
-        smvk::StaticMeshUpload u;
+        smvk::MeshData u;
         const int N = 8;
         for (int iy = 0; iy <= N; ++iy)
             for (int ix = 0; ix <= N; ++ix) {
-                smvk::ImportStaticVertex v{};
+                smvk::MeshVertex v{};
                 v.pos = {(float)ix, (float)iy, 0.0f};
                 u.vertices.push_back(v);
             }
@@ -3202,11 +3234,11 @@ void TestMeshlets() {
             }
         // Long sliver: two verts in the grid, one 60 units away.
         uint32_t s0 = (uint32_t)u.vertices.size();
-        smvk::ImportStaticVertex a{};
+        smvk::MeshVertex a{};
         a.pos = {0.0f, 0.0f, 0.0f};
-        smvk::ImportStaticVertex b{};
+        smvk::MeshVertex b{};
         b.pos = {0.5f, 0.0f, 0.0f};
-        smvk::ImportStaticVertex c{};
+        smvk::MeshVertex c{};
         c.pos = {60.0f, 0.5f, 0.0f};
         u.vertices.push_back(a);
         u.vertices.push_back(b);
@@ -3497,8 +3529,8 @@ void TestStaticCollapse() {
     const int root = addNode(cluster->scene, -1, 0);
     const int n1 = addNode(cluster->scene, root, 1);
     const int n2 = addNode(cluster->scene, root, 1);
-    const ClusterStaticMeshHandle h1 = cluster->UploadStaticMesh(q1);
-    const ClusterStaticMeshHandle h2 = cluster->UploadStaticMesh(q2);
+    const ClusterStaticMeshHandle h1 = cluster->UploadMesh(q1);
+    const ClusterStaticMeshHandle h2 = cluster->UploadMesh(q2);
     SetMesh(cluster->scene, uint32_t(n1), h1.index());
     SetMesh(cluster->scene, uint32_t(n2), h2.index());
     SetMaterial(cluster->scene, uint32_t(n1), matIdx);
@@ -3518,7 +3550,7 @@ void TestStaticCollapse() {
     Check(mr.blocks.size() == 1, "collapse.singleblock");
     if (!mr.blocks.empty()) {
         const auto h = cluster->staticMeshes.getHandle(mr.blocks[0].meshPoolIndex);
-        const StaticMeshUpload* up = cluster->GetRetainedUpload(h);
+        const MeshData* up = cluster->GetRetainedUpload(h);
         Check(up && up->vertices.size() == 8 && up->indices.size() == 12, "collapse.baked.size");
         if (up && up->vertices.size() == 8) {
             // Second quad baked at +1 X: its min.x must be 1, first quad 0.
@@ -3542,7 +3574,7 @@ void TestMultiSceneSerialize() {
         auto cluster = std::make_unique<Cluster>(nullptr);
         cluster->SetOfflineMode(true);
         auto quad = MakeQuad();
-        const ClusterStaticMeshHandle mh = cluster->UploadStaticMesh(quad);
+        const ClusterStaticMeshHandle mh = cluster->UploadMesh(quad);
         cluster->RegisterMeshUri(meshUri, mh);
         MaterialCreateInfo ci{};
         const ClusterMaterialHandle math = cluster->CreateMaterial(ci);
@@ -3931,7 +3963,7 @@ void TestStaticBvhSection() {
     auto mkCluster = [] {
         auto c = std::make_unique<Cluster>(nullptr);
         c->SetOfflineMode(true);
-        const ClusterStaticMeshHandle mh = c->UploadStaticMesh(MakeQuad());
+        const ClusterStaticMeshHandle mh = c->UploadMesh(MakeQuad());
         c->RegisterMeshUri("models/bvh.gltf#mesh.0", mh);
         const int root = addNode(c->scene, -1, 0);
         const int child = addNode(c->scene, root, 1);
@@ -4194,6 +4226,7 @@ int main() {
     // test would initialize it single-threaded and spend the window).
     run("TestPakAppendConcurrentFirstUse", TestPakAppendConcurrentFirstUse);
     run("TestVfsNormalize", TestVfsNormalize);
+    run("TestSpatialDerivativeWorldSizing", TestSpatialDerivativeWorldSizing);
     run("TestOverlayMem", TestOverlayMem);
     run("TestAssetUris", TestAssetUris);
     run("TestTextureSourceLifetime", TestTextureSourceLifetime);

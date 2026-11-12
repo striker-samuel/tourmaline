@@ -471,8 +471,8 @@ class EditorApp : public tour::App {
     // so the world's asset registry resolves mesh/node -> CPU geometry
     // with no importer state kept alive. Null when the mesh/node is
     // missing or its cluster did not retain.
-    const smvk::StaticMeshUpload* MeshUploadOf(uint32_t worldMeshIdx) const;
-    const smvk::StaticMeshUpload* NodeMeshUpload(uint32_t node) const;
+    const smvk::MeshData* MeshUploadOf(uint32_t worldMeshIdx) const;
+    const smvk::MeshData* NodeMeshUpload(uint32_t node) const;
     static glm::mat4 LocalMatrixFromTRS(const glm::vec3& t,
                                         const glm::vec3& eulerDeg,
                                         const glm::vec3& s);

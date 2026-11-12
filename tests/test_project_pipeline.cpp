@@ -29,6 +29,7 @@
 #include <project_pipeline/build_plan.h>
 #include <project_pipeline/import_pipeline.h>
 #include <project_pipeline/project.h>
+#include <project_pipeline/project_resource_path.h>
 #include <project_pipeline/project_catalog.h>
 #include <project_pipeline/project_recipe.h>
 #include <project_pipeline/recipe_resolver.h>
@@ -950,8 +951,8 @@ void TestRecipeImportSettings() {
     {
         smvk::project::ProjectRecipe r;
         smvk::project::RecipeDiagnostic d;
-        Check(smvk::project::ParseProjectRecipeText(header + "import lod-ratios 0.8,0.4\n" + pak,
-                                                    r, d) &&
+        Check(smvk::project::ParseProjectRecipeText(
+                  header + "import lod-ratios 0.8,0.4\n" + pak, r, d) &&
                   r.importLods && r.importLodRatios.size() == 2 && r.importLodRatios[0] == 0.8f &&
                   r.importLodRatios[1] == 0.4f,
               "recipe.import.lod-ratios");
@@ -959,10 +960,10 @@ void TestRecipeImportSettings() {
     {
         smvk::project::ProjectRecipe r;
         smvk::project::RecipeDiagnostic d;
-        Check(smvk::project::ParseProjectRecipeText(header + "import lod-error 0.02\n" + pak, r,
-                                                    d) &&
-                  r.importLodError == 0.02f,
-              "recipe.import.lod-error");
+        Check(
+            smvk::project::ParseProjectRecipeText(header + "import lod-error 0.02\n" + pak, r, d) &&
+                r.importLodError == 0.02f,
+            "recipe.import.lod-error");
     }
     struct Bad {
         const char* name;
@@ -1942,6 +1943,8 @@ class InProcessAdapter final : public smvk::project::StageAdapter {
         args.tour = a.tour;
         args.cubemap = a.cubemap;
         args.lightmap = a.lightmap;
+        args.lods = a.lods;
+        args.explicitSet.insert("lods");
         args.registryDir = a.registryDir;
         return cooktool::Run(args);
     }
@@ -1961,6 +1964,9 @@ class InProcessAdapter final : public smvk::project::StageAdapter {
         args.verify = a.verify;
         args.levelName = a.levelName;
         args.registryDir = a.registryDir;
+        args.contentSet = a.contentSet;
+        args.excludeVfsPaths = a.excludeVfs;
+        args.soundIds = a.soundIds;
         return paktool::Run(args);
     }
 };
@@ -2991,8 +2997,10 @@ void TestBuildPlanExecutor() {
             // byte equality is gone BY DESIGN. The parity that still
             // holds — pinned here — is ENTRY parity: every legacy TOC
             // entry (kind, path, slot, payload bytes) appears
-            // IDENTICALLY in the plan pak, which carries exactly ONE
-            // extra entry (the identity table).
+            // IDENTICALLY in the plan pak, which carries exactly TWO
+            // extra entries (the identity table + the default-on SDF
+            // sidecar — a plan-only derived asset the legacy build
+            // never emits).
             const std::vector<char> legacy = ReadAllBytes(br.pak);
             const std::vector<char> planned = ReadAllBytes(rep.paks[0].output);
             bool parity = !legacy.empty() && !planned.empty();
@@ -3023,7 +3031,7 @@ void TestBuildPlanExecutor() {
                         }
                     }
                     if (parity)
-                        parity = pr->EntryCount() == lr->EntryCount() + 1;
+                        parity = pr->EntryCount() == lr->EntryCount() + 2;
                 }
             }
             Check(parity, "executor.parity-bytes");
@@ -4592,6 +4600,44 @@ void TestPlansHeaderEmission() {
     fs::remove_all(tmp, ec);
 }
 
+void TestProjectResourcePaths() {
+    namespace fs = std::filesystem;
+    const fs::path root = fs::absolute(fs::path("resource_path_test_project"));
+    smvk::project::ResolvedProjectResource resolved;
+    std::string err;
+    const auto resolve = [&](const std::string& input) {
+        return smvk::project::ResolveProjectResource(
+            root.generic_string(), input, resolved, err);
+    };
+    Check(resolve("models/bistro/bistro.geometry") &&
+              resolved.contentRelative == "models/bistro/bistro.geometry" &&
+              resolved.projectVfs == "content/models/bistro/bistro.geometry" &&
+              resolved.stageRoot == root.generic_string(),
+          "resourcepath.content-relative");
+    Check(resolve("content/models/bistro/bistro.geometry") &&
+              resolved.contentRelative == "models/bistro/bistro.geometry" &&
+              resolved.projectVfs == "content/models/bistro/bistro.geometry",
+          "resourcepath.legacy-project-relative");
+    Check(resolve((root / "content/models/bistro/bistro.geometry").generic_string()) &&
+              resolved.contentRelative == "models/bistro/bistro.geometry",
+          "resourcepath.absolute-project-host");
+    Check(!resolve("content/content/models/bistro/bistro.geometry") &&
+              err.find("duplicate") != std::string::npos,
+          "resourcepath.duplicate-content-prefix-refused");
+    Check(!resolve("../outside.geometry") &&
+              err.find("traversal") != std::string::npos,
+          "resourcepath.traversal-refused");
+    Check(!resolve((root.parent_path() / "outside.geometry").generic_string()) &&
+              err.find("escapes") != std::string::npos,
+          "resourcepath.absolute-outside-refused");
+    Check(!resolve("") && !err.empty(), "resourcepath.empty-refused");
+    // A directory whose *name* contains 'content' is not treated as
+    // a mount marker; root derivation is based on path components.
+    Check(resolve((root / "content/models/contention/mesh.geometry").generic_string()) &&
+              resolved.projectVfs == "content/models/contention/mesh.geometry",
+          "resourcepath.no-substring-search");
+}
+
 int main(int argc, char** argv) {
     if (argc > 0 && argv[0])
         g_argv0 = argv[0];
@@ -4601,6 +4647,7 @@ int main(int argc, char** argv) {
     setvbuf(stdout, nullptr, _IONBF, 0);
     setvbuf(stderr, nullptr, _IONBF, 0);
     std::cout << std::unitbuf;
+    TestProjectResourcePaths();
     TestProjectModel();
     TestImportLifecycle();
     TestFingerprint();

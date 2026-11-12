@@ -788,14 +788,14 @@ the RHI ONLY; smvk::detail::vulkan = the private impl. Remaining:
       tour::Cluster for using-namespace-gfx consumers — the recorded
       lesson: qualify in headers, TU-local using-directives in .cpps).
       LANDED (the two giants): (a) mesh.h's whole renderer DATA MODEL
-      -> tour:: (Material/StaticMesh/StaticMeshUpload/ImportStaticVertex,
+      -> tour:: (Material/StaticMesh/MeshData/MeshVertex,
       the packed-vertex + terrain/skin streams, ShaderLod*,
       MaterialCreateInfo, the material flags/word helpers — 35 smvk
       re-export rows; mesh.cpp follows) — the vertex-INPUT contract
       (VertexLayoutId + the layout constants + GetVertexLayoutDesc,
       defined against smvk.h's VertexLayoutDesc and consumed by the
       Vulkan backend) deliberately STAYS smvk::; the three cross-file
-      `struct StaticMeshUpload;` fwd decls (meshlet.h/lightmap.h/
+      `struct MeshData;` fwd decls (meshlet.h/lightmap.h/
       gfx_filter.h) became using-declarations so they cannot collide
       with mesh.h's compat block. (b) THE GLOBAL-NAMESPACE CLEANUP IS
       COMPLETE: bvh.h -> tour + the global bridge, dxc_integration.h

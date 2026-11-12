@@ -159,7 +159,7 @@ bool EditorApp::Initialize() {
         }
     }
     // Static mesh heap (VMA virtual blocks + GPU buffers) backing
-    // Cluster::UploadStaticMesh. Without this, the first glTF import
+    // Cluster::UploadMesh. Without this, the first glTF import
     // crashes in vmaVirtualAllocate on a null m_staticVertexBlock.
     smvk::AllocateStaticVertexFmt(*m_context);
     {
@@ -771,7 +771,7 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& pathIn, const std::string& 
     m_world = tour::mem::MakeProcess<tour::World>();
     tour::Cluster& cluster = m_world->LoadCluster(*m_context);
     // CPU geometry mirror (the editor's picking/UV/placement source):
-    // every mesh this import lands keeps a retained StaticMeshUpload
+    // every mesh this import lands keeps a retained MeshData
     // (Cluster::GetRetainedUpload) — THE replacement for the old kept
     // tinygltf::Model (picking walks the world's asset registry).
     cluster.SetRetainUploads(true);

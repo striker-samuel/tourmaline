@@ -36,7 +36,7 @@ HeightfieldData BuildTerrainHeights(const TerrainParams& params) {
     return hf;
 }
 
-bool BuildTerrainUpload(const TerrainParams& params, StaticMeshUpload& out) {
+bool BuildTerrainUpload(const TerrainParams& params, MeshData& out) {
     // Single-node terrain == a 1x1 group tile (shared code path).
     TerrainGroupData g;
     g.params = params;
@@ -81,8 +81,8 @@ glm::vec2 TerrainTileOrigin(const TerrainGroupData& g, uint32_t tx, uint32_t tz)
 bool BuildTerrainTileUpload(const TerrainGroupData& g,
                             uint32_t tx,
                             uint32_t tz,
-                            StaticMeshUpload& out) {
-    out = StaticMeshUpload{};
+                            MeshData& out) {
+    out = MeshData{};
     const HeightfieldData& hf = g.heights;
     const uint32_t res = hf.width;
     if (res < 2 || !hf.valid())
@@ -129,7 +129,7 @@ bool BuildTerrainTileUpload(const TerrainGroupData& g,
             if (glm::dot(t, t) < 1e-8f)
                 t = glm::vec3(1, 0, 0);
             t = glm::normalize(t);
-            ImportStaticVertex v{};
+            MeshVertex v{};
             v.pos = glm::vec3(lx, hgt, lz);
             v.color = glm::vec4(1.0f);
             v.texCoord = glm::vec2(float(x) * invW, float(z) * invH);

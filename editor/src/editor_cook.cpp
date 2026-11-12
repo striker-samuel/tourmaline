@@ -35,6 +35,7 @@
 
 #include <project_pipeline/build_pipeline.h>
 #include <project_pipeline/project.h>
+#include <project_pipeline/project_resource_path.h>
 #include <project_pipeline/project_recipe.h>
 #include <project_pipeline/recipe_resolver.h>
 
@@ -60,6 +61,8 @@ class EditorStageAdapter final : public smvk::project::StageAdapter {
         args.tour = a.tour;
         args.cubemap = a.cubemap;
         args.lightmap = a.lightmap;
+        args.lods = a.lods;
+        args.explicitSet.insert("lods");
         args.registryDir = a.registryDir;
         return cooktool::Run(args);
     }
@@ -170,52 +173,40 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
         return;
     // Definition fingerprint: the scene artifact's cache source key.
     m_cookDefHash = defHash;
-    // contentDir = absolute path to the content root (parent of
-    // "content/"): for F:\content\models\... it is the drive root.
-    // THE CANONICAL HOST PATH drives the marker walk (m_gltfHostPath —
-    // the file that actually loaded, GUID-resolved on tour opens): the
-    // recorded identity (m_gltfPath) can be a project-RELATIVE
-    // "content/models/..." on tour-opened scenes, whose "." parent then
-    // resolved against the EDITOR CWD (the build dir) — every bake
-    // file the cook stages (gi/*.givolume, textures/cubemaps/
-    // <base>[_N].ktx2 + the .cubemanifest) landed next to the exe
-    // instead of the project (and the project-relative resolution below
-    // never saw them (the "cubemap probe preview not drawn in the
-    // editor" report — the probes bake fine, they just surface in the
-    // wrong tree). A RELATIVE marker (at 0) resolves against the
-    // project root when one is open (the tour records project-space
-    // sources; the project owns the content tree), else the CWD like
-    // before.
+    // The current stage adapters use project-root-mounted VFS keys
+    // ("content/models/..."), but authored content paths may be
+    // content-relative ("models/..."). Resolve the two domains explicitly.
+    // No substring search and no editor CWD dependence for project assets.
     std::string contentDir, inVfs;
     {
+        namespace fs = std::filesystem;
         const std::string identity = !m_gltfHostPath.empty() ? m_gltfHostPath : m_gltfPath;
-        std::string posix = identity;
-        for (char& c : posix)
-            if (c == '\\')
-                c = '/';
-        {
-            const std::string marker = "content/";
-            const size_t at = posix.find(marker);
-            if (at != std::string::npos && !identity.empty()) {
-                // contentDir = parent of "content/" so VFS mount works.
-                std::string parentPath =
-                    (at > 0) ? posix.substr(0, at)
-                             : (m_projectRoot.empty() ? std::string(".") : m_projectRoot);
-                contentDir = std::filesystem::absolute(parentPath).string();
-                inVfs = posix.substr(at); // "content/models/..."
-            } else {
-                // Fallback: glTF host path's parent directory.
-                contentDir =
-                    std::filesystem::absolute(std::filesystem::path(m_gltfHostPath).parent_path())
-                        .string();
-                inVfs = std::filesystem::path(m_gltfHostPath).filename().string();
+        if (!m_projectRoot.empty()) {
+            smvk::project::ResolvedProjectResource resource;
+            std::string pathError;
+            if (!smvk::project::ResolveProjectResource(
+                    m_projectRoot, identity, resource, pathError)) {
+                Log("Cook: cannot resolve project asset: " + pathError);
+                return;
             }
+            contentDir = resource.stageRoot;
+            inVfs = resource.projectVfs;
+        } else {
+            // Legacy non-project sessions: an absolute host path chooses
+            // its parent as the mount. No implicit "content/" substring.
+            if (identity.empty()) {
+                Log("Cook: no source asset path.");
+                return;
+            }
+            const fs::path host = fs::absolute(fs::path(identity)).lexically_normal();
+            contentDir = host.parent_path().generic_string();
+            inVfs = host.filename().generic_string();
         }
-        // No trailing separators (but keep filesystem roots like
-        // "F:\" intact): a trailing backslash would escape the closing
-        // quote when this rides the cooker command line (..."F:\proj\"
-        // is a broken argument).
-        while (contentDir.size() > 3 && (contentDir.back() == '\\' || contentDir.back() == '/'))
+        // Trim trailing separators without damaging a filesystem root.
+        const fs::path rootPath(contentDir);
+        while (contentDir.size() > rootPath.root_path().generic_string().size() &&
+               !contentDir.empty() &&
+               (contentDir.back() == '/' || contentDir.back() == '\\'))
             contentDir.pop_back();
     }
     CookSettings cook = m_cook;

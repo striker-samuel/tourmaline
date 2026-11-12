@@ -426,7 +426,13 @@ class WorldSynchronizer {
                 std::construct_at(scratchMeshes + meshCount++, MeshSourceEntry{record.mesh, item.mesh});
                 record.globalModel = tour::scene::GlobalTransformDouble(world.scene, item.node);
                 record.material = item.material; // interim World index
-                record.flags = static_cast<uint32_t>(item.flags);
+                // Closeup fades need a discarding MASK depth pass, even if the
+                // authored material is opaque. The FS applies the distance
+                // factor every frame, so no per-camera CPU publication is
+                // required for the fade band.
+                record.flags = WithCloseupDitherRasterFlags(
+                    static_cast<uint32_t>(item.flags),
+                    tour::scene::IsDitherCloseupNode(world.scene, int(item.node)));
                 // Per-instance pipeline classification, independent of
                 // mesh sharing. Keep legacy admission until both raster
                 // and depth PSO bins are wired end-to-end.

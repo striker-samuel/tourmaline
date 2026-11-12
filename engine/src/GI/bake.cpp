@@ -1005,7 +1005,7 @@ namespace {
 // identical trace scenes through either path (the bake-parity contract
 // the editor's layout optimizer and a future live bake both rest on).
 //
-// MeshFn  (node, meshIdx, stale) -> const StaticMeshUpload*  (stale=true
+// MeshFn  (node, meshIdx, stale) -> const MeshData*  (stale=true
 //   on a dead handle: a cook-mode world that has lost its cluster).
 // MatFn   (node, matIdx)         -> const Material*
 // LightFn (node, lightIdx)       -> const SceneLight*
@@ -1169,7 +1169,7 @@ void AssembleTraceScene(const ::Scene& scene,
     struct NodeGeo {
         uint32_t node;
         uint32_t materialIdx;
-        const StaticMeshUpload* upload;
+        const MeshData* upload;
         glm::mat4 global;
     };
     std::vector<NodeGeo> geos;
@@ -1177,7 +1177,7 @@ void AssembleTraceScene(const ::Scene& scene,
     for (const MeshRow& row : scene.tables.meshes) {
         const NodeId node = row.node;
         bool stale = false;
-        const StaticMeshUpload* upload = meshAt(node, row.mesh, stale);
+        const MeshData* upload = meshAt(node, row.mesh, stale);
         if (stale) {
             err = "BuildTraceScene: stale mesh handle";
             return;
@@ -1250,7 +1250,7 @@ void AssembleTraceScene(const ::Scene& scene,
         const glm::mat3 normalMatrix = opts.retainVertexNormals
                                            ? glm::transpose(glm::inverse(glm::mat3(g.global)))
                                            : glm::mat3(1.0f);
-        for (const ImportStaticVertex& v : g.upload->vertices) {
+        for (const MeshVertex& v : g.upload->vertices) {
             const glm::vec4 wp = g.global * glm::vec4(v.pos, 1.0f);
             out.positions.push_back(glm::vec3(wp));
             if (opts.retainVertexNormals) {
@@ -1303,7 +1303,7 @@ void BuildTraceSceneFromCluster(Cluster& cluster,
         opts,
         out,
         err,
-        [&cluster](uint32_t, uint32_t meshIdx, bool& stale) -> const StaticMeshUpload* {
+        [&cluster](uint32_t, uint32_t meshIdx, bool& stale) -> const MeshData* {
             const ClusterStaticMeshHandle h = cluster.staticMeshes.getHandle(meshIdx);
             if (!h.valid()) {
                 stale = true;
@@ -1341,7 +1341,7 @@ void ExtractTraceSceneFromWorld(World& world,
         opts,
         out,
         err,
-        [&world](uint32_t, uint32_t meshIdx, bool& stale) -> const StaticMeshUpload* {
+        [&world](uint32_t, uint32_t meshIdx, bool& stale) -> const MeshData* {
             // The merged world's LOCATION table: mesh slots index
             // world.meshLocations, each resolving to the owning cluster
             // + its retained CPU upload (the editor's picking mirror -

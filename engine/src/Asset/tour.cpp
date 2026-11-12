@@ -16,6 +16,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iterator>
+#include <limits>
 #include <random>
 #include <regex>
 #include <set>
@@ -218,6 +219,14 @@ static bool IsLogicalNodeVerb(Verb v) {
 }
 
 static void WriteCommandLine(std::ostream& f, const Command& c, const char* indent) {
+    // The GI bake unit hash folds the authored OBB's full float matrix
+    // bitwise. Default stream precision (6 significant digits) loses
+    // float bits at SaveTour, so the pak's replayed-volume hash differed
+    // from the first bake. Emit all GI-volume float operands with enough
+    // digits to round-trip binary32 geometry and double scalar attributes.
+    const auto previousPrecision = f.precision();
+    if (c.verb == Verb::CreateGiVolume || c.verb == Verb::SetGiVolumeAttr)
+        f << std::setprecision(std::numeric_limits<double>::max_digits10);
     f << indent;
     switch (c.verb) {
     case Verb::Rename:
@@ -728,6 +737,7 @@ static void WriteCommandLine(std::ostream& f, const Command& c, const char* inde
     if (!c.name.empty() && !IsGenericNodeVerb(c.verb))
         f << " // " << c.name;
     f << ";\n";
+    f.precision(previousPrecision);
 }
 
 } // namespace
@@ -5434,7 +5444,7 @@ bool ApplyTourToCluster(Cluster& cluster,
                 const uint32_t packed = tx | (tz << 16);
                 if (!state.dirty.empty() && !state.dirty.contains(packed))
                     continue;
-                smvk::StaticMeshUpload upload;
+                smvk::MeshData upload;
                 if (!smvk::placement::BuildTerrainTileUpload(state.data, tx, tz, upload)) {
                     if (strict) {
                         if (err)
@@ -5445,7 +5455,7 @@ bool ApplyTourToCluster(Cluster& cluster,
                          std::to_string(tz) + ")");
                     continue;
                 }
-                const ClusterStaticMeshHandle mh = cluster.UploadStaticMesh(upload);
+                const ClusterStaticMeshHandle mh = cluster.UploadMesh(upload);
                 if (!mh.valid()) {
                     if (strict) {
                         if (err)

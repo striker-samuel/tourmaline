@@ -69,16 +69,21 @@ bool ProcessAlive(unsigned long long pid) {
 
 } // namespace
 
+#include <Engine/App/cluster.h>
+#include <Engine/App/world.h>
+#include <Engine/Asset/asset_registry.h>
 #include <Engine/Asset/appmanifest.h>
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Asset/sdf.h>
+#include <Engine/Asset/mesh_preparation_policy.h>
 #include <Engine/Asset/tour.h>
 
 #include <artifact_cache/artifact_cache.h>
 #include <artifact_cache/assetdb.h>
 
 #include <gltf_import/asset_export.h>
+#include <gltf_import/tour_world.h>
 #include <gltf_import/source_formats.h>
 
 #include <project_pipeline/import_pipeline.h>
@@ -267,7 +272,9 @@ class SubprocessStageAdapter final : public StageAdapter {
                          "--cubemap",
                          a.cubemap ? "on" : "off",
                          "--lightmap",
-                         a.lightmap ? "on" : "off"},
+                         a.lightmap ? "on" : "off",
+                         "--lods",
+                         a.lods ? "on" : "off"},
                         err);
     }
     int GiBaker(const GiBakerStageArgs& a, std::string& err) override {
@@ -440,7 +447,74 @@ bool RefreshPlanImports(const Project& project,
 // after any Cook writeback and before pak assembly. Each geometry family
 // owns one sibling .geometry.sdf, containing all base primitives (not the
 // LOD chain). Re-running the recipe deterministically replaces the sibling.
-static bool BakePlanSdfs(const Project& project, const BuildPlan& plan, std::string& err) {
+static bool BakePlanSdfs(const Project& project,
+                         const BuildPlan& plan,
+                         const BuildPlanOptions& options,
+                         std::string& err) {
+    // Build each authoritative scene once, AFTER Cook, with the same
+    // references and .tour replay used by the cooker. This captures
+    // edited scale, reparenting, instancing and deleted scene nodes.
+    // Key by geometry family + fragment because SDF payloads remain
+    // mesh-local and shared across all scenes using that family.
+    std::set<std::string> eligibleSceneMeshes;
+    auto canonicalFamily = [](std::string file) {
+        for (char& c : file)
+            if (c == '\\') c = '/';
+        fs::path p(file);
+        p.replace_extension(".geometry");
+        file = p.lexically_normal().generic_string();
+        if (file.rfind("content/", 0) == 0)
+            file.erase(0, 8);
+        return file;
+    };
+    for (const PlanPak& pak : plan.paks) {
+        if (pak.scene.empty())
+            continue;
+        const fs::path tourAbs = options.sceneSnapshot.empty()
+                                     ? fs::path(project.root) / fs::path(pak.scene)
+                                     : fs::path(options.sceneSnapshot);
+        smvk::tour::Doc doc;
+        std::vector<std::string> warnings;
+        if (!smvk::tour::LoadTour(tourAbs.generic_string(), doc, err, &warnings))
+            return false;
+        tourworld::BuildOptions build;
+        build.contentDir = project.root;
+        build.meshOpt.enabled = false;
+        build.meshOpt.generateLods = false;
+        build.meshlets.enabled = false;
+        auto replay = tourworld::BuildWorldFromDoc(doc, build, warnings, err);
+        if (!replay) {
+            err = "SDF scene replay failed (" + pak.scene + "): " + err;
+            return false;
+        }
+        for (const auto& owner : replay->world->clusters) {
+            auto& scene = owner->scene;
+            MarkAllRootsChanged(scene);
+            recalculateGlobalTransforms(scene);
+            for (const MeshRow& row : scene.tables.meshes) {
+                if (row.node >= scene.globalTransform.size())
+                    continue;
+                const auto handle = owner->staticMeshes.getHandle(row.mesh);
+                if (!handle.valid())
+                    continue;
+                const smvk::StringViewT uri = owner->GetMeshUri(handle);
+                if (uri.empty())
+                    continue;
+                const auto parts = smvk::SplitAssetUri(uri);
+                if (parts.second.empty())
+                    continue;
+                const auto* upload = owner->GetRetainedUpload(handle);
+                if (!upload || !smvk::EligibleForSpatialDerivatives(
+                                   upload->aabbMin, upload->aabbMax,
+                                   upload->indices.size(), scene.globalTransform[row.node],
+                                   !upload->skin.empty()))
+                    continue;
+                eligibleSceneMeshes.insert(canonicalFamily(parts.first.Str()) + "#" +
+                                           parts.second.Str());
+            }
+        }
+    }
+
     std::set<std::string> families;
     for (const PlanPak& pak : plan.paks)
         for (const PlanAsset& a : pak.assets)
@@ -456,12 +530,56 @@ static bool BakePlanSdfs(const Project& project, const BuildPlan& plan, std::str
             err = "SDF cannot read '" + name + "': " + err;
             return false;
         }
+        // Gather effective asset-space transforms for every geometry instance.
+        // The same mesh-local grid is reused for every placement; one large
+        // instance makes it worthwhile to bake the shared SDF.
+        std::vector<glm::mat4> globals(mesh.nodes.size(), glm::mat4(1.0f));
+        std::vector<uint8_t> computed(mesh.nodes.size(), 0);
+        auto globalFor = [&](auto&& self, size_t node) -> glm::mat4 {
+            if (node >= mesh.nodes.size()) return glm::mat4(1.0f);
+            if (computed[node] == 2) return globals[node];
+            if (computed[node] == 1) return glm::mat4(1.0f); // malformed cycle
+            computed[node] = 1;
+            const int32_t parent = mesh.nodes[node].parent;
+            const glm::mat4 local = node < mesh.locals.size() ? mesh.locals[node] : glm::mat4(1.0f);
+            globals[node] = (parent >= 0 && size_t(parent) < mesh.nodes.size()
+                                 ? self(self, size_t(parent)) : glm::mat4(1.0f)) * local;
+            computed[node] = 2;
+            return globals[node];
+        };
+        for (size_t node = 0; node < mesh.nodes.size(); ++node)
+            globalFor(globalFor, node);
+        std::vector<uint8_t> eligible(mesh.geometry.size(), 0);
+        // Scene-owned families must qualify against the FINAL .tour
+        // transforms, not the original source-node transforms.
+        const bool sceneOwned = [&]() {
+            for (const PlanPak& pak : plan.paks)
+                if (!pak.scene.empty())
+                    for (const std::string& artifact : pak.sceneArtifacts)
+                        if (canonicalFamily(artifact) == canonicalFamily(name))
+                            return true;
+            return false;
+        }();
+        for (size_t gi = 0; gi < mesh.geometry.size(); ++gi)
+            if (eligibleSceneMeshes.count(canonicalFamily(name) + "#" +
+                                          mesh.geometry[gi].uriFragment))
+                eligible[gi] = 1;
+        if (!sceneOwned) for (const auto& instance : mesh.instances) {
+            if (instance.geometry >= mesh.geometry.size() || instance.node >= globals.size())
+                continue;
+            const auto& geo = mesh.geometry[instance.geometry];
+            if (smvk::EligibleForSpatialDerivatives(geo.aabbMin, geo.aabbMax,
+                                                     geo.indices.size(), globals[instance.node],
+                                                     !geo.skin.empty()))
+                eligible[instance.geometry] = 1;
+        }
         // (::tour::asset — the leading :: is required inside smvk::project,
         // where tour.h's `namespace tour = ::tour::asset` alias shadows the
         // global tour namespace).
         ::tour::asset::SdfAsset baked;
-        for (const auto& geometry : mesh.geometry) {
-            if (geometry.indices.empty() || geometry.positions.empty())
+        for (size_t gi = 0; gi < mesh.geometry.size(); ++gi) {
+            const auto& geometry = mesh.geometry[gi];
+            if (!eligible[gi] || geometry.indices.empty() || geometry.positions.empty())
                 continue;
             std::vector<glm::vec3> positions;
             positions.reserve(geometry.positions.size());
@@ -643,6 +761,7 @@ bool ExecuteBuildPlan(const Project& project,
             stage.tour = tourAbs.lexically_normal().generic_string();
             stage.cubemap = pak.bakeCubemaps;
             stage.lightmap = false; // the deprecated path stays off
+            stage.lods = plan.importLods;
             stage.registryDir = options.registryDir;
             const int rc = adapter.Cook(stage, err);
             if (rc != 0) {
@@ -665,7 +784,7 @@ bool ExecuteBuildPlan(const Project& project,
     // ---- 2.25) optional mesh-local SDF bake -----------------------------
     // Sidecars belong to their .geometry family, never to a scene or
     // runtime mutable mesh. The original render meshes stay unchanged.
-    if (plan.bakeSdf && !BakePlanSdfs(project, plan, err))
+    if (plan.bakeSdf && !BakePlanSdfs(project, plan, options, err))
         return false;
 
     // ---- 2.5) the pre-stage catalog ensure --------------------------------

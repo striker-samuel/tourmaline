@@ -19,10 +19,10 @@
 #include <Engine/Rendergraph/rendergraph.h>
 
 namespace tour {
-struct StaticMeshUpload;
+struct MeshData;
 }
 namespace smvk {
-using ::tour::StaticMeshUpload;
+using ::tour::MeshData;
 struct CookedMeshlets;
 } // namespace smvk
 
@@ -102,7 +102,7 @@ struct StaticGeometry {
 // Registers one mesh's retained upload as clusters/meshlets (runtime path).
 // Returns the mesh index, or UINT32_MAX on failure.
 uint32_t RegisterMeshFromUpload(StaticGeometry& s,
-                                const StaticMeshUpload& upload,
+                                const MeshData& upload,
                                 uint32_t baseVertex);
 
 // Registers a cooked meshlet set as clusters/meshlets (pak path). Returns the
