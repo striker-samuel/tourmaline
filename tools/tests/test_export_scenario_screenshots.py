@@ -87,9 +87,9 @@ class ExportScenarioSnapshotsTests(unittest.TestCase):
             args = exporter.parser().parse_args(["--app", "App", "--output", str(root)])
             frames = [({"kind": "key"}, {"tick": 0})]
             with mock.patch.object(exporter.toursnapshot, "run_record",
-                                   return_value={"status": "ok", "frames": 1}), \\
+                                   return_value={"status": "ok", "frames": 1}), \
                  mock.patch.object(exporter.toursnapshot.codec, "reconstruct",
-                                   return_value=frames), \\
+                                   return_value=frames), \
                  mock.patch.object(exporter.os, "replace", side_effect=OSError("rename failed")):
                 with self.assertRaisesRegex(OSError, "rename failed"):
                     exporter.run_scenario(args, {**self.scenario(), "frames": 1})
