@@ -1471,12 +1471,12 @@ void TestGiVolumePrecisionRoundTrip() {
         Check(false, "GI volume precise command count");
         return;
     }
-    Check(reloaded.commands[0].vec == create.vec &&
-              reloaded.commands[0].svec == create.svec &&
-              reloaded.commands[0].vec4 == create.vec4,
+    Check(glm::all(glm::equal(reloaded.commands[0].vec, create.vec)) &&
+              glm::all(glm::equal(reloaded.commands[0].svec, create.svec)) &&
+              glm::all(glm::equal(reloaded.commands[0].vec4, create.vec4)),
           "GI volume create OBB and settings bit-exact roundtrip");
-    Check(reloaded.commands[1].vec4 == size.vec4 &&
-              reloaded.commands[2].vec4 == rotation.vec4,
+    Check(glm::all(glm::equal(reloaded.commands[1].vec4, size.vec4)) &&
+              glm::all(glm::equal(reloaded.commands[2].vec4, rotation.vec4)),
           "GI volume size/rotation attr bit-exact roundtrip");
 }
 
