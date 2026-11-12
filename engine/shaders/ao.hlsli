@@ -111,7 +111,14 @@ float3 AoOctDecode(float2 oct01)
 // surface it was computed for even when the depth reps straddle.
 float AoNormalWeight(float3 tapN, float3 centerN)
 {
-    return pow(saturate(dot(tapN, centerN)), 4.0f);
+    // x^4 (the "pow4" bilateral normal term): the multiply chain is the
+    // exact same polynomial but skips the generic pow's log2/exp2 SFU
+    // pair. Called once per blur tap (5x5) and once per compose tap
+    // (2x2), so the SFU pressure is real even though the tap loads are
+    // the latency floor.
+    float d = saturate(dot(tapN, centerN));
+    float d2 = d * d;
+    return d2 * d2;
 }
 
 // Guarded/sky block output: unoccluded, reserved sentinel distance, and a

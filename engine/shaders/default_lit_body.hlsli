@@ -993,13 +993,13 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     {
         float3 color = baseColor + emissive;
         // Fog still applies so unlit cards (e.g. foliage impostors) fade
-        // with the rest of the scene.
-        FrameUniforms frameU = pc.frameUniforms.Get();
-        float viewDistU = length(frameU.cameraPos - IN.worldPos);
-        float fogFU = ComputeFogFactor(viewDistU, IN.worldPos.y, frameU.env);
+        // with the rest of the scene. `frame` is already hoisted at the top
+        // of mainPS — reuse it instead of re-loading the whole struct.
+        float viewDistU = length(frame.cameraPos - IN.worldPos);
+        float fogFU = ComputeFogFactor(viewDistU, IN.worldPos.y, frame.env);
         if (fogFU > 0.0f)
         {
-            float3 fogHdrU = frameU.env.fogColor.rgb * max(frameU.env.fogColor.w, 0.0f);
+            float3 fogHdrU = frame.env.fogColor.rgb * max(frame.env.fogColor.w, 0.0f);
             color = lerp(color, fogHdrU, fogFU);
         }
         // Still apply occlusion? Spec says occlusion not for unlit, but we keep none.
@@ -1283,10 +1283,17 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         const uint2 pix = (uint2) clipPos.xy;
         if (pix.x < (uint) hot.viewportSize.x && pix.y < (uint) hot.viewportSize.y)
         {
+            // Hoist the DS BDA fields too: the per-pixel light loop reads
+            // the tile state, the light list and the visibility slots, and
+            // every inline frame.ds*.Get() re-loads its 64-bit address out
+            // of `frame` first. Same reason fpLightsBuf is hoisted above.
+            GPU_PTR(DsTileStateBuffer) dsTileState = frame.dsTileState;
+            GPU_PTR(DsLightListBuffer) dsLightList = frame.dsLightList;
+            GPU_PTR(DsVisibilityBuffer) dsVisibility = frame.dsVisibility;
             const uint tileIdx = (pix.y >> 3) * hot.dsTileCountX + (pix.x >> 3);
             const uint2 st = uint2(
-                frame.dsTileState.Get().states[tileIdx * 4u],
-                min(frame.dsTileState.Get().states[tileIdx * 4u + 1u],
+                dsTileState.Get().states[tileIdx * 4u],
+                min(dsTileState.Get().states[tileIdx * 4u + 1u],
                     (uint) DS_MAX_LIGHTS_PER_TILE));
             // Pixel index inside the Shadow Tile (phase-4 byte mapping).
             const uint localIdx = (pix.x & 7u) + (pix.y & 7u) * 8u;
@@ -1294,12 +1301,12 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
             {
                 if (st.x + i >= (uint) DS_MAX_LIST_UINTS)
                     break; // saturated/invalid slot: nothing valid follows
-                const uint entry = frame.dsLightList.Get().entries[st.x + i];
+                const uint entry = dsLightList.Get().entries[st.x + i];
                 const uint li = entry & 0x3FFu;
                 const uint slotInfo = entry >> DS_LIGHT_IDX_BITS;
                 float vis = 1.0f;
                 if (slotInfo != DS_SLOT_ALL_LIT)
-                    vis = DsLoadVisibility(frame.dsVisibility, slotInfo, localIdx);
+                    vis = DsLoadVisibility(dsVisibility, slotInfo, localIdx);
                 if (li >= nlights)
                     continue;
                 if ((fpLightsBuf.Get().lights[li].layerMask & IN.lightLayerMask) == 0u)
