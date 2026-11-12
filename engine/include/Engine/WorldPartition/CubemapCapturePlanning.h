@@ -22,6 +22,9 @@ namespace engine::worldpartition {
 struct CubemapCascade {
     float outerRadiusMeters = 64.0f;
     float densityMeters = 2.0f;
+    // 0 inherits volume.maxProbesPerCell. Lets near-detail tiers
+    // receive a larger budget without raising every far-tier cook.
+    uint32_t maxProbesPerCell = 0;
 };
 
 struct CubemapCaptureVolume {
@@ -115,7 +118,9 @@ inline bool PlanCubemapTileCaptures(const CubemapCaptureVolume& volume,
                 opts.maxCellSize = volume.cascades[tier].densityMeters;
                 opts.minCellSize = volume.cascades[tier].densityMeters;
                 opts.maxDepth = volume.maxDepth;
-                opts.maxProbes = volume.maxProbesPerCell;
+                opts.maxProbes = volume.cascades[tier].maxProbesPerCell
+                                     ? volume.cascades[tier].maxProbesPerCell
+                                     : volume.maxProbesPerCell;
                 CubemapTileCaptureSet set{};
                 set.cell = {static_cast<int64_t>(x), static_cast<int64_t>(z)};
                 set.cascade = tier;
