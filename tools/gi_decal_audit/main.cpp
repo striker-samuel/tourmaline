@@ -9,6 +9,17 @@
 //   gi_decal_audit <content-dir> <geometry-vfs-path> [substring]
 //
 // Default substring is "decal" (case-insensitive).
+//
+// NOTE on names: the ALWAYS-RELIABLE output is the alphaMode x castsShadows
+// breakdown (the columns this prints). The name-substring match is a
+// best-effort convenience only: the pak/cook strips NODE names (the offline
+// .geometry build surfaces generic "node<N>" names), and bistro's decal
+// identity lives in the authored MATERIAL name (the .material file name,
+// e.g. bistro.mat42_LMBR_000005f_Decals.material) and on parent GROUP
+// nodes, neither of which the mesh-row walk sees directly. Match the
+// material name via the .material files / the source glTF when the name
+// classification matters; the numeric breakdown here is the authoritative
+// view of what the bake BVH admits.
 #include <Engine/App/cluster.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Scene/scene.h>
@@ -117,13 +128,13 @@ int main(int argc, char** argv) {
     std::vector<std::string> needleNames;
 
     for (const MeshRow& row : scene.tables.meshes) {
-        const std::string name = lower(getNodeName(scene, int(row.node)));
-        const bool isNeedle = name.find(needle) != std::string::npos;
+        const std::string nodeName = lower(getNodeName(scene, int(row.node)));
         ++totalMeshes;
 
         const MaterialRow* matRow = FindMaterial(scene, row.node);
         tour::AlphaMode am = tour::AlphaMode::Opaque;
         bool casts = true;
+        std::string matName;
         if (matRow && matRow->material != 0xFFFFFFFFu) {
             const smvk::ClusterMaterialHandle h = cluster->materials.getHandle(matRow->material);
             if (h.valid()) {
@@ -131,8 +142,16 @@ int main(int argc, char** argv) {
                     am = m->alphaMode;
                     casts = m->castsShadows;
                 }
+                matName = lower(cluster->GetMaterialUri(h).Str());
             }
         }
+        // Names survive TWO ways: the scene-graph node name and the
+        // material URI (the .material file name). The pak/cook strips
+        // NODE names, but the material URI still carries the authored
+        // material name — bistro's decal/ornament classifiers live there
+        // (e.g. "bistro.mat42_LMBR_000005f_Decals.material").
+        const bool isNeedle =
+            nodeName.find(needle) != std::string::npos || matName.find(needle) != std::string::npos;
         // Triangle count: resolve the mesh upload the trace build would use.
         uint64_t tris = 0;
         bool stale = false;
@@ -148,7 +167,7 @@ int main(int argc, char** argv) {
             ++needleMeshes;
             needleTris += tris;
             if (needleNames.size() < 40)
-                needleNames.push_back(getNodeName(scene, int(row.node)) + " [" + modeName(am) +
+                needleNames.push_back((matName.empty() ? nodeName : matName) + " [" + modeName(am) +
                                       (casts ? ", cast" : ", NOcast") + "]");
         }
     }
