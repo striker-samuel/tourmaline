@@ -53,16 +53,71 @@ def _find_mcp() -> str:
     return str(candidates[-1][1])
 
 
-def _rpc(endpoint: str, method: str, params: dict | None = None) -> dict:
-    payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}}
+_session_id: str | None = None
+
+
+def _post(endpoint: str, payload: dict) -> tuple[dict, dict]:
+    """POST a JSON-RPC message; returns (json_body, headers)."""
+    global _session_id
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+        "MCP-Protocol-Version": "2025-06-18",
+    }
+    if _session_id:
+        headers["Mcp-Session-Id"] = _session_id
     req = urllib.request.Request(
         endpoint,
         data=json.dumps(payload).encode("utf-8"),
-        headers={"Content-Type": "application/json", "Accept": "application/json"},
+        headers=headers,
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=60) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+        sid = resp.headers.get("Mcp-Session-Id")
+        if sid:
+            _session_id = sid
+        raw = resp.read().decode("utf-8")
+        body = _parse_body(raw)
+        return body, dict(resp.headers)
+
+
+def _parse_body(raw: str) -> dict:
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        for line in raw.splitlines():
+            s = line.strip()
+            if s.startswith("data:"):
+                try:
+                    parsed = json.loads(s[len("data:"):].strip())
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(parsed, dict) and "jsonrpc" in parsed:
+                    return parsed
+        raise RuntimeError(f"unparseable MCP response: {raw[:200]!r}")
+
+
+def _rpc(endpoint: str, method: str, params: dict | None = None) -> dict:
+    payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}}
+    body, _ = _post(endpoint, payload)
+    return body
+
+
+def _notify(endpoint: str, method: str) -> None:
+    # A JSON-RPC notification has no "id" and expects no response.
+    payload = {"jsonrpc": "2.0", "method": method, "params": {}}
+    try:
+        _post(endpoint, payload)
+    except urllib.error.HTTPError:
+        pass  # the initialized handshake is advisory; ignore a strict server
+
+
+def _initialize(endpoint: str) -> None:
+    _rpc(endpoint, "initialize", {
+        "protocolVersion": "2025-06-18",
+        "capabilities": {},
+        "clientInfo": {"name": "tourmaline-nsight-mcp", "version": "1.0"},
+    })
 
 
 def cmd_locate(args: argparse.Namespace) -> int:
@@ -88,11 +143,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
 def cmd_list_tools(args: argparse.Namespace) -> int:
     endpoint = f"http://127.0.0.1:{args.port}{args.endpoint}"
-    _rpc(endpoint, "initialize", {
-        "protocolVersion": "2025-03-26",
-        "capabilities": {},
-        "clientInfo": {"name": "tourmaline-nsight-mcp", "version": "1.0"},
-    })
+    _initialize(endpoint)
     result = _rpc(endpoint, "tools/list", {})
     tools = result.get("result", {}).get("tools", [])
     for t in tools:
@@ -109,11 +160,7 @@ def cmd_inspect(args: argparse.Namespace) -> int:
     )
     # The Workflow profile advertises an offline-inspection tool; discover its
     # exact name rather than hardcoding the catalog.
-    _rpc(endpoint, "initialize", {
-        "protocolVersion": "2025-03-26",
-        "capabilities": {},
-        "clientInfo": {"name": "tourmaline-nsight-mcp", "version": "1.0"},
-    })
+    _initialize(endpoint)
     tools = _rpc(endpoint, "tools/list", {}).get("result", {}).get("tools", [])
     inspect_tool = next(
         (t for t in tools if "inspect" in t.get("name", "").lower() or "capture" in t.get("name", "").lower()),
