@@ -16,6 +16,7 @@
 //   hRes                                        : 1024
 //   packing : "rg16"
 
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -243,8 +244,10 @@ inline bool ParseString(std::string_view s, size_t& p, std::string& out) {
         err = "terrain.json: missing required key";
         return false;
     }
-    if (range <= 0.0 || worldSize <= 0.0 || hTileSize <= 0.0 || gBlock <= 0.0) {
-        err = "terrain.json: range/worldSize/hTileSize/gBlock must be > 0";
+    if (!std::isfinite(baseY) || !std::isfinite(range) || !std::isfinite(ox) ||
+        !std::isfinite(oz) || !(range > 0.0) || worldSize != 4096.0 ||
+        hTileSize != 1024.0 || gBlock != 256.0) {
+        err = "terrain.json: v1 requires finite heights, positive range and fixed 4096/1024/256 layout";
         return false;
     }
     // Layout invariants (v1): the cooked binary format carries EXACTLY
@@ -326,8 +329,10 @@ inline void SerializeTerrainMeta(const TerrainMeta& meta,
     meta.gBlock = getF(32);
     meta.hRes = 1024;
     meta.packingRg16 = true;
-    if (!(meta.range > 0.0f) || !(meta.worldSize > 0.0f) || !(meta.hTileSize > 0.0f) ||
-        !(meta.gBlock > 0.0f))
+    if (!std::isfinite(meta.baseY) || !std::isfinite(meta.range) ||
+        !std::isfinite(meta.originX) || !std::isfinite(meta.originZ) ||
+        !(meta.range > 0.0f) || meta.worldSize != 4096.0f ||
+        meta.hTileSize != 1024.0f || meta.gBlock != 256.0f)
         return false;
     // Layout invariants (v1) — the SAME pair the JSON parser enforces:
     // the blob carries exactly 16 tile min/max entries (a 4x4 H-tile
@@ -342,7 +347,8 @@ inline void SerializeTerrainMeta(const TerrainMeta& meta,
     for (int i = 0; i < 16; ++i) {
         tileMinMax[i][0] = getF(36 + size_t(i) * 8);
         tileMinMax[i][1] = getF(40 + size_t(i) * 8);
-        if (!(tileMinMax[i][1] >= tileMinMax[i][0]))
+        if (!std::isfinite(tileMinMax[i][0]) || !std::isfinite(tileMinMax[i][1]) ||
+            !(tileMinMax[i][1] >= tileMinMax[i][0]))
             return false;
     }
     return true;
