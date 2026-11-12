@@ -1576,6 +1576,14 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
                 }
             }
         }
+        // Explicit Tourmaline cloth extension; leave ordinary glTF PBR untouched.
+        if (auto it = gm.extensions.find("SMVK_materials_clothSheen");
+            it != gm.extensions.end() && it->second.IsObject()) {
+            const auto& obj = it->second.Get<tinygltf::Value::Object>();
+            if (auto f = obj.find("enabled"); f != obj.end() && f->second.IsBool())
+                m.info.clothSheen = f->second.Get<bool>();
+        }
+
         // KHR_materials_transmission -> BLEND glass (the engine has no
         // transmission path). Metallic forced dielectric; alpha derives
         // from (1 - transmissionFactor); double-sided so panes read from
