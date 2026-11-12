@@ -4618,7 +4618,7 @@ void TestProjectResourcePaths() {
               err.find("duplicate") != std::string::npos,
           "resourcepath.duplicate-content-prefix-refused");
     Check(!resolve("../outside.geometry") &&
-              err.find("escapes") != std::string::npos,
+              err.find("traversal") != std::string::npos,
           "resourcepath.traversal-refused");
     Check(!resolve((root.parent_path() / "outside.geometry").generic_string()) &&
               err.find("escapes") != std::string::npos,
