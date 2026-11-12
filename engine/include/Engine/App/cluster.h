@@ -110,8 +110,8 @@ struct Cluster {
     smvk::Pool<SceneCamera, SceneCamera> cameras;
     smvk::Pool<SceneDecal, SceneDecal> decals;
 
-    ClusterStaticMeshHandle UploadStaticMesh(const StaticMeshUpload& data);
-    // Batched UploadStaticMesh: identical semantics per entry (heap
+    ClusterStaticMeshHandle UploadMesh(const MeshData& data);
+    // Batched UploadMesh: identical semantics per entry (heap
     // range allocation, pool entry, uri/lod registration happen at the
     // CALLER), but the AoS->SoA conversion packs ONE blob per heap and
     // the GPU upload is three BulkCopyBuffer calls (table-driven; the
@@ -120,8 +120,8 @@ struct Cluster {
     // Handles return in input order. All-or-nothing: {} when ANY entry
     // fails (degenerate mesh, heap full) — nothing is staged to the GPU
     // in that case. Cook mode / retainUploads mirror the single path.
-    std::vector<ClusterStaticMeshHandle> UploadStaticMeshes(
-        std::span<const StaticMeshUpload> uploads);
+    std::vector<ClusterStaticMeshHandle> UploadMeshes(
+        std::span<const MeshData> uploads);
     // Direct-addressed batched upload (v4 fast-load path): the sources
     // are packed-SoA stream subranges of ONE blob (`content` — the
     // loaded pak image) addressed by byte offsets, so the upload is
@@ -131,7 +131,7 @@ struct Cluster {
     // per-vertex CPU conversion, no intermediate packed vectors. The
     // caller attaches cooked meta (sphere, lod, lightmap chunk,
     // meshlets, uri) per handle afterwards. All-or-nothing like
-    // UploadStaticMeshes; cook mode is a programming error (the
+    // UploadMeshes; cook mode is a programming error (the
     // deserializer only calls this with a GPU context).
     //
     // The carve + copy core lives in the SHARED GEOMETRY UPLOAD
@@ -222,13 +222,13 @@ struct Cluster {
         bakePayloads_.erase(vfsPath);
     }
 
-    // Cook support: when enabled, UploadStaticMesh keeps a CPU-side copy
+    // Cook support: when enabled, UploadMesh keeps a CPU-side copy
     // of every upload keyed by pool index so the pak cooker can embed
     // full vertex/index payloads (runtime Clusters never see this cost:
     // the default is off, and GPU pools hold no CPU vertex data after
     // upload). DestroyMesh drops the retained copy.
     void SetRetainUploads(bool retain);
-    const StaticMeshUpload* GetRetainedUpload(ClusterStaticMeshHandle handle) const;
+    const MeshData* GetRetainedUpload(ClusterStaticMeshHandle handle) const;
 
     // ------------------------------------------------------------------
     // Skeletal skin (the Northlight data path, touranim.h + mesh.h).
@@ -270,7 +270,7 @@ struct Cluster {
     [[nodiscard]] const std::vector<PackedSkinInfluences>* GetMeshSkinStream(
         ClusterStaticMeshHandle handle) const;
     // The RETAINED upload's skin stream (or null). The import post pass
-    // reads it back: the stream attached before OptimizeStaticMeshUpload
+    // reads it back: the stream attached before OptimizeMeshData
     // rode the vertex remap, so it is already in final vertex order.
     // Null when uploads are not retained or the mesh carries no skin.
     [[nodiscard]] const std::vector<PackedSkinInfluences>* GetRetainedSkinStream(
@@ -382,7 +382,7 @@ struct Cluster {
     bool poseExternallyDriven = false;
 
     // GPU-free offline mode (pak cooker without a Vulkan device).
-    // UploadStaticMesh records CPU geometry + retained uploads only
+    // UploadMesh records CPU geometry + retained uploads only
     // (no VMA/streamer touch); textures mint fake RHI handles whose
     // indices are stable offline ids (see Handle::Mint). The offline cluster
     // is serializable and nothing else: never register it with a World
@@ -640,7 +640,7 @@ struct Cluster {
     std::vector<std::pair<ClusterCameraHandle, smvk::StringViewT>> cameraUriLedger_;
     std::vector<std::pair<ClusterDecalHandle, smvk::StringViewT>> decalUriLedger_;
     bool retainUploads_ = false;
-    std::unordered_map<uint32_t, StaticMeshUpload> retainedUploads_;
+    std::unordered_map<uint32_t, MeshData> retainedUploads_;
     // Pak-image pin for borrowed texture payloads (see PinPakImage).
     std::shared_ptr<const std::vector<uint8_t>> pakImagePin_;
     // Bake payloads by VFS path (see the public block): borrowed spans
