@@ -189,6 +189,14 @@ smvk::ShaderProgram& WorldRenderer::MainLitProgramFor(uint32_t materialId) {
                                           true,
                                           m_hybridProgramGi,
                                           m_hybridProgramGiStd);
+                if (m_giFixedEnvVisArmed)
+                    return SpecProgramFor(m_resources.mainProgramGiStd[gv],
+                                          tour::kSpecGiFixedEnvVis,
+                                          m_giOctahedralArmed ? tour::kSpecGiOctahedral : 0u,
+                                          gv,
+                                          true,
+                                          m_fixedEnvVisProgramGi,
+                                          m_fixedEnvVisProgramGiStd);
                 if (m_giVolumeStatsArmed)
                     return SpecProgramFor(m_resources.mainProgramGiStd[gv],
                                           tour::kSpecGiStats,
@@ -231,6 +239,14 @@ smvk::ShaderProgram& WorldRenderer::MainLitProgramFor(uint32_t materialId) {
                                       false,
                                       m_hybridProgramGi,
                                       m_hybridProgramGiStd);
+            if (m_giFixedEnvVisArmed)
+                return SpecProgramFor(gi,
+                                      tour::kSpecGiFixedEnvVis,
+                                      m_giOctahedralArmed ? tour::kSpecGiOctahedral : 0u,
+                                      gv,
+                                      false,
+                                      m_fixedEnvVisProgramGi,
+                                      m_fixedEnvVisProgramGiStd);
             if (m_giVolumeStatsArmed)
                 return SpecProgramFor(gi,
                                       tour::kSpecGiStats,
@@ -1490,6 +1506,14 @@ bool WorldRenderer::onAttach() {
     if (const char* hybridEnv = std::getenv("TOURMALINE_GI_HYBRID")) {
         if (std::atoi(hybridEnv) == 1)
             m_giHybridArmed = true;
+    }
+    // Fixed-envVis diagnostic: force SpecularOcclusionFromGI to 1 in the GI
+    // volume paths, isolating the occlusion coupling from the specular
+    // representation. Composes with the octahedral flag.
+    //   TOURMALINE_GI_FIXED_ENVVIS=1
+    if (const char* fixedEnvVis = std::getenv("TOURMALINE_GI_FIXED_ENVVIS")) {
+        if (std::atoi(fixedEnvVis) == 1)
+            m_giFixedEnvVisArmed = true;
     }
     // Linear-HDR diffuse-irradiance capture: the lit pass writes E (GI +
     // sky fallback, before albedo) to outEnvSpec, read back after the

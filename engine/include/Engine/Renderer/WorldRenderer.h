@@ -4113,6 +4113,11 @@ class WorldRenderer : public IRenderer {
     bool m_giHybridArmed = false;
     smvk::ShaderProgram m_hybridProgramGi[4];
     smvk::ShaderProgram m_hybridProgramGiStd[4];
+    // Fixed-envVis diagnostic twins (giFixedEnvVisCompile=1, optionally +
+    // giOctaCompile=1): forged + selected when TOURMALINE_GI_FIXED_ENVVIS=1.
+    bool m_giFixedEnvVisArmed = false;
+    smvk::ShaderProgram m_fixedEnvVisProgramGi[4];
+    smvk::ShaderProgram m_fixedEnvVisProgramGiStd[4];
     // Linear-HDR diffuse-irradiance capture twins (giExportIrradianceCompile
     // =1, optionally + giOctaCompile=1): forged + selected when
     // TOURMALINE_GI_EXPORT_IRRADIANCE=1.

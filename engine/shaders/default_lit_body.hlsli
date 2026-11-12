@@ -1556,6 +1556,8 @@ float envVis = 1.0f;
             giSource = 4u;
             bakedE = giE;
             envVis = SpecularOcclusionFromGI(giE, giScale, N, frame.env, shadingRoughness);
+            if (giFixedEnvVisCompile != 0u)
+                envVis = 1.0;
             ambientSpec = envSpec * envVis;
             if (!isBlendMat)
                 ambient += kD * baseColor * (giE / PI) * occlusion;
@@ -1592,6 +1594,8 @@ float envVis = 1.0f;
             giSource = 4u;
             bakedE = giE;
             envVis = SpecularOcclusionFromGI(giE, giScale, N, frame.env, shadingRoughness);
+            if (giFixedEnvVisCompile != 0u)
+                envVis = 1.0;
             ambientSpec = envSpec * envVis;
             if (!isBlendMat)
                 ambient += kD * baseColor * (giE / PI) * occlusion;
@@ -1628,6 +1632,8 @@ float envVis = 1.0f;
             giSource = 4u;
             bakedE = giE;
             envVis = SpecularOcclusionFromGI(giE, giScale, N, frame.env, shadingRoughness);
+            if (giFixedEnvVisCompile != 0u)
+                envVis = 1.0;
             ambientSpec = envSpec * envVis;
             if (!isBlendMat)
                 ambient += kD * baseColor * (giE / PI) * occlusion;
