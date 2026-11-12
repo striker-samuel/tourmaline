@@ -104,6 +104,7 @@
 #include <Engine/Asset/bake_asset.h> // bake-asset identity (bake GUIDs)
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/mesh_optimizer.h>
+#include <Engine/Asset/mesh_preparation_policy.h>
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Asset/tour.h>
@@ -3894,7 +3895,7 @@ bool WriteCookedArtifactsBack(const Args& args,
             if (lod.lodIndex < 1)
                 continue;
             auto h = c.FindMeshByUri(uriV);
-            if (!h.has_value() || !h->valid())
+            if (!h.has_value() || !h->valid() || !c.staticMeshes.get(*h))
                 continue;
             MeshRef r;
             r.cluster = &c;
@@ -3963,6 +3964,12 @@ bool WriteCookedArtifactsBack(const Args& args,
         }
         if (asset.lodChains.size() < asset.geometry.size())
             asset.lodChains.resize(asset.geometry.size());
+        // On a .tour build, LOD families are re-selected using effective
+        // scene world transforms. Drop the old candidate list first, then
+        // repopulate from the live pool handles (pruned siblings are absent).
+        if (!args.tour.empty() && args.lods)
+            for (auto& chain : asset.lodChains)
+                chain.clear();
         for (const MeshRef& r : refs) {
             smvk::Cluster& c = *r.cluster;
             const smvk::StaticMeshUpload* up = c.GetRetainedUpload(r.handle);
@@ -4729,6 +4736,64 @@ int Run(const CookArgs& c) {
             sceneClusters.push_back(std::move(cluster));
         }
     } // close else block for the artifact path
+    // ---------------------------------------------------------------------------
+    // SCENE-AWARE LOD PREPARATION: imported .geometry contains reusable
+    // candidate siblings. After the authoritative .tour replay, use the
+    // FINAL transformed instance bounds to decide which sibling chains
+    // survive. A source-small mesh enlarged by .tour may acquire a missing
+    // chain here; a source-large prop scaled down by .tour loses its chain.
+    // Persisting the filtered family below prevents stale candidates from
+    // leaking into Pak's separate definition replay.
+    if (haveTour && args.lods && !args.lightmap) {
+        smvk::MeshOptConfig sceneLods = opt;
+        sceneLods.generateLods = true;
+        smvk::MeshletConfig noMeshlets = meshletCfg;
+        noMeshlets.enabled = false;
+        smvk::CookLodSiblingsOptions siblingsOpts;
+        for (auto& owner : sceneClusters) {
+            auto& scene = owner->scene;
+            MarkAllRootsChanged(scene);
+            recalculateGlobalTransforms(scene);
+            std::unordered_set<uint32_t> eligibleMeshes;
+            for (const MeshRow& row : scene.tables.meshes) {
+                if (row.node >= scene.globalTransform.size())
+                    continue;
+                const auto base = owner->staticMeshes.getHandle(row.mesh);
+                if (!base.valid())
+                    continue;
+                const auto* upload = owner->GetRetainedUpload(base);
+                if (upload && smvk::EligibleForSpatialDerivatives(
+                                  upload->aabbMin, upload->aabbMax, upload->indices.size(),
+                                  scene.globalTransform[row.node], !upload->skin.empty()))
+                    eligibleMeshes.insert(row.mesh);
+            }
+            std::vector<smvk::ClusterStaticMeshHandle> unwanted;
+            for (const auto& [uri, lod] : owner->ListMeshLods()) {
+                if (lod.lodIndex == 0) {
+                    const auto base = owner->FindMeshByUri(uri);
+                    if (base && !eligibleMeshes.contains(base->index())) {
+                        smvk::LodInfo single = lod;
+                        single.candidateCount = 1;
+                        owner->RegisterMeshLod(uri, single);
+                    }
+                    continue;
+                }
+                const auto base = owner->FindMeshByUri(smvk::BaseMeshUriForLod(uri));
+                if (base && eligibleMeshes.contains(base->index()))
+                    continue;
+                const auto sibling = owner->FindMeshByUri(uri);
+                if (sibling && owner->staticMeshes.get(*sibling))
+                    unwanted.push_back(*sibling);
+            }
+            for (const auto handle : unwanted)
+                owner->DestroyMesh(handle);
+            if (!smvk::CookLodSiblings(*owner, sceneLods, noMeshlets, siblingsOpts)) {
+                tool::err() << "Scene-aware LOD preparation failed\n";
+                return 1;
+            }
+        }
+    }
+
     // ---------------------------------------------------------------------------
     // IMPORTED-PREPROCESSING VALIDATION: --lods/--meshlets are now
     // REQUIREMENTS against the imported artifacts, not cook operations —
@@ -6870,7 +6935,7 @@ int Run(const CookArgs& c) {
                                   sceneClusters,
                                   wb,
                                   werr,
-                                  /*writeGeometry=*/args.lightmap)) {
+                                  /*writeGeometry=*/args.lightmap || (haveTour && args.lods))) {
         tool::err() << "Write-back failed: " << werr << std::endl;
         return 1;
     }
