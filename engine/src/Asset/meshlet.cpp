@@ -68,7 +68,7 @@ void RepairBoundRadius(meshopt_Bounds& b,
                        const unsigned int* meshletVerts,
                        const unsigned char* meshletTris,
                        unsigned int triCount,
-                       const StaticMeshUpload& upload) {
+                       const MeshData& upload) {
     const size_t vcount = upload.vertices.size();
     float maxD2 = 0.0f;
     for (unsigned int t = 0; t < triCount; ++t) {
@@ -98,7 +98,7 @@ void RepairBoundRadius(meshopt_Bounds& b,
 
 } // anonymous namespace
 
-bool BuildMeshletsForUpload(const StaticMeshUpload& upload,
+bool BuildMeshletsForUpload(const MeshData& upload,
                             const MeshletConfig& config,
                             CookedMeshlets* out,
                             MeshletStats* outStats,
@@ -171,7 +171,7 @@ bool BuildMeshletsForUpload(const StaticMeshUpload& upload,
                                                icount,
                                                positions,
                                                vcount,
-                                               sizeof(ImportStaticVertex),
+                                               sizeof(MeshVertex),
                                                maxVerts,
                                                maxTris,
                                                config.coneWeight);
@@ -267,7 +267,7 @@ bool BuildMeshletsForUpload(const StaticMeshUpload& upload,
                          unsigned int depth,
                          bool fromSplit) {
             meshopt_Bounds b = meshopt_computeMeshletBounds(
-                winVerts, winTris, triCount, positions, vcount, sizeof(ImportStaticVertex));
+                winVerts, winTris, triCount, positions, vcount, sizeof(MeshVertex));
             RepairBoundRadius(b, winVerts, winTris, triCount, upload);
 
             const bool degenerateCone =
@@ -566,7 +566,7 @@ bool BuildMeshletsForUpload(const StaticMeshUpload& upload,
                     a.tris[(a.triCount + t) * 3 + k] = map[f.tris[t * 3 + k]];
             a.triCount += f.triCount;
             meshopt_Bounds mb = meshopt_computeMeshletBounds(
-                a.verts, a.tris, a.triCount, positions, vcount, sizeof(ImportStaticVertex));
+                a.verts, a.tris, a.triCount, positions, vcount, sizeof(MeshVertex));
             if ((mb.cone_axis[0] * mb.cone_axis[0] + mb.cone_axis[1] * mb.cone_axis[1] +
                  mb.cone_axis[2] * mb.cone_axis[2]) < 1e-12f)
                 return reject();
@@ -575,7 +575,7 @@ bool BuildMeshletsForUpload(const StaticMeshUpload& upload,
         auto emitAcc = [&](Acc& a) {
             meshopt_optimizeMeshlet(a.verts, a.tris, a.triCount, a.vertCount);
             meshopt_Bounds mb = meshopt_computeMeshletBounds(
-                a.verts, a.tris, a.triCount, positions, vcount, sizeof(ImportStaticVertex));
+                a.verts, a.tris, a.triCount, positions, vcount, sizeof(MeshVertex));
             RepairBoundRadius(mb, a.verts, a.tris, a.triCount, upload);
             for (unsigned k = 0; k < a.vertCount; ++k)
                 cooked.vertices.push_back(a.verts[k]);
