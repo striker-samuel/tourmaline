@@ -247,6 +247,16 @@ int main(int argc, char** argv) {
                             overlap, quality.equivalentToPrevious ? "yes" : "no");
             }
             std::printf("\n");
+            // Keep the original sample-position dump: visible geometry-
+            // aware movement is useful while comparing budget sweeps.
+            for (size_t i = 0; i < set.probes.size() && i < 4; ++i) {
+                const auto& p = set.probes[i];
+                std::printf("      probe %zu: pos=(%.2f, %.2f, %.2f) "
+                            "influence=%.1f fade=%.1f depth=%u\n",
+                            i, (double)p.position.x, (double)p.position.y,
+                            (double)p.position.z, (double)p.influenceRadius,
+                            (double)p.fadeRadius, p.depth);
+            }
             previous[key] = &set;
         }
         std::printf("  total probes=%zu; equivalent adjacent cell-tiers=%zu\n",
