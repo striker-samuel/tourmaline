@@ -49,7 +49,12 @@ std::unique_ptr<BuiltWorld> BuildWorldFromDoc(const smvk::tour::Doc& doc,
                                            nullptr,
                                            opt.autoKtx,
                                            !doc.fileNodes.empty() ? &doc.fileNodes : nullptr,
-                                           opt.artifactCache);
+                                           opt.artifactCache,
+                                           nullptr /* guidResolver — path-only */,
+                                           nullptr /* outImages */,
+                                           opt.contentDir /* contentRoot — project-relative
+                                                             sources resolve against the project
+                                                             tree, not the tool's own CWD copy */);
         tool::out() << "Definition: bound " << refsApplied << " reference subtree(s) ("
                     << doc.references.size() << " top-level)\n";
     }

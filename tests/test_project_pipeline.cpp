@@ -950,8 +950,8 @@ void TestRecipeImportSettings() {
     {
         smvk::project::ProjectRecipe r;
         smvk::project::RecipeDiagnostic d;
-        Check(smvk::project::ParseProjectRecipeText(header + "import lod-ratios 0.8,0.4\n" + pak,
-                                                    r, d) &&
+        Check(smvk::project::ParseProjectRecipeText(
+                  header + "import lod-ratios 0.8,0.4\n" + pak, r, d) &&
                   r.importLods && r.importLodRatios.size() == 2 && r.importLodRatios[0] == 0.8f &&
                   r.importLodRatios[1] == 0.4f,
               "recipe.import.lod-ratios");
@@ -959,10 +959,10 @@ void TestRecipeImportSettings() {
     {
         smvk::project::ProjectRecipe r;
         smvk::project::RecipeDiagnostic d;
-        Check(smvk::project::ParseProjectRecipeText(header + "import lod-error 0.02\n" + pak, r,
-                                                    d) &&
-                  r.importLodError == 0.02f,
-              "recipe.import.lod-error");
+        Check(
+            smvk::project::ParseProjectRecipeText(header + "import lod-error 0.02\n" + pak, r, d) &&
+                r.importLodError == 0.02f,
+            "recipe.import.lod-error");
     }
     struct Bad {
         const char* name;
@@ -1942,6 +1942,8 @@ class InProcessAdapter final : public smvk::project::StageAdapter {
         args.tour = a.tour;
         args.cubemap = a.cubemap;
         args.lightmap = a.lightmap;
+        args.lods = a.lods;
+        args.explicitSet.insert("lods");
         args.registryDir = a.registryDir;
         return cooktool::Run(args);
     }
@@ -1961,6 +1963,9 @@ class InProcessAdapter final : public smvk::project::StageAdapter {
         args.verify = a.verify;
         args.levelName = a.levelName;
         args.registryDir = a.registryDir;
+        args.contentSet = a.contentSet;
+        args.excludeVfsPaths = a.excludeVfs;
+        args.soundIds = a.soundIds;
         return paktool::Run(args);
     }
 };
@@ -2991,8 +2996,10 @@ void TestBuildPlanExecutor() {
             // byte equality is gone BY DESIGN. The parity that still
             // holds — pinned here — is ENTRY parity: every legacy TOC
             // entry (kind, path, slot, payload bytes) appears
-            // IDENTICALLY in the plan pak, which carries exactly ONE
-            // extra entry (the identity table).
+            // IDENTICALLY in the plan pak, which carries exactly TWO
+            // extra entries (the identity table + the default-on SDF
+            // sidecar — a plan-only derived asset the legacy build
+            // never emits).
             const std::vector<char> legacy = ReadAllBytes(br.pak);
             const std::vector<char> planned = ReadAllBytes(rep.paks[0].output);
             bool parity = !legacy.empty() && !planned.empty();
@@ -3023,7 +3030,7 @@ void TestBuildPlanExecutor() {
                         }
                     }
                     if (parity)
-                        parity = pr->EntryCount() == lr->EntryCount() + 1;
+                        parity = pr->EntryCount() == lr->EntryCount() + 2;
                 }
             }
             Check(parity, "executor.parity-bytes");

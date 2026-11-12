@@ -104,6 +104,7 @@
 #include <Engine/Asset/bake_asset.h> // bake-asset identity (bake GUIDs)
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/mesh_optimizer.h>
+#include <Engine/Asset/mesh_preparation_policy.h>
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Asset/tour.h>
@@ -3894,7 +3895,7 @@ bool WriteCookedArtifactsBack(const Args& args,
             if (lod.lodIndex < 1)
                 continue;
             auto h = c.FindMeshByUri(uriV);
-            if (!h.has_value() || !h->valid())
+            if (!h.has_value() || !h->valid() || !c.staticMeshes.get(*h))
                 continue;
             MeshRef r;
             r.cluster = &c;
@@ -3963,6 +3964,12 @@ bool WriteCookedArtifactsBack(const Args& args,
         }
         if (asset.lodChains.size() < asset.geometry.size())
             asset.lodChains.resize(asset.geometry.size());
+        // On a .tour build, LOD families are re-selected using effective
+        // scene world transforms. Drop the old candidate list first, then
+        // repopulate from the live pool handles (pruned siblings are absent).
+        if (!args.tour.empty() && args.lods)
+            for (auto& chain : asset.lodChains)
+                chain.clear();
         for (const MeshRef& r : refs) {
             smvk::Cluster& c = *r.cluster;
             const smvk::StaticMeshUpload* up = c.GetRetainedUpload(r.handle);
@@ -4730,15 +4737,68 @@ int Run(const CookArgs& c) {
         }
     } // close else block for the artifact path
     // ---------------------------------------------------------------------------
-    // IMPORTED-PREPROCESSING VALIDATION: --lods/--meshlets are now
-    // REQUIREMENTS against the imported artifacts, not cook operations —
-    // the LOD chains + meshlet sets are an IMPORT product (the .geometry
-    // carries them; see DeriveConfig/ImportMeshSource), and the cook
-    // NEVER regenerates them (the old final-pass regeneration + geometry
-    // write-back is retired). A scene referencing geometry imported
-    // without the requested preprocessing fails HERE with an actionable
-    // diagnostic — reimport the source (Project.exe import / Import.exe),
-    // do not silently fall back to direct draws.
+    // SCENE-AWARE LOD PREPARATION: imported .geometry contains reusable
+    // candidate siblings. After the authoritative .tour replay, use the
+    // FINAL transformed instance bounds to decide which sibling chains
+    // survive. A source-small mesh enlarged by .tour may acquire a missing
+    // chain here; a source-large prop scaled down by .tour loses its chain.
+    // Persisting the filtered family below prevents stale candidates from
+    // leaking into Pak's separate definition replay.
+    if (haveTour && args.lods && !args.lightmap) {
+        smvk::MeshOptConfig sceneLods = opt;
+        sceneLods.generateLods = true;
+        smvk::MeshletConfig noMeshlets = meshletCfg;
+        noMeshlets.enabled = false;
+        smvk::CookLodSiblingsOptions siblingsOpts;
+        for (auto& owner : sceneClusters) {
+            auto& scene = owner->scene;
+            MarkAllRootsChanged(scene);
+            recalculateGlobalTransforms(scene);
+            std::unordered_set<uint32_t> eligibleMeshes;
+            for (const MeshRow& row : scene.tables.meshes) {
+                if (row.node >= scene.globalTransform.size())
+                    continue;
+                const auto base = owner->staticMeshes.getHandle(row.mesh);
+                if (!base.valid())
+                    continue;
+                const auto* upload = owner->GetRetainedUpload(base);
+                if (upload && smvk::EligibleForSpatialDerivatives(
+                                  upload->aabbMin, upload->aabbMax, upload->indices.size(),
+                                  scene.globalTransform[row.node], !upload->skin.empty()))
+                    eligibleMeshes.insert(row.mesh);
+            }
+            std::vector<smvk::ClusterStaticMeshHandle> unwanted;
+            for (const auto& [uri, lod] : owner->ListMeshLods()) {
+                if (lod.lodIndex == 0) {
+                    const auto base = owner->FindMeshByUri(uri);
+                    if (base && !eligibleMeshes.contains(base->index())) {
+                        smvk::LodInfo single = lod;
+                        single.candidateCount = 1;
+                        owner->RegisterMeshLod(uri, single);
+                    }
+                    continue;
+                }
+                const auto base = owner->FindMeshByUri(smvk::BaseMeshUriForLod(uri));
+                if (base && eligibleMeshes.contains(base->index()))
+                    continue;
+                const auto sibling = owner->FindMeshByUri(uri);
+                if (sibling && owner->staticMeshes.get(*sibling))
+                    unwanted.push_back(*sibling);
+            }
+            for (const auto handle : unwanted)
+                owner->DestroyMesh(handle);
+            if (!smvk::CookLodSiblings(*owner, sceneLods, noMeshlets, siblingsOpts)) {
+                tool::err() << "Scene-aware LOD preparation failed\n";
+                return 1;
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------------
+    // PREPROCESSING VALIDATION: meshlets are imported, while scene-aware
+    // LOD siblings may also be generated above after replay. Only meshes
+    // sufficiently large in the effective scene count as chainable.
+    // Missing derivations for eligible meshes remain an actionable error.
     // ---------------------------------------------------------------------------
     if (args.lods || args.meshlets) {
         for (auto& sc : sceneClusters) {
@@ -4750,13 +4810,31 @@ int Run(const CookArgs& c) {
             size_t meshBlobs = 0, meshletSets = 0;
             for (const auto& [uri, lod] : c.ListMeshLods()) {
                 if (lod.lodIndex == 0) {
-                    if (lod.triCount > 100)
-                        ++chainable;
+                    if (lod.triCount > 100) {
+                        const auto base = c.FindMeshByUri(uri);
+                        if (base && c.staticMeshes.get(*base)) {
+                            const auto* upload = c.GetRetainedUpload(*base);
+                            for (const MeshRow& row : c.scene.tables.meshes) {
+                                if (row.mesh != base->index() ||
+                                    row.node >= c.scene.globalTransform.size() || !upload)
+                                    continue;
+                                if (smvk::EligibleForSpatialDerivatives(
+                                        upload->aabbMin, upload->aabbMax,
+                                        upload->indices.size(),
+                                        c.scene.globalTransform[row.node], !upload->skin.empty())) {
+                                    ++chainable;
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     if (c.GetMeshMeshlets(uri).has_value())
                         ++meshletSets;
                     ++meshBlobs;
                 } else {
-                    ++siblings;
+                    const auto sibling = c.FindMeshByUri(uri);
+                    if (sibling && c.staticMeshes.get(*sibling))
+                        ++siblings;
                 }
             }
             if (args.lods && chainable > 0 && siblings == 0) {
@@ -6856,13 +6934,10 @@ int Run(const CookArgs& c) {
                     << "\n";
     }
 
-    // COOK WRITE-BACK: the <stem>.cooked manifests are the pak's freshness
-    // contract — always written. The imported .geometry is CANONICAL and is
-    // persisted ONLY when the (deprecated) lightmap flow actually mutated
-    // blobs (stamped chart UVs / lm bindings — a scene-specific derivation
-    // kept inside that flow); the plain path writes markers only and never
-    // touches the imported artifacts. pak.exe assembles the .pak from the
-    // imported artifacts + the loose bake files (pure serialization).
+    // COOK WRITE-BACK: the <stem>.cooked markers are always written.
+    // Scene-aware LOD selection and the lightmap flow both mutate the
+    // geometry family and require an artifact write before Pak replays it.
+    // The plain cook path still writes markers only.
     const auto t1 = std::chrono::steady_clock::now();
     WriteBackStats wb;
     std::string werr;
@@ -6870,7 +6945,7 @@ int Run(const CookArgs& c) {
                                   sceneClusters,
                                   wb,
                                   werr,
-                                  /*writeGeometry=*/args.lightmap)) {
+                                  /*writeGeometry=*/args.lightmap || (haveTour && args.lods))) {
         tool::err() << "Write-back failed: " << werr << std::endl;
         return 1;
     }

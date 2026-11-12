@@ -76,6 +76,7 @@ struct CookStageArgs {
     std::string tour;       // the scene tour (absolute)
     bool cubemap = true;
     bool lightmap = false;
+    bool lods = false; // recipe-level LOD derivation, pinned in Cook
     // The artifact-cache store root (the editor's registry; empty = the
     // CLI's derived convention or off). Acceleration only — the output
     // is byte-identical either way (the cache's own contract).

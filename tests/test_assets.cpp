@@ -33,6 +33,7 @@
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/compression.h>
 #include <Engine/Asset/mesh_optimizer.h>
+#include <Engine/Asset/mesh_preparation_policy.h>
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Asset/pak_pager.h>
@@ -59,6 +60,37 @@ void Check(bool cond, const std::string& name) {
         ++g_failures;
         std::cout << "FAIL " << name << "\n";
     }
+}
+
+void TestSpatialDerivativeWorldSizing() {
+    const glm::vec3 mn(0.0f), mx(1.0f);
+    const glm::mat4 identity(1.0f);
+    Check(!smvk::EligibleForSpatialDerivatives(mn, mx, 6, identity),
+          "derivatives.local-unit-small");
+    glm::mat4 enlarged(1.0f);
+    enlarged[0][0] = 3.0f;
+    Check(smvk::EligibleForSpatialDerivatives(mn, mx, 6, enlarged),
+          "derivatives.world-scaled-up");
+    glm::mat4 downscaled(1.0f);
+    downscaled[0][0] = 0.01f;
+    Check(!smvk::EligibleForSpatialDerivatives(glm::vec3(0.0f),
+                                                glm::vec3(100.0f, 1.0f, 1.0f),
+                                                6, downscaled),
+          "derivatives.world-scaled-down");
+    glm::mat4 negativeScale(1.0f);
+    negativeScale[2][2] = -3.0f;
+    Check(smvk::EligibleForSpatialDerivatives(mn, mx, 6, negativeScale),
+          "derivatives.negative-scale");
+    glm::mat4 parent(1.0f);
+    parent[0][0] = 0.01f;
+    glm::mat4 child(1.0f);
+    child[0][0] = 300.0f;
+    Check(smvk::EligibleForSpatialDerivatives(mn, mx, 6, parent * child),
+          "derivatives.parent-child-transform");
+    Check(!smvk::EligibleForSpatialDerivatives(mn, mx, 6, enlarged, true),
+          "derivatives.skinned-rejected");
+    Check(!smvk::EligibleForSpatialDerivatives(mn, mx, 5, enlarged),
+          "derivatives.invalid-triangles-rejected");
 }
 
 void TestVfsNormalize() {
@@ -4194,6 +4226,7 @@ int main() {
     // test would initialize it single-threaded and spend the window).
     run("TestPakAppendConcurrentFirstUse", TestPakAppendConcurrentFirstUse);
     run("TestVfsNormalize", TestVfsNormalize);
+    run("TestSpatialDerivativeWorldSizing", TestSpatialDerivativeWorldSizing);
     run("TestOverlayMem", TestOverlayMem);
     run("TestAssetUris", TestAssetUris);
     run("TestTextureSourceLifetime", TestTextureSourceLifetime);
