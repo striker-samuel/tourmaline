@@ -2153,9 +2153,35 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
     // silently freezing at LOD-switch distance. Skipping the siblings
     // here keeps every draw on the streamed base mesh, which is also
     // the GPU-driven raster eligibility shape (single-level chains).
+    // Evaluate ALL authored instances, not the raw primitive dimensions.
+    // A shared mesh needs derived siblings if any placement is large in
+    // scene/world space. Node local transforms are traversed from roots.
+    bool largePlacedInstance = false;
+    std::vector<uint8_t> visited(model.nodes.size(), 0);
+    std::vector<uint8_t> child(model.nodes.size(), 0);
+    for (const auto& n : model.nodes)
+        for (int c : n.children)
+            if (c >= 0 && size_t(c) < child.size()) child[size_t(c)] = 1;
+    auto visit = [&](auto&& self, int idx, const glm::mat4& parent) -> void {
+        if (idx < 0 || size_t(idx) >= model.nodes.size() || visited[size_t(idx)])
+            return;
+        visited[size_t(idx)] = 1;
+        const auto& n = model.nodes[size_t(idx)];
+        const glm::mat4 world = parent * GetNodeLocalTransform(n);
+        if (n.mesh == gltfMeshIndex &&
+            smvk::EligibleForSpatialDerivatives(data.aabbMin, data.aabbMax,
+                                                 data.indices.size(), world, skinned))
+            largePlacedInstance = true;
+        for (int c : n.children) self(self, c, world);
+    };
+    for (size_t i = 0; i < model.nodes.size(); ++i)
+        if (!child[i]) visit(visit, int(i), glm::mat4(1.0f));
+    // Handle orphan/cyclic malformed inputs conservatively.
+    for (size_t i = 0; i < model.nodes.size(); ++i)
+        if (!visited[i]) visit(visit, int(i), glm::mat4(1.0f));
     std::vector<smvk::CookedLod> lodChain;
     if (meshOptConfig.generateLods && data.skin.empty() && !data.vertices.empty() &&
-        smvk::EligibleForSpatialDerivatives(data.aabbMin, data.aabbMax, data.indices.size())) {
+        largePlacedInstance) {
         // Alpha cutout (MASK) and blended foliage sample coverage from the
         // base-color alpha via the UVs: positions-only simplify collapses
         // quad borders and stretches UVs, flashing background through the
