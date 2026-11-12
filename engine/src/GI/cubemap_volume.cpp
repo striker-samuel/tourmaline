@@ -1374,6 +1374,19 @@ bool BakeGiVolume(const GiTraceScene& scene,
         return visOpen(u, k ^ 1);
     };
 
+    // ---- Postprocessing pool (issue #329): the validity dilation AND the
+    // volume smoothing share ONE ThreadPool over disjoint Z-slice ranges.
+    // The Jacobi pass barriers, the same-side visibility gates and the
+    // per-voxel neighbor accumulation order are unchanged; only the
+    // dispatch is parallel. cfg.threadCount wins (fall back to hardware
+    // concurrency); a single-worker pool degrades to the serial path.
+    const uint32_t nx = outVolume.dims[0], ny = outVolume.dims[1], nz = outVolume.dims[2];
+    const uint32_t postThreads =
+        cfg.threadCount ? cfg.threadCount : std::thread::hardware_concurrency();
+    ThreadPool postPool(postThreads ? postThreads : 1);
+    const uint32_t zChunk =
+        std::max(1u, (nz + uint32_t(postPool.size()) - 1u) / uint32_t(postPool.size()));
+
     // ---- Validity dilation (probes inside solid geometry; the same
     // Jacobi scheme as the regular-volume bake: nearest-valid values
     // spread over the holes so facade-adjacent trilinear taps see
@@ -1390,53 +1403,85 @@ bool BakeGiVolume(const GiTraceScene& scene,
     // rooms (leak path one). The valid array is the hoisted one (no
     // recomputation here).
     {
-        const uint32_t nx = outVolume.dims[0], ny = outVolume.dims[1], nz = outVolume.dims[2];
         for (int pass = 0; pass < 64; ++pass) {
-            bool anyFill = false;
             std::vector<glm::vec3> fill(size_t(n) * kSgLobeCount);
             std::vector<char> fillMask(size_t(n), 0);
             static const int kDx[6] = {1, -1, 0, 0, 0, 0};
             static const int kDy[6] = {0, 0, 1, -1, 0, 0};
             static const int kDz[6] = {0, 0, 0, 0, 1, -1};
-            for (uint32_t iz = 0; iz < nz; ++iz)
-                for (uint32_t iy = 0; iy < ny; ++iy)
-                    for (uint32_t ix = 0; ix < nx; ++ix) {
-                        const uint64_t v = (uint64_t(iz) * ny + iy) * nx + ix;
-                        if (valid[size_t(v)])
-                            continue;
-                        glm::vec3 acc[kSgLobeCount] = {};
-                        int cnt = 0;
-                        for (int k = 0; k < 6; ++k) {
-                            const int jx = int(ix) + kDx[k];
-                            const int jy = int(iy) + kDy[k];
-                            const int jz = int(iz) + kDz[k];
-                            if (jx < 0 || jy < 0 || jz < 0 || jx >= int(nx) || jy >= int(ny) ||
-                                jz >= int(nz))
-                                continue;
-                            const uint64_t u =
-                                (uint64_t(jz) * ny + uint64_t(jy)) * nx + uint64_t(jx);
-                            if (!valid[size_t(u)])
-                                continue;
-                            if (!sameSide(u, v, k))
-                                continue; // the source cannot see the target: across a wall
-                            for (uint32_t i = 0; i < kSgLobeCount; ++i)
-                                acc[i] += outVolume.coeffs[size_t(u) * kSgLobeCount + i];
-                            ++cnt;
-                        }
-                        if (cnt > 0) {
-                            for (uint32_t i = 0; i < kSgLobeCount; ++i)
-                                fill[size_t(v) * kSgLobeCount + i] = acc[i] / float(cnt);
-                            fillMask[size_t(v)] = 1;
-                            anyFill = true;
-                        }
-                    }
-            for (uint64_t v = 0; v < n; ++v)
-                if (fillMask[size_t(v)]) {
-                    for (uint32_t i = 0; i < kSgLobeCount; ++i)
-                        outVolume.coeffs[size_t(v) * kSgLobeCount + i] =
-                            fill[size_t(v) * kSgLobeCount + i];
-                    valid[size_t(v)] = 1;
-                }
+            // ---- Compute phase (parallel over disjoint Z-slice ranges):
+            // reads the previous pass's coeffs/valid (read-only) and
+            // writes the disjoint fill/fillMask; each task returns its
+            // task-local fill flag (the barrier aggregates, no shared
+            // write races).
+            std::vector<std::future<bool>> futures;
+            futures.reserve((nz + zChunk - 1u) / zChunk);
+            for (uint32_t z0 = 0; z0 < nz; z0 += zChunk) {
+                const uint32_t z1 = std::min(z0 + zChunk, nz);
+                futures.push_back(postPool.enqueue([&, z0, z1] {
+                    bool localAnyFill = false;
+                    for (uint32_t iz = z0; iz < z1; ++iz)
+                        for (uint32_t iy = 0; iy < ny; ++iy)
+                            for (uint32_t ix = 0; ix < nx; ++ix) {
+                                const uint64_t v = (uint64_t(iz) * ny + iy) * nx + ix;
+                                if (valid[size_t(v)])
+                                    continue;
+                                glm::vec3 acc[kSgLobeCount] = {};
+                                int cnt = 0;
+                                for (int k = 0; k < 6; ++k) {
+                                    const int jx = int(ix) + kDx[k];
+                                    const int jy = int(iy) + kDy[k];
+                                    const int jz = int(iz) + kDz[k];
+                                    if (jx < 0 || jy < 0 || jz < 0 || jx >= int(nx) ||
+                                        jy >= int(ny) || jz >= int(nz))
+                                        continue;
+                                    const uint64_t u =
+                                        (uint64_t(jz) * ny + uint64_t(jy)) * nx + uint64_t(jx);
+                                    if (!valid[size_t(u)])
+                                        continue;
+                                    if (!sameSide(u, v, k))
+                                        continue; // the source cannot see the target: across a wall
+                                    for (uint32_t i = 0; i < kSgLobeCount; ++i)
+                                        acc[i] += outVolume.coeffs[size_t(u) * kSgLobeCount + i];
+                                    ++cnt;
+                                }
+                                if (cnt > 0) {
+                                    for (uint32_t i = 0; i < kSgLobeCount; ++i)
+                                        fill[size_t(v) * kSgLobeCount + i] = acc[i] / float(cnt);
+                                    fillMask[size_t(v)] = 1;
+                                    localAnyFill = true;
+                                }
+                            }
+                    return localAnyFill;
+                }));
+            }
+            bool anyFill = false;
+            for (auto& f : futures)
+                anyFill |= f.get();
+            futures.clear();
+            // ---- Apply phase (parallel, disjoint writes): the barrier
+            // above guarantees every compute task wrote fill/fillMask
+            // before any apply reads them, and the newly-validated v
+            // never aliases a valid neighbor the compute read.
+            for (uint32_t z0 = 0; z0 < nz; z0 += zChunk) {
+                const uint32_t z1 = std::min(z0 + zChunk, nz);
+                futures.push_back(postPool.enqueue([&, z0, z1] {
+                    for (uint32_t iz = z0; iz < z1; ++iz)
+                        for (uint32_t iy = 0; iy < ny; ++iy)
+                            for (uint32_t ix = 0; ix < nx; ++ix) {
+                                const uint64_t v = (uint64_t(iz) * ny + iy) * nx + ix;
+                                if (!fillMask[size_t(v)])
+                                    continue;
+                                for (uint32_t i = 0; i < kSgLobeCount; ++i)
+                                    outVolume.coeffs[size_t(v) * kSgLobeCount + i] =
+                                        fill[size_t(v) * kSgLobeCount + i];
+                                valid[size_t(v)] = 1;
+                            }
+                    return true;
+                }));
+            }
+            for (auto& f : futures)
+                f.get();
             if (!anyFill)
                 break;
         }
@@ -1461,41 +1506,54 @@ bool BakeGiVolume(const GiTraceScene& scene,
     // walls (leak path two).
     {
         for (uint32_t pass = 0; pass < cfg.smoothingPasses; ++pass) {
-            const uint32_t nx = outVolume.dims[0], ny = outVolume.dims[1], nz = outVolume.dims[2];
             std::vector<glm::vec3> smoothed(size_t(n) * kSgLobeCount);
             static const int kDx[6] = {1, -1, 0, 0, 0, 0};
             static const int kDy[6] = {0, 0, 1, -1, 0, 0};
             static const int kDz[6] = {0, 0, 0, 0, 1, -1};
             const float lambda = std::clamp(cfg.smoothingLambda, 0.0f, 1.0f);
-            for (uint32_t iz = 0; iz < nz; ++iz)
-                for (uint32_t iy = 0; iy < ny; ++iy)
-                    for (uint32_t ix = 0; ix < nx; ++ix) {
-                        const uint64_t v = (uint64_t(iz) * ny + iy) * nx + ix;
-                        glm::vec3 acc[kSgLobeCount] = {};
-                        int cnt = 0;
-                        for (int k = 0; k < 6; ++k) {
-                            const int jx = int(ix) + kDx[k];
-                            const int jy = int(iy) + kDy[k];
-                            const int jz = int(iz) + kDz[k];
-                            if (jx < 0 || jy < 0 || jz < 0 || jx >= int(nx) || jy >= int(ny) ||
-                                jz >= int(nz))
-                                continue;
-                            const uint64_t u =
-                                (uint64_t(jz) * ny + uint64_t(jy)) * nx + uint64_t(jx);
-                            if (!sameSide(u, v, k))
-                                continue; // across a wall: no cross-side smear
-                            for (uint32_t i = 0; i < kSgLobeCount; ++i)
-                                acc[i] += outVolume.coeffs[size_t(u) * kSgLobeCount + i];
-                            ++cnt;
-                        }
-                        for (uint32_t i = 0; i < kSgLobeCount; ++i) {
-                            const glm::vec3& cur = outVolume.coeffs[size_t(v) * kSgLobeCount + i];
-                            glm::vec3 next = cur;
-                            if (cnt > 0)
-                                next = glm::mix(cur, acc[i] / float(cnt), lambda);
-                            smoothed[size_t(v) * kSgLobeCount + i] = next;
-                        }
-                    }
+            // Parallel over disjoint Z-slice ranges: reads coeffs
+            // (read-only this pass) and writes the disjoint `smoothed`;
+            // the swap below is the Jacobi barrier (the next pass and the
+            // swap both observe the completed pass).
+            std::vector<std::future<void>> futures;
+            futures.reserve((nz + zChunk - 1u) / zChunk);
+            for (uint32_t z0 = 0; z0 < nz; z0 += zChunk) {
+                const uint32_t z1 = std::min(z0 + zChunk, nz);
+                futures.push_back(postPool.enqueue([&, z0, z1] {
+                    for (uint32_t iz = z0; iz < z1; ++iz)
+                        for (uint32_t iy = 0; iy < ny; ++iy)
+                            for (uint32_t ix = 0; ix < nx; ++ix) {
+                                const uint64_t v = (uint64_t(iz) * ny + iy) * nx + ix;
+                                glm::vec3 acc[kSgLobeCount] = {};
+                                int cnt = 0;
+                                for (int k = 0; k < 6; ++k) {
+                                    const int jx = int(ix) + kDx[k];
+                                    const int jy = int(iy) + kDy[k];
+                                    const int jz = int(iz) + kDz[k];
+                                    if (jx < 0 || jy < 0 || jz < 0 || jx >= int(nx) ||
+                                        jy >= int(ny) || jz >= int(nz))
+                                        continue;
+                                    const uint64_t u =
+                                        (uint64_t(jz) * ny + uint64_t(jy)) * nx + uint64_t(jx);
+                                    if (!sameSide(u, v, k))
+                                        continue; // across a wall: no cross-side smear
+                                    for (uint32_t i = 0; i < kSgLobeCount; ++i)
+                                        acc[i] += outVolume.coeffs[size_t(u) * kSgLobeCount + i];
+                                    ++cnt;
+                                }
+                                for (uint32_t i = 0; i < kSgLobeCount; ++i) {
+                                    const glm::vec3& cur =
+                                        outVolume.coeffs[size_t(v) * kSgLobeCount + i];
+                                    glm::vec3 next = cur;
+                                    if (cnt > 0)
+                                        next = glm::mix(cur, acc[i] / float(cnt), lambda);
+                                    smoothed[size_t(v) * kSgLobeCount + i] = next;
+                                }
+                            }
+                }));
+            }
+            for (auto& f : futures)
+                f.get();
             outVolume.coeffs = std::move(smoothed);
         }
     }
