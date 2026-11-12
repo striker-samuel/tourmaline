@@ -60,6 +60,8 @@ class EditorStageAdapter final : public smvk::project::StageAdapter {
         args.tour = a.tour;
         args.cubemap = a.cubemap;
         args.lightmap = a.lightmap;
+        args.lods = a.lods;
+        args.explicitSet.insert("lods");
         args.registryDir = a.registryDir;
         return cooktool::Run(args);
     }
