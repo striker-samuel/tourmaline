@@ -35,9 +35,9 @@ namespace fs = std::filesystem;
 static int usage() {
     std::fprintf(stderr,
                  "usage: cubemap_plan <content-dir> <geometry-vfs-path> "
-                 "[minX minY minZ maxX maxY maxZ] [--budget N] [--sweep]\\n"
-                 "  --budget N: max probes per world cell and tier\\n"
-                 "  --sweep: budgets 128, 256, 512 and 1024 (one BVH build)\\n");
+                 "[minX minY minZ maxX maxY maxZ] [--budget N] [--sweep]\n"
+                 "  --budget N: max probes per world cell and tier\n"
+                 "  --sweep: budgets 128, 256, 512 and 1024 (one BVH build)\n");
     return 2;
 }
 
@@ -59,9 +59,9 @@ int main(int argc, char** argv) {
             char* tail = nullptr;
             errno = 0;
             values[i] = std::strtof(argv[next + i], &tail);
-            if (errno == ERANGE || tail == argv[next + i] || *tail != '\\0' ||
+            if (errno == ERANGE || tail == argv[next + i] || *tail != '\0' ||
                 !std::isfinite(values[i])) {
-                std::fprintf(stderr, "invalid capture bound: %s\\n", argv[next + i]);
+                std::fprintf(stderr, "invalid capture bound: %s\n", argv[next + i]);
                 return 2;
             }
         }
@@ -81,7 +81,7 @@ int main(int argc, char** argv) {
             sweep = true;
         } else if (option == "--budget" && i + 1 < argc) {
             if (explicitBudget) {
-                std::fprintf(stderr, "--budget specified more than once\\n");
+                std::fprintf(stderr, "--budget specified more than once\n");
                 return 2;
             }
             explicitBudget = true;
@@ -89,19 +89,20 @@ int main(int argc, char** argv) {
             char* tail = nullptr;
             errno = 0;
             const unsigned long parsed = std::strtoul(raw.c_str(), &tail, 10);
-            if (errno == ERANGE || tail == raw.c_str() || *tail != '\\0' ||
-                parsed == 0 || parsed > std::numeric_limits<uint32_t>::max()) {
-                std::fprintf(stderr, "invalid positive --budget: %s\\n", raw.c_str());
+            if (errno == ERANGE || tail == raw.c_str() || *tail != '\0' ||
+                raw[0] == '-' || parsed == 0 ||
+                parsed > std::numeric_limits<uint32_t>::max()) {
+                std::fprintf(stderr, "invalid positive --budget: %s\n", raw.c_str());
                 return 2;
             }
             volume.maxProbesPerCell = static_cast<uint32_t>(parsed);
         } else {
-            std::fprintf(stderr, "unknown or incomplete option: %s\\n", option.c_str());
+            std::fprintf(stderr, "unknown or incomplete option: %s\n", option.c_str());
             return usage();
         }
     }
     if (sweep && explicitBudget) {
-        std::fprintf(stderr, "--sweep cannot be combined with --budget\\n");
+        std::fprintf(stderr, "--sweep cannot be combined with --budget\n");
         return 2;
     }
     volume.cascades = {{64.0f, 2.0f}, {256.0f, 3.0f}, {512.0f, 5.0f}};
@@ -180,11 +181,11 @@ int main(int argc, char** argv) {
         std::vector<wp::CubemapTileCaptureSet> sets;
         std::string error;
         if (!wp::PlanCubemapTileCaptures(volume, occluded, sets, error)) {
-            std::fprintf(stderr, "plan failed at budget %u: %s\\n", budget, error.c_str());
+            std::fprintf(stderr, "plan failed at budget %u: %s\n", budget, error.c_str());
             return 1;
         }
         std::printf("cubemap plan: budget=%u per cell/tier, %zu capture sets, "
-                    "%zu tiers; BVH=%u triangles\\n",
+                    "%zu tiers; BVH=%u triangles\n",
                     budget, sets.size(), volume.cascades.size(),
                     (unsigned)traceScene.Bvh().TriangleCount());
         size_t totalProbes = 0;
@@ -215,14 +216,14 @@ int main(int argc, char** argv) {
                 std::printf("; prior-tier position overlap=%.1f%%, equivalent=%s",
                             overlap, quality.equivalentToPrevious ? "yes" : "no");
             }
-            std::printf("\\n");
+            std::printf("\n");
             previous[key] = &set;
         }
-        std::printf("  total probes=%zu; equivalent adjacent cell-tiers=%zu\\n",
+        std::printf("  total probes=%zu; equivalent adjacent cell-tiers=%zu\n",
                     totalProbes, equivalentTiers);
         if (equivalentTiers)
             std::printf("  NOTE: matching placements do not justify distinct "
-                        "capture tiers until bake/render quality is measured.\\n");
+                        "capture tiers until bake/render quality is measured.\n");
     }
     return 0;
 }
