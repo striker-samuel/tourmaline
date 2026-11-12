@@ -153,6 +153,11 @@ void EditorApp::ReadSharedMatAttr(uint32_t matWorld,
         num = mat->doubleSided ? 1.0 : 0.0;
     else if (attr == "castsShadows")
         num = mat->castsShadows ? 1.0 : 0.0;
+    else if (attr == "clothSheen")
+        num = (smvk::MaterialFlagsFromWord(mat->values.emissiveFactor.w) &
+               tour::kMaterialFlagClothSheen) != 0
+                  ? 1.0
+                  : 0.0;
     else if (attr == "contactShadows")
         num = (smvk::MaterialFlagsFromWord(mat->values.emissiveFactor.w) &
                smvk::kMaterialFlagReceiveContactShadows) != 0
@@ -228,10 +233,13 @@ void EditorApp::WriteSharedMatAttr(uint32_t matWorld,
         mat->doubleSided = (num != 0.0);
     else if (attr == "castsShadows")
         mat->castsShadows = (num != 0.0);
-    else if (attr == "contactShadows")
-        mat->values.emissiveFactor.w =
-            smvk::MaterialFlagsToWord((num != 0.0) ? smvk::kMaterialFlagReceiveContactShadows : 0u);
-    else if (attr == "alphaMode") {
+    else if (attr == "contactShadows" || attr == "clothSheen") {
+        const uint32_t bit = attr == "contactShadows" ? smvk::kMaterialFlagReceiveContactShadows
+                                                      : tour::kMaterialFlagClothSheen;
+        uint32_t flags = smvk::MaterialFlagsFromWord(mat->values.emissiveFactor.w);
+        flags = num != 0.0 ? (flags | bit) : (flags & ~bit);
+        mat->values.emissiveFactor.w = smvk::MaterialFlagsToWord(flags);
+    } else if (attr == "alphaMode") {
         mat->alphaMode = (num < 0.5)   ? smvk::AlphaMode::Opaque
                          : (num < 1.5) ? smvk::AlphaMode::Mask
                                        : smvk::AlphaMode::Blend;
@@ -2982,8 +2990,7 @@ bool EditorApp::WriteNodeLightAttr(uint32_t node,
         if (node >= scene.hierarchy.size())
             return false;
         EnsureNodeMetadata(scene);
-        scene.metadata[node].lightLayerMask =
-            uint32_t(std::clamp(num, 0.0, 4294967295.0));
+        scene.metadata[node].lightLayerMask = uint32_t(std::clamp(num, 0.0, 4294967295.0));
         return true;
     }
     auto lit = FindLight(scene, node);
@@ -6973,7 +6980,7 @@ bool EditorApp::RebuildTerrainTiles(uint32_t groupNode,
         const uint32_t worldMeshIdx = meshRow->mesh;
         if (worldMeshIdx >= m_world->meshLocations.size())
             continue;
-        smvk::StaticMeshUpload upload;
+        smvk::MeshData upload;
         if (!smvk::placement::BuildTerrainTileUpload(g.data, tx, tz, upload)) {
             Log("Terrain tile rebuild failed.");
             ok = false;
@@ -6983,7 +6990,7 @@ bool EditorApp::RebuildTerrainTiles(uint32_t groupNode,
         tour::Cluster* cl = loc.cluster ? loc.cluster : m_world->clusters[0].get();
         if (loc.cluster)
             loc.cluster->DestroyMesh(loc.handle);
-        const tour::ClusterStaticMeshHandle mh = cl->UploadStaticMesh(upload);
+        const tour::ClusterStaticMeshHandle mh = cl->UploadMesh(upload);
         if (!mh.valid()) {
             Log("Terrain tile upload failed.");
             ok = false;
@@ -7067,12 +7074,12 @@ void EditorApp::ExecCreateTerrain(EditCmd& c) {
             scene.nodeNames.push_back(c.afterText + "_" + std::to_string(tx) + "_" +
                                       std::to_string(tz));
             SetNodeNameIndex(scene, t, tName);
-            smvk::StaticMeshUpload upload;
+            smvk::MeshData upload;
             if (!smvk::placement::BuildTerrainTileUpload(g.data, tx, tz, upload)) {
                 Log("Terrain tile build failed.");
                 return;
             }
-            const tour::ClusterStaticMeshHandle mh = cl->UploadStaticMesh(upload);
+            const tour::ClusterStaticMeshHandle mh = cl->UploadMesh(upload);
             if (!mh.valid()) {
                 Log("Terrain tile upload failed.");
                 return;

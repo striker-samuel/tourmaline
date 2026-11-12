@@ -41,7 +41,7 @@ HeightfieldData BuildTerrainHeights(const TerrainParams& params);
 // Builds a renderable grid mesh from the same field: local-space verts
 // ([0,size] x/z, y up), smooth normals, planar 0..1 UVs, one indexed
 // surface, valid AABB. Returns false when res is degenerate.
-bool BuildTerrainUpload(const TerrainParams& params, StaticMeshUpload& out);
+bool BuildTerrainUpload(const TerrainParams& params, MeshData& out);
 
 // ---------------------------------------------------------------------------
 // Terrain groups: tile split + height painting.
@@ -98,7 +98,7 @@ glm::vec2 TerrainTileOrigin(const TerrainGroupData& g, uint32_t tx, uint32_t tz)
 bool BuildTerrainTileUpload(const TerrainGroupData& g,
                             uint32_t tx,
                             uint32_t tz,
-                            StaticMeshUpload& out);
+                            MeshData& out);
 
 // ---- Height painting (deterministic, no RNG) -----------------------------
 enum class TerrainBrushOp : uint8_t {

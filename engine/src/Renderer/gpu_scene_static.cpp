@@ -165,7 +165,7 @@ static uint32_t FinishMesh(StaticGeometry& s, uint32_t clusterStart) {
 }
 
 uint32_t RegisterMeshFromUpload(StaticGeometry& s,
-                                const StaticMeshUpload& upload,
+                                const MeshData& upload,
                                 uint32_t baseVertex) {
     if (upload.vertices.empty() || upload.indices.empty() || (upload.indices.size() % 3) != 0)
         return UINT32_MAX;

@@ -527,6 +527,7 @@ void WriteMaterialAsset(const std::filesystem::path& path,
     o << "doubleSided=" << (m.info.doubleSided ? 1 : 0) << "\n";
     o << "castsShadows=" << (m.info.castsShadows ? 1 : 0) << "\n";
     o << "receiveContactShadows=" << (m.info.receiveContactShadows ? 1 : 0) << "\n";
+    o << "clothSheen=" << (m.info.clothSheen ? 1 : 0) << "\n";
     const char* shading = (m.info.shadingModel == smvk::ShadingModel::Unlit)    ? "unlit"
                           : (m.info.shadingModel == smvk::ShadingModel::Masked) ? "masked"
                                                                                 : "lit";
@@ -639,6 +640,8 @@ bool LoadMaterialAssetText(const std::string& text, MaterialAsset& out, std::str
             out.info.castsShadows = std::atoi(val.c_str()) != 0;
         else if (key == "receiveContactShadows")
             out.info.receiveContactShadows = std::atoi(val.c_str()) != 0;
+        else if (key == "clothSheen")
+            out.info.clothSheen = std::atoi(val.c_str()) != 0;
         else if (key == "shading") {
             if (val == "unlit")
                 out.info.shadingModel = smvk::ShadingModel::Unlit;
@@ -1573,6 +1576,14 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
                 }
             }
         }
+        // Explicit Tourmaline cloth extension; leave ordinary glTF PBR untouched.
+        if (auto it = gm.extensions.find("SMVK_materials_clothSheen");
+            it != gm.extensions.end() && it->second.IsObject()) {
+            const auto& obj = it->second.Get<tinygltf::Value::Object>();
+            if (auto f = obj.find("enabled"); f != obj.end() && f->second.IsBool())
+                m.info.clothSheen = f->second.Get<bool>();
+        }
+
         // KHR_materials_transmission -> BLEND glass (the engine has no
         // transmission path). Metallic forced dielectric; alpha derives
         // from (1 - transmissionFactor); double-sided so panes read from
@@ -1707,13 +1718,13 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
                 g.uriFragment = (hash != std::string::npos) ? u.substr(hash + 1) : std::string();
                 if (auto ml = cluster->GetMeshMeshlets(uri))
                     g.meshlets = std::move(*ml);
-                if (const smvk::StaticMeshUpload* up = cluster->GetRetainedUpload(h)) {
+                if (const smvk::MeshData* up = cluster->GetRetainedUpload(h)) {
                     g.positions.resize(up->vertices.size());
                     g.shading.resize(up->vertices.size());
                     g.lightmap.resize(up->vertices.size());
                     bool charted = false;
                     for (size_t v = 0; v < up->vertices.size(); ++v) {
-                        smvk::PackStaticVertex(
+                        smvk::PackMeshVertex(
                             up->vertices[v], g.positions[v], g.shading[v], g.lightmap[v]);
                         if (up->vertices[v].chartId != 0xFFFFFFFFu)
                             charted = true;
@@ -1751,13 +1762,13 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
                             (sh != std::string::npos) ? su.substr(sh + 1) : std::string();
                         if (auto ml = cluster->GetMeshMeshlets(sibUri))
                             s.geo.meshlets = std::move(*ml);
-                        if (const smvk::StaticMeshUpload* up = cluster->GetRetainedUpload(*sibH)) {
+                        if (const smvk::MeshData* up = cluster->GetRetainedUpload(*sibH)) {
                             s.geo.positions.resize(up->vertices.size());
                             s.geo.shading.resize(up->vertices.size());
                             s.geo.lightmap.resize(up->vertices.size());
                             bool charted = false;
                             for (size_t v = 0; v < up->vertices.size(); ++v) {
-                                smvk::PackStaticVertex(up->vertices[v],
+                                smvk::PackMeshVertex(up->vertices[v],
                                                        s.geo.positions[v],
                                                        s.geo.shading[v],
                                                        s.geo.lightmap[v]);
@@ -2354,6 +2365,7 @@ smvk::ClusterMaterialHandle ImportMaterialAssetToCluster(smvk::Cluster& cluster,
     info.doubleSided = m.info.doubleSided;
     info.castsShadows = m.info.castsShadows;
     info.receiveContactShadows = m.info.receiveContactShadows;
+    info.clothSheen = m.info.clothSheen;
     // Texture refs: image files beside the .material (the URI IS the POSIX
     // file path). Failures bind the BUILT-IN pink error texture
     // (editor://error_texture) instead of leaving the slot empty: a

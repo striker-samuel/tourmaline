@@ -737,7 +737,7 @@ int main() {
             {"Asset/pak.h", 29, 0},
             {"Asset/tour.h", 1, 1},     // namespace tour = ::tour::asset
             {"Asset/touranim.h", 0, 1}, // namespace touranim = ::tour::asset
-            {"Asset/meshlet.h", 1, 0},  // StaticMeshUpload fwd-becomes-using (mesh.h move)
+            {"Asset/meshlet.h", 1, 0},  // MeshData fwd-becomes-using (mesh.h move)
             {"Audio/audio.h", 6, 0},
             {"GI/bake.h", 17, 0},
             {"GI/bake_inputs.h", 18, 0},
@@ -782,7 +782,7 @@ int main() {
                                         // families (vertex layout descriptions are engine-owned)
             {"Renderer/gpu_scene_static.h",
              1,
-             1}, // StaticMeshUpload fwd-becomes-using + namespace gfx = ::tour::gfx
+             1}, // MeshData fwd-becomes-using + namespace gfx = ::tour::gfx
         };
         // using ::tour::X / using namespace ::tour (the per-name and
         // the namespace-directive import), and the namespace ALIAS

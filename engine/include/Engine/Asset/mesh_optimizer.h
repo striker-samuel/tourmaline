@@ -149,7 +149,7 @@ struct LodInfo {
 // in mesh-local units (relativeError * meshopt_simplifyScale); the caller
 // scales it by node world scale to obtain LodInfo::simplifyError.
 struct CookedLod {
-    StaticMeshUpload upload;
+    MeshData upload;
     float relativeError = 0.0f;
     float localError = 0.0f;
     uint32_t triCount = 0;
@@ -173,8 +173,8 @@ struct CookedLod {
 // materials shade either side; single-sided ones match a true face
 // instead of pointing backwards into black).
 // ---------------------------------------------------------------------------
-void ComputeSmoothNormals(StaticMeshUpload& upload);
-void GenerateTangents(StaticMeshUpload& upload);
+void ComputeSmoothNormals(MeshData& upload);
+void GenerateTangents(MeshData& upload);
 
 // Optimizes upload in place. The caller gates config.overdraw for surfaces
 // that need it (the importer disables overdraw for Blend/Mask materials:
@@ -182,7 +182,7 @@ void GenerateTangents(StaticMeshUpload& upload);
 // + outLod for the MeshBlob. Returns false when the input is degenerate
 // (0 verts / <3 indices / non-triangle count) and leaves the upload
 // untouched (still fills outStats/outLod markers).
-bool OptimizeStaticMeshUpload(StaticMeshUpload& upload,
+bool OptimizeMeshData(MeshData& upload,
                               const MeshOptConfig& config,
                               uint32_t lodGroupId,
                               MeshOptStats* outStats = nullptr,
@@ -221,7 +221,7 @@ bool OptimizeStaticMeshUpload(StaticMeshUpload& upload,
 // metric when MeshOptConfig::lodUvAware (default true), protecting UV-seam
 // topology and biasing collapses toward UV-preserving ones. Untextured
 // (zero-UV) meshes are unaffected.
-bool BuildLodChainForUpload(const StaticMeshUpload& lod0,
+bool BuildLodChainForUpload(const MeshData& lod0,
                             const MeshOptConfig& config,
                             std::vector<CookedLod>& out,
                             bool preserveCoverage = false,
@@ -453,8 +453,8 @@ struct LodLightmapAuditReport {
 // regardless). `maxTris` caps the audited triangles via a deterministic
 // stride (cross-chart counting always covers all tris).
 // Returns false on degenerate input (report zeroed).
-bool AuditLodLightmap(const StaticMeshUpload& lod0,
-                      const StaticMeshUpload& sibling,
+bool AuditLodLightmap(const MeshData& lod0,
+                      const MeshData& sibling,
                       const glm::mat4& world,
                       const std::vector<glm::vec4>& chartXforms,
                       uint32_t atlasWidth,

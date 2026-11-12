@@ -1208,7 +1208,7 @@ void EditorApp::BuildFlatUvWires(std::vector<smvk::DebugLineVertex>& outLines,
         const uint32_t meshIdx = row.mesh;
         if (!wholeScene && !subtree.contains(node))
             continue;
-        const smvk::StaticMeshUpload* up = MeshUploadOf(meshIdx);
+        const smvk::MeshData* up = MeshUploadOf(meshIdx);
         if (!up || up->vertices.empty() || up->indices.empty())
             continue; // no exact geometry: no wires
         const size_t vcount = up->vertices.size();

@@ -34,6 +34,22 @@ int g_failures = 0;
 using namespace tour::gpu_scene;
 
 int main() {
+    // Dither-enabled GPUScene instances must choose masked depth and
+    // forward the independent location-8 fade flag to the lit shader.
+    // Unflagged and already-masked instances retain their classifications.
+    {
+        constexpr uint32_t plain = 0u;
+        constexpr uint32_t masked = InstanceFlagMasked;
+        constexpr uint32_t faded = WithCloseupDitherRasterFlags(plain, true);
+        static_assert((faded & InstanceFlagMasked) != 0u);
+        static_assert((faded & InstanceFlagDitherCloseup) != 0u);
+        CHECK(WithCloseupDitherRasterFlags(plain, false) == plain);
+        CHECK(WithCloseupDitherRasterFlags(masked, false) == masked);
+        CHECK(WithCloseupDitherRasterFlags(masked, true) ==
+              (masked | InstanceFlagDitherCloseup));
+        CHECK(WithCloseupDitherRasterFlags(InstanceFlagDoubleSided, true) ==
+              (InstanceFlagDoubleSided | faded));
+    }
     // Page sizing is a pure CPU contract: no Vulkan device required.
     // BDA rows remain physically contiguous across page boundaries.
     {

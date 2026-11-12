@@ -70,7 +70,7 @@ std::string DefaultRecipeText(const std::string& projectName, const std::string&
            "# Paths are relative to the project root.\n"
            "recipe 1\nproject " +
            name + "\nentry " + scene +
-           "\n\nbake gi off\nbake cubemaps off\nbake sdf off\n\n"
+           "\n\nbake gi off\nbake cubemaps off\nbake sdf on\n\n"
            "[pak world]\noutput game.pak\nscene " +
            scene + "\n";
 }

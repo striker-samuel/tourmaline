@@ -5444,7 +5444,7 @@ bool ApplyTourToCluster(Cluster& cluster,
                 const uint32_t packed = tx | (tz << 16);
                 if (!state.dirty.empty() && !state.dirty.contains(packed))
                     continue;
-                smvk::StaticMeshUpload upload;
+                smvk::MeshData upload;
                 if (!smvk::placement::BuildTerrainTileUpload(state.data, tx, tz, upload)) {
                     if (strict) {
                         if (err)
@@ -5455,7 +5455,7 @@ bool ApplyTourToCluster(Cluster& cluster,
                          std::to_string(tz) + ")");
                     continue;
                 }
-                const ClusterStaticMeshHandle mh = cluster.UploadStaticMesh(upload);
+                const ClusterStaticMeshHandle mh = cluster.UploadMesh(upload);
                 if (!mh.valid()) {
                     if (strict) {
                         if (err)

@@ -153,7 +153,7 @@ struct ProjectRecipe {
     std::string entry; // project-relative entry scene tour
     bool bakeGi = false;
     bool bakeCubemaps = false;
-    bool bakeSdf = false;
+    bool bakeSdf = true;
     // Geometry-import (derivation) settings for every family the plan
     // packs — the recipe-level expression of the import CLI's LOD knobs.
     // 'import lods off' strips LOD derivations entirely: every mesh cooks

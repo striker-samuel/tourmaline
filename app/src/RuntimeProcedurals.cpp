@@ -27,10 +27,10 @@ namespace {
 constexpr float kPi = 3.14159265358979323846f;
 
 struct MeshRecipe {
-    smvk::StaticMeshUpload upload{};
+    smvk::MeshData upload{};
 
     uint32_t Vertex(const glm::vec3& p, const glm::vec3& n, const glm::vec2& uv) {
-        smvk::ImportStaticVertex v{};
+        smvk::MeshVertex v{};
         v.pos = p;
         v.normal = glm::normalize(n);
         v.tangent = glm::vec4(glm::abs(v.normal.y) < 0.98f
@@ -58,7 +58,7 @@ struct MeshRecipe {
         Triangle(a, c, d);
     }
 
-    smvk::StaticMeshUpload Finish() {
+    smvk::MeshData Finish() {
         if (!upload.vertices.empty()) {
             upload.aabbMin = upload.aabbMax = upload.vertices.front().pos;
             for (const auto& v : upload.vertices) {
@@ -197,7 +197,7 @@ void HairBundle(MeshRecipe& mesh, float size, int resolution) {
     }
 }
 
-smvk::StaticMeshUpload MakeFixture(int shape,
+smvk::MeshData MakeFixture(int shape,
                                    float size,
                                    int resolution,
                                    float thickness,
@@ -280,7 +280,7 @@ void RuntimeProcedurals::ApplyRuntimeProceduralRequest() {
     smvk::Cluster& dyn = World()->EnsureDynamicCluster(m_host.GetResourceManager());
 
     if (request == 1) {
-        const smvk::StaticMeshUpload upload =
+        const smvk::MeshData upload =
             MakeFixture(std::clamp(m_runtimeProcShape, 0, 7),
                         std::clamp(m_runtimeProcSize, 0.2f, 20.0f),
                         std::clamp(m_runtimeProcResolution, 8, 64),
@@ -289,7 +289,7 @@ void RuntimeProcedurals::ApplyRuntimeProceduralRequest() {
                         std::clamp(m_runtimeProcWaveFreq, 0.25f, 10.0f));
         if (upload.vertices.empty() || upload.indices.empty())
             return;
-        const auto newMesh = dyn.UploadStaticMesh(upload);
+        const auto newMesh = dyn.UploadMesh(upload);
         if (!newMesh.valid()) {
             std::fprintf(stderr, "[Procedurals] mesh upload failed\n");
             return;

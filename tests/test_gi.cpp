@@ -34,7 +34,7 @@
 #include <Engine/GI/regular_volume.h>
 #include <Engine/GI/sg.h>
 #include <Engine/GI/triangle_bvh.h>
-#include <Engine/Renderer/mesh.h>       // StaticMeshUpload (curvature test)
+#include <Engine/Renderer/mesh.h>       // MeshData (curvature test)
 #include <Engine/Rendergraph/giprobe.h> // BuildGiProbeLatticeRows (pre-bake preview)
 
 namespace {
@@ -1502,12 +1502,12 @@ void TestLightmapCurvatureScale() {
     // cylinder wall strip, height 1). Shared vertical edges carry the
     // smooth dihedral; quad-internal edges are flat.
     auto bentWall = [&](float r, float degPerSeg, uint32_t segs) {
-        StaticMeshUpload u;
+        MeshData u;
         const float step = glm::radians(degPerSeg);
         for (uint32_t j = 0; j <= segs; ++j) {
             const float a = float(j) * step;
             for (int y = 0; y <= 1; ++y) {
-                ImportStaticVertex v{};
+                MeshVertex v{};
                 v.pos = {r * std::cos(a), float(y), r * std::sin(a)};
                 v.color = {1, 1, 1, 1};
                 v.normal = {-std::cos(a), 0.0f, -std::sin(a)};
@@ -1552,10 +1552,10 @@ void TestLightmapCurvatureScale() {
     }
     // Flat sheet: all dihedrals 0 -> no boost.
     {
-        StaticMeshUpload flat;
+        MeshData flat;
         for (int y = 0; y <= 2; ++y)
             for (int x = 0; x <= 2; ++x) {
-                ImportStaticVertex v{};
+                MeshVertex v{};
                 v.pos = {float(x), float(y), 0.0f};
                 v.color = {1, 1, 1, 1};
                 v.normal = {0, 0, 1};
@@ -1571,7 +1571,7 @@ void TestLightmapCurvatureScale() {
     }
     // Crease-only mesh (90 deg folds): authored edges do not count.
     {
-        StaticMeshUpload box;
+        MeshData box;
         const glm::vec3 p[8] = {
             {0, 0, 0},
             {1, 0, 0},
@@ -1583,7 +1583,7 @@ void TestLightmapCurvatureScale() {
             {0, 1, 1},
         };
         for (const glm::vec3& v : p) {
-            ImportStaticVertex sv{};
+            MeshVertex sv{};
             sv.pos = v;
             sv.color = {1, 1, 1, 1};
             box.vertices.push_back(sv);
@@ -1603,7 +1603,7 @@ void TestLightmapCurvatureScale() {
     }
     // Degenerate / disabled inputs.
     {
-        StaticMeshUpload empty;
+        MeshData empty;
         CheckNear(
             gi::LightmapCurvatureScale(empty, 4.0f, 7.0f, 2.5f), 1.0f, 1e-4f, "lm.curve.empty");
         auto wall = bentWall(1.0f, 15.0f, 12);
@@ -1624,9 +1624,9 @@ void TestLmXatlasCharts() {
         // 1x1 quad in the XZ plane at height y, entirely at x<0 (the
         // old packing only collided for negative coordinates), CCW
         // seen from +Y.
-        StaticMeshUpload u;
+        MeshData u;
         auto vert = [y](float x, float z) {
-            ImportStaticVertex v{};
+            MeshVertex v{};
             v.pos = {x, y, z};
             v.color = {1, 1, 1, 1};
             v.normal = {0.0f, 1.0f, 0.0f};
@@ -1641,7 +1641,7 @@ void TestLmXatlasCharts() {
         u.indices = {0, 2, 1, 0, 3, 2};
         return u;
     };
-    auto stackPlates = [&](StaticMeshUpload& dst, float y0, float y1) {
+    auto stackPlates = [&](MeshData& dst, float y0, float y1) {
         for (float y : {y0, y1}) {
             auto p = plate(y);
             const uint32_t base = uint32_t(dst.vertices.size());
@@ -1661,7 +1661,7 @@ void TestLmXatlasCharts() {
     // share no 3D edge), each triangle a non-degenerate [0,1]
     // parameterization.
     {
-        StaticMeshUpload stacked;
+        MeshData stacked;
         stackPlates(stacked, -1.0f, -0.9f);
         gi::SgLightmapXatlasMeshInput in{};
         in.upload = &stacked;
@@ -1702,7 +1702,7 @@ void TestLmXatlasCharts() {
     // Xatlas on a cube in the negative octant: all 12 faces charted,
     // corner uvs in [0,1], every rect inside the packed atlas.
     {
-        StaticMeshUpload cube;
+        MeshData cube;
         const glm::vec3 p[8] = {
             {-1, -1, -1},
             {0, -1, -1},
@@ -1714,7 +1714,7 @@ void TestLmXatlasCharts() {
             {-1, 0, 0},
         };
         for (const glm::vec3& v : p) {
-            ImportStaticVertex sv{};
+            MeshVertex sv{};
             sv.pos = v;
             sv.color = {1, 1, 1, 1};
             cube.vertices.push_back(sv);
@@ -1776,10 +1776,10 @@ void TestLmXatlasCharts() {
 // chunks (GPU packing has no ownership check).
 void TestLmDeferRasterize() {
     using namespace smvk;
-    StaticMeshUpload quad;
+    MeshData quad;
     {
         auto vert = [](float x, float z) {
-            ImportStaticVertex v{};
+            MeshVertex v{};
             v.pos = {x, 0.0f, z};
             v.color = {1, 1, 1, 1};
             v.normal = {0.0f, 1.0f, 0.0f};
@@ -2045,12 +2045,12 @@ void TestLmSeamStitch() {
 void TestLmChartTransfer() {
     using namespace smvk;
     auto buildQuad =
-        [](float x0, float z0, float x1, float z1, float y, uint32_t segs, StaticMeshUpload& u) {
+        [](float x0, float z0, float x1, float z1, float y, uint32_t segs, MeshData& u) {
             // XZ-plane quad [x0,x1]x[z0,z1] at height y, segs x segs grid,
             // CCW seen from +Y.
             for (uint32_t j = 0; j <= segs; ++j)
                 for (uint32_t i = 0; i <= segs; ++i) {
-                    ImportStaticVertex v{};
+                    MeshVertex v{};
                     v.pos = {x0 + (x1 - x0) * float(i) / float(segs),
                              y,
                              z0 + (z1 - z0) * float(j) / float(segs)};
@@ -2066,7 +2066,7 @@ void TestLmChartTransfer() {
                     u.indices.insert(u.indices.end(), {a, c, b, a, d, c});
                 }
         };
-    auto chartSingle = [&](const StaticMeshUpload& up,
+    auto chartSingle = [&](const MeshData& up,
                            gi::SgLightmapChartResult& out,
                            const char* okName,
                            const char* meshName) {
@@ -2090,7 +2090,7 @@ void TestLmChartTransfer() {
     std::string err;
 
     // Reference: a single 2x2 quad at y=-1 (one chart).
-    StaticMeshUpload refUp;
+    MeshData refUp;
     buildQuad(-2.0f, -1.0f, 0.0f, 1.0f, -1.0f, 2, refUp);
     gi::SgLightmapChartResult ref;
     if (chartSingle(refUp, ref, "lm.xfer.ref.ok", "lm.xfer.ref.meshok")) {
@@ -2114,7 +2114,7 @@ void TestLmChartTransfer() {
         // Finer target (7x7): all triangles in the single reference
         // chart, uvs in [0,1], non-degenerate parameterization.
         {
-            StaticMeshUpload t;
+            MeshData t;
             buildQuad(-2.0f, -1.0f, 0.0f, 1.0f, -1.0f, 7, t);
             gi::SgLightmapChartResult xfer;
             err.clear();
@@ -2139,7 +2139,7 @@ void TestLmChartTransfer() {
         }
         // Corrupted reference sizes fail cleanly.
         {
-            StaticMeshUpload t;
+            MeshData t;
             buildQuad(-2.0f, -1.0f, 0.0f, 1.0f, -1.0f, 2, t);
             gi::SgLightmapChartResult bad = ref;
             bad.triChart.pop_back();
@@ -2155,13 +2155,13 @@ void TestLmChartTransfer() {
     // them. Every target triangle must land in a SINGLE chart
     // (majority + restricted re-projection for off-chart corners).
     {
-        StaticMeshUpload spanRef;
+        MeshData spanRef;
         buildQuad(-2.0f, -1.0f, 0.0f, 1.0f, -1.0f, 1, spanRef);
         buildQuad(1.0f, -1.0f, 3.0f, 1.0f, -1.0f, 1, spanRef);
         gi::SgLightmapChartResult rc;
         if (chartSingle(spanRef, rc, "lm.xfer.span.ref.ok", "lm.xfer.span.ref.meshok")) {
             Check(rc.charts.size() == 2, "lm.xfer.span.ref.twocharts");
-            StaticMeshUpload t;
+            MeshData t;
             buildQuad(-2.0f, -1.0f, 3.0f, 1.0f, -1.0f, 5, t);
             gi::SgLightmapChartResult xfer;
             err.clear();
@@ -3002,7 +3002,7 @@ void TestTraceSceneFromWorld() {
                                    // same CPU mirror either way)
     ::Scene& cs = cluster->scene;
     const int root = addNode(cs, -1, 0);
-    smvk::StaticMeshUpload u;
+    smvk::MeshData u;
     const float h = 2.0f;
     const float v[8][3] = {
         {-h, -h, -h},
@@ -3015,7 +3015,7 @@ void TestTraceSceneFromWorld() {
         {-h, h, h},
     };
     for (const auto& p : v) {
-        smvk::ImportStaticVertex iv{};
+        smvk::MeshVertex iv{};
         iv.pos = glm::vec3(p[0], p[1], p[2]);
         iv.color = {1, 1, 1, 1};
         u.vertices.push_back(iv);
@@ -3038,7 +3038,7 @@ void TestTraceSceneFromWorld() {
         u.indices.insert(u.indices.end(), {t[0], t[1], t[2]});
     u.aabbMin = glm::vec3(-h);
     u.aabbMax = glm::vec3(h);
-    const auto mh = cluster->UploadStaticMesh(u);
+    const auto mh = cluster->UploadMesh(u);
     smvk::MaterialValues vals{};
     vals.diffuse = glm::vec4(0.7f, 0.7f, 0.7f, 1.0f);
     const auto matH = cluster->CreateMaterialFromValues(

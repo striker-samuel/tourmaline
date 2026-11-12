@@ -32,7 +32,7 @@
 //    + density). Static/dynamic separation is per-draw via the chunk id
 //    riding the gfx draw ring (GfxDraw.misc.w; 0xFFFFFFFF = none).
 //
-// Ownership: the COOK bakes charts, fills ImportStaticVertex::texCoord2 with
+// Ownership: the COOK bakes charts, fills MeshVertex::texCoord2 with
 // the per-vertex CHART-LOCAL uvs (+ chartId), records each mesh's
 // per-chart atlas transforms (StaticMesh::lmChartXforms), stamps each
 // mesh's atlas chunk id, and writes the .sglm. The runtime uploads the
@@ -44,7 +44,7 @@
 // File format: .sglm (SGLM v1, LZ4-compressed half payload, see .cpp).
 // GPU layout: 9 RGBA16F 2D textures (36 half slots = 12 lobes x RGB);
 // chunks with fewer lobes use the prefix subset. Chunk rects address one
-// shared UV space; chart-local UVs ride in ImportStaticVertex::texCoord2
+// shared UV space; chart-local UVs ride in MeshVertex::texCoord2
 // (filled at cook time).
 
 #include <cstdint>
@@ -54,14 +54,14 @@
 
 #include <glm/glm.hpp>
 
-// (moved: StaticMeshUpload is ENGINE-OWNED/tour::, Engine/Renderer/
+// (moved: MeshData is ENGINE-OWNED/tour::, Engine/Renderer/
 // mesh.h — the smvk fwd decl became a using-declaration so it cannot
 // collide with mesh.h's compat re-export)
 namespace tour {
-struct StaticMeshUpload;
+struct MeshData;
 }
 namespace smvk {
-using ::tour::StaticMeshUpload;
+using ::tour::MeshData;
 }
 
 namespace tour::gi {
@@ -339,15 +339,15 @@ bool StitchSgLightmapSeams(std::span<const SgLightmapChunkBatch> batches,
 // chart SEAMS approximate (the seam-side triangle samples the neighbor
 // chart's margin — a mild, dilated artifact confined to seams).
 //
-// The COOK stamps chart-local UVs into ImportStaticVertex::texCoord2 (+ chart
+// The COOK stamps chart-local UVs into MeshVertex::texCoord2 (+ chart
 // ids) and records the per-chart atlas-space transforms
 // (SgLightmapAtlas::AtlasTexel decomposed as scale + offset) on the mesh
 // for the shader unpack; the lobe count rides the draw ring.
 // Transmissive (Blend) meshes get no charts (they stay runtime-lit).
 
-// StaticMeshUpload is forward-declared at smvk:: scope above (the gi
+// MeshData is forward-declared at smvk:: scope above (the gi
 // namespace deliberately does NOT redeclare it — a local forward would
-// shadow smvk::StaticMeshUpload inside this namespace).
+// shadow smvk::MeshData inside this namespace).
 
 struct SgLightmapChartResult {
     // Per chart: rect size in texels (incl. margins) and the bake points
@@ -418,7 +418,7 @@ struct SgLightmapXatlasOptions {
 };
 
 struct SgLightmapXatlasMeshInput {
-    const StaticMeshUpload* upload = nullptr;
+    const MeshData* upload = nullptr;
     uint32_t meshKey = 0;      // owning node id (tool/debug, feeds chunk meshKey)
     float densityScale = 1.0f; // worldScale * curveScale: positions are
                                // pre-scaled by this before AddMesh so one
@@ -562,9 +562,9 @@ struct SgLightmapTransferStats {
     uint32_t trisDegenerate = 0; // degenerate even after the rescue
 };
 
-bool TransferLightmapCharts(const StaticMeshUpload& reference,
+bool TransferLightmapCharts(const MeshData& reference,
                             const SgLightmapChartResult& refCharts,
-                            const StaticMeshUpload& target,
+                            const MeshData& target,
                             SgLightmapChartResult& out,
                             std::string& err,
                             SgLightmapTransferStats* stats = nullptr);
@@ -588,7 +588,7 @@ bool TransferLightmapCharts(const StaticMeshUpload& reference,
 // read as faceted/hard-normal shading on smooth geometry); spending the
 // same atlas budget where normals turn fast fixes the banding without
 // raising the total texel count.
-float LightmapCurvatureScale(const StaticMeshUpload& upload,
+float LightmapCurvatureScale(const MeshData& upload,
                              float localTexelsPerUnit,
                              float targetDegreesPerTexel,
                              float maxScale);
