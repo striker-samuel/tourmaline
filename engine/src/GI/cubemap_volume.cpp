@@ -1426,100 +1426,105 @@ bool BakeGiVolume(const GiTraceScene& scene,
                             const uint64_t v = (uint64_t(iz) * ny + iy) * nx + ix;
                             if (valid[size_t(v)])
                                 continue;
-                        glm::vec3 acc[kSgLobeCount] = {};
-                        int cnt = 0;
-                        for (int k = 0; k < 6; ++k) {
-                            const int jx = int(ix) + kDx[k];
-                            const int jy = int(iy) + kDy[k];
-                            const int jz = int(iz) + kDz[k];
-                            if (jx < 0 || jy < 0 || jz < 0 || jx >= int(nx) || jy >= int(ny) ||
-                                jz >= int(nz))
-                                continue;
-                            const uint64_t u =
-                                (uint64_t(jz) * ny + uint64_t(jy)) * nx + uint64_t(jx);
-                            if (!valid[size_t(u)])
-                                continue;
-                            if (!sameSide(u, v, k))
-                                continue; // the source cannot see the target: across a wall
-                            for (uint32_t i = 0; i < kSgLobeCount; ++i)
-                                acc[i] += outVolume.coeffs[size_t(u) * kSgLobeCount + i];
-                            ++cnt;
-                        }
-                        if (cnt > 0) {
-                            for (uint32_t i = 0; i < kSgLobeCount; ++i)
-                                fill[size_t(v) * kSgLobeCount + i] = acc[i] / float(cnt);
-                            fillMask[size_t(v)] = 1;
-                            localFill = true;
-                        }
-                    }
-                return localFill;
-            });
-            for (uint64_t v = 0; v < n; ++v)
-                if (fillMask[size_t(v)]) {
-                    for (uint32_t i = 0; i < kSgLobeCount; ++i)
-                        outVolume.coeffs[size_t(v) * kSgLobeCount + i] =
-                            fill[size_t(v) * kSgLobeCount + i];
-                    valid[size_t(v)] = 1;
-                }
-            if (!anyFill)
-                break;
-        }
-    }
-
-    // ---- Volume smoothing (BO3 "volume smoothing"): gentle Laplacian
-    // over ALL voxels, dilated ones included. The valid-only exclusion
-    // this pass used to carry left the dilation's neighbor-average
-    // islands (the near-surface clearance shells — every wall's 5 cm
-    // band, dense clusters along thin geometry like the chains) as
-    // NEVER-SMOOTHED sharp values against the per-probe field: the
-    // runtime trilerp read them as a binary mask pattern laid over
-    // every surface. A lambda Laplacian softens the seams without
-    // emptying anything (the padding survives — it just stops being a
-    // hard edge), so the dilated voxels participate on both sides:
-    // they take neighbor averages AND contribute to their neighbors.
-    // The visibility bake: the neighbor set is SAME-SIDE GATED
-    // (the sameSide rule above): along-surface neighbors still
-    // smooth — the seam-softening this pass exists for — while
-    // across-wall pairs are excluded, so the Laplacian no longer
-    // smears bright exterior values into dark interiors through thin
-    // walls (leak path two).
-    {
-        for (uint32_t pass = 0; pass < cfg.smoothingPasses; ++pass) {
-            const uint32_t nx = outVolume.dims[0], ny = outVolume.dims[1], nz = outVolume.dims[2];
-            std::vector<glm::vec3> smoothed(size_t(n) * kSgLobeCount);
-            static const int kDx[6] = {1, -1, 0, 0, 0, 0};
-            static const int kDy[6] = {0, 0, 1, -1, 0, 0};
-            static const int kDz[6] = {0, 0, 0, 0, 1, -1};
-            const float lambda = std::clamp(cfg.smoothingLambda, 0.0f, 1.0f);
-            parallelSlices(nz, [&](uint32_t zBegin, uint32_t zEnd) {
-                for (uint32_t iz = zBegin; iz < zEnd; ++iz)
-                    for (uint32_t iy = 0; iy < ny; ++iy)
-                        for (uint32_t ix = 0; ix < nx; ++ix) {
-                            const uint64_t v = (uint64_t(iz) * ny + iy) * nx + ix;
                             glm::vec3 acc[kSgLobeCount] = {};
-                        int cnt = 0;
-                        for (int k = 0; k < 6; ++k) {
-                            const int jx = int(ix) + kDx[k];
-                            const int jy = int(iy) + kDy[k];
-                            const int jz = int(iz) + kDz[k];
-                            if (jx < 0 || jy < 0 || jz < 0 || jx >= int(nx) || jy >= int(ny) ||
-                                jz >= int(nz))
-                                continue;
-                            const uint64_t u =
-                                (uint64_t(jz) * ny + uint64_t(jy)) * nx + uint64_t(jx);
-                            if (!sameSide(u, v, k))
-                                continue; // across a wall: no cross-side smear
-                            for (uint32_t i = 0; i < kSgLobeCount; ++i)
-                                acc[i] += outVolume.coeffs[size_t(u) * kSgLobeCount + i];
-                            ++cnt;
+                                int cnt = 0;
+                                for (int k = 0; k < 6; ++k) {
+                                    const int jx = int(ix) + kDx[k];
+                                    const int jy = int(iy) + kDy[k];
+                                    const int jz = int(iz) + kDz[k];
+                                    if (jx < 0 || jy < 0 || jz < 0 || jx >= int(nx) || jy >= int(ny) ||
+                                        jz >= int(nz))
+                                        continue;
+                                    const uint64_t u =
+                                        (uint64_t(jz) * ny + uint64_t(jy)) * nx + uint64_t(jx);
+                                    if (!valid[size_t(u)])
+                                        continue;
+                                    if (!sameSide(u, v, k))
+                                        continue; // the source cannot see the target: across a wall
+                                    for (uint32_t i = 0; i < kSgLobeCount; ++i)
+                                        acc[i] += outVolume.coeffs[size_t(u) * kSgLobeCount + i];
+                                    ++cnt;
+                                }
+                                if (cnt > 0) {
+                                    for (uint32_t i = 0; i < kSgLobeCount; ++i)
+                                        fill[size_t(v) * kSgLobeCount + i] = acc[i] / float(cnt);
+                                    fillMask[size_t(v)] = 1;
+                                    localFill = true;
+                                }
                         }
-                        for (uint32_t i = 0; i < kSgLobeCount; ++i) {
-                            const glm::vec3& cur = outVolume.coeffs[size_t(v) * kSgLobeCount + i];
-                            glm::vec3 next = cur;
-                            if (cnt > 0)
-                                next = glm::mix(cur, acc[i] / float(cnt), lambda);
-                            smoothed[size_t(v) * kSgLobeCount + i] = next;
-                        }
+                    return localFill;
+                });
+                parallelSlices(nz, [&](uint32_t zBegin, uint32_t zEnd) {
+                    for (uint64_t v = uint64_t(zBegin) * nx * ny;
+                         v < uint64_t(zEnd) * nx * ny; ++v) {
+                        if (!fillMask[size_t(v)])
+                            continue;
+                        for (uint32_t i = 0; i < kSgLobeCount; ++i)
+                            outVolume.coeffs[size_t(v) * kSgLobeCount + i] =
+                                fill[size_t(v) * kSgLobeCount + i];
+                        valid[size_t(v)] = 1;
+                    }
+                    return false;
+                });
+                if (!anyFill)
+                    break;
+            }
+        }
+
+        // ---- Volume smoothing (BO3 "volume smoothing"): gentle Laplacian
+        // over ALL voxels, dilated ones included. The valid-only exclusion
+        // this pass used to carry left the dilation's neighbor-average
+        // islands (the near-surface clearance shells — every wall's 5 cm
+        // band, dense clusters along thin geometry like the chains) as
+        // NEVER-SMOOTHED sharp values against the per-probe field: the
+        // runtime trilerp read them as a binary mask pattern laid over
+        // every surface. A lambda Laplacian softens the seams without
+        // emptying anything (the padding survives — it just stops being a
+        // hard edge), so the dilated voxels participate on both sides:
+        // they take neighbor averages AND contribute to their neighbors.
+        // The visibility bake: the neighbor set is SAME-SIDE GATED
+        // (the sameSide rule above): along-surface neighbors still
+        // smooth — the seam-softening this pass exists for — while
+        // across-wall pairs are excluded, so the Laplacian no longer
+        // smears bright exterior values into dark interiors through thin
+        // walls (leak path two).
+        {
+            for (uint32_t pass = 0; pass < cfg.smoothingPasses; ++pass) {
+                const uint32_t nx = outVolume.dims[0], ny = outVolume.dims[1], nz = outVolume.dims[2];
+                std::vector<glm::vec3> smoothed(size_t(n) * kSgLobeCount);
+                static const int kDx[6] = {1, -1, 0, 0, 0, 0};
+                static const int kDy[6] = {0, 0, 1, -1, 0, 0};
+                static const int kDz[6] = {0, 0, 0, 0, 1, -1};
+                const float lambda = std::clamp(cfg.smoothingLambda, 0.0f, 1.0f);
+                parallelSlices(nz, [&](uint32_t zBegin, uint32_t zEnd) {
+                    for (uint32_t iz = zBegin; iz < zEnd; ++iz)
+                        for (uint32_t iy = 0; iy < ny; ++iy)
+                            for (uint32_t ix = 0; ix < nx; ++ix) {
+                                const uint64_t v = (uint64_t(iz) * ny + iy) * nx + ix;
+                                glm::vec3 acc[kSgLobeCount] = {};
+                            int cnt = 0;
+                            for (int k = 0; k < 6; ++k) {
+                                const int jx = int(ix) + kDx[k];
+                                const int jy = int(iy) + kDy[k];
+                                const int jz = int(iz) + kDz[k];
+                                if (jx < 0 || jy < 0 || jz < 0 || jx >= int(nx) || jy >= int(ny) ||
+                                    jz >= int(nz))
+                                    continue;
+                                const uint64_t u =
+                                    (uint64_t(jz) * ny + uint64_t(jy)) * nx + uint64_t(jx);
+                                if (!sameSide(u, v, k))
+                                    continue; // across a wall: no cross-side smear
+                                for (uint32_t i = 0; i < kSgLobeCount; ++i)
+                                    acc[i] += outVolume.coeffs[size_t(u) * kSgLobeCount + i];
+                                ++cnt;
+                            }
+                            for (uint32_t i = 0; i < kSgLobeCount; ++i) {
+                                const glm::vec3& cur = outVolume.coeffs[size_t(v) * kSgLobeCount + i];
+                                glm::vec3 next = cur;
+                                if (cnt > 0)
+                                    next = glm::mix(cur, acc[i] / float(cnt), lambda);
+                                smoothed[size_t(v) * kSgLobeCount + i] = next;
+                            }
                     }
                 return false;
             });
