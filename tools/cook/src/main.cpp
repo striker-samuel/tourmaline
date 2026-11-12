@@ -4815,13 +4815,31 @@ int Run(const CookArgs& c) {
             size_t meshBlobs = 0, meshletSets = 0;
             for (const auto& [uri, lod] : c.ListMeshLods()) {
                 if (lod.lodIndex == 0) {
-                    if (lod.triCount > 100)
-                        ++chainable;
+                    if (lod.triCount > 100) {
+                        const auto base = c.FindMeshByUri(uri);
+                        if (base && c.staticMeshes.get(*base)) {
+                            const auto* upload = c.GetRetainedUpload(*base);
+                            for (const MeshRow& row : c.scene.tables.meshes) {
+                                if (row.mesh != base->index() ||
+                                    row.node >= c.scene.globalTransform.size() || !upload)
+                                    continue;
+                                if (smvk::EligibleForSpatialDerivatives(
+                                        upload->aabbMin, upload->aabbMax,
+                                        upload->indices.size(),
+                                        c.scene.globalTransform[row.node], !upload->skin.empty())) {
+                                    ++chainable;
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     if (c.GetMeshMeshlets(uri).has_value())
                         ++meshletSets;
                     ++meshBlobs;
                 } else {
-                    ++siblings;
+                    const auto sibling = c.FindMeshByUri(uri);
+                    if (sibling && c.staticMeshes.get(*sibling))
+                        ++siblings;
                 }
             }
             if (args.lods && chainable > 0 && siblings == 0) {
