@@ -11,6 +11,8 @@ import json
 from pathlib import Path
 import re
 import sys
+import tempfile
+import os
 
 import perf_harness
 import toursnapshot
@@ -79,7 +81,20 @@ def run_scenario(args, scenario):
     # state write depending on it. (Never on the dry-run path - that
     # contract is zero filesystem side effects.)
     state_file.parent.mkdir(parents=True, exist_ok=True)
-    state_file.write_bytes(toursnapshot.codec.canonical(frames_data[state_frame - 1][1]) + b"\n")
+    state_bytes = toursnapshot.codec.canonical(frames_data[state_frame - 1][1]) + b"\\n"
+    # Never expose a truncated JSON state file if the write is interrupted.
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(dir=state_file.parent, prefix=".state-",
+                                         suffix=".tmp", delete=False) as output:
+            temporary = Path(output.name)
+            output.write(state_bytes)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, state_file)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
     return {"id": scenario_id, "status": "captured", "record": result,
             "state_frame": state_frame, "state_file": str(state_file)}
 
@@ -98,6 +113,9 @@ def main(argv=None):
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         parser().error(str(exc))
 
+    manifest = args.output / "manifest.json"
+    if not args.dry_run and manifest.exists():
+        parser().error(f"refusing to overwrite manifest: {manifest}")
     report = {"schema_version": 1, "catalog": str(args.catalog.resolve()),
               "output": str(args.output.resolve()), "dry_run": args.dry_run,
               "scenarios": []}
@@ -116,8 +134,9 @@ def main(argv=None):
         print(json.dumps(report, indent=2))
     else:
         args.output.mkdir(parents=True, exist_ok=True)
-        (args.output / "manifest.json").write_text(json.dumps(report, indent=2) + "\n",
-                                                   encoding="utf-8")
+        # Exclusive creation respects the same fresh-output contract as frames.
+        with manifest.open("x", encoding="utf-8") as output:
+            output.write(json.dumps(report, indent=2) + "\\n")
     return 1 if failed else 0
 
 
