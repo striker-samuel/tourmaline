@@ -107,16 +107,19 @@ static double s_benchUpdates = 0.0, s_benchPasses = 0.0, s_benchReadbacks = 0.0,
 // ---------------------------------------------------------------------------
 namespace engine {
 
-smvk::ShaderProgram& WorldRenderer::GiStatsProgramFor(const smvk::ShaderProgram& base,
-                                                      uint32_t gv,
-                                                      bool stdTwin) {
-    smvk::ShaderProgram& slot = stdTwin ? m_giStatsProgramGiStd[gv] : m_giStatsProgramGi[gv];
+smvk::ShaderProgram& WorldRenderer::SpecProgramFor(const smvk::ShaderProgram& base,
+                                                   uint32_t specId,
+                                                   uint32_t gv,
+                                                   bool stdTwin,
+                                                   smvk::ShaderProgram* cacheGi,
+                                                   smvk::ShaderProgram* cacheStd) {
+    smvk::ShaderProgram& slot = stdTwin ? cacheStd[gv] : cacheGi[gv];
     if (slot.shaderCount == 0 && base.shaderCount == 2) {
-        // Forge the telemetry twin ONCE: the same modules + a spec payload
-        // flipping SPEC_GI_STATS to 1 on the fragment stage. Pipelines key
-        // on the spec, so this mints its own PSOs on first bind.
+        // Forge the diagnostic twin ONCE: the same modules + a spec payload
+        // flipping `specId` to 1 on the fragment stage. Pipelines key on the
+        // spec, so this mints its own PSOs on first bind.
         auto spec = std::make_shared<smvk::ShaderSpecialization>();
-        spec->SetBool(tour::kSpecGiStats, true);
+        spec->SetBool(specId, true);
         slot = base;
         for (size_t i = 0; i < slot.shaderCount; ++i)
             if (slot.shaders[i].stage == smvk::ShaderStage::Fragment)
@@ -161,11 +164,31 @@ smvk::ShaderProgram& WorldRenderer::MainLitProgramFor(uint32_t materialId) {
         if (gi.shaderCount == 2) {
             if (!layered && m_resources.mainProgramGiStd[gv].shaderCount == 2) {
                 if (m_giVolumeStatsArmed)
-                    return GiStatsProgramFor(m_resources.mainProgramGiStd[gv], gv, true);
+                    return SpecProgramFor(m_resources.mainProgramGiStd[gv],
+                                          tour::kSpecGiStats,
+                                          gv,
+                                          true,
+                                          m_giStatsProgramGi,
+                                          m_giStatsProgramGiStd);
+                if (m_giCoeffConstArmed)
+                    return SpecProgramFor(m_resources.mainProgramGiStd[gv],
+                                          tour::kSpecGiCoeffConst,
+                                          gv,
+                                          true,
+                                          m_coeffConstProgramGi,
+                                          m_coeffConstProgramGiStd);
                 return m_resources.mainProgramGiStd[gv];
             }
             if (m_giVolumeStatsArmed)
-                return GiStatsProgramFor(gi, gv, false);
+                return SpecProgramFor(
+                    gi, tour::kSpecGiStats, gv, false, m_giStatsProgramGi, m_giStatsProgramGiStd);
+            if (m_giCoeffConstArmed)
+                return SpecProgramFor(gi,
+                                      tour::kSpecGiCoeffConst,
+                                      gv,
+                                      false,
+                                      m_coeffConstProgramGi,
+                                      m_coeffConstProgramGiStd);
             return gi;
         }
         return stdReady ? m_resources.mainProgramStd : m_resources.mainProgram;
@@ -1376,6 +1399,15 @@ bool WorldRenderer::onAttach() {
     if (const char* statsEnv = std::getenv("TOURMALINE_GI_STATS")) {
         if (std::atoi(statsEnv) == 1)
             m_giVolumeStatsArmed = true;
+    }
+    // Constant-coefficient diagnostic: replace the weighted path's 9 BC6H
+    // lobe fetches with a constant (keeping the full visibility walk + SG
+    // evaluation) to floor the coefficient-fetch cost. Selects the
+    // giCoeffConstCompile=1 lit twin — off the timing path otherwise.
+    //   TOURMALINE_GI_COEFF_CONST=1
+    if (const char* ccEnv = std::getenv("TOURMALINE_GI_COEFF_CONST")) {
+        if (std::atoi(ccEnv) == 1)
+            m_giCoeffConstArmed = true;
     }
     // GI probe spheres for headless runs (the "Probe points" panel
     // checkbox's twin — the 3D instanced visual, Rendergraph/giprobe.h:

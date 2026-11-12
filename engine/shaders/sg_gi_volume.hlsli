@@ -350,7 +350,17 @@ void SgGiVolumeSample(FrameUniforms frame, uint vol, float3 pos,
                     continue;
                 ++surviving;
                 float3 corner[SG_GI_LOBES];
-                if (v.planeCountBase.z == 1u)
+                if (giCoeffConstCompile != 0u)
+                {
+                    // Constant-coefficient diagnostic (SPEC_GI_COEFF_CONST):
+                    // floor the coefficient-fetch cost — the visibility walk
+                    // above still runs, only the 9 BC6H lobe reads drop to a
+                    // constant. The SG evaluation below stays intact.
+                    [unroll]
+                    for (uint l = 0; l < SG_GI_LOBES; ++l)
+                        corner[l] = float3(0.5, 0.5, 0.5);
+                }
+                else if (v.planeCountBase.z == 1u)
                 {
                     // GV6H: one BC6H fetch per lobe - the amp IS the
                     // RGB (no unpack). Slots at [vol * 10 + l].

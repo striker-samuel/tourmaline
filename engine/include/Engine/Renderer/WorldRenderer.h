@@ -1865,13 +1865,16 @@ class WorldRenderer : public IRenderer {
     // chain over the project family's twins (design §9: the same hook
     // code on every leg).
     [[nodiscard]] smvk::ShaderProgram& MainLitProgramFor(uint32_t materialId);
-    // Stats-specialized twin of a lit GI program (giStatsCompile=1 on the
-    // fragment stage), built once and cached in m_giStatsProgramGi[gv] /
-    // m_giStatsProgramGiStd[gv]. Only ever forged when the telemetry pin
-    // is armed — the timing pipelines never mint the stats PSOs.
-    [[nodiscard]] smvk::ShaderProgram& GiStatsProgramFor(const smvk::ShaderProgram& base,
-                                                         uint32_t gv,
-                                                         bool stdTwin);
+    // Specialized twin of a lit GI program (a spec constant flipped to 1 on
+    // the fragment stage), built once and cached per (variant, gv, stdTwin).
+    // Only ever forged when the matching diagnostic pin is armed — the
+    // timing pipelines never mint these PSOs.
+    [[nodiscard]] smvk::ShaderProgram& SpecProgramFor(const smvk::ShaderProgram& base,
+                                                      uint32_t specId,
+                                                      uint32_t gv,
+                                                      bool stdTwin,
+                                                      smvk::ShaderProgram* cacheGi,
+                                                      smvk::ShaderProgram* cacheStd);
     // The family consult every lit leg shares: true only when the
     // material's family is ProjectLit AND the family programs loaded.
     // A ProjectLit material with no loaded family reports ONCE (a loud
@@ -4077,6 +4080,11 @@ class WorldRenderer : public IRenderer {
     // telemetry out).
     smvk::ShaderProgram m_giStatsProgramGi[4];
     smvk::ShaderProgram m_giStatsProgramGiStd[4];
+    // Constant-coefficient diagnostic twins (giCoeffConstCompile=1):
+    // forged + selected when TOURMALINE_GI_COEFF_CONST=1.
+    bool m_giCoeffConstArmed = false;
+    smvk::ShaderProgram m_coeffConstProgramGi[4];
+    smvk::ShaderProgram m_coeffConstProgramGiStd[4];
     bool m_giBlendActive = false;
     float m_giBlendAlpha = 0.0f; // 0 = fully A, 1 = fully B (clamped)
     // The cached path lists (AdoptGiVolumeBlend's residency check).

@@ -205,6 +205,9 @@ inline constexpr uint32_t kSpecLitNormalMap = 21;
 // GI-volume weighted-path telemetry (TOURMALINE_GI_STATS=1). Must match
 // common.hlsli SPEC_GI_STATS.
 inline constexpr uint32_t kSpecGiStats = 22;
+// Constant-coefficient diagnostic (TOURMALINE_GI_COEFF_CONST=1). Must
+// match common.hlsli SPEC_GI_COEFF_CONST.
+inline constexpr uint32_t kSpecGiCoeffConst = 23;
 
 struct MaterialCreateInfo {
     // Primary PBR textures – baseColorTexture == diffuse for backward compat.
