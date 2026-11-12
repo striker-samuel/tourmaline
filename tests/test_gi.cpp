@@ -3205,6 +3205,58 @@ void TestTraceSceneFromWorld() {
 // magic + 9 blobs; ReadFromMemory restores the blocks verbatim;
 // DecodeBc6hCoeffs reconstructs the coeffs within the codec's
 // tolerance band (the TestBc6hCodec convention: 0.12x relative).
+void TestGiOctahedralPack() {
+    using namespace smvk::gi;
+    using tour::gi::kGiOctRes;
+    GiVolume vol;
+    vol.gridMin = glm::vec3(0.0f);
+    vol.spacing = 0.5f;
+    vol.dims[0] = vol.dims[1] = vol.dims[2] = 1; // one probe
+    vol.Resize();
+    // A single +Z-ish lobe so the diffuse response is a smooth function of
+    // the sampling direction.
+    for (uint32_t l = 0; l < kSgLobeCount; ++l)
+        vol.coeffs[l] = (l == 0) ? glm::vec3(1.0f, 0.5f, 0.25f) : glm::vec3(0.0f);
+
+    std::vector<uint16_t> atlas;
+    uint32_t cols = 0, rows = 0;
+    vol.PackGpuOctahedral(atlas, cols, rows);
+    Check(cols == 1 && rows == 1, "gi.oct.single-probe-tile-grid");
+    Check(atlas.size() == size_t(kGiOctRes) * kGiOctRes * 4, "gi.oct.atlas-size");
+
+    // Oct decode twin (matches PackGpuOctahedral's texel-center convention).
+    const auto octDecode = [](const glm::vec2& oct01) -> glm::vec3 {
+        float x = oct01.x * 2.0f - 1.0f;
+        float y = oct01.y * 2.0f - 1.0f;
+        float z = 1.0f - std::abs(x) - std::abs(y);
+        if (z < 0.0f) {
+            const float tx = (1.0f - std::abs(y)) * (x >= 0.0f ? 1.0f : -1.0f);
+            const float ty = (1.0f - std::abs(x)) * (y >= 0.0f ? 1.0f : -1.0f);
+            x = tx;
+            y = ty;
+        }
+        const float l2 = x * x + y * y + z * z;
+        if (!(l2 > 1e-24f))
+            return glm::vec3(0.0f, 0.0f, 1.0f);
+        return glm::vec3(x, y, z) / std::sqrt(l2);
+    };
+    bool texelsMatch = true;
+    for (uint32_t oy = 0; oy < kGiOctRes && texelsMatch; ++oy)
+        for (uint32_t ox = 0; ox < kGiOctRes && texelsMatch; ++ox) {
+            const glm::vec2 oct01((float(ox) + 0.5f) / float(kGiOctRes),
+                                  (float(oy) + 0.5f) / float(kGiOctRes));
+            const glm::vec3 expected = SgDiffuseIrradiance(&vol.coeffs[0], octDecode(oct01));
+            const size_t o = (size_t(oy) * kGiOctRes + ox) * 4;
+            const glm::vec3 got(
+                UnpackHalf(atlas[o + 0]), UnpackHalf(atlas[o + 1]), UnpackHalf(atlas[o + 2]));
+            if (glm::length(got - expected) > 1e-2f)
+                texelsMatch = false;
+        }
+    Check(texelsMatch, "gi.oct.texels-match-diffuse-eval");
+}
+
+// DecodeBc6hCoeffs reconstructs the coeffs within the codec's
+// tolerance band (the TestBc6hCodec convention: 0.12x relative).
 void TestGiVolumeBc6hRoundTrip() {
     using namespace smvk::gi;
     GiVolume vol;
@@ -3491,6 +3543,7 @@ int main() {
     TestGiGridLayoutOptimizer();
     TestTraceSceneFromWorld();
     TestGiVolumeBc6hRoundTrip();
+    TestGiOctahedralPack();
     TestBakeInputHashFolds();
 
     std::cout << "gi_tests: " << (g_checks - g_failures) << "/" << g_checks << " checks passed\n";

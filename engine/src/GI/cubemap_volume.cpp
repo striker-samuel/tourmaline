@@ -457,6 +457,62 @@ void GiVolume::PackGpuMeanLayer(std::vector<uint16_t>& out) const {
     }
 }
 
+void GiVolume::PackGpuOctahedral(std::vector<uint16_t>& out,
+                                 uint32_t& atlasCols,
+                                 uint32_t& atlasRows) const {
+    // Octahedral decode (the AoOctDecode / gbuffer OctEncodeNormal twin).
+    const auto octDecode = [](const glm::vec2& oct01) -> glm::vec3 {
+        float x = oct01.x * 2.0f - 1.0f;
+        float y = oct01.y * 2.0f - 1.0f;
+        float z = 1.0f - std::abs(x) - std::abs(y);
+        if (z < 0.0f) {
+            const float tx = (1.0f - std::abs(y)) * (x >= 0.0f ? 1.0f : -1.0f);
+            const float ty = (1.0f - std::abs(x)) * (y >= 0.0f ? 1.0f : -1.0f);
+            x = tx;
+            y = ty;
+        }
+        const float l2 = x * x + y * y + z * z;
+        if (!(l2 > 1e-24f))
+            return glm::vec3(0.0f, 0.0f, 1.0f);
+        return glm::vec3(x, y, z) / std::sqrt(l2);
+    };
+
+    const uint32_t n = uint32_t(VoxelCount());
+    // Square-ish power-of-2 tile grid.
+    atlasCols = 1u;
+    while (atlasCols * atlasCols < n)
+        atlasCols <<= 1u;
+    atlasRows = (n + atlasCols - 1u) / atlasCols;
+    const uint32_t atlasW = atlasCols * kGiOctRes;
+    const uint32_t atlasH = atlasRows * kGiOctRes;
+    out.assign(size_t(atlasW) * atlasH * 4, uint16_t(0));
+
+    constexpr float kHalfMax = 65504.0f;
+    for (uint32_t v = 0; v < n; ++v) {
+        const glm::vec3* amps = &coeffs[size_t(v) * kSgLobeCount];
+        const uint32_t tx = v % atlasCols;
+        const uint32_t ty = v / atlasCols;
+        const uint32_t baseX = tx * kGiOctRes;
+        const uint32_t baseY = ty * kGiOctRes;
+        for (uint32_t oy = 0; oy < kGiOctRes; ++oy) {
+            for (uint32_t ox = 0; ox < kGiOctRes; ++ox) {
+                const glm::vec2 oct01((float(ox) + 0.5f) / float(kGiOctRes),
+                                      (float(oy) + 0.5f) / float(kGiOctRes));
+                const glm::vec3 E = glm::clamp(SgDiffuseIrradiance(amps, octDecode(oct01)),
+                                               glm::vec3(0.0f),
+                                               glm::vec3(kHalfMax));
+                const size_t px = size_t(baseX + ox);
+                const size_t py = size_t(baseY + oy);
+                const size_t o = (py * atlasW + px) * 4;
+                out[o + 0] = PackHalf(E.r);
+                out[o + 1] = PackHalf(E.g);
+                out[o + 2] = PackHalf(E.b);
+                out[o + 3] = PackHalf(1.0f);
+            }
+        }
+    }
+}
+
 void GiVolume::PackGpuVisLayers(std::vector<uint8_t> out[2]) const {
     // Two RGBA8_UNORM 3D layers per volume, one texel per voxel:
     //   visA = (+x, -x, +y, -y) obstacle distances

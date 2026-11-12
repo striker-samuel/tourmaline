@@ -160,6 +160,9 @@ std::vector<GiVolumePlane> GiVolumeBoxPlanesRotated(const glm::vec3& center,
 // ---------------------------------------------------------------------------
 
 inline constexpr uint32_t kGiVolumeMaxDim = 256; // per-axis grid cap (sgrv parity)
+// Octahedral diffuse-irradiance resolution per probe (the atlas tile is
+// kGiOctRes x kGiOctRes; power-of-2 so the atlas tiles align).
+inline constexpr uint32_t kGiOctRes = 8;
 
 class GiVolume {
   public:
@@ -252,6 +255,19 @@ class GiVolume {
     // unpack + lobe-sum path computes, at 1/7 the fetches and none of
     // the lobe-array register pressure.
     void PackGpuMeanLayer(std::vector<uint16_t>& out) const;
+    // Octahedral DIFFUSE irradiance atlas (the Overwatch-style compact
+    // directional representation — one directional fetch per probe instead
+    // of nine SG lobes). Each probe's kGiOctRes x kGiOctRes octahedral map
+    // (diffuse irradiance E(n) = SgDiffuseIrradiance(coeffs, n) evaluated
+    // per texel direction) is tiled into a 2D RGBA16F atlas; the runtime
+    // point- or bilinear-fetches one texel per surviving corner at the
+    // surface normal. atlasCols/atlasRows are the tile grid (square-ish,
+    // power-of-2 cols); atlasW/H = cols/rows * kGiOctRes. Memory is
+    // kGiOctRes^2 halfs per probe (the DDGI memory tradeoff — this is the
+    // diagnostic shape, not a production-compressed one).
+    void PackGpuOctahedral(std::vector<uint16_t>& out,
+                           uint32_t& atlasCols,
+                           uint32_t& atlasRows) const;
     // Resident bytes/voxel: BC6H = 9 (9 lobes x 1 B) + 8 vis + 8 mean;
     // the legacy RGBA16F shape = 56 + 8 + 8.
     size_t GpuBytes() const;
