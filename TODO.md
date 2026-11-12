@@ -122,55 +122,6 @@
   diagnostics, two-sided shadow policies, Forward+ optimizations, per-draw
   animation palettes, audio upgrades, and namespace/API cleanup.
 
-### Completed or superseded — do not re-open without new evidence
-
-- [x] **GPU snapshot #142/#148:** scoped/legacy PNG/raw matrix including
-  >256 MiB staging split and pinned camera parity validated 2026-11-04.
-  The duplicate #148 “GPU validation still open” paragraph below was removed.
-- [x] **#151 shader diagnostics default:** unsafe tree-wide Release define
-  reverted in `438cd288`; Debug-auto plus explicit opt-in remains intentional.
-  Target-scoped Release Editor diagnostics is a *new design task*, not
-  restoration of the reverted global define.
-- [x] **#190 immutable publication receipts and documented recovery
-  procedure:** landed; acceptance tests, platform durability and real
-  interruption behavior still open above.
-- [x] **#191 WorldRenderer configuration/descriptor extraction:** merged;
-  whole-renderer orchestration extraction not complete.
-- [x] **#272 default direct Map adapter:** replaces default Cluster-backed
-  `ProjectScenes` bridge; does not imply Cluster-free asset loading.
-- [x] **#280 eligible GPU-scene raster default and dynamic GfxFilter
-  capacity:** older opt-in/fixed draw-limit assumptions superseded.
-- [x] **#285 dedicated animation pak kind:** new cooks use `Anim` rather than
-  texture-kind clip assets; legacy wrapped clips remain readable. Catalog
-  clip/skeleton typed keys are a distinct follow-up.
-- [x] **#286/#287/#292 GPU-scene eligible LOD, double-sided and masked raster
-  support:** older blanket “always legacy-owned” statements superseded,
-  subject to current material/skinning/other admission restrictions.
-- [x] **#294/#295 persistent indexed geometry identities and live raster
-  handoff:** physical heap cutover, alias retirement and slot recycling remain
-  open above.
-- [x] **#297 gameplay-owned mesh-node GPU-scene synchronization:** landed
-  with headless tests; legacy full-world Cluster resolves still need separate
-  ownership migration.
-- [x] **#299 final temporal kept-bit visibility history:** merged with
-  reported static-scene pinned capture parity; retain broader temporal
-  hardware acceptance above.
-- [x] **#300–#338 (post-#299 merges, 2026-11-09 → 2026-11-12):** GPU-scene
-  atomics-free four-class PSO compaction (#301, supersedes #296), empty-command
-  sentinel (#300), closeup dither on GPUScene raster (#327), default-on
-  size-gated SDF baking + scene-aware LOD prep (#328), opt-in cloth sheen
-  (#330), source mesh type rename to `MeshData`/`MeshVertex` (#333), explicit
-  project resource paths + lossless GI-volume serialization (#335), terrain
-  fixed-layout validation + skirt winding (#336), benchmark scenario export
-  hardening (#325), GI-volume parallel bakes (#329/#332), declarative vertex
-  layouts (#319), shared-asset revision/blob hardening (#317), SSR metallic
-  continuity (#314), and World-node TRS setters, ProjectScenes context binding,
-  plug semantics, scene-preserve-on-failure, plus Vulkan hardening (#310/#312),
-  backports (#307/#309) and several docs/planning reconciles. #338 (cascaded
-  cubemap capture planning + tile provider) is a
-  **foundation** — the baking/streaming/renderer wiring is still open; the
-  GPU-scene removal plan (#305) is a planning doc only, not a landed cutover.
-
 ---
 
 ## Historical merged-as-draft audits (2026-11-04 to 2026-11-06)
