@@ -84,3 +84,11 @@ A normal build should accept one project and one human-friendly scene selector (
 - Existing pak/catalog ABI and runtime provider overrides remain compatible.
 
 **Disclosure:** Written by ChatGPT (OpenAI GPT-6). Findings are based on the cited source files and the reported Bistro incident; no native compilation or runtime bake was performed in this review PR.
+
+## GI-volume hash vs tour writer precision (confirmed follow-up)
+
+The authored OBB's world transform is hashed bitwise in `engine/src/GI/bake_inputs.cpp` (`GiVolumeBakeUnitHash` folds `nodeGlobal` through `feedPod`). In `engine/src/Asset/tour.cpp`, `WriteCommandLine` previously emitted `createGiVolume` position/size and `setGiVolumeAttr` position/rotation/size with the stream default of six significant digits. A high-precision authored transform could be hashed in memory by GiBaker and then replayed from a rounded `.tour` by Pak, yielding a different hash even with unchanged settings. Result: a first-time GI bake could be falsely rejected as stale, requiring a second bake against the rounded saved transform.
+
+**Corrective design:** serialization of every hash-relevant value must be round-trip safe (binary32 for float vectors; binary64 for double scalars) and both bake/gate must use the same persisted scene snapshot. Do not round the matrix inside the hash: that would silently erase meaningful differences and may not reproduce hierarchical OBB transforms. Add high-precision create/attribute save-load regression checks and a bake-vs-pack input-hash parity integration test.
+
+A narrow serialization correction and save/load tests were added to implementation PR **#335**; full bake/pack parity remains a required integration check before merge.
