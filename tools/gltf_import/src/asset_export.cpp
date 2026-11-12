@@ -527,6 +527,7 @@ void WriteMaterialAsset(const std::filesystem::path& path,
     o << "doubleSided=" << (m.info.doubleSided ? 1 : 0) << "\n";
     o << "castsShadows=" << (m.info.castsShadows ? 1 : 0) << "\n";
     o << "receiveContactShadows=" << (m.info.receiveContactShadows ? 1 : 0) << "\n";
+    o << "clothSheen=" << (m.info.clothSheen ? 1 : 0) << "\n";
     const char* shading = (m.info.shadingModel == smvk::ShadingModel::Unlit)    ? "unlit"
                           : (m.info.shadingModel == smvk::ShadingModel::Masked) ? "masked"
                                                                                 : "lit";
@@ -639,6 +640,8 @@ bool LoadMaterialAssetText(const std::string& text, MaterialAsset& out, std::str
             out.info.castsShadows = std::atoi(val.c_str()) != 0;
         else if (key == "receiveContactShadows")
             out.info.receiveContactShadows = std::atoi(val.c_str()) != 0;
+        else if (key == "clothSheen")
+            out.info.clothSheen = std::atoi(val.c_str()) != 0;
         else if (key == "shading") {
             if (val == "unlit")
                 out.info.shadingModel = smvk::ShadingModel::Unlit;
@@ -2354,6 +2357,7 @@ smvk::ClusterMaterialHandle ImportMaterialAssetToCluster(smvk::Cluster& cluster,
     info.doubleSided = m.info.doubleSided;
     info.castsShadows = m.info.castsShadows;
     info.receiveContactShadows = m.info.receiveContactShadows;
+    info.clothSheen = m.info.clothSheen;
     // Texture refs: image files beside the .material (the URI IS the POSIX
     // file path). Failures bind the BUILT-IN pink error texture
     // (editor://error_texture) instead of leaving the slot empty: a
