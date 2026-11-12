@@ -951,8 +951,11 @@ bool CookLodSiblings(Cluster& cluster,
         if (!largeInstance)
             continue;
         // Idempotence: already-cooked chains stay untouched.
-        if (auto hit = cluster.GetMeshLod(LodSiblingUri(uri, 1)); hit && hit->lodIndex == 1)
-            continue;
+        if (auto hit = cluster.GetMeshLod(LodSiblingUri(uri, 1)); hit && hit->lodIndex == 1) {
+            const auto existing = cluster.FindMeshByUri(LodSiblingUri(uri, 1));
+            if (existing && cluster.staticMeshes.get(*existing))
+                continue;
+        }
         // LOD0 marker (serializer fallback semantics when unregistered).
         LodInfo lod0;
         if (auto hit = cluster.GetMeshLod(uri))
