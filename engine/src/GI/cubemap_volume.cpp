@@ -1374,6 +1374,27 @@ bool BakeGiVolume(const GiTraceScene& scene,
         return visOpen(u, k ^ 1);
     };
 
+    // Reuse one pool across Jacobi passes. Each task owns complete Z slices:
+    // neighbor reads are from the previous pass, writes are disjoint, and
+    // all tasks finish before any pass publishes its results.
+    const uint32_t postThreads =
+        cfg.threadCount ? cfg.threadCount : std::thread::hardware_concurrency();
+    ThreadPool postPool(postThreads ? postThreads : 1);
+    const auto parallelSlices = [&](uint32_t nz, const auto& work) {
+        const uint32_t workers = std::min(nz, std::max(1u, postThreads));
+        const uint32_t slicesPerTask = (nz + workers - 1) / workers;
+        std::vector<std::future<bool>> futures;
+        futures.reserve(workers);
+        for (uint32_t begin = 0; begin < nz; begin += slicesPerTask) {
+            const uint32_t end = std::min(nz, begin + slicesPerTask);
+            futures.push_back(postPool.enqueue([&, begin, end] { return work(begin, end); }));
+        }
+        bool changed = false;
+        for (auto& future : futures)
+            changed |= future.get();
+        return changed;
+    };
+
     // ---- Validity dilation (probes inside solid geometry; the same
     // Jacobi scheme as the regular-volume bake: nearest-valid values
     // spread over the holes so facade-adjacent trilinear taps see
@@ -1392,18 +1413,19 @@ bool BakeGiVolume(const GiTraceScene& scene,
     {
         const uint32_t nx = outVolume.dims[0], ny = outVolume.dims[1], nz = outVolume.dims[2];
         for (int pass = 0; pass < 64; ++pass) {
-            bool anyFill = false;
             std::vector<glm::vec3> fill(size_t(n) * kSgLobeCount);
             std::vector<char> fillMask(size_t(n), 0);
             static const int kDx[6] = {1, -1, 0, 0, 0, 0};
             static const int kDy[6] = {0, 0, 1, -1, 0, 0};
             static const int kDz[6] = {0, 0, 0, 0, 1, -1};
-            for (uint32_t iz = 0; iz < nz; ++iz)
-                for (uint32_t iy = 0; iy < ny; ++iy)
-                    for (uint32_t ix = 0; ix < nx; ++ix) {
-                        const uint64_t v = (uint64_t(iz) * ny + iy) * nx + ix;
-                        if (valid[size_t(v)])
-                            continue;
+            const bool anyFill = parallelSlices(nz, [&](uint32_t zBegin, uint32_t zEnd) {
+                bool localFill = false;
+                for (uint32_t iz = zBegin; iz < zEnd; ++iz)
+                    for (uint32_t iy = 0; iy < ny; ++iy)
+                        for (uint32_t ix = 0; ix < nx; ++ix) {
+                            const uint64_t v = (uint64_t(iz) * ny + iy) * nx + ix;
+                            if (valid[size_t(v)])
+                                continue;
                         glm::vec3 acc[kSgLobeCount] = {};
                         int cnt = 0;
                         for (int k = 0; k < 6; ++k) {
@@ -1427,9 +1449,11 @@ bool BakeGiVolume(const GiTraceScene& scene,
                             for (uint32_t i = 0; i < kSgLobeCount; ++i)
                                 fill[size_t(v) * kSgLobeCount + i] = acc[i] / float(cnt);
                             fillMask[size_t(v)] = 1;
-                            anyFill = true;
+                            localFill = true;
                         }
                     }
+                return localFill;
+            });
             for (uint64_t v = 0; v < n; ++v)
                 if (fillMask[size_t(v)]) {
                     for (uint32_t i = 0; i < kSgLobeCount; ++i)
@@ -1467,11 +1491,12 @@ bool BakeGiVolume(const GiTraceScene& scene,
             static const int kDy[6] = {0, 0, 1, -1, 0, 0};
             static const int kDz[6] = {0, 0, 0, 0, 1, -1};
             const float lambda = std::clamp(cfg.smoothingLambda, 0.0f, 1.0f);
-            for (uint32_t iz = 0; iz < nz; ++iz)
-                for (uint32_t iy = 0; iy < ny; ++iy)
-                    for (uint32_t ix = 0; ix < nx; ++ix) {
-                        const uint64_t v = (uint64_t(iz) * ny + iy) * nx + ix;
-                        glm::vec3 acc[kSgLobeCount] = {};
+            parallelSlices(nz, [&](uint32_t zBegin, uint32_t zEnd) {
+                for (uint32_t iz = zBegin; iz < zEnd; ++iz)
+                    for (uint32_t iy = 0; iy < ny; ++iy)
+                        for (uint32_t ix = 0; ix < nx; ++ix) {
+                            const uint64_t v = (uint64_t(iz) * ny + iy) * nx + ix;
+                            glm::vec3 acc[kSgLobeCount] = {};
                         int cnt = 0;
                         for (int k = 0; k < 6; ++k) {
                             const int jx = int(ix) + kDx[k];
@@ -1496,6 +1521,8 @@ bool BakeGiVolume(const GiTraceScene& scene,
                             smoothed[size_t(v) * kSgLobeCount + i] = next;
                         }
                     }
+                return false;
+            });
             outVolume.coeffs = std::move(smoothed);
         }
     }
