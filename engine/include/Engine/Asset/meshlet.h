@@ -4,7 +4,7 @@
 #pragma once
 
 // Cook-time meshlet path (meshoptimizer). Cooked once in the pak cooker from
-// the optimized `StaticMeshUpload`, persisted in the Mesh blob, loaded into
+// the optimized `MeshData`, persisted in the Mesh blob, loaded into
 // `StaticMesh::meshlets` at runtime. Nothing in the renderer consumes this
 // yet — it is the data foundation for a future indirect/mesh-shader pass.
 //
@@ -19,14 +19,14 @@
 
 #include <glm/glm.hpp>
 
-// (moved: StaticMeshUpload is ENGINE-OWNED/tour:: — the smvk fwd decl
+// (moved: MeshData is ENGINE-OWNED/tour:: — the smvk fwd decl
 // became a using-declaration so it cannot collide with mesh.h's compat
 // re-export; CookedMeshlets stays smvk::)
 namespace tour {
-struct StaticMeshUpload;
+struct MeshData;
 }
 namespace smvk {
-using ::tour::StaticMeshUpload;
+using ::tour::MeshData;
 struct CookedMeshlets;
 
 // THE meshlet size limits (kMax constants — the one place the number lives).
@@ -102,7 +102,7 @@ struct CookedMeshlets {
 // Builds meshlets from an (already vertex-cache-optimized) upload.
 // Returns false on degenerate input / disabled config / builder failure,
 // leaving `out` empty. `err` describes the failure when non-null.
-bool BuildMeshletsForUpload(const StaticMeshUpload& upload,
+bool BuildMeshletsForUpload(const MeshData& upload,
                             const MeshletConfig& config,
                             CookedMeshlets* out,
                             MeshletStats* outStats = nullptr,
