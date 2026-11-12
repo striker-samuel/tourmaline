@@ -157,6 +157,7 @@ inline void BakeGBlockVerts(const TerrainHField& hf,
 inline void BuildBlockIndices(uint32_t quads,
                               std::vector<uint32_t>& out,
                               std::span<const glm::vec3> positions = {}) {
+    (void)positions; // Skirt facing does not depend on sampled heights.
     out.clear();
     const uint32_t row = quads + 1;
     out.reserve(size_t(quads) * size_t(quads) * 6 + size_t(4) * size_t(quads) * 6);
@@ -197,26 +198,12 @@ inline void BuildBlockIndices(uint32_t quads,
             const uint32_t b = edgeVert(ring, i + 1);
             const uint32_t sa = ringBase + i;
             const uint32_t sb = ringBase + i + 1;
-            // Candidate (a,b,sa)+(b,sb,sa); flip when facing inward.
-            bool flip = false;
-            if (positions.size() > sa) {
-                const glm::vec3 pa = positions[a];
-                const glm::vec3 pb = positions[b];
-                const glm::vec3 ps = positions[sa];
-                glm::vec3 fn = glm::cross(pb - pa, ps - pa);
-                // Outward reference: edge midpoint pushed away from the
-                // block center, purely horizontal.
-                glm::vec3 mid = (pa + pb) * 0.5f;
-                glm::vec3 ctr = positions[surfCount / 2];
-                glm::vec3 away(mid.x - ctr.x, 0.0f, mid.z - ctr.z);
-                if (glm::dot(fn, away) < 0.0f)
-                    flip = true;
-            }
-            if (!flip) {
-                out.insert(out.end(), {a, b, sa, b, sb, sa});
-            } else {
+            // +X border traversal: bottom (-Z) and right (+X)
+            // use default winding; top (+Z) and left (-X) reverse it.
+            if (ring == 1 || ring == 2)
                 out.insert(out.end(), {a, sa, b, b, sa, sb});
-            }
+            else
+                out.insert(out.end(), {a, b, sa, b, sb, sa});
         }
     }
 }
