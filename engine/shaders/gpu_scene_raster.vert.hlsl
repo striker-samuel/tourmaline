@@ -94,7 +94,7 @@ VSOut mainVS(VSIn IN) {
     OUT.meshMaterial = inst.refs.z;
     OUT.lightmapUv = float2(0.0f, 0.0f);
     OUT.lmChunk = 0xffffffffu;
-    OUT.ditherCloseup = 0u;
+    OUT.ditherCloseup = (inst.refs.w & GPU_SCENE_INSTANCE_DITHER_CLOSEUP) != 0u ? 1u : 0u;
     OUT.userData = 0u;
     OUT.lightLayerMask = 0xffffffffu;
 
