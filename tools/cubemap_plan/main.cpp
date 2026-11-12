@@ -14,10 +14,15 @@
 #include <Engine/GI/bake.h>
 #include <Engine/Vfs/vfs.h>
 #include <Engine/WorldPartition/CubemapCapturePlanning.h>
+#include <Engine/WorldPartition/CubemapCaptureDiagnostics.h>
 #include <gltf_import/asset_export.h>
 #include <gltf_import/gltf.h> // BuildFromMeshAsset + VfsTextureSource (global ns)
 
+#include <cerrno>
+#include <cmath>
 #include <cstdio>
+#include <limits>
+#include <map>
 #include <cstdlib>
 #include <filesystem>
 #include <memory>
@@ -30,7 +35,9 @@ namespace fs = std::filesystem;
 static int usage() {
     std::fprintf(stderr,
                  "usage: cubemap_plan <content-dir> <geometry-vfs-path> "
-                 "[minX minY minZ maxX maxY maxZ]\n");
+                 "[minX minY minZ maxX maxY maxZ] [--budget N] [--sweep]\\n"
+                 "  --budget N: max probes per world cell and tier\\n"
+                 "  --sweep: budgets 128, 256, 512 and 1024 (one BVH build)\\n");
     return 2;
 }
 
@@ -41,17 +48,61 @@ int main(int argc, char** argv) {
     const std::string geometryVfs = argv[2];
 
     wp::CubemapCaptureVolume volume{};
-    if (argc >= 9) {
-        volume.min = {std::strtof(argv[3], nullptr),
-                      std::strtof(argv[4], nullptr),
-                      std::strtof(argv[5], nullptr)};
-        volume.max = {std::strtof(argv[6], nullptr),
-                      std::strtof(argv[7], nullptr),
-                      std::strtof(argv[8], nullptr)};
+    // Bounds are an optional six-number group; a negative X is valid.
+    int next = 3;
+    if (next < argc && std::string(argv[next]) != "--budget" &&
+        std::string(argv[next]) != "--sweep") {
+        if (argc - next < 6)
+            return usage();
+        float values[6]{};
+        for (int i = 0; i < 6; ++i) {
+            char* tail = nullptr;
+            errno = 0;
+            values[i] = std::strtof(argv[next + i], &tail);
+            if (errno == ERANGE || tail == argv[next + i] || *tail != '\\0' ||
+                !std::isfinite(values[i])) {
+                std::fprintf(stderr, "invalid capture bound: %s\\n", argv[next + i]);
+                return 2;
+            }
+        }
+        volume.min = {values[0], values[1], values[2]};
+        volume.max = {values[3], values[4], values[5]};
+        next += 6;
     } else {
-        // The bistro scene AABB (GiBaker --print-bounds trace bounds).
+        // Bistro fixture AABB (GiBaker --print-bounds trace bounds).
         volume.min = {-58.6003f, -4.72616f, -72.3586f};
         volume.max = {50.463f, 27.2062f, 42.9172f};
+    }
+    bool sweep = false;
+    bool explicitBudget = false;
+    for (int i = next; i < argc; ++i) {
+        const std::string option = argv[i];
+        if (option == "--sweep") {
+            sweep = true;
+        } else if (option == "--budget" && i + 1 < argc) {
+            if (explicitBudget) {
+                std::fprintf(stderr, "--budget specified more than once\\n");
+                return 2;
+            }
+            explicitBudget = true;
+            const std::string raw = argv[++i];
+            char* tail = nullptr;
+            errno = 0;
+            const unsigned long parsed = std::strtoul(raw.c_str(), &tail, 10);
+            if (errno == ERANGE || tail == raw.c_str() || *tail != '\\0' ||
+                parsed == 0 || parsed > std::numeric_limits<uint32_t>::max()) {
+                std::fprintf(stderr, "invalid positive --budget: %s\\n", raw.c_str());
+                return 2;
+            }
+            volume.maxProbesPerCell = static_cast<uint32_t>(parsed);
+        } else {
+            std::fprintf(stderr, "unknown or incomplete option: %s\\n", option.c_str());
+            return usage();
+        }
+    }
+    if (sweep && explicitBudget) {
+        std::fprintf(stderr, "--sweep cannot be combined with --budget\\n");
+        return 2;
     }
     volume.cascades = {{64.0f, 2.0f}, {256.0f, 3.0f}, {512.0f, 5.0f}};
 
@@ -119,40 +170,59 @@ int main(int argc, char** argv) {
             return traceScene.Occluded(origin, dir, maxDist);
         };
 
-    // ---- Plan the cascaded captures over the bistro AABB.
-    std::vector<wp::CubemapTileCaptureSet> sets;
-    std::string error;
-    if (!wp::PlanCubemapTileCaptures(volume, occluded, sets, error)) {
-        std::fprintf(stderr, "plan failed: %s\n", error.c_str());
-        return 1;
-    }
-
-    std::printf("cascaded cubemap plan: %zu capture set(s) over %u cascade tiers\n"
-                "  occlusion BVH: %u triangles\n",
-                sets.size(),
-                (unsigned)volume.cascades.size(),
-                (unsigned)traceScene.Bvh().TriangleCount());
-    size_t totalProbes = 0;
-    for (const auto& s : sets) {
-        totalProbes += s.probes.size();
-        std::printf("  cell (%lld,%lld) cascade %u: %zu probes\n",
-                    (long long)s.cell.x,
-                    (long long)s.cell.z,
-                    s.cascade,
-                    s.probes.size());
-        for (size_t i = 0; i < s.probes.size() && i < 4; ++i) {
-            const auto& p = s.probes[i];
-            std::printf(
-                "      probe %zu: pos=(%.2f, %.2f, %.2f) influence=%.1f fade=%.1f depth=%u\n",
-                i,
-                p.position.x,
-                p.position.y,
-                p.position.z,
-                p.influenceRadius,
-                p.fadeRadius,
-                p.depth);
+    // ---- Reuse the same geometry BVH for every budget. Report actual
+    // overlap, not the misleading equality of per-tier probe counts.
+    const std::vector<uint32_t> budgets = sweep
+        ? std::vector<uint32_t>{128, 256, 512, 1024}
+        : std::vector<uint32_t>{volume.maxProbesPerCell};
+    for (const uint32_t budget : budgets) {
+        volume.maxProbesPerCell = budget;
+        std::vector<wp::CubemapTileCaptureSet> sets;
+        std::string error;
+        if (!wp::PlanCubemapTileCaptures(volume, occluded, sets, error)) {
+            std::fprintf(stderr, "plan failed at budget %u: %s\\n", budget, error.c_str());
+            return 1;
         }
+        std::printf("cubemap plan: budget=%u per cell/tier, %zu capture sets, "
+                    "%zu tiers; BVH=%u triangles\\n",
+                    budget, sets.size(), volume.cascades.size(),
+                    (unsigned)traceScene.Bvh().TriangleCount());
+        size_t totalProbes = 0;
+        size_t equivalentTiers = 0;
+        std::map<std::pair<int64_t, int64_t>, const wp::CubemapTileCaptureSet*> previous;
+        for (const auto& set : sets) {
+            const auto key = std::make_pair(set.cell.x, set.cell.z);
+            const auto it = previous.find(key);
+            const auto* prior = it == previous.end() ? nullptr : it->second;
+            const auto quality = wp::AnalyzeCubemapCaptureQuality(set, prior);
+            totalProbes += set.probes.size();
+            if (quality.equivalentToPrevious)
+                ++equivalentTiers;
+            std::printf("  cell (%lld,%lld) cascade %u target=%.1fm: "
+                        "%zu probes (%.1f%% budget); influence radius "
+                        "min/median/max=%.2f/%.2f/%.2fm",
+                        (long long)set.cell.x, (long long)set.cell.z,
+                        set.cascade, (double)volume.cascades[set.cascade].densityMeters,
+                        set.probes.size(), 100.0 * double(set.probes.size()) / double(budget),
+                        (double)quality.minInfluenceMeters,
+                        (double)quality.medianInfluenceMeters,
+                        (double)quality.maxInfluenceMeters);
+            if (quality.hasPrevious) {
+                const double overlap = quality.probes
+                    ? 100.0 * double(quality.matchingPreviousPositions) /
+                        double(quality.probes)
+                    : (prior->probes.empty() ? 100.0 : 0.0);
+                std::printf("; prior-tier position overlap=%.1f%%, equivalent=%s",
+                            overlap, quality.equivalentToPrevious ? "yes" : "no");
+            }
+            std::printf("\\n");
+            previous[key] = &set;
+        }
+        std::printf("  total probes=%zu; equivalent adjacent cell-tiers=%zu\\n",
+                    totalProbes, equivalentTiers);
+        if (equivalentTiers)
+            std::printf("  NOTE: matching placements do not justify distinct "
+                        "capture tiers until bake/render quality is measured.\\n");
     }
-    std::printf("total probes: %zu\n", totalProbes);
     return 0;
 }
