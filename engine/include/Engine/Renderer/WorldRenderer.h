@@ -4115,6 +4115,10 @@ class WorldRenderer : public IRenderer {
     smvk::ShaderProgram m_exportProgramGi[4];
     smvk::ShaderProgram m_exportProgramGiStd[4];
     std::string m_giExportIrradianceDir; // capture output directory
+    // Specular capture (TOURMALINE_GI_EXPORT_SPECULAR): reads the NORMAL
+    // outEnvSpec (ambientSpec x occlusion) — no diffuse spec constant, so
+    // the SG roughW crossover vs cubemap-only difference is isolated.
+    bool m_giExportSpecularArmed = false;
     bool m_giBlendActive = false;
     float m_giBlendAlpha = 0.0f; // 0 = fully A, 1 = fully B (clamped)
     // The cached path lists (AdoptGiVolumeBlend's residency check).

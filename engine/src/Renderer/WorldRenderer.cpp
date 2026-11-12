@@ -1475,6 +1475,14 @@ bool WorldRenderer::onAttach() {
         m_giExportIrradianceArmed = true;
         m_giExportIrradianceDir = expEnv;
     }
+    // Specular capture: read the normal outEnvSpec (ambientSpec x occlusion)
+    // without the diffuse swap, isolating the roughW SG crossover vs
+    // cubemap-only specular.
+    //   TOURMALINE_GI_EXPORT_SPECULAR=<dir>
+    if (const char* specEnv = std::getenv("TOURMALINE_GI_EXPORT_SPECULAR")) {
+        m_giExportSpecularArmed = true;
+        m_giExportIrradianceDir = specEnv;
+    }
     // GI probe spheres for headless runs (the "Probe points" panel
     // checkbox's twin — the 3D instanced visual, Rendergraph/giprobe.h:
     // each volume's lattice as 0.12 m icospheres colored by the probe's
@@ -10043,7 +10051,7 @@ void WorldRenderer::PollCaptureReadback() {
     } else if (m_sequenceReadbackPending) {
         m_sequenceReadbackPending = false;
         ExportSequenceScreenshot(m_captureExtent);
-    } else if (m_giExportIrradianceArmed) {
+    } else if (m_giExportIrradianceArmed || m_giExportSpecularArmed) {
         ExportIrradianceCapture(m_captureExtent);
     } else {
         ExportScreenshot(m_captureExtent);
