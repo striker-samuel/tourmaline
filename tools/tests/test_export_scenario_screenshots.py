@@ -66,6 +66,36 @@ class ExportScenarioSnapshotsTests(unittest.TestCase):
                 exporter.run_scenario(args, self.scenario())
             self.assertEqual(state.read_text(encoding="utf-8"), "previous")
 
+    def test_existing_manifest_is_not_overwritten(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            catalog = root / "catalog.json"
+            catalog.write_text(json.dumps({"schema_version": 1,
+                                           "scenarios": [self.scenario()]}), encoding="utf-8")
+            output = root / "output"
+            output.mkdir()
+            manifest = output / "manifest.json"
+            manifest.write_text("prior manifest", encoding="utf-8")
+            with self.assertRaises(SystemExit):
+                exporter.main(["--catalog", str(catalog), "--app", "App",
+                               "--output", str(output)])
+            self.assertEqual(manifest.read_text(encoding="utf-8"), "prior manifest")
+
+    def test_state_write_failure_leaves_no_partial_state_or_temp(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            args = exporter.parser().parse_args(["--app", "App", "--output", str(root)])
+            frames = [({"kind": "key"}, {"tick": 0})]
+            with mock.patch.object(exporter.toursnapshot, "run_record",
+                                   return_value={"status": "ok", "frames": 1}), \\
+                 mock.patch.object(exporter.toursnapshot.codec, "reconstruct",
+                                   return_value=frames), \\
+                 mock.patch.object(exporter.os, "replace", side_effect=OSError("rename failed")):
+                with self.assertRaisesRegex(OSError, "rename failed"):
+                    exporter.run_scenario(args, {**self.scenario(), "frames": 1})
+            self.assertFalse((root / "demo/state.json").exists())
+            self.assertEqual(list((root / "demo").glob(".state-*.tmp")), [])
+
     def test_record_extracts_canonical_state(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
