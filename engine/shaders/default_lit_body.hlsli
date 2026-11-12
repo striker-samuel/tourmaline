@@ -1212,6 +1212,9 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         shadow = min(shadow, saturate(contactVisibility));
     }
 
+    // Opt-in microfiber cloth BRDF (Neubelt & Pettineo, The Order: 1886).
+    // Reuses the existing roughness control, normal map and specular AA.
+    const bool clothSheen = (asuint(mat.emissiveFactor.w) & MATERIAL_CLOTH_SHEEN) != 0u;
     // Cook-Torrance BRDF
     float D = DistributionGGX(N, H, shadingRoughness);
     float G = GeometrySmith(N, V, L, shadingRoughness);
@@ -1230,6 +1233,19 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // constant below.
     float3 specular = (litSpecular != 0u)
         ? numerator / denominator : float3(0.0f, 0.0f, 0.0f);
+    if (clothSheen && litSpecular != 0u)
+    {
+        // Modified Ashikhmin-Premoze velvet distribution (Order: 1886).
+        // Broad grazing-angle backscatter; stable at NdotH = 1.
+        const float alpha2 = max(shadingRoughness * shadingRoughness, 0.0016f);
+        const float sin2ThetaH = saturate(1.0f - NdotH * NdotH);
+        const float velvetD = (2.0f + 1.0f / alpha2) *
+            pow(max(sin2ThetaH, 1e-6f), 0.5f / alpha2) / (2.0f * PI);
+        // The Order's smooth visibility denominator, rather than GGX Smith.
+        const float velvetVisibility = 1.0f /
+            max(4.0f * (NdotL + NdotV - NdotL * NdotV), 1e-4f);
+        specular = F * min(velvetD * velvetVisibility, 64.0f);
+    }
     if (litSpecular == 0u)
         kD = float3(1.0f - metallic, 1.0f - metallic, 1.0f - metallic);
 
