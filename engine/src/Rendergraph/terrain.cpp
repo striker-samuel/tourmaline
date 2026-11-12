@@ -80,7 +80,10 @@ bool TerrainField::ReloadShaders(ResourceManager& ctx, std::vector<ShaderModuleH
 bool TerrainField::BuildFromSource(ResourceManager& ctx,
                                    const TerrainSource& src,
                                    const TerrainDesc& d) {
-    if (!src.hasTerrain || !src.hfield.valid() || src.masks.size() != 256) {
+    if (!src.hasTerrain || !src.hfield.valid() || src.masks.size() != 256 ||
+        !std::all_of(src.masks.begin(), src.masks.end(), [](const auto& tile) {
+            return tile.size() == size_t(kMaskTileRes) * kMaskTileRes * 4;
+        })) {
         std::fprintf(stderr, "[terrain] no valid terrain source (empty or broken harvest)\n");
         return false;
     }
@@ -101,17 +104,9 @@ bool TerrainField::BuildFromSource(ResourceManager& ctx,
     // near pattern; a 16-grid height sample for the far pattern — same
     // ring layout, resolution-independent check).
     std::vector<std::vector<uint32_t>> lodIndices(3);
-    {
-        GBlockMesh ref;
-        BakeGBlockVerts(hf, masks, 0, 0, kBlockLods[0], kSkirtDepth, ref);
-        std::vector<glm::vec3> refPos;
-        refPos.reserve(ref.verts.size());
-        for (const auto& v : ref.verts)
-            refPos.push_back(v.pos);
-        BuildBlockIndices(kBlockLods[0], lodIndices[0], refPos);
-        BuildBlockIndices(kBlockLods[1], lodIndices[1], {});
-        BuildBlockIndices(kBlockLods[2], lodIndices[2], {});
-    }
+    // Shared edge-specific topology, independent of sampled block heights.
+    for (int l = 0; l < 3; ++l)
+        BuildBlockIndices(kBlockLods[l], lodIndices[size_t(l)]);
     for (int l = 0; l < 3; ++l)
         indicesPerLod[size_t(l)] = uint32_t(lodIndices[size_t(l)].size());
 
@@ -147,24 +142,7 @@ bool TerrainField::BuildFromSource(ResourceManager& ctx,
     farVertexCount = uint32_t(farVerts.size());
     // Shared far topology, wound from real 16-grid positions.
     std::vector<uint32_t> farIndices;
-    {
-        const TerrainMeta& meta = hf.meta;
-        const float step = kBlockSize / float(kFarQuads);
-        std::vector<glm::vec3> farPos;
-        farPos.reserve(size_t(kFarQuads + 1) * size_t(kFarQuads + 1));
-        for (uint32_t j = 0; j <= kFarQuads; ++j)
-            for (uint32_t i = 0; i <= kFarQuads; ++i)
-                farPos.emplace_back(meta.originX + float(i) * step,
-                                    SampleHeight(hf,
-                                                 meta.originX + float(i) * step,
-                                                 meta.originZ + float(j) * step),
-                                    meta.originZ + float(j) * step);
-        // Skirt ring positions (dropped; only the horizontal facing
-        // matters for the winding check).
-        for (uint32_t k = 0; k < 4 * (kFarQuads + 1); ++k)
-            farPos.emplace_back(0.0f, -1000.0f, 0.0f);
-        BuildBlockIndices(kFarQuads, farIndices, farPos);
-    }
+    BuildBlockIndices(kFarQuads, farIndices);
     farIndexCount = uint32_t(farIndices.size());
     boundsMin = glm::vec3(hf.meta.originX, globalMinY, hf.meta.originZ);
     boundsMax = glm::vec3(
