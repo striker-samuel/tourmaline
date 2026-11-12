@@ -495,6 +495,20 @@ void EditorApp::DrawMaterialBody(uint32_t mat) {
                 Do(c);
             }
         }
+        {
+            const bool cloth = (smvk::MaterialFlagsFromWord(m->values.emissiveFactor.w) &
+                                smvk::kMaterialFlagClothSheen) != 0;
+            if (attr::Bool("Cloth sheen", cloth,
+                           "The Order: 1886 velvet microfiber BRDF; roughness controls fuzz width")) {
+                EditCmd c{};
+                c.verb = EditVerb::SetMatAttr;
+                c.matWorld = mat;
+                c.attr = "clothSheen";
+                c.number = cloth ? 0.0 : 1.0;
+                ReadSharedMatAttr(mat, "clothSheen", c.beforeVec4, c.beforeNum);
+                Do(c);
+            }
+        }
         int alpha = int(m->alphaMode);
         if (attr::Enum("Alpha",
                        &alpha,
