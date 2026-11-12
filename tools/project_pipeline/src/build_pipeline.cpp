@@ -73,6 +73,7 @@ bool ProcessAlive(unsigned long long pid) {
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Asset/sdf.h>
+#include <Engine/Asset/mesh_preparation_policy.h>
 #include <Engine/Asset/tour.h>
 
 #include <artifact_cache/artifact_cache.h>
@@ -461,7 +462,11 @@ static bool BakePlanSdfs(const Project& project, const BuildPlan& plan, std::str
         // global tour namespace).
         ::tour::asset::SdfAsset baked;
         for (const auto& geometry : mesh.geometry) {
-            if (geometry.indices.empty() || geometry.positions.empty())
+            if (geometry.indices.empty() || geometry.positions.empty() ||
+                !smvk::EligibleForSpatialDerivatives(geometry.aabbMin,
+                                                     geometry.aabbMax,
+                                                     geometry.indices.size(),
+                                                     !geometry.skin.empty()))
                 continue;
             std::vector<glm::vec3> positions;
             positions.reserve(geometry.positions.size());
