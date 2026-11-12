@@ -607,6 +607,33 @@ struct EnvTileCell {
 // The DS visualizer inputs live in the standalone DsVizParams payload
 // (NOT inlined here): viz-gated #ifdefs inside this struct once made the
 // CPU/GPU layout config-dependent.
+
+// ---- GI-volume weighted-path telemetry (TOURMALINE_GI_STATS=1) ----
+// A 128-byte debug histogram the lit shader accumulates with InterlockedAdd
+// when frame.giVolumeStatsEnabled is set. Zero-filled once before the
+// instrumented bench; the CPU dumps it after. Off the timing path (the
+// atomics are gated off for normal runs — the perf benchmark never pays
+// them). Layout:
+//   [0] totalCalls     every SgGiVolumeSample invocation
+//   [1] weightedCalls  invocations that took the 8-corner weighted path
+//   [2] fullWeight     weighted calls where all 8 corners have wv == 1
+//   [3..11] hist[9]    surviving-corner histogram (0..8 corners, wt > 0)
+//   [12..16] dhist[5]  weight-distance D = 1/2 sum|q_i - t_i| bins
+//   [17..31] pad       (128-byte round)
+// D measures how far the NORMALIZED visibility weights q_i = t_i v_i /
+// sum(t_j v_j) drift from the ordinary trilinear weights t_i. D == 0 means
+// the visibility filter changes nothing (all v_i equal, even if < 1); the
+// bin edges (0.001 / 0.01 / 0.05 / 0.1) split identical -> strong.
+struct GiVolumeStatsBuffer
+{
+    uint totalCalls;    // 0
+    uint weightedCalls; // 4
+    uint fullWeight;    // 8
+    uint hist[9];       // 12 surviving corners 0..8
+    uint dhist[5];      // 48 D bins (0..4: <0.001, <0.01, <0.05, <0.1, >=0.1)
+    uint pad[15];       // 68 128-byte round
+};
+
 struct FrameUniforms
 {
     float4x4 view;
@@ -906,6 +933,14 @@ uint decalCount;                                         // 776 0 = decals off
     // vis tail - no pad on either side (DXC packs uint arrays at 4). ----
     uint giVolumeLayerTable[80];                                  // 2500 A set: 8 volumes x 10 layer slots
     uint giVolumeLayerTableB[80];                                 // 2820 B set
+    // ---- GI-volume weighted-path telemetry (the APPEND-ONLY tail's last
+    // slots; see GiVolumeStatsBuffer above). Enabled only when the app
+    // sets giVolumeStatsEnabled (TOURMALINE_GI_STATS=1) — the atomics
+    // gate off for normal/timing runs. The 64-bit BDA sits at 3144 (the
+    // uint tables end at 3140; std140/C++ both 8-align the pointer, so 4
+    // bytes of pad precede it). ----
+    GPU_PTR_WRITE(GiVolumeStatsBuffer) giVolumeStats;             // 3144 debug histogram BDA
+    uint giVolumeStatsEnabled;                                     // 3152 1 = accumulate + report
 };
 
 // Deferred-shadow push constants + shared helpers (needs FrameUniforms

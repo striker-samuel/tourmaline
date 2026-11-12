@@ -1345,6 +1345,15 @@ bool WorldRenderer::onAttach() {
         else
             std::cerr << "[WorldRenderer] TOURMALINE_GI_DEBUG wants 0..4\n";
     }
+    // GI-volume weighted-path telemetry (the lit shader's 64-byte
+    // histogram; OFF for normal/timing runs — the perf benchmark must run
+    // with this pin ABSENT so the atomics never fire and the timing path
+    // stays uninstrumented):
+    //   TOURMALINE_GI_STATS=1  accumulate + dump the histogram at bench end
+    if (const char* statsEnv = std::getenv("TOURMALINE_GI_STATS")) {
+        if (std::atoi(statsEnv) == 1)
+            m_giVolumeStatsArmed = true;
+    }
     // GI probe spheres for headless runs (the "Probe points" panel
     // checkbox's twin — the 3D instanced visual, Rendergraph/giprobe.h:
     // each volume's lattice as 0.12 m icospheres colored by the probe's
@@ -4838,6 +4847,32 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
     data.giIntensity = m_giIntensity;
     data.giDebug = (uint32_t(std::clamp(m_giDebug, 0, 4)) & 0xffu) |
                    (uint32_t(std::clamp(m_giDebugLevel, 0, 7) & 0xff) << 8);
+    // GI-volume weighted-path telemetry: publish the histogram BDA + the
+    // enable flag when armed (TOURMALINE_GI_STATS=1). The buffer is
+    // created + zero-filled ONCE (the GPU-counter contract) and the
+    // atomics accumulate across the whole bench; the final-frame dump
+    // reports the ratios. Absent the pin, both fields stay 0 and the
+    // shader's atomics gate off — the timing run pays nothing.
+    if (m_giVolumeStatsArmed) {
+        if (m_giVolumeStatsBuffer.empty()) {
+            static constexpr uint32_t kZeroStats[32] = {};
+            m_giVolumeStatsBuffer = m_context->CreateBuffer(
+                sizeof(kZeroStats), smvk::BufferType_Storage, "gi volume stats");
+            m_context->UploadDataToBuffer(m_giVolumeStatsBuffer,
+                                          kZeroStats,
+                                          sizeof(kZeroStats),
+                                          smvk::PipelineStageBit_Transfer,
+                                          smvk::AccessFlags::TransferWrite,
+                                          0,
+                                          0);
+            m_giVolumeStatsAddress = m_context->GetBufferDeviceAddress(m_giVolumeStatsBuffer);
+        }
+        data.giVolumeStats = m_giVolumeStatsAddress;
+        data.giVolumeStatsEnabled = 1u;
+    } else {
+        data.giVolumeStats = 0;
+        data.giVolumeStatsEnabled = 0u;
+    }
     // The LEGACY .sggi probe-volume frame block — RETIRED (stage 3 of
     // the octree retirement): the loader is deleted, so the whole
     // block is the zeroed ABI forever (giEnabled 0, no grid BDA, all
@@ -9515,6 +9550,49 @@ void WorldRenderer::RenderLayerInto(const ElementFrame& frame) {
                     m_gpuTimingValid ? (std::to_string(m_gpuMsSmooth) + " ms").c_str()
                                      : "(warming up)",
                     m_swapchain ? smvk::ToString(m_swapchain->GetActivePresentMode()) : "?");
+        // GI-volume weighted-path telemetry dump (TOURMALINE_GI_STATS=1):
+        // the accumulated histogram — invocation rate + surviving-corner
+        // distribution + the derived BC6H load count (9 lobes x corners).
+        if (m_giVolumeStatsArmed && !m_giVolumeStatsBuffer.empty()) {
+            uint32_t stats[32] = {};
+            if (m_context->DownloadDataFromBuffer(m_giVolumeStatsBuffer, stats, sizeof(stats))) {
+                const uint64_t total = stats[0];
+                const uint64_t weighted = stats[1];
+                const uint64_t fullWeight = stats[2];
+                const uint32_t* hist = &stats[3];
+                const uint32_t* dhist = &stats[12];
+                uint64_t cornerSum = 0;
+                for (uint32_t k = 0; k < 9; ++k)
+                    cornerSum += hist[k] * uint64_t(k);
+                // D bin centers (log-ish midpoints of <0.001/<0.01/<0.05/
+                // <0.1/>=0.1) for a rough mean; the top bin is open-ended.
+                static constexpr double kDCenters[5] = {0.0, 0.005, 0.03, 0.075, 0.2};
+                double dSum = 0.0;
+                for (uint32_t k = 0; k < 5; ++k)
+                    dSum += dhist[k] * kDCenters[k];
+                std::printf("[gistats] total=%llu weighted=%llu (%.2f%%) "
+                            "fullWeight=%llu (%.2f%% of weighted) "
+                            "meanCorners=%.3f meanBc6hLoads=%.1f meanD=%.4f\n",
+                            (unsigned long long)total,
+                            (unsigned long long)weighted,
+                            total ? (100.0 * double(weighted) / double(total)) : 0.0,
+                            (unsigned long long)fullWeight,
+                            weighted ? (100.0 * double(fullWeight) / double(weighted)) : 0.0,
+                            weighted ? double(cornerSum) / double(weighted) : 0.0,
+                            weighted ? 9.0 * double(cornerSum) / double(weighted) : 0.0,
+                            weighted ? dSum / double(weighted) : 0.0);
+                std::printf("[gistats] surviving corners:");
+                for (uint32_t k = 0; k < 9; ++k)
+                    std::printf(" %llu", (unsigned long long)hist[k]);
+                std::printf("\n");
+                std::printf("[gistats] weight-distance D (<0.001, <0.01, <0.05, <0.1, >=0.1):");
+                for (uint32_t k = 0; k < 5; ++k)
+                    std::printf(" %llu", (unsigned long long)dhist[k]);
+                std::printf("\n");
+            } else {
+                std::cerr << "[WorldRenderer] gi volume stats readback failed\n";
+            }
+        }
         // Task/mesh drawn-triangle count (the primitive-statistics query
         // wrapping the GPU-scene task dispatch). Valid once the first
         // retired frame has carried the query.

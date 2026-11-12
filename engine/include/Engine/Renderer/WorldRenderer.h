@@ -1163,6 +1163,13 @@ struct FrameUniforms {
     // kGiVolumeLayerInvalid so no stale descriptor survives. ----
     uint32_t giVolumeLayerTable[kGiVolumeLayerSlots] = {};  // 2500 A set 8 volumes x 10 slots
     uint32_t giVolumeLayerTableB[kGiVolumeLayerSlots] = {}; // 2820 B set
+    // ---- GI-volume weighted-path telemetry (TOURMALINE_GI_STATS=1):
+    // a 64-byte debug histogram the lit shader accumulates with
+    // InterlockedAdd when giVolumeStatsEnabled is set. See the HLSL
+    // GiVolumeStatsBuffer (common.hlsli) for the layout. The 64-bit BDA
+    // 8-aligns to 3144 (the uint tables end at 3140).
+    uint64_t giVolumeStats = 0;        // 3144 histogram BDA (0 = disabled)
+    uint32_t giVolumeStatsEnabled = 0; // 3152 1 = accumulate + report
 };
 // FrameUniforms layout insurance: the HLSL mirror (common.hlsli) reads
 // every field by absolute offset — any drift desyncs the GPU reads.
@@ -1217,6 +1224,9 @@ static_assert(offsetof(FrameUniforms, giVolumeLayerTable) == 2500,
               "giVolumeLayerTable offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, giVolumeLayerTableB) == 2820,
               "giVolumeLayerTableB offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giVolumeStats) == 3144, "giVolumeStats offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giVolumeStatsEnabled) == 3152,
+              "giVolumeStatsEnabled offset: HLSL mirror");
 // Env-zone block (the append-only tail): the per-frame EnvZoneGpu slice
 // BDA + count + reserved words, pinned like every other HLSL-mirrored
 // member. The reserved array keeps the old 208-byte block size so the
@@ -1265,10 +1275,10 @@ static_assert(offsetof(FrameUniforms, fogShadowEnabled) == 2148,
               "fogShadowEnabled offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, contactShadowIndex) == 2152,
               "contactShadowIndex offset: HLSL mirror (the old tail pad's first word)");
-static_assert(sizeof(FrameUniforms) == 3152,
+static_assert(sizeof(FrameUniforms) == 3168,
               "FrameUniforms size: HLSL mirror (the GI-blend tail grew the struct 2160 -> 2500; "
-              "the §1.1 layer tables append 2500 -> 3140, the 16-align tail rounds to 3152; every "
-              "pre-blend offset above is unchanged)");
+              "the §1.1 layer tables append 2500 -> 3140, the 64-bit telemetry BDA 8-aligns to "
+              "3144 -> 3168; every pre-blend offset above is unchanged)");
 
 // FramePSHot — tiny per-frame data frequently accessed by the pixel shader.
 // Mirrors HLSL FramePSHot in common.hlsli (96 bytes, 16-byte aligned).
@@ -4048,6 +4058,12 @@ class WorldRenderer : public IRenderer {
     std::vector<GiVolumeResources> m_giVolumesB;
     smvk::Holder<smvk::BufferHandle> m_giVolumesBufferB;
     uint64_t m_giVolumesAddressB = 0;
+    // ---- GI-volume weighted-path telemetry (TOURMALINE_GI_STATS=1):
+    // a 64-byte histogram the lit shader accumulates + the host dumps
+    // after the bench. Off the timing path when the env pin is absent.
+    smvk::Holder<smvk::BufferHandle> m_giVolumeStatsBuffer;
+    uint64_t m_giVolumeStatsAddress = 0;
+    bool m_giVolumeStatsArmed = false;
     bool m_giBlendActive = false;
     float m_giBlendAlpha = 0.0f; // 0 = fully A, 1 = fully B (clamped)
     // The cached path lists (AdoptGiVolumeBlend's residency check).

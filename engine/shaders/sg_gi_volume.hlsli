@@ -300,6 +300,12 @@ void SgGiVolumeSample(FrameUniforms frame, uint vol, float3 pos,
     const GiVolumeGpu v = frame.giVolumes.Get().volumes[vol];
     const float3 uvw = saturate(pos * v.uvwScale.xyz + v.uvwBias.xyz);
 
+    // Weighted-path telemetry (TOURMALINE_GI_STATS=1): one invocation
+    // per call; the weighted branch adds the surviving-corner histogram.
+    const bool giStats = frame.giVolumeStatsEnabled != 0u;
+    if (giStats)
+        InterlockedAdd(frame.giVolumeStats.Get().totalCalls, 1u);
+
     // ---- the cell + the clean-flag fast path ----
     const uint visSlotB = frame.giVolumeVisLayers[vol * 2u + 1u];
     if (visSlotB != 0xffffffffu)
@@ -324,6 +330,7 @@ void SgGiVolumeSample(FrameUniforms frame, uint vol, float3 pos,
                 float3(0, 0, 0), float3(0, 0, 0), float3(0, 0, 0),
                 float3(0, 0, 0) };
             float wSum = 0.0;
+            uint surviving = 0u;
             [unroll]
             for (uint c = 0; c < 8; ++c)
             {
@@ -339,6 +346,7 @@ void SgGiVolumeSample(FrameUniforms frame, uint vol, float3 pos,
                 const float wt = wvEff * (t3.x * t3.y * t3.z);
                 if (wt <= 0.0)
                     continue;
+                ++surviving;
                 float3 corner[SG_GI_LOBES];
                 if (v.planeCountBase.z == 1u)
                 {
@@ -364,6 +372,42 @@ void SgGiVolumeSample(FrameUniforms frame, uint vol, float3 pos,
                 for (uint l = 0; l < SG_GI_LOBES; ++l)
                     acc[l] += corner[l] * wt;
                 wSum += wt;
+            }
+            if (giStats)
+            {
+                InterlockedAdd(frame.giVolumeStats.Get().weightedCalls, 1u);
+                InterlockedAdd(frame.giVolumeStats.Get().hist[min(surviving, 8u)], 1u);
+                // Weight-distance D = 1/2 sum |q_i - t_i|: how far the
+                // NORMALIZED visibility weights q_i = t_i v_i / sum(t_j v_j)
+                // drift from the ordinary trilinear weights t_i. D == 0 when
+                // all v_i are EQUAL (even if < 1) — the filter changes
+                // nothing. Re-walk the 8 corners' CHEAP visibility (no lobe
+                // loads; the 72-load path already ran above).
+                float dSum = 0.0;
+                bool allFull = true;
+                [unroll]
+                for (uint c = 0; c < 8; ++c)
+                {
+                    const int3 cc = int3(b) + int3(c & 1 ? 1 : 0, c & 2 ? 1 : 0, c & 4 ? 1 : 0);
+                    const float3 dRel = rel - (float3(cc) + 0.5);
+                    const float4 visA = volumeTextures[visSlotA].Load(int4(cc, 0));
+                    const float4 visB = volumeTextures[visSlotB].Load(int4(cc, 0));
+                    const float wv = SgGiVolumeVisFactor(dRel, visA, visB);
+                    const float3 t3 = float3(c & 1 ? f.x : 1.0 - f.x,
+                        c & 2 ? f.y : 1.0 - f.y, c & 4 ? f.z : 1.0 - f.z);
+                    const float t = t3.x * t3.y * t3.z;
+                    if (wv < 1.0 - 1e-5)
+                        allFull = false;
+                    const float q = (wSum > 1e-4) ? (wv * t / wSum) : 0.0;
+                    dSum += abs(q - t);
+                }
+                // Zero-sum (all 8 blocked) reads zero in production — a full
+                // correction from the plain trilinear result: the strong bin.
+                const float D = (wSum > 1e-4) ? (0.5 * dSum) : 1.0;
+                const uint db = D < 0.001 ? 0u : D < 0.01 ? 1u : D < 0.05 ? 2u : D < 0.1 ? 3u : 4u;
+                InterlockedAdd(frame.giVolumeStats.Get().dhist[db], 1u);
+                if (allFull)
+                    InterlockedAdd(frame.giVolumeStats.Get().fullWeight, 1u);
             }
             if (wSum > 1e-4)
             {
