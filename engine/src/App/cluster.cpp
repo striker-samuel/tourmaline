@@ -33,7 +33,7 @@ smvk::Cluster::~Cluster() {
     textures.clear();
 }
 
-smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(const StaticMeshUpload& data) {
+smvk::ClusterStaticMeshHandle smvk::Cluster::UploadMesh(const MeshData& data) {
     const uint32_t vertexCount = static_cast<uint32_t>(data.vertices.size());
 
     const uint32_t indexCount = static_cast<uint32_t>(data.indices.size());
@@ -114,7 +114,7 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadStaticMesh(const StaticMeshUp
 
     for (uint32_t i = 0; i < vertexCount; ++i) {
 
-        const ImportStaticVertex& src = data.vertices[i];
+        const MeshVertex& src = data.vertices[i];
 
         PackStaticVertex(src, positions[i], shading[i], lightmap[i]);
         // The optional stream carves only when chart data exists (the
@@ -571,8 +571,8 @@ bool smvk::Cluster::SampleAnimation(float dt, tour::mem::FrameVector<glm::mat4>&
     return true;
 }
 
-std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
-    std::span<const StaticMeshUpload> uploads) {
+std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadMeshes(
+    std::span<const MeshData> uploads) {
     std::vector<ClusterStaticMeshHandle> handles;
     if (uploads.empty())
         return handles;
@@ -581,8 +581,8 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
     // batch win is GPU-side staging, which offline mode never touches).
     if (offlineMode_) {
         handles.reserve(uploads.size());
-        for (const StaticMeshUpload& data : uploads)
-            handles.push_back(UploadStaticMesh(data));
+        for (const MeshData& data : uploads)
+            handles.push_back(UploadMesh(data));
         return handles;
     }
 
@@ -613,7 +613,7 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
                                     ranges[j].alloc.lightmapAllocation);
     };
     for (size_t i = 0; i < uploads.size(); ++i) {
-        const StaticMeshUpload& data = uploads[i];
+        const MeshData& data = uploads[i];
         const uint32_t vertexCount = static_cast<uint32_t>(data.vertices.size());
         const uint32_t indexCount = static_cast<uint32_t>(data.indices.size());
         if (vertexCount == 0) {
@@ -644,7 +644,7 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
         // charted (independently packed — its base is not vertexBase).
         {
             bool charted = false;
-            for (const ImportStaticVertex& v : data.vertices)
+            for (const MeshVertex& v : data.vertices)
                 if (v.chartId != 0xFFFFFFFFu) {
                     charted = true;
                     break;
@@ -669,7 +669,7 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
 
     handles.resize(uploads.size());
     for (size_t i = 0; i < uploads.size(); ++i) {
-        const StaticMeshUpload& data = uploads[i];
+        const MeshData& data = uploads[i];
         MeshRange& r = ranges[i];
         const uint32_t vertexCount = static_cast<uint32_t>(data.vertices.size());
         const uint32_t indexCount = static_cast<uint32_t>(data.indices.size());
@@ -743,7 +743,7 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshes(
     size_t srcVert = 0;
     size_t srcIdx = 0;
     for (size_t i = 0; i < uploads.size(); ++i) {
-        const StaticMeshUpload& data = uploads[i];
+        const MeshData& data = uploads[i];
         MeshRange& r = ranges[i];
         const uint32_t vertexCount = static_cast<uint32_t>(data.vertices.size());
         const uint32_t indexCount = static_cast<uint32_t>(data.indices.size());
@@ -843,7 +843,7 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshesDire
     for (size_t i = 0; i < uploaded.size(); ++i) {
         handles[i] = staticMeshes.create(std::move(uploaded[i].mesh));
         if (handles[i].empty()) {
-            // Same rollback contract as UploadStaticMeshes: the
+            // Same rollback contract as UploadMeshes: the
             // rolled-back DestroyMesh frees are retirement-ordered.
             for (size_t j = 0; j < i; ++j)
                 DestroyMesh(handles[j]);
