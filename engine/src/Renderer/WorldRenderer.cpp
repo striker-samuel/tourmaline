@@ -110,26 +110,32 @@ namespace engine {
 smvk::ShaderProgram& WorldRenderer::SpecProgramFor(const smvk::ShaderProgram& base,
                                                    uint32_t specId,
                                                    uint32_t specId2,
+                                                   uint32_t specId3,
                                                    uint32_t gv,
-                                                   bool stdTwin,
-                                                   smvk::ShaderProgram* cacheGi,
-                                                   smvk::ShaderProgram* cacheStd) {
-    smvk::ShaderProgram& slot = stdTwin ? cacheStd[gv] : cacheGi[gv];
-    if (slot.shaderCount == 0 && base.shaderCount == 2) {
+                                                   bool stdTwin) {
+    const uint64_t key = uint64_t(specId) | (uint64_t(specId2) << 8) | (uint64_t(specId3) << 16) |
+                         (uint64_t(gv) << 24) | (uint64_t(stdTwin ? 1u : 0u) << 28);
+    auto it = m_specCache.find(key);
+    if (it != m_specCache.end())
+        return it->second;
+    smvk::ShaderProgram slot;
+    if (base.shaderCount == 2) {
         // Forge the diagnostic twin ONCE: the same modules + a spec payload
-        // flipping `specId` (and optionally `specId2`) to 1 on the fragment
-        // stage. Pipelines key on the spec, so this mints its own PSOs on
-        // first bind.
+        // flipping every non-zero spec constant to 1 on the fragment stage.
+        // Pipelines key on the spec, so each combination mints its own PSOs.
         auto spec = std::make_shared<smvk::ShaderSpecialization>();
-        spec->SetBool(specId, true);
+        if (specId != 0u)
+            spec->SetBool(specId, true);
         if (specId2 != 0u)
             spec->SetBool(specId2, true);
+        if (specId3 != 0u)
+            spec->SetBool(specId3, true);
         slot = base;
         for (size_t i = 0; i < slot.shaderCount; ++i)
             if (slot.shaders[i].stage == smvk::ShaderStage::Fragment)
                 slot.shaders[i].specialization = spec;
     }
-    return slot;
+    return m_specCache.emplace(key, std::move(slot)).first->second;
 }
 
 smvk::ShaderProgram& WorldRenderer::MainLitProgramFor(uint32_t materialId) {
@@ -166,160 +172,39 @@ smvk::ShaderProgram& WorldRenderer::MainLitProgramFor(uint32_t materialId) {
     if (giVar != GIVariant::None) {
         smvk::ShaderProgram& gi = m_resources.mainProgramGi[gv];
         if (gi.shaderCount == 2) {
-            // The irradiance capture composes with the path choice (SG,
-            // octahedral, or hybrid): a second spec flips
-            // SPEC_GI_EXPORT_IRRADIANCE on top of the path spec.
-            const uint32_t expSpec2 = m_giOctahedralArmed ? tour::kSpecGiOctahedral
-                                      : m_giHybridArmed   ? tour::kSpecGiHybrid
-                                                          : 0u;
-            if (!layered && m_resources.mainProgramGiStd[gv].shaderCount == 2) {
-                if (m_giExportIrradianceArmed)
-                    return SpecProgramFor(m_resources.mainProgramGiStd[gv],
-                                          tour::kSpecGiExportIrradiance,
-                                          expSpec2,
-                                          gv,
-                                          true,
-                                          m_exportProgramGi,
-                                          m_exportProgramGiStd);
-                if (m_giHybridArmed)
-                    return SpecProgramFor(m_resources.mainProgramGiStd[gv],
-                                          tour::kSpecGiHybrid,
-                                          0u,
-                                          gv,
-                                          true,
-                                          m_hybridProgramGi,
-                                          m_hybridProgramGiStd);
-                if (m_giFixedEnvVisArmed)
-                    return SpecProgramFor(m_resources.mainProgramGiStd[gv],
-                                          tour::kSpecGiFixedEnvVis,
-                                          m_giOctahedralArmed ? tour::kSpecGiOctahedral : 0u,
-                                          gv,
-                                          true,
-                                          m_fixedEnvVisProgramGi,
-                                          m_fixedEnvVisProgramGiStd);
-                if (m_giExportConstantArmed)
-                    return SpecProgramFor(m_resources.mainProgramGiStd[gv],
-                                          tour::kSpecGiExportConstant,
-                                          0u,
-                                          gv,
-                                          true,
-                                          m_exportConstantProgramGi,
-                                          m_exportConstantProgramGiStd);
-                if (m_giExportEnvSpecArmed)
-                    return SpecProgramFor(m_resources.mainProgramGiStd[gv],
-                                          tour::kSpecGiExportEnvSpec,
-                                          0u,
-                                          gv,
-                                          true,
-                                          m_exportEnvSpecProgramGi,
-                                          m_exportEnvSpecProgramGiStd);
-                if (m_giExportDiagArmed)
-                    return SpecProgramFor(m_resources.mainProgramGiStd[gv],
-                                          tour::kSpecGiExportDiag,
-                                          0u,
-                                          gv,
-                                          true,
-                                          m_exportDiagProgramGi,
-                                          m_exportDiagProgramGiStd);
-                if (m_giVolumeStatsArmed)
-                    return SpecProgramFor(m_resources.mainProgramGiStd[gv],
-                                          tour::kSpecGiStats,
-                                          0u,
-                                          gv,
-                                          true,
-                                          m_giStatsProgramGi,
-                                          m_giStatsProgramGiStd);
-                if (m_giCoeffConstArmed)
-                    return SpecProgramFor(m_resources.mainProgramGiStd[gv],
-                                          tour::kSpecGiCoeffConst,
-                                          0u,
-                                          gv,
-                                          true,
-                                          m_coeffConstProgramGi,
-                                          m_coeffConstProgramGiStd);
-                if (m_giOctahedralArmed)
-                    return SpecProgramFor(m_resources.mainProgramGiStd[gv],
-                                          tour::kSpecGiOctahedral,
-                                          0u,
-                                          gv,
-                                          true,
-                                          m_octaProgramGi,
-                                          m_octaProgramGiStd);
-                return m_resources.mainProgramGiStd[gv];
+            // Compose the INDEPENDENT diagnostic dimensions instead of a
+            // mutually-exclusive flag chain (which silently dropped one of
+            // e.g. fixed-envVis + export). Dimensions:
+            //   path    octahedral / hybrid / coeff-const (mutually exclusive)
+            //   envVis  fixed-envVis (optional)
+            //   export  irradiance / constant / envSpec / diag (optional)
+            //   stats   weighted-path telemetry (standalone primary)
+            const uint32_t pathSpec = m_giOctahedralArmed   ? tour::kSpecGiOctahedral
+                                      : m_giHybridArmed     ? tour::kSpecGiHybrid
+                                      : m_giCoeffConstArmed ? tour::kSpecGiCoeffConst
+                                                            : 0u;
+            const uint32_t envVisSpec = m_giFixedEnvVisArmed ? tour::kSpecGiFixedEnvVis : 0u;
+            const uint32_t exportSpec = m_giExportIrradianceArmed ? tour::kSpecGiExportIrradiance
+                                        : m_giExportConstantArmed ? tour::kSpecGiExportConstant
+                                        : m_giExportEnvSpecArmed  ? tour::kSpecGiExportEnvSpec
+                                        : m_giExportDiagArmed     ? tour::kSpecGiExportDiag
+                                                                  : 0u;
+            const uint32_t statsSpec = m_giVolumeStatsArmed ? tour::kSpecGiStats : 0u;
+
+            const bool stdTwin = !layered && m_resources.mainProgramGiStd[gv].shaderCount == 2;
+            smvk::ShaderProgram& base = stdTwin ? m_resources.mainProgramGiStd[gv] : gi;
+
+            if (pathSpec != 0u || envVisSpec != 0u || exportSpec != 0u || statsSpec != 0u) {
+                // stats composes with nothing else (it is its own primary);
+                // path and stats together would exceed the 3-spec budget.
+                if (statsSpec != 0u && (pathSpec != 0u || envVisSpec != 0u || exportSpec != 0u)) {
+                    std::cerr << "[GIV] unsupported diagnostic combination: stats + path/export"
+                                 " (split the run)\n";
+                }
+                const uint32_t primary = pathSpec != 0u ? pathSpec : statsSpec;
+                return SpecProgramFor(base, primary, envVisSpec, exportSpec, gv, stdTwin);
             }
-            if (m_giExportIrradianceArmed)
-                return SpecProgramFor(gi,
-                                      tour::kSpecGiExportIrradiance,
-                                      expSpec2,
-                                      gv,
-                                      false,
-                                      m_exportProgramGi,
-                                      m_exportProgramGiStd);
-            if (m_giHybridArmed)
-                return SpecProgramFor(gi,
-                                      tour::kSpecGiHybrid,
-                                      0u,
-                                      gv,
-                                      false,
-                                      m_hybridProgramGi,
-                                      m_hybridProgramGiStd);
-            if (m_giFixedEnvVisArmed)
-                return SpecProgramFor(gi,
-                                      tour::kSpecGiFixedEnvVis,
-                                      m_giOctahedralArmed ? tour::kSpecGiOctahedral : 0u,
-                                      gv,
-                                      false,
-                                      m_fixedEnvVisProgramGi,
-                                      m_fixedEnvVisProgramGiStd);
-            if (m_giExportConstantArmed)
-                return SpecProgramFor(gi,
-                                      tour::kSpecGiExportConstant,
-                                      0u,
-                                      gv,
-                                      false,
-                                      m_exportConstantProgramGi,
-                                      m_exportConstantProgramGiStd);
-            if (m_giExportEnvSpecArmed)
-                return SpecProgramFor(gi,
-                                      tour::kSpecGiExportEnvSpec,
-                                      0u,
-                                      gv,
-                                      false,
-                                      m_exportEnvSpecProgramGi,
-                                      m_exportEnvSpecProgramGiStd);
-            if (m_giExportDiagArmed)
-                return SpecProgramFor(gi,
-                                      tour::kSpecGiExportDiag,
-                                      0u,
-                                      gv,
-                                      false,
-                                      m_exportDiagProgramGi,
-                                      m_exportDiagProgramGiStd);
-            if (m_giVolumeStatsArmed)
-                return SpecProgramFor(gi,
-                                      tour::kSpecGiStats,
-                                      0u,
-                                      gv,
-                                      false,
-                                      m_giStatsProgramGi,
-                                      m_giStatsProgramGiStd);
-            if (m_giCoeffConstArmed)
-                return SpecProgramFor(gi,
-                                      tour::kSpecGiCoeffConst,
-                                      0u,
-                                      gv,
-                                      false,
-                                      m_coeffConstProgramGi,
-                                      m_coeffConstProgramGiStd);
-            if (m_giOctahedralArmed)
-                return SpecProgramFor(gi,
-                                      tour::kSpecGiOctahedral,
-                                      0u,
-                                      gv,
-                                      false,
-                                      m_octaProgramGi,
-                                      m_octaProgramGiStd);
-            return gi;
+            return base;
         }
         return stdReady ? m_resources.mainProgramStd : m_resources.mainProgram;
     }
@@ -9765,7 +9650,11 @@ void WorldRenderer::ExportIrradianceCapture(smvk::Extent2D extent) {
     }
     {
         std::ofstream meta(m_giExportIrradianceDir + "/meta.json");
-        meta << "{\"width\":" << w << ",\"height\":" << h << ",\"format\":\"RGBA16F\",\"bytes\":["
+        meta << "{\"width\":" << w << ",\"height\":" << h << ",\"format\":\"RGBA16F\","
+             << "\"octahedral\":" << (m_giOctahedralArmed ? 1 : 0)
+             << ",\"hybrid\":" << (m_giHybridArmed ? 1 : 0)
+             << ",\"fixedEnvVis\":" << (m_giFixedEnvVisArmed ? 1 : 0)
+             << ",\"coeffConst\":" << (m_giCoeffConstArmed ? 1 : 0) << ",\"bytes\":["
              << (w * 4u * 2u) << "," << (h * 4u * 2u) << "]}\n";
     }
     // Roughness/metal twin (the SSR thin G-buffer, RGBA8: normal RG,

@@ -58,6 +58,12 @@ def main(argv=None):
     valid = r.get("valid_mask", np.ones(roughness.shape, dtype=bool)).astype(bool)
 
     report = {"epsilon": e, "bins": {}}
+    # Absolute HDR RGB difference (the energy mismatch, separate from the
+    # near-black-inflating log-luminance ratio).
+    rgbr = r["irradiance"].astype(np.float64)
+    rgbc = c["irradiance"].astype(np.float64)
+    abs_rgb = np.linalg.norm(rgbc - rgbr, axis=2)
+    exact_rgb = np.all(rgbc == rgbr, axis=2)
     for (rlo, rhi) in ROUGH_BINS:
         for metal_name, metal_mask in (("dielectric", metal < 0.5), ("metallic", metal >= 0.5)):
             sel = valid & (roughness >= rlo) & (roughness < rhi) & metal_mask
@@ -67,7 +73,6 @@ def main(argv=None):
             frac = {}
             for th in (0.25, 0.5, 1.0):
                 frac[str(th)] = float(np.mean(le > th)) if le.size else None
-            # Reference-luminance-weighted stats (weight by max(y, floor)).
             w = np.maximum(yr_sel, 1e-3)
             wmean = float(np.average(le, weights=w)) if le.size else None
             report["bins"][f"r{rlo:.2f}-{rhi:.2f} {metal_name}"] = {
@@ -77,6 +82,8 @@ def main(argv=None):
                 "signed_mean": float(np.mean(se)) if se.size else None,
                 "brightening_fraction": float(np.mean(se > 0.01)) if se.size else None,
                 "exceed_frac": frac,
+                "abs_rgb": stats(abs_rgb[sel]),
+                "exact_match_pct": float(100.0 * np.mean(exact_rgb[sel])) if le.size else None,
                 "ref_luma_p50_p99": [float(np.percentile(yr_sel, 50)) if yr_sel.size else None,
                                      float(np.percentile(yr_sel, 99)) if yr_sel.size else None],
                 "ref_luma_weighted_mean": wmean,

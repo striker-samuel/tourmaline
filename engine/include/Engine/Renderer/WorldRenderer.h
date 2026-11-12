@@ -1883,10 +1883,13 @@ class WorldRenderer : public IRenderer {
     [[nodiscard]] smvk::ShaderProgram& SpecProgramFor(const smvk::ShaderProgram& base,
                                                       uint32_t specId,
                                                       uint32_t specId2,
+                                                      uint32_t specId3,
                                                       uint32_t gv,
-                                                      bool stdTwin,
-                                                      smvk::ShaderProgram* cacheGi,
-                                                      smvk::ShaderProgram* cacheStd);
+                                                      bool stdTwin);
+    // Single cache for all spec-constant combinations (keyed by the packed
+    // spec IDs + gv + stdTwin), so diagnostics compose (e.g. fixed-envVis +
+    // export) instead of silently dropping one flag.
+    std::unordered_map<uint64_t, smvk::ShaderProgram> m_specCache;
     // The family consult every lit leg shares: true only when the
     // material's family is ProjectLit AND the family programs loaded.
     // A ProjectLit material with no loaded family reports ONCE (a loud
