@@ -35,8 +35,8 @@ struct TaskMeshGpuPush {
     uint32_t groupCount;
     uint32_t rasterClass;
     uint32_t taskGridX;
-    uint32_t temporalPhase; // 0 normal, 1 seed, 2 remainder, 3 Main
-    uint32_t reservedTemporal;
+    uint32_t temporalPhase;  // 0 normal, 1 seed, 2 remainder, 3 Main
+    uint32_t vertexOptFlags; // bit 0 = rigid-transform normalize elision
 };
 struct TaskMeshIndirectCommand {
     uint32_t groupCountX;

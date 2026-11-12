@@ -10,6 +10,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 
 namespace tour::gpu_scene {
 
@@ -357,7 +358,14 @@ class TaskMeshRuntime {
                         groupCapacity,
                         in.meshCount};
         next.indirect = {offsets, indirect, in.workCapacity, groupCapacity, TaskGridX, 1024u};
-        next.graphics = {params, 0u, groupCapacity, 0u, TaskGridX, 0u, 0u};
+        // vertexOptFlags (was reservedTemporal): bit 0 = rigid-transform
+        // normalize elision, toggled by TOURMALINE_FAST_VERTEX for the A/B
+        // measurement of the mesh-stage vertex cost.
+        static const uint32_t s_vertexOptFlags = [] {
+            const char* e = std::getenv("TOURMALINE_FAST_VERTEX");
+            return (e && std::atoi(e) != 0) ? 1u : 0u;
+        }();
+        next.graphics = {params, 0u, groupCapacity, 0u, TaskGridX, 0u, s_vertexOptFlags};
         next.workCapacity = in.workCapacity;
         next.taskGroupCapacity = groupCapacity;
         next.scanBlocks = blocks;

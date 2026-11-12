@@ -141,13 +141,20 @@ float GeometrySmith(float3 N, float3 V, float3 L, float roughness)
 
 float3 FresnelSchlick(float cosTheta, float3 F0)
 {
-    return F0 + (1.0f - F0) * pow(max(1.0f - cosTheta, 0.0f), 5.0f);
+    // pow(x, 5) -> 4 FMAs: the fresnel falloff is exactly the fifth power of
+    // the clamped (1 - cosTheta) term, cheaper than the pow() transcendental.
+    const float k = max(1.0f - cosTheta, 0.0f);
+    const float k2 = k * k;
+    return F0 + (1.0f - F0) * (k2 * k2 * k);
 }
 
 // Optional: with roughness adjustment for smoother Fresnel at grazing
 float3 FresnelSchlickRoughness(float cosTheta, float3 F0, float roughness)
 {
-    return F0 + (max(float3(1.0f - roughness, 1.0f - roughness, 1.0f - roughness), F0) - F0) * pow(max(1.0f - cosTheta, 0.0f), 5.0f);
+    const float k = max(1.0f - cosTheta, 0.0f);
+    const float k2 = k * k;
+    const float k5 = k2 * k2 * k;
+    return F0 + (max(float3(1.0f - roughness, 1.0f - roughness, 1.0f - roughness), F0) - F0) * k5;
 }
 
 // -------------------------------------------------------------------------

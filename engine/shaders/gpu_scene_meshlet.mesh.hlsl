@@ -28,10 +28,43 @@ struct GsMeshVertex {
     [[vk::location(10)]] nointerpolation uint lightLayerMask : TEXCOORD9;
 };
 
+// Per-INSTANCE transform frame, hoisted out of the per-vertex FetchVertex
+// loop. The basis columns + their cofactors (the inverse-transpose basis) and
+// the determinant are instance-uniform: recomputing 3 cross + 1 dot per vertex
+// was pure waste, and the determinant is also the rigid-transform test for the
+// normalize elision below.
+struct GsInstanceFrame {
+    float3 a, b, c;     // basis columns (inst.basisX/Y/Z)
+    float3 cx, cy, cz;  // cofactor basis (cross(b,c), cross(c,a), cross(a,b))
+    float det;          // dot(a, cross(b,c))
+    float3 originRelative;      // DoubleFloatRelative(inst.worldPosition, view.origin)
+    float4x4 viewProj;          // relativeViewProjection
+    float3 originHigh;          // view.origin.high.xyz
+    float3 originLow;           // view.origin.low.xyz
+    uint meshMaterial;          // inst.refs.z
+};
+
+GsInstanceFrame MakeInstanceFrame(GpuSceneInstance inst, GsRasterView view) {
+    GsInstanceFrame f;
+    f.a = inst.basisX.xyz;
+    f.b = inst.basisY.xyz;
+    f.c = inst.basisZ.xyz;
+    f.cx = cross(f.b, f.c);
+    f.cy = cross(f.c, f.a);
+    f.cz = cross(f.a, f.b);
+    f.det = dot(f.a, f.cx);
+    f.originRelative = DoubleFloatRelative(inst.worldPosition, view.origin);
+    f.viewProj = view.relativeViewProjection;
+    f.originHigh = view.origin.high.xyz;
+    f.originLow = view.origin.low.xyz;
+    f.meshMaterial = inst.refs.z;
+    return f;
+}
+
 GsMeshVertex FetchVertex(uint vertexId,
-                         GpuSceneInstance inst,
-                         GsRasterView view,
-                         GsTaskMeshParams p) {
+                         GsInstanceFrame f,
+                         GsTaskMeshParams p,
+                         bool fastNormal) {
     GsMeshVertex v=(GsMeshVertex)0;
     const uint pb=vertexId*3u, sb=vertexId*4u;
     const float3 local=float3(
@@ -43,30 +76,31 @@ GsMeshVertex FetchVertex(uint vertexId,
     const uint nword=p.shading.Get().word[sb+2u];
     const uint tword=p.shading.Get().word[sb+3u];
 
-    const float3 a=inst.basisX.xyz;
-    const float3 b=inst.basisY.xyz;
-    const float3 c=inst.basisZ.xyz;
-    const float3 relative=DoubleFloatRelative(inst.worldPosition,view.origin)
-        +a*local.x+b*local.y+c*local.z;
-    v.pos=mul(view.relativeViewProjection,float4(relative,1.0f));
-    v.worldPos=relative+view.origin.high.xyz+view.origin.low.xyz;
+    const float3 relative=f.originRelative
+        +f.a*local.x+f.b*local.y+f.c*local.z;
+    v.pos=mul(f.viewProj,float4(relative,1.0f));
+    v.worldPos=relative+f.originHigh+f.originLow;
     v.color=float4(color&255u,(color>>8u)&255u,
                    (color>>16u)&255u,(color>>24u)&255u)*(1.0f/255.0f);
     v.uv=float2(f16tof32(uv&65535u),f16tof32(uv>>16u));
     const float3 normal=OctDecodeNormal(nword);
     const float4 tangent=OctDecodeTangent(tword);
-    const float3 cx=cross(b,c),cy=cross(c,a),cz=cross(a,b);
-    const float det=dot(a,cx);
-    const float3 worldN=abs(det)>1e-12f
-        ?(cx*normal.x+cy*normal.y+cz*normal.z)/det
-        :a*normal.x+b*normal.y+c*normal.z;
-    const float3 worldT=a*tangent.x+b*tangent.y+c*tangent.z;
-    v.normal=normalize(worldN);
-    v.tangent=float4(normalize(worldT),
-                     tangent.w*(det<0.0f?-1.0f:1.0f));
+    const float3 worldN=abs(f.det)>1e-12f
+        ?(f.cx*normal.x+f.cy*normal.y+f.cz*normal.z)/f.det
+        :f.a*normal.x+f.b*normal.y+f.c*normal.z;
+    const float3 worldT=f.a*tangent.x+f.b*tangent.y+f.c*tangent.z;
+    // Rigid-transform elision (opt-in): det == 1 means the instance transform
+    // is a pure rotation, so the inverse-transpose and the tangent transform
+    // both preserve length and the oct-decode already returned a UNIT vector —
+    // the two normalize() are dead math. det is instance-uniform, so this
+    // branch is uniform across the meshlet (no divergence).
+    const bool rigid = fastNormal && abs(f.det - 1.0f) < 1e-4f;
+    v.normal = rigid ? worldN : normalize(worldN);
+    v.tangent = float4(rigid ? worldT : normalize(worldT),
+                       tangent.w*(f.det<0.0f?-1.0f:1.0f));
     v.lightmapUv=0.0f;
     v.lmChunk=0xffffffffu;
-    v.meshMaterial=inst.refs.z;
+    v.meshMaterial=f.meshMaterial;
     v.ditherCloseup=0u;
     v.userData=0u;
     v.lightLayerMask=0xffffffffu;
@@ -185,6 +219,8 @@ void mainMS(uint3 gid : SV_GroupID,
     if (vertexCount==0u || triCount==0u) return;
 
     const GsRasterView view=p.rasterView.Get();
+    const GsInstanceFrame frame=MakeInstanceFrame(inst,view);
+    const bool fastNormal=(pc.vertexOptFlags & 1u) != 0u;
     const uint vertexBase=c.a.z;
     const uint triBase=c.e.x;
     // One unique vertex per lane. The meshlet vertex stream is already
@@ -193,7 +229,7 @@ void mainMS(uint3 gid : SV_GroupID,
     for (uint v=tid.x;v<vertexCount;v+=GS_MESH_THREADS) {
         const uint globalId=p.meshletVertices.Get().id[vertexBase+v];
         const int64_t vertexSigned=(int64_t)globalId+(int64_t)geo.vertexOffset;
-        verts[v]=FetchVertex((uint)vertexSigned,inst,view,p);
+        verts[v]=FetchVertex((uint)vertexSigned,frame,p,fastNormal);
         if (p.debugMode!=0u)
             verts[v].color=dbgColor;
     }

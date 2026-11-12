@@ -116,7 +116,7 @@ struct GsTaskMeshPush {
     uint rasterClass;
     uint taskGridX; // x dimension of indirect task dispatch (for 2D flattening)
     uint temporalPhase; // 0 normal, 1 seed, 2 remainder, 3 Main
-    uint reservedTemporal;
+    uint vertexOptFlags; // bit 0 = rigid-transform normalize elision (TOURMALINE_FAST_VERTEX)
 };
 
 // Workgroup-local payload. Each mesh workgroup reads its own compact slot.
