@@ -210,7 +210,7 @@ class GrassApp final : public smvk::App {
 
     bool BuildBladeMesh() {
         m_cluster = new smvk::Cluster(m_context.get());
-        smvk::StaticMeshUpload up{};
+        smvk::MeshData up{};
         up.vertices.resize(4);
         up.vertices[0].pos = glm::vec3(-0.085f, 0.0f, 0.0f);
         up.vertices[1].pos = glm::vec3(0.085f, 0.0f, 0.0f);
@@ -226,7 +226,7 @@ class GrassApp final : public smvk::App {
         up.indices = {0, 1, 2, 2, 1, 3};
         up.aabbMin = glm::vec3(-0.085f, 0.0f, -0.01f);
         up.aabbMax = glm::vec3(0.085f, 0.95f, 0.01f);
-        const auto handle = m_cluster->UploadStaticMesh(up);
+        const auto handle = m_cluster->UploadMesh(up);
         if (handle.empty())
             return false;
         const smvk::StaticMesh* mesh = m_cluster->staticMeshes.get(handle);
@@ -240,7 +240,7 @@ class GrassApp final : public smvk::App {
         // under the grass; all 1M blade instances remain GPU-generated.
         constexpr uint32_t grid = 128;
         constexpr uint32_t row = grid + 1;
-        smvk::StaticMeshUpload ground{};
+        smvk::MeshData ground{};
         ground.vertices.resize(size_t(row) * row);
         ground.indices.resize(size_t(grid) * grid * 6);
         for (uint32_t z = 0; z <= grid; ++z)
@@ -267,7 +267,7 @@ class GrassApp final : public smvk::App {
             }
         ground.aabbMin = glm::vec3(-128.0f, -12.0f, -128.0f);
         ground.aabbMax = glm::vec3(128.0f, 12.0f, 128.0f);
-        const auto groundHandle = m_cluster->UploadStaticMesh(ground);
+        const auto groundHandle = m_cluster->UploadMesh(ground);
         if (groundHandle.empty())
             return false;
         const auto* groundMesh = m_cluster->staticMeshes.get(groundHandle);
