@@ -81,7 +81,7 @@ def run_scenario(args, scenario):
     # state write depending on it. (Never on the dry-run path - that
     # contract is zero filesystem side effects.)
     state_file.parent.mkdir(parents=True, exist_ok=True)
-    state_bytes = toursnapshot.codec.canonical(frames_data[state_frame - 1][1]) + b"\\n"
+    state_bytes = toursnapshot.codec.canonical(frames_data[state_frame - 1][1]) + b"\n"
     # Never expose a truncated JSON state file if the write is interrupted.
     temporary = None
     try:
@@ -136,7 +136,7 @@ def main(argv=None):
         args.output.mkdir(parents=True, exist_ok=True)
         # Exclusive creation respects the same fresh-output contract as frames.
         with manifest.open("x", encoding="utf-8") as output:
-            output.write(json.dumps(report, indent=2) + "\\n")
+            output.write(json.dumps(report, indent=2) + "\n")
     return 1 if failed else 0
 
 
