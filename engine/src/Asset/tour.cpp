@@ -223,10 +223,10 @@ static void WriteCommandLine(std::ostream& f, const Command& c, const char* inde
     // bitwise. Default stream precision (6 significant digits) loses
     // float bits at SaveTour, so the pak's replayed-volume hash differed
     // from the first bake. Emit all GI-volume float operands with enough
-    // digits to round-trip a binary32 value exactly.
+    // digits to round-trip binary32 geometry and double scalar attributes.
     const auto previousPrecision = f.precision();
     if (c.verb == Verb::CreateGiVolume || c.verb == Verb::SetGiVolumeAttr)
-        f << std::setprecision(std::numeric_limits<float>::max_digits10);
+        f << std::setprecision(std::numeric_limits<double>::max_digits10);
     f << indent;
     switch (c.verb) {
     case Verb::Rename:
