@@ -12144,7 +12144,7 @@ smvk::PipelineBundle smvk::detail::vulkan::VulkanPipelineCache::BuildGraphicsPip
         // overlapping fragments, so the diagnostic export's known-value
         // round-trip read back Nx the written value (overdraw + additive
         // blend). The color target (i == 0) keeps the material blend.
-        dst.blendEnable = (i == 0) ? key.blend.blendState.blendEnable : false;
+        dst.blendEnable = key.blend.blendState.AttachmentBlendEnabled(i);
 
         dst.srcColorBlendFactor = toVkSrcBlendFactor(src.srcColorBlendFactor);
 

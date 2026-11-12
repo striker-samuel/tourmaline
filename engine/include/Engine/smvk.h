@@ -1148,6 +1148,17 @@ struct BlendAttachmentState {
 struct BlendState {
     bool blendEnable = false;
     BlendAttachmentState attachment[4]{}; // max 4 color attachments
+
+    // Per-attachment blend gate. Only the COLOR target (index 0) carries
+    // the material's blend (Add/AlphaBlend); every aux MRT export (aoTerm,
+    // envSpec, and any secondary data target) is a DATA export for the
+    // AO/SSR compose and must OVERWRITE, never accumulate. Applying the
+    // material blend to the aux targets is what made additive materials
+    // accumulate across overlapping fragments (the diagnostic export read
+    // back Nx the written value).
+    [[nodiscard]] bool AttachmentBlendEnabled(size_t attachmentIndex) const {
+        return attachmentIndex == 0 && blendEnable;
+    }
 };
 
 struct BlendSettings {

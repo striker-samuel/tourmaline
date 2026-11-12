@@ -518,6 +518,30 @@ int main() {
         Check(order == 16u && visited == 0xffffu, "contract.omm-bird-bijection");
     }
 
+    // 9. MRT blend-state contract: the material's color blend applies to the
+    // COLOR target (index 0) only. The aux MRT exports (aoTerm/envSpec and
+    // any secondary data target) are data exports for the AO/SSR compose and
+    // must overwrite, never accumulate. This pins the fix that stopped
+    // additive materials from accumulating across overlapping fragments on
+    // the diagnostic envSpec export (its known-value round-trip read back Nx
+    // the written value).
+    {
+        // Opaque: nothing blends.
+        const smvk::BlendSettings opaque = smvk::BlendSettings::Opaque();
+        Check(!opaque.blendState.AttachmentBlendEnabled(0), "contract.blend-opaque-color-off");
+        Check(!opaque.blendState.AttachmentBlendEnabled(1), "contract.blend-opaque-aux-off");
+        Check(!opaque.blendState.AttachmentBlendEnabled(2), "contract.blend-opaque-envspec-off");
+        // Additive / alpha-blend materials: color blends, aux data targets never do.
+        for (const smvk::BlendSettings& b : {smvk::BlendSettings::Add(),
+                                             smvk::BlendSettings::AlphaBlend(),
+                                             smvk::BlendSettings::Mixed()}) {
+            Check(b.blendState.AttachmentBlendEnabled(0), "contract.blend-material-color-on");
+            Check(!b.blendState.AttachmentBlendEnabled(1), "contract.blend-material-aoTerm-off");
+            Check(!b.blendState.AttachmentBlendEnabled(2), "contract.blend-material-envSpec-off");
+            Check(!b.blendState.AttachmentBlendEnabled(3), "contract.blend-material-aux3-off");
+        }
+    }
+
     std::cout << "checks=" << g_checks << " failures=" << g_failures << "\n";
     return g_failures == 0 ? 0 : 1;
 }
