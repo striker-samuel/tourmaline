@@ -208,6 +208,9 @@ inline constexpr uint32_t kSpecGiStats = 22;
 // Constant-coefficient diagnostic (TOURMALINE_GI_COEFF_CONST=1). Must
 // match common.hlsli SPEC_GI_COEFF_CONST.
 inline constexpr uint32_t kSpecGiCoeffConst = 23;
+// Octahedral diffuse-irradiance path (TOURMALINE_GI_OCTAHEDRAL=1). Must
+// match common.hlsli SPEC_GI_OCTAHEDRAL.
+inline constexpr uint32_t kSpecGiOctahedral = 24;
 
 struct MaterialCreateInfo {
     // Primary PBR textures – baseColorTexture == diffuse for backward compat.

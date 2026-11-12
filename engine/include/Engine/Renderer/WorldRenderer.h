@@ -1170,6 +1170,12 @@ struct FrameUniforms {
     // 8-aligns to 3144 (the uint tables end at 3140).
     uint64_t giVolumeStats = 0;        // 3144 histogram BDA (0 = disabled)
     uint32_t giVolumeStatsEnabled = 0; // 3152 1 = accumulate + report
+    // ---- Octahedral diffuse-irradiance atlas (the Overwatch-style compact
+    // directional representation): per-volume 2D atlas slots in textures[]
+    // + the packed tile grid (atlasCols | atlasRows << 16). UINT32_MAX slot
+    // = absent (the shader falls back to the SG path).
+    uint32_t giVolumeOctaLayers[8] = {}; // 3156 atlas slots (textures[])
+    uint32_t giVolumeOctaDims[8] = {};   // 3188 packed cols | rows << 16
 };
 // FrameUniforms layout insurance: the HLSL mirror (common.hlsli) reads
 // every field by absolute offset — any drift desyncs the GPU reads.
@@ -1227,6 +1233,10 @@ static_assert(offsetof(FrameUniforms, giVolumeLayerTableB) == 2820,
 static_assert(offsetof(FrameUniforms, giVolumeStats) == 3144, "giVolumeStats offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, giVolumeStatsEnabled) == 3152,
               "giVolumeStatsEnabled offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giVolumeOctaLayers) == 3156,
+              "giVolumeOctaLayers offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giVolumeOctaDims) == 3188,
+              "giVolumeOctaDims offset: HLSL mirror");
 // Env-zone block (the append-only tail): the per-frame EnvZoneGpu slice
 // BDA + count + reserved words, pinned like every other HLSL-mirrored
 // member. The reserved array keeps the old 208-byte block size so the
@@ -1275,10 +1285,11 @@ static_assert(offsetof(FrameUniforms, fogShadowEnabled) == 2148,
               "fogShadowEnabled offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, contactShadowIndex) == 2152,
               "contactShadowIndex offset: HLSL mirror (the old tail pad's first word)");
-static_assert(sizeof(FrameUniforms) == 3168,
+static_assert(sizeof(FrameUniforms) == 3232,
               "FrameUniforms size: HLSL mirror (the GI-blend tail grew the struct 2160 -> 2500; "
               "the §1.1 layer tables append 2500 -> 3140, the 64-bit telemetry BDA 8-aligns to "
-              "3144 -> 3168; every pre-blend offset above is unchanged)");
+              "3144 -> 3152, the octahedral atlas tail appends 3156 -> 3232; every pre-blend "
+              "offset above is unchanged)");
 
 // FramePSHot — tiny per-frame data frequently accessed by the pixel shader.
 // Mirrors HLSL FramePSHot in common.hlsli (96 bytes, 16-byte aligned).
@@ -4047,6 +4058,12 @@ class WorldRenderer : public IRenderer {
         // GI entirely.
         smvk::Holder<smvk::TextureHandle> visLayers[2];
         uint32_t visSlots[2] = {UINT32_MAX, UINT32_MAX};
+        // Octahedral diffuse-irradiance atlas (PackGpuOctahedral): one 2D
+        // RGBA16F tile atlas in textures[]. UINT32_MAX slot = absent (the
+        // shader falls back to the 9-lobe SG path).
+        smvk::Holder<smvk::TextureHandle> octaTex;
+        uint32_t octaSlot = UINT32_MAX;
+        uint32_t octaDimsPacked = 0; // atlasCols | atlasRows << 16
         // The probe-sphere instance table (Rendergraph/giprobe.h - the
         // ImGui probe-dot overlay's 3D successor): the strided static
         // lattice subset (position + integer grid coords), built once by
@@ -4085,6 +4102,11 @@ class WorldRenderer : public IRenderer {
     bool m_giCoeffConstArmed = false;
     smvk::ShaderProgram m_coeffConstProgramGi[4];
     smvk::ShaderProgram m_coeffConstProgramGiStd[4];
+    // Octahedral diffuse-path twins (giOctaCompile=1): forged + selected
+    // when TOURMALINE_GI_OCTAHEDRAL=1.
+    bool m_giOctahedralArmed = false;
+    smvk::ShaderProgram m_octaProgramGi[4];
+    smvk::ShaderProgram m_octaProgramGiStd[4];
     bool m_giBlendActive = false;
     float m_giBlendAlpha = 0.0f; // 0 = fully A, 1 = fully B (clamped)
     // The cached path lists (AdoptGiVolumeBlend's residency check).

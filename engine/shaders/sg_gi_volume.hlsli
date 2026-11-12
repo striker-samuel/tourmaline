@@ -791,6 +791,112 @@ void SgGiVolumeComposite(FrameUniforms frame, uint volMask, float3 pos,
 }
 
 // ***************************************************************************
+// THE OCTAHEDRAL DIFFUSE PATH (the Overwatch-style compact directional
+// representation): one directional fetch per probe instead of nine SG
+// lobes. The per-probe kGiOctRes x kGiOctRes octahedral irradiance map
+// (diffuse E(n) pre-evaluated from the SG fit at bake/load time) is tiled
+// into a 2D RGBA16F atlas (textures[]); the runtime point-fetches one
+// texel per surviving corner at the surface normal and accumulates RGB.
+// The diffuse arrives pre-evaluated — no SgGiDiffuseIrradiance call, and
+// the SG specular crossover drops to cubemap-only.
+// ***************************************************************************
+
+static const uint kGiOctRes = 8; // octahedral map resolution (tile size)
+
+float2 SgGiOctEncode(float3 n) {
+    n /= (abs(n.x) + abs(n.y) + abs(n.z));
+    float2 e = (n.z >= 0.0) ? n.xy
+        : float2((1.0 - abs(n.y)) * (n.x >= 0.0 ? 1.0 : -1.0),
+                 (1.0 - abs(n.x)) * (n.y >= 0.0 ? 1.0 : -1.0));
+    return e * 0.5 + 0.5;
+}
+
+void SgGiVolumeSampleOctahedral(FrameUniforms frame, uint vol, float3 pos, float3 N,
+    out float3 diffuse)
+{
+    const GiVolumeGpu v = frame.giVolumes.Get().volumes[vol];
+    const float3 uvw = saturate(pos * v.uvwScale.xyz + v.uvwBias.xyz);
+    const uint octaSlot = frame.giVolumeOctaLayers[vol];
+    const uint packed = frame.giVolumeOctaDims[vol];
+    const uint atlasCols = packed & 0xffffu;
+    const uint atlasRows = packed >> 16u;
+
+    const float3 dims = float3(v.uvwScale.w, v.uvwBias.w, v.aabbMax.w);
+    const float3 rel = uvw * dims;
+    const int3 b = clamp(int3(floor(rel - 0.5)), 0, int3(dims) - 2);
+    const float3 f = saturate(rel - 0.5 - float3(b));
+
+    const uint visSlotA = frame.giVolumeVisLayers[vol * 2u];
+    const uint visSlotB = frame.giVolumeVisLayers[vol * 2u + 1u];
+    const bool weighted = (visSlotB != 0xffffffffu) &&
+        (volumeTextures[visSlotB].Load(int4(b, 0)).z < 0.5);
+
+    const int2 octTexel = min(int2(SgGiOctEncode(N) * float(kGiOctRes)),
+                              int2(int(kGiOctRes) - 1, int(kGiOctRes) - 1));
+
+    float3 acc = float3(0.0, 0.0, 0.0);
+    float wSum = 0.0;
+    [unroll]
+    for (uint c = 0; c < 8; ++c)
+    {
+        const int3 cc = int3(b) + int3(c & 1 ? 1 : 0, c & 2 ? 1 : 0, c & 4 ? 1 : 0);
+        float wv = 1.0;
+        if (weighted)
+        {
+            const float3 dRel = rel - (float3(cc) + 0.5);
+            const float4 visA = volumeTextures[visSlotA].Load(int4(cc, 0));
+            const float4 visB = volumeTextures[visSlotB].Load(int4(cc, 0));
+            wv = SgGiVolumeVisFactor(dRel, visA, visB);
+        }
+        const float3 t3 = float3(c & 1 ? f.x : 1.0 - f.x,
+            c & 2 ? f.y : 1.0 - f.y, c & 4 ? f.z : 1.0 - f.z);
+        const float wt = wv * (t3.x * t3.y * t3.z);
+        if (wt <= 0.0)
+            continue;
+        // Flatten the lattice index -> tile -> atlas texel (the bake's
+        // tile order: probe p at (p % atlasCols, p / atlasCols)).
+        const uint probeIdx = (uint(cc.z) * uint(dims.y) + uint(cc.y)) * uint(dims.x) + uint(cc.x);
+        const int2 tile = int2(probeIdx % atlasCols, probeIdx / atlasCols);
+        const int2 texel = tile * int(kGiOctRes) + octTexel;
+        const float3 rgb = textures[octaSlot].Load(int3(texel, 0)).rgb;
+        acc += rgb * wt;
+        wSum += wt;
+    }
+    diffuse = (wSum > 1e-4) ? (acc / wSum) : float3(0.0, 0.0, 0.0);
+}
+
+void SgGiVolumeCompositeOctahedral(FrameUniforms frame, uint volMask, float3 pos, float3 N,
+    out float3 diffuse, out float transmission, out bool hit)
+{
+    diffuse = float3(0.0, 0.0, 0.0);
+    transmission = 1.0;
+    hit = false;
+    if (frame.giVolumesEnabled == 0u)
+        return;
+    const uint volCount = min(frame.giVolumeCount, (uint)SG_GI_VOLUME_MAX);
+    [loop]
+    for (int v = int(volCount) - 1; v >= 0; --v) // HIGH priority first
+    {
+        if ((volMask & (1u << uint(v))) == 0u)
+            continue;
+        const GiVolumeGpu vol = frame.giVolumes.Get().volumes[uint(v)];
+        const float w = SgGiVolumeWeight(frame, vol, pos);
+        [branch]
+        if (w <= 0.0)
+            continue;
+        float3 vDiffuse;
+        SgGiVolumeSampleOctahedral(frame, uint(v), pos, N, vDiffuse);
+        const float c = transmission * w;
+        diffuse += vDiffuse * c;
+        hit = true;
+        transmission *= 1.0 - w;
+        if (transmission <= 0.0)
+            break; // deep inside: lower priorities + base contribute 0
+    }
+    // (no B-set blend here — the prototype is diffuse-only over the A set)
+}
+
+// ***************************************************************************
 // THE GI BLEND B-SET TWINS (docs/content_as_code.md): frame.giVolumesB
 // + the *B layer tables carry a SECOND resident GI set; the functions
 // below are the A-set twins' exact math over the B tables, kept as

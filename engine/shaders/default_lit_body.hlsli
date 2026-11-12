@@ -1528,44 +1528,72 @@ float envVis = 1.0f;
     float3 specAmps[SG_GI_LOBES];
     bool covered = false;
 
-    // Convex volumes: blended amps + the leftover base weight.
-    float3 volAmps[SG_GI_LOBES];
-    float volTrans = 1.0;
-    bool volHit = false;
-    SgGiVolumeComposite(frame, SgGiVolumeTileMask(frame, clipPos.xy), IN.worldPos,
-        volAmps, volTrans, volHit);
-
-    // Base + volumes — every consumer (E, spec amps, the fog-leg mean)
-    // is LINEAR in the lobe amps, so the one accumulated amp set
-    // evaluates them all:
-    //   E    = irr(volAmps) + skyE * volTrans
-    //   spec = volAmps      (the sky's specular lives in ambientSpec —
-    //                        the uncovered spec base is ZERO amps, and
-    //                        the first volume blends in by its weight
-    //                        like every other source)
-    E = SgGiDiffuseIrradiance(volAmps, N);
-    [unroll]
-    for (uint sA = 0; sA < SG_GI_LOBES; ++sA)
-        specAmps[sA] = volAmps[sA];
-    E += irradiance * (iblOn * volTrans); // analytic sky diffuse base
-    covered = volHit;
-
-    if (covered)
+    // Convex volumes: the SG path blends 9 lobes then evaluates diffuse +
+    // specular; the octahedral path (giOctaCompile) fetches pre-evaluated
+    // diffuse per corner and drops the SG specular crossover (cubemap-only).
+    if (giOctaCompile != 0u)
     {
-        const float3 giE = E * giScale;
-        giSource = 4u;
-        bakedE = giE;
-        envVis = SpecularOcclusionFromGI(giE, giScale, N, frame.env, shadingRoughness);
-        ambientSpec = envSpec * envVis;
-        if (!isBlendMat)
-            ambient += kD * baseColor * (giE / PI) * occlusion;
-        const float roughW = saturate((shadingRoughness - 0.45f) / 0.25f);
-        if (roughW > 0.0f)
+        float3 octaE;
+        float volTrans = 1.0;
+        bool volHit = false;
+        SgGiVolumeCompositeOctahedral(frame, SgGiVolumeTileMask(frame, clipPos.xy),
+            IN.worldPos, N, octaE, volTrans, volHit);
+        E = octaE;
+        E += irradiance * (iblOn * volTrans); // analytic sky diffuse base
+        covered = volHit;
+        if (covered)
         {
-            const float3 giSpecular =
-                SgGiSpecular(specAmps, R, shadingRoughness) * giScale
-                * Fenv * occlusion;
-            ambientSpec = lerp(ambientSpec, giSpecular, roughW);
+            const float3 giE = E * giScale;
+            giSource = 4u;
+            bakedE = giE;
+            envVis = SpecularOcclusionFromGI(giE, giScale, N, frame.env, shadingRoughness);
+            ambientSpec = envSpec * envVis;
+            if (!isBlendMat)
+                ambient += kD * baseColor * (giE / PI) * occlusion;
+            // No SgGiSpecular crossover here — the octahedral atlas stores
+            // diffuse only, so rough surfaces keep the GGX cubemap specular.
+        }
+    }
+    else
+    {
+        float3 volAmps[SG_GI_LOBES];
+        float volTrans = 1.0;
+        bool volHit = false;
+        SgGiVolumeComposite(frame, SgGiVolumeTileMask(frame, clipPos.xy), IN.worldPos,
+            volAmps, volTrans, volHit);
+
+        // Base + volumes — every consumer (E, spec amps, the fog-leg mean)
+        // is LINEAR in the lobe amps, so the one accumulated amp set
+        // evaluates them all:
+        //   E    = irr(volAmps) + skyE * volTrans
+        //   spec = volAmps      (the sky's specular lives in ambientSpec —
+        //                        the uncovered spec base is ZERO amps, and
+        //                        the first volume blends in by its weight
+        //                        like every other source)
+        E = SgGiDiffuseIrradiance(volAmps, N);
+        [unroll]
+        for (uint sA = 0; sA < SG_GI_LOBES; ++sA)
+            specAmps[sA] = volAmps[sA];
+        E += irradiance * (iblOn * volTrans); // analytic sky diffuse base
+        covered = volHit;
+
+        if (covered)
+        {
+            const float3 giE = E * giScale;
+            giSource = 4u;
+            bakedE = giE;
+            envVis = SpecularOcclusionFromGI(giE, giScale, N, frame.env, shadingRoughness);
+            ambientSpec = envSpec * envVis;
+            if (!isBlendMat)
+                ambient += kD * baseColor * (giE / PI) * occlusion;
+            const float roughW = saturate((shadingRoughness - 0.45f) / 0.25f);
+            if (roughW > 0.0f)
+            {
+                const float3 giSpecular =
+                    SgGiSpecular(specAmps, R, shadingRoughness) * giScale
+                    * Fenv * occlusion;
+                ambientSpec = lerp(ambientSpec, giSpecular, roughW);
+            }
         }
     }
 #endif // GI permutations

@@ -177,6 +177,13 @@ smvk::ShaderProgram& WorldRenderer::MainLitProgramFor(uint32_t materialId) {
                                           true,
                                           m_coeffConstProgramGi,
                                           m_coeffConstProgramGiStd);
+                if (m_giOctahedralArmed)
+                    return SpecProgramFor(m_resources.mainProgramGiStd[gv],
+                                          tour::kSpecGiOctahedral,
+                                          gv,
+                                          true,
+                                          m_octaProgramGi,
+                                          m_octaProgramGiStd);
                 return m_resources.mainProgramGiStd[gv];
             }
             if (m_giVolumeStatsArmed)
@@ -189,6 +196,9 @@ smvk::ShaderProgram& WorldRenderer::MainLitProgramFor(uint32_t materialId) {
                                       false,
                                       m_coeffConstProgramGi,
                                       m_coeffConstProgramGiStd);
+            if (m_giOctahedralArmed)
+                return SpecProgramFor(
+                    gi, tour::kSpecGiOctahedral, gv, false, m_octaProgramGi, m_octaProgramGiStd);
             return gi;
         }
         return stdReady ? m_resources.mainProgramStd : m_resources.mainProgram;
@@ -1408,6 +1418,15 @@ bool WorldRenderer::onAttach() {
     if (const char* ccEnv = std::getenv("TOURMALINE_GI_COEFF_CONST")) {
         if (std::atoi(ccEnv) == 1)
             m_giCoeffConstArmed = true;
+    }
+    // Octahedral diffuse-irradiance path: replace the 9-lobe surface
+    // diffuse with the per-probe octahedral atlas (1 directional fetch per
+    // corner) + cubemap-only specular. Selects the giOctaCompile=1 lit
+    // twin — off the timing path otherwise.
+    //   TOURMALINE_GI_OCTAHEDRAL=1
+    if (const char* octaEnv = std::getenv("TOURMALINE_GI_OCTAHEDRAL")) {
+        if (std::atoi(octaEnv) == 1)
+            m_giOctahedralArmed = true;
     }
     // GI probe spheres for headless runs (the "Probe points" panel
     // checkbox's twin — the 3D instanced visual, Rendergraph/giprobe.h:
@@ -3902,6 +3921,34 @@ bool WorldRenderer::BuildGiVolumeSet(std::vector<GiVolumeResources>& built,
                 cv.meanSlot = m_context->GetTextureBindlessIndex(cv.meanTex);
             }
         }
+        // Octahedral diffuse-irradiance atlas (PackGpuOctahedral — the
+        // Overwatch-style compact directional representation): computed from
+        // the (decoded) coeffs, uploaded as one 2D RGBA16F tile atlas. SOFT
+        // failure like the vis layers: a missing atlas keeps the volume on
+        // the SG path (the slot stays UINT32_MAX).
+        {
+            std::vector<uint16_t> octaAtlas;
+            uint32_t atlasCols = 0, atlasRows = 0;
+            cv.volume.PackGpuOctahedral(octaAtlas, atlasCols, atlasRows);
+            const uint32_t atlasW = atlasCols * tour::gi::kGiOctRes;
+            const uint32_t atlasH = atlasRows * tour::gi::kGiOctRes;
+            smvk::ImageCreateInfo oci{};
+            oci.type = smvk::ImageType::Image2D;
+            oci.extent = {atlasW, atlasH, 1};
+            oci.format = smvk::Format::RGBA16_Float;
+            oci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::TransferDst;
+            oci.mipLevels = 1;
+            oci.arrayLayers = 1;
+            oci.name = "gi volume octahedral";
+            auto octaTex = m_context->CreateTexture(oci, octaAtlas.data());
+            if (octaTex.empty()) {
+                std::cerr << "[GIV] octahedral atlas creation failed - SG path\n";
+            } else {
+                cv.octaTex = std::move(octaTex);
+                cv.octaSlot = m_context->GetTextureBindlessIndex(cv.octaTex);
+                cv.octaDimsPacked = atlasCols | (atlasRows << 16);
+            }
+        }
         // Visibility twins (PackGpuVisLayers - the through-wall
         // rejection): 2 RGBA8_UNORM 3D textures (the 6 axis
         // distances + the clean-cell flag). SOFT failure: a failed
@@ -5005,6 +5052,9 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
             // the plain trilerp fast path).
             for (uint32_t t = 0; t < 2; ++t)
                 data.giVolumeVisLayers[v * 2u + t] = m_giVolumes[v].visSlots[t];
+            // Octahedral diffuse atlas (UINT32_MAX = absent -> SG path).
+            data.giVolumeOctaLayers[v] = m_giVolumes[v].octaSlot;
+            data.giVolumeOctaDims[v] = m_giVolumes[v].octaDimsPacked;
         }
         data.giVolumeCount = n;
         data.giVolumesEnabled = ProbesWanted() ? 1u : 0u;
@@ -5015,6 +5065,8 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
         for (uint32_t& slot : data.giVolumeLayerTable)
             slot = UINT32_MAX;
         for (uint32_t& slot : data.giVolumeMeanLayers)
+            slot = UINT32_MAX;
+        for (uint32_t& slot : data.giVolumeOctaLayers)
             slot = UINT32_MAX;
         data.giVolumeCount = 0u;
         data.giVolumesEnabled = 0u;
