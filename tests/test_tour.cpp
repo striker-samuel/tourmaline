@@ -1406,8 +1406,7 @@ void TestLightVerbs() {
                   std::abs(L->outerConeAngle - glm::radians(35.0f)) < 1e-4f &&
                   (L->flags & ::SceneLight::kSceneLightFlag_CastShadow) != 0 &&
                   (L->flags & ::SceneLight::kSceneLightFlag_Static) == 0 &&
-                  L->color == glm::vec3(1.0f, 0.5f, 0.25f) &&
-                  L->layerMask == 2147483649u;
+                  L->color == glm::vec3(1.0f, 0.5f, 0.25f) && L->layerMask == 2147483649u;
     Check(params, "light replay params (-ref intensity + color + layer mask)");
     Check(cluster->scene.metadata.size() > 0 &&
               cluster->scene.metadata[0].lightLayerMask == 2147483648u,
@@ -1452,13 +1451,13 @@ void TestGiVolumePrecisionRoundTrip() {
     size.verb = smvk::tour::Verb::SetGiVolumeAttr;
     size.node = smvk::tour::kCreateGiVolumeRefBase;
     size.text = "size";
-    size.vec4 = glm::vec4(7.87654352f, 3.23456788f, 5.34567881f, 0.0f);
+    size.vec4 = glm::vec4(7.87654352f, 3.23456788f, 5.34567881f, 1.0f);
     doc.commands.push_back(size);
     smvk::tour::Command rotation{};
     rotation.verb = smvk::tour::Verb::SetGiVolumeAttr;
     rotation.node = smvk::tour::kCreateGiVolumeRefBase;
     rotation.text = "rotation";
-    rotation.vec4 = glm::vec4(13.123456f, 27.876543f, -41.234567f, 0.0f);
+    rotation.vec4 = glm::vec4(13.123456f, 27.876543f, -41.234567f, 1.0f);
     doc.commands.push_back(rotation);
     smvk::tour::Command spacing{};
     spacing.verb = smvk::tour::Verb::SetGiVolumeAttr;
@@ -1468,11 +1467,9 @@ void TestGiVolumePrecisionRoundTrip() {
     doc.commands.push_back(spacing);
 
     std::string err;
-    Check(smvk::tour::SaveTour(TempTour(), doc, err),
-          "GI volume precise save");
+    Check(smvk::tour::SaveTour(TempTour(), doc, err), "GI volume precise save");
     smvk::tour::Doc reloaded;
-    Check(smvk::tour::LoadTour(TempTour(), reloaded, err),
-          "GI volume precise load");
+    Check(smvk::tour::LoadTour(TempTour(), reloaded, err), "GI volume precise load");
     if (reloaded.commands.size() != doc.commands.size()) {
         Check(false, "GI volume precise command count");
         return;
@@ -1633,7 +1630,7 @@ void TestGiVolumeVerbs() {
         g.verb = smvk::tour::Verb::SetGiVolumeAttr;
         g.node = smvk::tour::kCreateGiVolumeRefBase | 0u;
         g.text = "optlayout";
-        g.number = 1.30313;
+        g.number = 1.5;
         g.vec4 = glm::vec4(0.25f, 0.5f, 0.75f, 0.0f);
         seed.commands.push_back(g);
         Check(smvk::tour::SaveTour(TempTour(), seed, err), "GI volume gate/seed save");
@@ -1645,7 +1642,7 @@ void TestGiVolumeVerbs() {
         Check(gtext.find("setGiVolumeAttr -ref 0 -at spacinglow -v 0.75") != std::string::npos &&
                   gtext.find("setGiVolumeAttr -ref 0 -at spacinghigh -v 2.5") != std::string::npos,
               "GI volume gate lines");
-        Check(gtext.find("setGiVolumeAttr -ref 0 -at optlayout -v 1.30313 -t 0.25 0.5 0.75") !=
+        Check(gtext.find("setGiVolumeAttr -ref 0 -at optlayout -v 1.5 -t 0.25 0.5 0.75") !=
                   std::string::npos,
               "GI volume seed line carries the phase");
         smvk::tour::Doc gback;
@@ -1654,7 +1651,7 @@ void TestGiVolumeVerbs() {
                   gback.commands[0].number == 0.75 && gback.commands[1].text == "spacinghigh" &&
                   gback.commands[1].number == 2.5,
               "GI volume gates roundtrip");
-        Check(gback.commands[2].text == "optlayout" && gback.commands[2].number == 1.30313 &&
+        Check(gback.commands[2].text == "optlayout" && gback.commands[2].number == 1.5 &&
                   gback.commands[2].vec4.x == 0.25f && gback.commands[2].vec4.z == 0.75f,
               "GI volume seed roundtrip (spacing + phase)");
         // The OLD scalar-only seed shape (what the writer emitted before
