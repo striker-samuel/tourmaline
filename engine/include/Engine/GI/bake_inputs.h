@@ -95,7 +95,11 @@ inline std::string BakeInputHash(const std::string& s) {
 // v2: the FULL-BSDF PBR transport (GGX specular NEE + one-sample-MIS
 // lobe sampling — metals reflect instead of absorbing; every prior
 // bake under-reports indirect near metallic or glossy surfaces).
-inline constexpr uint32_t kBakeAlgorithmRevision = 2;
+// v3: the through-wall visibility bake skips TRANSMISSIVE (Blend glass)
+// triangles (GiTraceScene::SolidObstacleDistance) — a pane no longer
+// shortens a probe's obstacle distance, so near-glass probes read open
+// and their cells stay clean instead of forcing the weighted sampler.
+inline constexpr uint32_t kBakeAlgorithmRevision = 3;
 
 // ---------------------------------------------------------------------------
 // The geometry merkle
