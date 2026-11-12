@@ -222,42 +222,43 @@ float2 SsrFullNdc(int2 fullPx)
                   (float(fullPx.y) + 0.5f) * sp.invDepthH * 2.0f - 1.0f);
 }
 
-// Per-axis boundary crossing parameter t = (boundary - origin) /
-// direction, NaN-SAFE for axis-aligned rays: a ZERO direction axis is
-// parallel to the plane and never crosses (+MAX). The old
-// boundary * inv - origin * inv form divided a zero axis into Inf and
-// then Inf - Inf'd into NaN whenever the boundary equaled the origin on
-// that axis - exactly the axis-aligned reflections (the vertical
-// walls' horizontal mirror rays, the floors' vertical columns).
-float2 SsrBoundaryT2(float2 boundary, float2 origin, float2 direction)
+// Per-axis boundary crossing parameter t = (boundary - origin) *
+// rcpDir, where rcpDir is the NaN-SAFE reciprocal of the march direction
+// computed ONCE per ray (see SsrRecipDirection). A ZERO direction axis
+// maps to +MAX (parallel to the plane, never crosses), which is exactly
+// the old ternary's semantics but without a division per cell per axis.
+float2 SsrBoundaryT2(float2 boundary, float2 origin, float2 rcpDir)
 {
-    float2 t;
-    t.x = direction.x != 0.0f ? (boundary.x - origin.x) / direction.x : SSR_FLOAT_MAX;
-    t.y = direction.y != 0.0f ? (boundary.y - origin.y) / direction.y : SSR_FLOAT_MAX;
-    return t;
+    return (boundary - origin) * rcpDir;
 }
 
-float3 SsrBoundaryT(float3 boundary, float3 origin, float3 direction)
+float3 SsrBoundaryT(float3 boundary, float3 origin, float3 rcpDir)
 {
-    float3 t;
-    t.x = direction.x != 0.0f ? (boundary.x - origin.x) / direction.x : SSR_FLOAT_MAX;
-    t.y = direction.y != 0.0f ? (boundary.y - origin.y) / direction.y : SSR_FLOAT_MAX;
-    t.z = direction.z != 0.0f ? (boundary.z - origin.z) / direction.z : SSR_FLOAT_MAX;
-    return t;
+    return (boundary - origin) * rcpDir;
+}
+
+// NaN-safe reciprocal of the march direction, computed ONCE per ray:
+// a zero axis stays +MAX (the plane is parallel and never crossed), so
+// the boundary tests above multiply instead of divide.
+float3 SsrRecipDirection(float3 direction)
+{
+    return select(float3(SSR_FLOAT_MAX, SSR_FLOAT_MAX, SSR_FLOAT_MAX),
+                  1.0f / direction,
+                  direction != 0.0f);
 }
 
 // Initial ray advance (the SDK's FFX_SSSR_InitialAdvanceRay, adapted to
 // the NaN-safe boundary form): intersect the ray with the half-box
 // pointing away from the origin so the march never self-intersects the
 // receiver's own cell.
-void SsrInitialAdvanceRay(float3 origin, float3 direction,
+void SsrInitialAdvanceRay(float3 origin, float3 direction, float3 rcpDir,
     float2 mipRes, float2 mipResInv, float2 floorOff, float2 uvOff,
     out float3 position, out float t)
 {
     float2 mipPos = mipRes * origin.xy;
     float2 xyPlane = floor(mipPos) + floorOff;
     xyPlane = xyPlane * mipResInv + uvOff;
-    float2 tt = SsrBoundaryT2(xyPlane, origin.xy, direction.xy);
+    float2 tt = SsrBoundaryT2(xyPlane, origin.xy, rcpDir.xy);
     t = min(tt.x, tt.y);
     position = origin + t * direction;
 }
@@ -279,13 +280,13 @@ void SsrInitialAdvanceRay(float3 origin, float3 direction,
 // the measured reflections (22.9-luma delta shrunk to 3.0). The
 // one-sided z plane stays: approaching rays ride the xy skipping + the
 // below-surface stuck-refine, which works.
-bool SsrAdvanceRay(float3 origin, float3 direction,
+bool SsrAdvanceRay(float3 origin, float3 direction, float3 rcpDir,
     float2 mipPos, float2 mipResInv, float2 floorOff, float2 uvOff,
     float surface_z, inout float3 position, inout float t)
 {
     float2 xyPlane = floor(mipPos) + floorOff;
     xyPlane = xyPlane * mipResInv + uvOff;
-    float3 tt = SsrBoundaryT(float3(xyPlane, surface_z), origin, direction);
+    float3 tt = SsrBoundaryT(float3(xyPlane, surface_z), origin, rcpDir);
     tt.z = direction.z < 0.0f ? tt.z : SSR_FLOAT_MAX;
     float tMin = min(min(tt.x, tt.y), tt.z);
     // Reversed-Z: larger z = nearer. The ray is above (in front of) the
@@ -431,6 +432,11 @@ void mainCS(uint3 groupId : SV_GroupID, uint groupIndex : SV_GroupIndex)
         return;
     }
 
+    // One NaN-safe reciprocal of the march direction per ray, so the
+    // per-cell boundary tests multiply instead of dividing (the march
+    // direction is constant for the whole traversal).
+    const float3 rcpDir = SsrRecipDirection(screenDir);
+
     // ---- The classic Hi-Z traversal (the SDK's
     // FFX_SSSR_HierarchicalRaymarch, adapted): cell-exit mip walk over
     // the app's MAX-reduce SSR pyramid (nearest-surface per block —
@@ -475,7 +481,7 @@ void mainCS(uint3 groupId : SV_GroupID, uint groupIndex : SV_GroupIndex)
 
     float curT;
     float3 pos;
-    SsrInitialAdvanceRay(screenOrigin, screenDir,
+    SsrInitialAdvanceRay(screenOrigin, screenDir, rcpDir,
         mipRes, mipResInv, floorOff, uvOff, pos, curT);
 
     bool exitLowOcc = false;
@@ -488,7 +494,7 @@ void mainCS(uint3 groupId : SV_GroupID, uint groupIndex : SV_GroupIndex)
         int2 tp = int2(clamp(floor(mipPos), float2(0.0f, 0.0f), mipRes - 1.0f));
         float surfaceZ = sp.ssrHzb.Get().texels[hzbOff[curMip] + tp.y * hzbW[curMip] + tp.x];
         exitLowOcc = !is_mirror && (WaveActiveCountBits(true) <= sp.minOccupancy);
-        bool skipped = SsrAdvanceRay(screenOrigin, screenDir,
+        bool skipped = SsrAdvanceRay(screenOrigin, screenDir, rcpDir,
             mipPos, mipResInv, floorOff, uvOff, surfaceZ, pos, curT);
         bool outOfRange = skipped && (curMip >= mipCount - 1);
         if (!outOfRange)
