@@ -5,6 +5,7 @@
 
 #include <Engine/Asset/asset_registry.h>
 #include <Engine/Asset/mesh_optimizer.h>
+#include <Engine/Asset/mesh_preparation_policy.h>
 #include <Engine/Renderer/texture_streamer.h>
 #include <Engine/Renderer/vertex_pack.h>
 #include <Engine/Utils/texture_loader.h>
@@ -2154,7 +2155,7 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
     // the GPU-driven raster eligibility shape (single-level chains).
     std::vector<smvk::CookedLod> lodChain;
     if (meshOptConfig.generateLods && data.skin.empty() && !data.vertices.empty() &&
-        !data.indices.empty()) {
+        smvk::EligibleForSpatialDerivatives(data.aabbMin, data.aabbMax, data.indices.size())) {
         // Alpha cutout (MASK) and blended foliage sample coverage from the
         // base-color alpha via the UVs: positions-only simplify collapses
         // quad borders and stretches UVs, flashing background through the
