@@ -3152,6 +3152,53 @@ void TestGiVolumeBc6hRoundTrip() {
         for (uint32_t l = 0; l < 9; ++l)
             sizes = sizes && blobs[l].size() == 192;
         Check(sizes, "gv6h.block-math-nonmultiple-dims");
+        // Repeated multi-worker packing must publish identical slice order,
+        // including the non-multiple-of-four padding/prefill.
+        std::vector<uint8_t> again[9];
+        vol.PackGpuLayersBc6h(again);
+        bool identical = true;
+        for (uint32_t l = 0; l < 9; ++l)
+            identical = identical && blobs[l] == again[l];
+        Check(identical, "gv6h.parallel-pack-deterministic");
+    }
+    // Compare the parallel pack to a direct serial Bc6hEncodeImage
+    // reference on an unpadded 4x4x2 field, per lobe and Z slice.
+    {
+        GiVolume small;
+        small.dims[0] = 4;
+        small.dims[1] = 4;
+        small.dims[2] = 2;
+        small.Resize();
+        for (uint32_t z = 0; z < 2; ++z)
+            for (uint32_t y = 0; y < 4; ++y)
+                for (uint32_t x = 0; x < 4; ++x)
+                    for (uint32_t l = 0; l < 9; ++l) {
+                        const float t = 0.1f * float(l + 1) +
+                                        0.03f * float(x + y * 4 + z * 16);
+                        small.coeffs[((size_t(z) * 4 + y) * 4 + x) * kSgLobeCount + l] =
+                            glm::vec3(t, t * 0.8f, t * 0.5f);
+                    }
+        std::vector<uint8_t> packed[9];
+        small.PackGpuLayersBc6h(packed);
+        bool matchesSerial = true;
+        for (uint32_t l = 0; l < 9; ++l) {
+            std::vector<uint8_t> serial;
+            for (uint32_t z = 0; z < 2; ++z) {
+                std::vector<uint16_t> halves(4 * 4 * 3);
+                for (uint32_t y = 0; y < 4; ++y)
+                    for (uint32_t x = 0; x < 4; ++x) {
+                        const glm::vec3& c =
+                            small.coeffs[((size_t(z) * 4 + y) * 4 + x) * kSgLobeCount + l];
+                        const size_t off = (size_t(y) * 4 + x) * 3;
+                        halves[off + 0] = PackHalf(c.r);
+                        halves[off + 1] = PackHalf(c.g);
+                        halves[off + 2] = PackHalf(c.b);
+                    }
+                Bc6hEncodeImage(halves.data(), 4, 4, serial);
+            }
+            matchesSerial = matchesSerial && packed[l] == serial;
+        }
+        Check(matchesSerial, "gv6h.parallel-pack-matches-serial-codec");
     }
     // The file round trip: GV6H magic + the blocks back VERBATIM +
     // the lossy decode within tolerance.
