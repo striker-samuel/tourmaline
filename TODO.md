@@ -1,6 +1,6 @@
 # TODO — active engineering backlog and historical audit log
 
-> **Current as of 2026-11-09 (`master`, through PR #299).** The checklists in
+> **Current as of 2026-11-12 (`master`, through PR #338).** The checklists in
 > **Current priorities** below are the actionable backlog. The dated PR audit
 > entries and migrated `todo.txt` below are retained for provenance, **not**
 > independently authoritative current-state checklists. A merged PR establishes
@@ -13,7 +13,7 @@
 > instruction. Do not turn an old validation gap back into an implementation
 > task without checking the linked newer PR.
 
-## Current priorities — reconciled 2026-11-09
+## Current priorities — reconciled 2026-11-12
 
 ### P0 — production correctness and architecture cutover
 
@@ -67,23 +67,24 @@
 
 ### P1 — incomplete integration and design work
 
-- [ ] **GPU-scene compact PSO submissions (#296, OPEN DRAFT).**
-  Four-bin fixed indirect ranges remain the live implementation. PR #296
-  introduces adaptive per-source budget accounting and experimental wave append,
-  **not** an enabled renderer cutover. Integrate per-flight budget snapshots,
-  compact allocations, barriers, count-buffer indirect submissions,
-  temporal/depth/Hi-Z consumers, no-drop overflow fallback, DXC/Vulkan checks,
-  and frame-time/image parity before enabling.
+- [ ] **GPU-scene compact PSO submissions (#296 superseded by #301).**
+  Four-bin fixed indirect ranges remain the live implementation. #301 landed
+  the deterministic, atomics-free four-class PSO compaction (CPU oracle +
+  prefix count/scan/scatter kernels + device-free tests); the wave-atomic
+  append draft #296 is closed. Still to wire: conservative per-source budget
+  accounting to per-flight publication, barriers, count-buffer indirect
+  submissions, temporal/depth/Hi-Z consumers, no-drop overflow fallback,
+  DXC/Vulkan checks, and frame-time/image parity before enabling.
 - [ ] **Scene mutation journaling (#182).** Complete remaining direct
   local/global transform caller classification/migration and deterministic +
   randomized CPU/GPU parity for reparent, remove/reuse, transform, visibility
   and binding mutations. The checked setter/animation migration are LANDED.
-- [ ] **WorldRenderer and public RHI boundary (#191, #298 OPEN DRAFT).**
-  #191's config/pass-descriptor extraction is **merged**, not unmerged.
-  Finish orchestration extraction, public API/interface ownership, renderer/RHI
-  seam and migration gates described in the legacy namespace audit. #298
-  prototypes CPU debug-draw producer decoupling, but does **not** move the GPU
-  debug-draw consumer; keep this distinction until merged and validated.
+- [ ] **WorldRenderer and public RHI boundary (#191 merged, #298 merged).**
+  #191's config/pass-descriptor extraction is **merged**. Finish orchestration
+  extraction, public API/interface ownership, renderer/RHI seam and migration
+  gates described in the legacy namespace audit. #298's CPU debug-draw producer
+  decoupling is **merged** (experimental), but it does **not** move the GPU
+  debug-draw consumer; keep that half open until it is also moved and validated.
 - [ ] **Tile/scene world-cutover acceptance (#231/#232/#272).**
   Exercise real Map cook/load/reload/corrupt-page, rapid movement/Map switch,
   delayed callback cancellation, shared physical resources, gameplay and
@@ -154,6 +155,21 @@
 - [x] **#299 final temporal kept-bit visibility history:** merged with
   reported static-scene pinned capture parity; retain broader temporal
   hardware acceptance above.
+- [x] **#300–#338 (post-#299 merges, 2026-11-09 → 2026-11-12):** GPU-scene
+  atomics-free four-class PSO compaction (#301, supersedes #296), empty-command
+  sentinel (#300), closeup dither on GPUScene raster (#327), default-on
+  size-gated SDF baking + scene-aware LOD prep (#328), opt-in cloth sheen
+  (#330), source mesh type rename to `MeshData`/`MeshVertex` (#333), explicit
+  project resource paths + lossless GI-volume serialization (#335), terrain
+  fixed-layout validation + skirt winding (#336), benchmark scenario export
+  hardening (#325), GI-volume parallel bakes (#329/#332), declarative vertex
+  layouts (#319), shared-asset revision/blob hardening (#317), SSR metallic
+  continuity (#314), and World-node TRS setters, ProjectScenes context binding,
+  plug semantics, scene-preserve-on-failure, plus Vulkan hardening (#310/#312),
+  backports (#307/#309) and several docs/planning reconciles. #338 (cascaded
+  cubemap capture planning + tile provider) is a
+  **foundation** — the baking/streaming/renderer wiring is still open; the
+  GPU-scene removal plan (#305) is a planning doc only, not a landed cutover.
 
 ---
 
@@ -161,7 +177,7 @@
 
 The sections below are an **audit trail at their stated commit/date**, not
 the current priority ordering. Older “remaining” and “not implemented”
-claims can be superseded by the dated 2026-11-09 status above. Preserve
+claims can be superseded by the dated 2026-11-12 status above. Preserve
 historical failure diagnoses, test evidence and engineering decisions rather
 than blindly deleting them.
 
