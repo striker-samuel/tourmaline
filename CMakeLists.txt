@@ -633,6 +633,7 @@ if(TOURMALINE_IS_TOP_LEVEL)
   # (tools/gi_baker moved into the shared game-host block above: embedded
   # game projects need the GiBaker stage tool for 'bake gi' recipes.)
   add_subdirectory(tools/cubemap_baker)
+  add_subdirectory(tools/cubemap_plan) # cascaded world-tile cubemap capture scoping aid (the #338 planner)
   add_subdirectory(samples/01_triangle)
   add_subdirectory(samples/02_blur)
   add_subdirectory(samples/03_fuzz) # the target-recreate/deferred-destroy hard fuzzer (see its .cpp header)
