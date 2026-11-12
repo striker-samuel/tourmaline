@@ -109,6 +109,7 @@ namespace engine {
 
 smvk::ShaderProgram& WorldRenderer::SpecProgramFor(const smvk::ShaderProgram& base,
                                                    uint32_t specId,
+                                                   uint32_t specId2,
                                                    uint32_t gv,
                                                    bool stdTwin,
                                                    smvk::ShaderProgram* cacheGi,
@@ -116,10 +117,13 @@ smvk::ShaderProgram& WorldRenderer::SpecProgramFor(const smvk::ShaderProgram& ba
     smvk::ShaderProgram& slot = stdTwin ? cacheStd[gv] : cacheGi[gv];
     if (slot.shaderCount == 0 && base.shaderCount == 2) {
         // Forge the diagnostic twin ONCE: the same modules + a spec payload
-        // flipping `specId` to 1 on the fragment stage. Pipelines key on the
-        // spec, so this mints its own PSOs on first bind.
+        // flipping `specId` (and optionally `specId2`) to 1 on the fragment
+        // stage. Pipelines key on the spec, so this mints its own PSOs on
+        // first bind.
         auto spec = std::make_shared<smvk::ShaderSpecialization>();
         spec->SetBool(specId, true);
+        if (specId2 != 0u)
+            spec->SetBool(specId2, true);
         slot = base;
         for (size_t i = 0; i < slot.shaderCount; ++i)
             if (slot.shaders[i].stage == smvk::ShaderStage::Fragment)
@@ -162,10 +166,23 @@ smvk::ShaderProgram& WorldRenderer::MainLitProgramFor(uint32_t materialId) {
     if (giVar != GIVariant::None) {
         smvk::ShaderProgram& gi = m_resources.mainProgramGi[gv];
         if (gi.shaderCount == 2) {
+            // The irradiance capture composes with the path choice (SG or
+            // octahedral): a second spec flips SPEC_GI_EXPORT_IRRADIANCE on
+            // top of the path spec.
+            const uint32_t expSpec2 = m_giOctahedralArmed ? tour::kSpecGiOctahedral : 0u;
             if (!layered && m_resources.mainProgramGiStd[gv].shaderCount == 2) {
+                if (m_giExportIrradianceArmed)
+                    return SpecProgramFor(m_resources.mainProgramGiStd[gv],
+                                          tour::kSpecGiExportIrradiance,
+                                          expSpec2,
+                                          gv,
+                                          true,
+                                          m_exportProgramGi,
+                                          m_exportProgramGiStd);
                 if (m_giVolumeStatsArmed)
                     return SpecProgramFor(m_resources.mainProgramGiStd[gv],
                                           tour::kSpecGiStats,
+                                          0u,
                                           gv,
                                           true,
                                           m_giStatsProgramGi,
@@ -173,6 +190,7 @@ smvk::ShaderProgram& WorldRenderer::MainLitProgramFor(uint32_t materialId) {
                 if (m_giCoeffConstArmed)
                     return SpecProgramFor(m_resources.mainProgramGiStd[gv],
                                           tour::kSpecGiCoeffConst,
+                                          0u,
                                           gv,
                                           true,
                                           m_coeffConstProgramGi,
@@ -180,25 +198,45 @@ smvk::ShaderProgram& WorldRenderer::MainLitProgramFor(uint32_t materialId) {
                 if (m_giOctahedralArmed)
                     return SpecProgramFor(m_resources.mainProgramGiStd[gv],
                                           tour::kSpecGiOctahedral,
+                                          0u,
                                           gv,
                                           true,
                                           m_octaProgramGi,
                                           m_octaProgramGiStd);
                 return m_resources.mainProgramGiStd[gv];
             }
+            if (m_giExportIrradianceArmed)
+                return SpecProgramFor(gi,
+                                      tour::kSpecGiExportIrradiance,
+                                      expSpec2,
+                                      gv,
+                                      false,
+                                      m_exportProgramGi,
+                                      m_exportProgramGiStd);
             if (m_giVolumeStatsArmed)
-                return SpecProgramFor(
-                    gi, tour::kSpecGiStats, gv, false, m_giStatsProgramGi, m_giStatsProgramGiStd);
+                return SpecProgramFor(gi,
+                                      tour::kSpecGiStats,
+                                      0u,
+                                      gv,
+                                      false,
+                                      m_giStatsProgramGi,
+                                      m_giStatsProgramGiStd);
             if (m_giCoeffConstArmed)
                 return SpecProgramFor(gi,
                                       tour::kSpecGiCoeffConst,
+                                      0u,
                                       gv,
                                       false,
                                       m_coeffConstProgramGi,
                                       m_coeffConstProgramGiStd);
             if (m_giOctahedralArmed)
-                return SpecProgramFor(
-                    gi, tour::kSpecGiOctahedral, gv, false, m_octaProgramGi, m_octaProgramGiStd);
+                return SpecProgramFor(gi,
+                                      tour::kSpecGiOctahedral,
+                                      0u,
+                                      gv,
+                                      false,
+                                      m_octaProgramGi,
+                                      m_octaProgramGiStd);
             return gi;
         }
         return stdReady ? m_resources.mainProgramStd : m_resources.mainProgram;
@@ -1427,6 +1465,15 @@ bool WorldRenderer::onAttach() {
     if (const char* octaEnv = std::getenv("TOURMALINE_GI_OCTAHEDRAL")) {
         if (std::atoi(octaEnv) == 1)
             m_giOctahedralArmed = true;
+    }
+    // Linear-HDR diffuse-irradiance capture: the lit pass writes E (GI +
+    // sky fallback, before albedo) to outEnvSpec, read back after the
+    // capture frame and dumped as raw typed buffers + metadata. Composes
+    // with TOURMALINE_GI_OCTAHEDRAL for the candidate capture.
+    //   TOURMALINE_GI_EXPORT_IRRADIANCE=<dir>
+    if (const char* expEnv = std::getenv("TOURMALINE_GI_EXPORT_IRRADIANCE")) {
+        m_giExportIrradianceArmed = true;
+        m_giExportIrradianceDir = expEnv;
     }
     // GI probe spheres for headless runs (the "Probe points" panel
     // checkbox's twin — the 3D instanced visual, Rendergraph/giprobe.h:

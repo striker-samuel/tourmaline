@@ -1347,6 +1347,12 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // sky baked into the source AND added again here).
     float3 irradiance = EvaluateIrradiance(N, frame.env);
     float iblOn = saturate(frame.env.fogEndAndFlags.w);
+    // Linear-HDR diffuse-irradiance capture (SPEC_GI_EXPORT_IRRADIANCE):
+    // the combined GI-volume + sky-fallback diffuse E, exported BEFORE
+    // albedo — the scenario-quality-comparison input. Set in the
+    // GI_VOLUMES block below, written to outEnvSpec at the output.
+    float3 giExportE = float3(0.0, 0.0, 0.0);
+    float giExportCovered = 0.0;
     // SSGI AO (profiler-driven rework): this shader NO LONGER samples or
     // applies AO. Every AO-sensitive term below (legacyAmbient,
     // ambientDiffuse, envSpec, the baked-GI ambient/specular branches) is
@@ -1596,6 +1602,11 @@ float envVis = 1.0f;
             }
         }
     }
+    // Capture the combined diffuse irradiance (before albedo) for the
+    // scenario-quality-comparison export. E + covered are in scope here
+    // (the GI_VOLUMES permutation); the export is GI-volume A/B only.
+    giExportE = E;
+    giExportCovered = covered ? 1.0 : 0.0;
 #endif // GI permutations
 
     // ---------------------------------------------------------------
@@ -1843,9 +1854,13 @@ float envVis = 1.0f;
     // the same point), so the AO compose's paired aoEff scaling keeps this
     // export tracking the base's env-spec slice through the AO apply. Alpha
     // unused (0). Sanitize like the color (the probe content x Fenv can
-    // exceed the half max).
-    OUT.outEnvSpec = float4(
-        SanitizeHdr(ambientSpec * occlusion), 0.0f);
+    // exceed the half max). SPEC_GI_EXPORT_IRRADIANCE swaps the payload for
+    // the linear-HDR diffuse irradiance + covered flag instead.
+    if (giExportIrradianceCompile != 0u)
+        OUT.outEnvSpec = float4(giExportE, giExportCovered);
+    else
+        OUT.outEnvSpec = float4(
+            SanitizeHdr(ambientSpec * occlusion), 0.0f);
 #if defined(ALPHA_TO_COVERAGE)
     // Coverage remap (2x MSAA): below-cutoff texels drop to 0 covered
     // samples (matches the discard cutout plane of the 1x depth passes);

@@ -1882,6 +1882,7 @@ class WorldRenderer : public IRenderer {
     // timing pipelines never mint these PSOs.
     [[nodiscard]] smvk::ShaderProgram& SpecProgramFor(const smvk::ShaderProgram& base,
                                                       uint32_t specId,
+                                                      uint32_t specId2,
                                                       uint32_t gv,
                                                       bool stdTwin,
                                                       smvk::ShaderProgram* cacheGi,
@@ -4107,6 +4108,13 @@ class WorldRenderer : public IRenderer {
     bool m_giOctahedralArmed = false;
     smvk::ShaderProgram m_octaProgramGi[4];
     smvk::ShaderProgram m_octaProgramGiStd[4];
+    // Linear-HDR diffuse-irradiance capture twins (giExportIrradianceCompile
+    // =1, optionally + giOctaCompile=1): forged + selected when
+    // TOURMALINE_GI_EXPORT_IRRADIANCE=1.
+    bool m_giExportIrradianceArmed = false;
+    smvk::ShaderProgram m_exportProgramGi[4];
+    smvk::ShaderProgram m_exportProgramGiStd[4];
+    std::string m_giExportIrradianceDir; // capture output directory
     bool m_giBlendActive = false;
     float m_giBlendAlpha = 0.0f; // 0 = fully A, 1 = fully B (clamped)
     // The cached path lists (AdoptGiVolumeBlend's residency check).
