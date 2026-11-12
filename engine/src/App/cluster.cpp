@@ -116,7 +116,7 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadMesh(const MeshData& data) {
 
         const MeshVertex& src = data.vertices[i];
 
-        PackStaticVertex(src, positions[i], shading[i], lightmap[i]);
+        PackMeshVertex(src, positions[i], shading[i], lightmap[i]);
         // The optional stream carves only when chart data exists (the
         // uncharted sentinel means "never lightmapped").
         if (src.chartId != 0xFFFFFFFFu)
@@ -751,7 +751,7 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadMeshes(
         PackedVertexShading* shadeOut = shading.data() + srcVert;
         PackedVertexLightmap* lmOut = lightmap.data() + srcVert;
         for (uint32_t v = 0; v < vertexCount; ++v)
-            PackStaticVertex(data.vertices[v], posOut[v], shadeOut[v], lmOut[v]);
+            PackMeshVertex(data.vertices[v], posOut[v], shadeOut[v], lmOut[v]);
         if (indexCount > 0) {
             memcpy(indices.data() + srcIdx,
                    data.indices.data(),
