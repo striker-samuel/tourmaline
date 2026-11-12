@@ -1879,10 +1879,10 @@ smvk::ClusterLightHandle GltfToSceneImporter::getOrCreateLight(int gltfLightInde
     return slot;
 }
 
-static smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model& model,
+static smvk::MeshData SurfaceDataFromGltfPrimitive(const tinygltf::Model& model,
                                                            const tinygltf::Primitive& primitive,
                                                            int coordFix) {
-    smvk::StaticMeshUpload data;
+    smvk::MeshData data;
     // AABB. for culling
     {
         auto it = primitive.attributes.find("POSITION");
@@ -1922,7 +1922,7 @@ static smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model
     auto& posAcc = model.accessors[primitive.attributes.at("POSITION")];
     data.vertices.reserve(posAcc.count);
     for (size_t i = 0; i < posAcc.count; ++i) {
-        smvk::ImportStaticVertex v{};
+        smvk::MeshVertex v{};
         v.pos = readVec3F(model, posAcc, i);
         v.color = {1.0f, 1.0f, 1.0f, 1.0f};
         v.texCoord = {0.0f, 0.0f};            // will fill if UVs exist
@@ -2001,7 +2001,7 @@ static smvk::StaticMeshUpload SurfaceDataFromGltfPrimitive(const tinygltf::Model
 // Packs a primitive's JOINTS_0/WEIGHTS_0 into the PackedSkinInfluences stream
 // (top-4 renormalized RGBA8; joint ids in the glTF JOINTS_0 order = the
 // cluster Skeleton joint table). Built in the POSITION-accessor order,
-// parallel to the mesh upload's vertices, so OptimizeStaticMeshUpload can
+// parallel to the mesh upload's vertices, so OptimizeMeshData can
 // keep it in lockstep through the vertex remap. Returns false for an
 // unskinned primitive (missing/invalid attributes or empty).
 static bool PackVertexSkinStream(const tinygltf::Model& model,
@@ -2091,7 +2091,7 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
 
     // Attach the skin stream BEFORE the meshopt pass so the weld +
     // vertex-fetch remaps carry it in lockstep with `data.vertices`
-    // (OptimizeStaticMeshUpload remaps `skin` alongside). A stream
+    // (OptimizeMeshData remaps `skin` alongside). A stream
     // attached after optimization would be in ACCESSOR order while the
     // vertices are reordered - bind-pose masks it (all joints = bind) but
     // animation scatters the weights into spikes.
@@ -2114,7 +2114,7 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
             cfg.overdraw = false;
         smvk::MeshOptStats optStats;
         const size_t inVerts = data.vertices.size();
-        if (OptimizeStaticMeshUpload(
+        if (OptimizeMeshData(
                 data, cfg, static_cast<uint32_t>(gltfMeshIndex), &optStats, &lod)) {
 #ifndef NDEBUG
             std::cout << "MeshOpt mesh." << gltfMeshIndex << "/prim." << primitiveIndex
@@ -2213,7 +2213,7 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
         }
     }
 
-    slot = cluster.UploadStaticMesh(data);
+    slot = cluster.UploadMesh(data);
 
     if (!modelUriBase.empty()) {
         const smvk::StringViewT uri = smvk::MakeSubUri(
@@ -2240,7 +2240,7 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
         // direct, unculled by frustum/HZB (freeze-view leak).
         for (size_t li = 0; li < lodChain.size(); ++li) {
             const smvk::CookedLod& kept = lodChain[li];
-            const auto lh = cluster.UploadStaticMesh(kept.upload);
+            const auto lh = cluster.UploadMesh(kept.upload);
             if (!lh.valid())
                 continue;
             const smvk::StringViewT lodUri =
@@ -2537,7 +2537,7 @@ int GltfToSceneImporter::BuildSkinData() {
             continue;
         const tinygltf::Primitive& prim = gm.primitives[size_t(r.primitiveIndex)];
         // The stream attached in getOrCreateMesh (BEFORE the meshopt pass)
-        // already rode OptimizeStaticMeshUpload's vertex remap, so it is in
+        // already rode OptimizeMeshData's vertex remap, so it is in
         // FINAL vertex order - prefer it. The accessor-order pack is the
         // fallback for an unoptimized mesh (no reorder => the orders agree).
         std::vector<smvk::PackedSkinInfluences> stream;
@@ -2772,16 +2772,16 @@ size_t BuildFromMeshAsset(
         matOf = entry.matOf;
     } else {
         // 1) Geometry uploads (base blobs + LOD sibling blobs, AoS via the
-        // inverse pack — UploadStaticMesh handles cook + GPU + streaming).
+        // inverse pack — UploadMesh handles cook + GPU + streaming).
         auto makeUpload = [](const smvk::assets::MeshAsset::Geometry& g) {
-            smvk::StaticMeshUpload up{};
+            smvk::MeshData up{};
             up.vertices.resize(g.positions.size());
             // Uncharted blobs carry NO lightmap stream (count-gated on disk);
             // the unpack uses an all-uncharted record for those (the inverse
             // pack's sentinel round-trips to chartId 0xFFFFFFFF anyway).
             const smvk::PackedVertexLightmap lmNone{};
             for (size_t v = 0; v < g.positions.size(); ++v)
-                smvk::UnpackStaticVertex(g.positions[v],
+                smvk::UnpackMeshVertex(g.positions[v],
                                          g.shading[v],
                                          !g.lightmap.empty() ? g.lightmap[v] : lmNone,
                                          up.vertices[v]);
@@ -2794,7 +2794,7 @@ size_t BuildFromMeshAsset(
             up.skin = g.skin;
             return up;
         };
-        std::vector<smvk::StaticMeshUpload> uploads;
+        std::vector<smvk::MeshData> uploads;
         uploads.reserve(asset.geometry.size());
         for (const auto& g : asset.geometry)
             uploads.push_back(makeUpload(g));
@@ -2803,7 +2803,7 @@ size_t BuildFromMeshAsset(
                 uploads.push_back(makeUpload(s.geo));
         if (uploads.empty())
             return 0;
-        handles = cluster.UploadStaticMeshes(uploads);
+        handles = cluster.UploadMeshes(uploads);
         if (handles.size() != uploads.size())
             return 0;
     }

@@ -8,7 +8,7 @@
 #include <Engine/GI/sg.h> // PackHalf/UnpackHalf (the fp16 amp packing;
 #include <Engine/Memory/pool.h>
 //                          the deleted probe_volume.h used to carry sg.h here)
-#include <Engine/Renderer/mesh.h> // StaticMeshUpload (charts API)
+#include <Engine/Renderer/mesh.h> // MeshData (charts API)
 
 #include <algorithm>
 #include <atomic>
@@ -401,7 +401,7 @@ void SgLightmapFitAccumulator::SolveGram(glm::vec3* outAmps) const {
 // ---------------------------------------------------------------------------
 // Curvature-driven density scale (see lightmap.h)
 // ---------------------------------------------------------------------------
-float LightmapCurvatureScale(const StaticMeshUpload& upload,
+float LightmapCurvatureScale(const MeshData& upload,
                              float localTexelsPerUnit,
                              float targetDegreesPerTexel,
                              float maxScale) {
@@ -646,7 +646,7 @@ bool GenerateLightmapChartsXatlas(const std::vector<SgLightmapXatlasMeshInput>& 
     // inputs so the caller can index by mesh position (ok=false when empty).
     struct Job {
         size_t inputIdx = 0;
-        const StaticMeshUpload* up = nullptr;
+        const MeshData* up = nullptr;
         std::vector<glm::vec3> posScaled;
     };
     std::vector<Job> jobs;
@@ -660,7 +660,7 @@ bool GenerateLightmapChartsXatlas(const std::vector<SgLightmapXatlasMeshInput>& 
         j.up = in.upload;
         const float s = (in.densityScale > 1e-6f) ? in.densityScale : 1.0f;
         j.posScaled.reserve(in.upload->vertices.size());
-        for (const ImportStaticVertex& v : in.upload->vertices)
+        for (const MeshVertex& v : in.upload->vertices)
             j.posScaled.push_back(v.pos * s);
         jobs.push_back(std::move(j));
     }
@@ -743,7 +743,7 @@ bool GenerateLightmapChartsXatlas(const std::vector<SgLightmapXatlasMeshInput>& 
     // per-corner stamping duplicates seam corners (StampLightmapUvs).
     for (size_t ji = 0; ji < jobs.size(); ++ji) {
         const Job& job = jobs[ji];
-        const StaticMeshUpload& upload = *job.up;
+        const MeshData& upload = *job.up;
         SgLightmapXatlasMeshOutput& mo = out.meshes[job.inputIdx];
         const xatlas::Mesh& xm = xa->meshes[ji];
         const uint32_t triCount = uint32_t(upload.indices.size() / 3);
@@ -1207,7 +1207,7 @@ bool RasterizeLightmapPackTexels(const std::vector<SgLightmapXatlasMeshInput>& m
         SgLightmapXatlasMeshOutput& mo = level.meshes[mi];
         if (!mo.ok || !in.upload)
             continue;
-        const StaticMeshUpload& upload = *in.upload;
+        const MeshData& upload = *in.upload;
         const uint32_t triCount = uint32_t(upload.indices.size() / 3);
         if (mo.chart.triChart.size() != triCount ||
             mo.chart.cornerChartUv.size() != size_t(triCount) * 3 ||
@@ -1769,9 +1769,9 @@ inline glm::vec3 ClosestPointOnTriangle(const glm::vec3& p,
 
 } // namespace
 
-bool TransferLightmapCharts(const StaticMeshUpload& reference,
+bool TransferLightmapCharts(const MeshData& reference,
                             const SgLightmapChartResult& refCharts,
-                            const StaticMeshUpload& target,
+                            const MeshData& target,
                             SgLightmapChartResult& out,
                             std::string& err,
                             SgLightmapTransferStats* stats) {

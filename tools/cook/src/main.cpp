@@ -2127,7 +2127,7 @@ bool NodeChainMatchesKeywords(const Scene& scene,
 // instance (each node's world transform feeds the trace), so shared
 // meshes used to be skipped wholesale (bistro: ~2300 skipped pairs).
 // With --lightmap on, every extra instance gets its own mesh: the
-// retained upload is cloned through UploadStaticMesh (cook mode builds
+// retained upload is cloned through UploadMesh (cook mode builds
 // the same single-surface shape the importer made), the node's mapping
 // is repointed, and a unique URI (original + "/inst<node>") plus copied
 // LOD/meshlet markers are registered. The lowest node keeps the
@@ -2146,7 +2146,7 @@ uint32_t DeinstanceSharedMeshes(smvk::Cluster& cluster) {
             continue;
         std::sort(nodes.begin(), nodes.end());
         const smvk::ClusterStaticMeshHandle origH = cluster.staticMeshes.getHandle(meshIdx);
-        const smvk::StaticMeshUpload* origUp = cluster.GetRetainedUpload(origH);
+        const smvk::MeshData* origUp = cluster.GetRetainedUpload(origH);
         if (!origH.valid() || !origUp || origUp->vertices.empty() || origUp->indices.empty())
             continue; // degenerate: keep shared (bake skips it anyway)
         const std::string origUri = cluster.GetMeshUri(origH).Str();
@@ -2156,7 +2156,7 @@ uint32_t DeinstanceSharedMeshes(smvk::Cluster& cluster) {
             origUri.empty() ? std::nullopt : cluster.GetMeshMeshlets(smvk::StringViewT(origUri));
         for (size_t i = 1; i < nodes.size(); ++i) {
             const uint32_t node = nodes[i];
-            const smvk::ClusterStaticMeshHandle ch = cluster.UploadStaticMesh(*origUp);
+            const smvk::ClusterStaticMeshHandle ch = cluster.UploadMesh(*origUp);
             if (!ch.valid())
                 continue;
             SetMesh(cluster.scene, node, ch.index());
@@ -2210,7 +2210,7 @@ uint32_t DeinstanceSharedMeshes(smvk::Cluster& cluster) {
 // triangle's corners land in ONE chart (seam corners are duplicated per
 // chart) and reach the atlas through that chart's single affine map —
 // so the old sweep-repair pass is gone.
-uint32_t StampLightmapUvs(smvk::StaticMeshUpload& upload,
+uint32_t StampLightmapUvs(smvk::MeshData& upload,
                           const smvk::gi::SgLightmapChartResult& chartRes,
                           uint32_t chunkBase,
                           const smvk::gi::SgLightmapAtlas& atlas,
@@ -2566,7 +2566,7 @@ uint32_t StampLightmapUvs(smvk::StaticMeshUpload& upload,
                 slot = orig;
             } else {
                 // Seam corner: duplicate for THIS chart.
-                smvk::ImportStaticVertex dup = upload.vertices[orig];
+                smvk::MeshVertex dup = upload.vertices[orig];
                 dup.texCoord2 = chartLocalUv;
                 dup.chartId = chartIdx;
                 upload.vertices.push_back(dup);
@@ -3972,7 +3972,7 @@ bool WriteCookedArtifactsBack(const Args& args,
                 chain.clear();
         for (const MeshRef& r : refs) {
             smvk::Cluster& c = *r.cluster;
-            const smvk::StaticMeshUpload* up = c.GetRetainedUpload(r.handle);
+            const smvk::MeshData* up = c.GetRetainedUpload(r.handle);
             if (!up || up->vertices.empty() || up->indices.empty()) {
                 err = "cooked mesh '" + c.GetMeshUri(r.handle).Str() +
                       "' has no retained upload (cook mode must retain)";
@@ -4010,14 +4010,14 @@ bool WriteCookedArtifactsBack(const Args& args,
                 return false;
             }
             // Pack the FINAL upload back to the heap-stream layout
-            // (PackStaticVertex: byte-stable round trip by design).
+            // (PackMeshVertex: byte-stable round trip by design).
             smvk::assets::MeshAsset::Geometry geo;
             geo.positions.resize(up->vertices.size());
             geo.shading.resize(up->vertices.size());
             geo.lightmap.resize(up->vertices.size());
             bool charted = false;
             for (size_t vi = 0; vi < up->vertices.size(); ++vi) {
-                smvk::PackStaticVertex(
+                smvk::PackMeshVertex(
                     up->vertices[vi], geo.positions[vi], geo.shading[vi], geo.lightmap[vi]);
                 if (up->vertices[vi].chartId != 0xFFFFFFFFu)
                     charted = true;
@@ -4762,9 +4762,11 @@ int Run(const CookArgs& c) {
                 if (!base.valid())
                     continue;
                 const auto* upload = owner->GetRetainedUpload(base);
-                if (upload && smvk::EligibleForSpatialDerivatives(
-                                  upload->aabbMin, upload->aabbMax, upload->indices.size(),
-                                  scene.globalTransform[row.node], !upload->skin.empty()))
+                if (upload && smvk::EligibleForSpatialDerivatives(upload->aabbMin,
+                                                                  upload->aabbMax,
+                                                                  upload->indices.size(),
+                                                                  scene.globalTransform[row.node],
+                                                                  !upload->skin.empty()))
                     eligibleMeshes.insert(row.mesh);
             }
             std::vector<smvk::ClusterStaticMeshHandle> unwanted;
@@ -4819,9 +4821,11 @@ int Run(const CookArgs& c) {
                                     row.node >= c.scene.globalTransform.size() || !upload)
                                     continue;
                                 if (smvk::EligibleForSpatialDerivatives(
-                                        upload->aabbMin, upload->aabbMax,
+                                        upload->aabbMin,
+                                        upload->aabbMax,
                                         upload->indices.size(),
-                                        c.scene.globalTransform[row.node], !upload->skin.empty())) {
+                                        c.scene.globalTransform[row.node],
+                                        !upload->skin.empty())) {
                                     ++chainable;
                                     break;
                                 }
@@ -5054,7 +5058,7 @@ int Run(const CookArgs& c) {
             if (importMeshletCfg.enabled) {
                 for (const auto& b : mr.blocks) {
                     const auto h = cluster->staticMeshes.getHandle(b.meshPoolIndex);
-                    const smvk::StaticMeshUpload* up = cluster->GetRetainedUpload(h);
+                    const smvk::MeshData* up = cluster->GetRetainedUpload(h);
                     if (!up)
                         continue;
                     smvk::CookedMeshlets cooked;
@@ -5328,7 +5332,7 @@ int Run(const CookArgs& c) {
                 continue;
             }
             const smvk::ClusterStaticMeshHandle handle = cluster->staticMeshes.getHandle(meshIdx);
-            const smvk::StaticMeshUpload* upload = cluster->GetRetainedUpload(handle);
+            const smvk::MeshData* upload = cluster->GetRetainedUpload(handle);
             if (!upload || upload->vertices.empty() || upload->indices.empty()) {
                 ++skipNoMat;
                 continue;
@@ -5343,7 +5347,7 @@ int Run(const CookArgs& c) {
             if (args.lmExcludeSmall > 0.0f) {
                 glm::vec3 bbMin(std::numeric_limits<float>::max());
                 glm::vec3 bbMax(std::numeric_limits<float>::lowest());
-                for (const smvk::ImportStaticVertex& v : upload->vertices) {
+                for (const smvk::MeshVertex& v : upload->vertices) {
                     bbMin = glm::min(bbMin, v.pos);
                     bbMax = glm::max(bbMax, v.pos);
                 }
@@ -5398,7 +5402,7 @@ int Run(const CookArgs& c) {
             {
                 size_t nv = 0, ni = 0;
                 for (const LmWork& w : work) {
-                    const smvk::StaticMeshUpload* up = cluster->GetRetainedUpload(w.handle);
+                    const smvk::MeshData* up = cluster->GetRetainedUpload(w.handle);
                     if (up) {
                         nv += up->vertices.size();
                         ni += up->indices.size();
@@ -5407,12 +5411,12 @@ int Run(const CookArgs& c) {
                 soupPos.reserve(nv * 3);
                 soupIdx.reserve(ni);
                 for (const LmWork& w : work) {
-                    const smvk::StaticMeshUpload* up = cluster->GetRetainedUpload(w.handle);
+                    const smvk::MeshData* up = cluster->GetRetainedUpload(w.handle);
                     if (!up || up->vertices.empty() || up->indices.empty())
                         continue;
                     const glm::mat4& g = cluster->scene.globalTransform[w.node];
                     const uint32_t base = uint32_t(soupPos.size() / 3);
-                    for (const smvk::ImportStaticVertex& v : up->vertices) {
+                    for (const smvk::MeshVertex& v : up->vertices) {
                         const glm::vec3 wp = glm::vec3(g * glm::vec4(v.pos, 1.0f));
                         soupPos.push_back(wp.x);
                         soupPos.push_back(wp.y);
@@ -5449,11 +5453,11 @@ int Run(const CookArgs& c) {
                                                        meshopt_RemeshSolve);
                     tool::err() << "  [LM] proxy: remeshed tris=" << ntri << "\n" << std::flush;
                     if (ntri > 0) {
-                        smvk::StaticMeshUpload proxyUp;
+                        smvk::MeshData proxyUp;
                         proxyUp.vertices.resize(ntri * 3);
                         proxyUp.indices.resize(ntri * 3);
                         for (size_t i = 0; i < ntri * 3; ++i) {
-                            smvk::ImportStaticVertex v{};
+                            smvk::MeshVertex v{};
                             v.pos = glm::vec3(
                                 triSoup[i * 3 + 0], triSoup[i * 3 + 1], triSoup[i * 3 + 2]);
                             v.color = glm::vec4(1.0f);
@@ -5611,19 +5615,18 @@ int Run(const CookArgs& c) {
                                         // stamp (world-space both sides).
                                         uint32_t okMeshes = 0;
                                         for (LmWork& w : work) {
-                                            smvk::StaticMeshUpload* realUp =
-                                                const_cast<smvk::StaticMeshUpload*>(
-                                                    cluster->GetRetainedUpload(w.handle));
+                                            smvk::MeshData* realUp = const_cast<smvk::MeshData*>(
+                                                cluster->GetRetainedUpload(w.handle));
                                             if (!realUp || realUp->vertices.empty() ||
                                                 realUp->indices.empty())
                                                 continue;
                                             const glm::mat4& g =
                                                 cluster->scene.globalTransform[w.node];
                                             const glm::mat3 g3(g);
-                                            smvk::StaticMeshUpload worldTgt;
+                                            smvk::MeshData worldTgt;
                                             worldTgt.vertices = realUp->vertices;
                                             worldTgt.indices = realUp->indices;
-                                            for (smvk::ImportStaticVertex& v : worldTgt.vertices) {
+                                            for (smvk::MeshVertex& v : worldTgt.vertices) {
                                                 v.pos = glm::vec3(g * glm::vec4(v.pos, 1.0f));
                                                 v.normal = glm::normalize(g3 * v.normal);
                                             }
@@ -5746,7 +5749,7 @@ int Run(const CookArgs& c) {
                     const auto h = cluster->FindMeshByUri(smvk::StringViewT(lit->second));
                     if (!h.has_value() || !h->valid())
                         continue;
-                    const smvk::StaticMeshUpload* up = cluster->GetRetainedUpload(*h);
+                    const smvk::MeshData* up = cluster->GetRetainedUpload(*h);
                     if (!up || up->vertices.empty() || up->indices.empty())
                         continue;
                     w.transfer.push_back(*h);
@@ -6129,8 +6132,8 @@ int Run(const CookArgs& c) {
                 // per-corner chart-uv + chart-id stamping, seam-correct (see
                 // StampLightmapUvs) — with texel-space transforms (the
                 // normalize pass below finishes the job).
-                smvk::StaticMeshUpload* srcUpload =
-                    const_cast<smvk::StaticMeshUpload*>(cluster->GetRetainedUpload(w.handle));
+                smvk::MeshData* srcUpload =
+                    const_cast<smvk::MeshData*>(cluster->GetRetainedUpload(w.handle));
                 const size_t srcTris = srcUpload ? srcUpload->indices.size() / 3 : 0;
                 if (!srcUpload || w.chart.triChart.size() != srcTris) {
                     tool::err() << "[LM] triangle count mismatch for node " << w.node
@@ -6175,8 +6178,8 @@ int Run(const CookArgs& c) {
                 // inherited chart uvs (uncharted triangle semantics) and the
                 // shared lobe count.
                 for (const smvk::ClusterStaticMeshHandle th : w.transfer) {
-                    smvk::StaticMeshUpload* up =
-                        const_cast<smvk::StaticMeshUpload*>(cluster->GetRetainedUpload(th));
+                    smvk::MeshData* up =
+                        const_cast<smvk::MeshData*>(cluster->GetRetainedUpload(th));
                     if (!up || up->vertices.empty() || up->indices.empty()) {
                         if (smvk::StaticMesh* m = cluster->staticMeshes.get(th))
                             m->lmChunk = lobes;
@@ -6426,8 +6429,7 @@ int Run(const CookArgs& c) {
                     std::vector<double> chartArea(atlas.chunks.size(), 0.0);
                     for (size_t i = 0; i < work.size(); ++i) {
                         const SgLightmapChartResult& cr = work[i].chart;
-                        const smvk::StaticMeshUpload* up =
-                            cluster->GetRetainedUpload(work[i].handle);
+                        const smvk::MeshData* up = cluster->GetRetainedUpload(work[i].handle);
                         if (!up || up->indices.size() < 3)
                             continue;
                         const glm::mat4& g = cluster->scene.globalTransform[work[i].node];
@@ -6797,7 +6799,7 @@ int Run(const CookArgs& c) {
                 if (!seen.insert(meshIdx).second)
                     continue; // still-shared mesh: one meshlet set per upload
                 const smvk::ClusterStaticMeshHandle h = c.staticMeshes.getHandle(meshIdx);
-                const smvk::StaticMeshUpload* up = c.GetRetainedUpload(h);
+                const smvk::MeshData* up = c.GetRetainedUpload(h);
                 if (!h.valid() || !up || up->vertices.empty() || up->indices.empty())
                     continue;
                 const auto uri = c.GetMeshUri(h);
@@ -6843,7 +6845,7 @@ int Run(const CookArgs& c) {
                 const auto h = c.FindMeshByUri(uri);
                 if (!h.has_value() || !h->valid())
                     continue;
-                const smvk::StaticMeshUpload* up = c.GetRetainedUpload(*h);
+                const smvk::MeshData* up = c.GetRetainedUpload(*h);
                 if (!up || up->vertices.empty() || up->indices.empty())
                     continue;
                 smvk::CookedMeshlets cooked;

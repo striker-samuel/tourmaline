@@ -584,7 +584,7 @@ void GfxRenderer::RegisterWorldMeshes(smvk::World& world) {
             gfxMesh = smvk::gfx::RegisterMeshFromCooked(gfx, *mesh->meshlets, baseVertex);
             if (gfxMesh != UINT32_MAX)
                 ++fromCooked;
-        } else if (const smvk::StaticMeshUpload* retained =
+        } else if (const smvk::MeshData* retained =
                        loc.cluster->GetRetainedUpload(loc.handle)) {
             gfxMesh = smvk::gfx::RegisterMeshFromUpload(gfx, *retained, baseVertex);
             if (gfxMesh != UINT32_MAX)

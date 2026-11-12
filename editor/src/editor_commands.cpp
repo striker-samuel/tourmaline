@@ -6980,7 +6980,7 @@ bool EditorApp::RebuildTerrainTiles(uint32_t groupNode,
         const uint32_t worldMeshIdx = meshRow->mesh;
         if (worldMeshIdx >= m_world->meshLocations.size())
             continue;
-        smvk::StaticMeshUpload upload;
+        smvk::MeshData upload;
         if (!smvk::placement::BuildTerrainTileUpload(g.data, tx, tz, upload)) {
             Log("Terrain tile rebuild failed.");
             ok = false;
@@ -6990,7 +6990,7 @@ bool EditorApp::RebuildTerrainTiles(uint32_t groupNode,
         tour::Cluster* cl = loc.cluster ? loc.cluster : m_world->clusters[0].get();
         if (loc.cluster)
             loc.cluster->DestroyMesh(loc.handle);
-        const tour::ClusterStaticMeshHandle mh = cl->UploadStaticMesh(upload);
+        const tour::ClusterStaticMeshHandle mh = cl->UploadMesh(upload);
         if (!mh.valid()) {
             Log("Terrain tile upload failed.");
             ok = false;
@@ -7074,12 +7074,12 @@ void EditorApp::ExecCreateTerrain(EditCmd& c) {
             scene.nodeNames.push_back(c.afterText + "_" + std::to_string(tx) + "_" +
                                       std::to_string(tz));
             SetNodeNameIndex(scene, t, tName);
-            smvk::StaticMeshUpload upload;
+            smvk::MeshData upload;
             if (!smvk::placement::BuildTerrainTileUpload(g.data, tx, tz, upload)) {
                 Log("Terrain tile build failed.");
                 return;
             }
-            const tour::ClusterStaticMeshHandle mh = cl->UploadStaticMesh(upload);
+            const tour::ClusterStaticMeshHandle mh = cl->UploadMesh(upload);
             if (!mh.valid()) {
                 Log("Terrain tile upload failed.");
                 return;

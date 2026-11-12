@@ -71,7 +71,7 @@
 #include <cstring>
 #include <vector>
 
-// StaticMeshUpload / CookedMeshlets forward decls and the Cluster/Mesh/
+// MeshData / CookedMeshlets forward decls and the Cluster/Mesh/
 // ClusterConstants + StaticGeometry registration surface now live in
 // gpu_scene_static.h (included above); this header keeps the render-side
 // types (flags, draws, batches, views, the temporal/Hi-Z sidecar, State)

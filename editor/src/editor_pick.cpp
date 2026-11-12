@@ -77,7 +77,7 @@ bool RayAabb(const glm::vec3& o,
 // the world's asset registry resolves node -> mesh -> CPU geometry with
 // no importer-side state left alive.
 
-const smvk::StaticMeshUpload* EditorApp::MeshUploadOf(uint32_t worldMeshIdx) const {
+const smvk::MeshData* EditorApp::MeshUploadOf(uint32_t worldMeshIdx) const {
     if (!m_world || worldMeshIdx >= m_world->meshLocations.size())
         return nullptr;
     const tour::World::MeshLocation& loc = m_world->meshLocations[worldMeshIdx];
@@ -86,7 +86,7 @@ const smvk::StaticMeshUpload* EditorApp::MeshUploadOf(uint32_t worldMeshIdx) con
     return loc.cluster->GetRetainedUpload(loc.handle);
 }
 
-const smvk::StaticMeshUpload* EditorApp::NodeMeshUpload(uint32_t node) const {
+const smvk::MeshData* EditorApp::NodeMeshUpload(uint32_t node) const {
     if (!m_world || node >= m_world->scene.hierarchy.size())
         return nullptr;
     const MeshRow* row = FindMesh(m_world->scene, node);
@@ -180,7 +180,7 @@ std::optional<EditorApp::PickHit> EditorApp::PickNode(int vpIdx,
             return; // cannot beat the current best
 
         float tHit = FLT_MAX;
-        const smvk::StaticMeshUpload* up = MeshUploadOf(item.mesh);
+        const smvk::MeshData* up = MeshUploadOf(item.mesh);
         if (up && !up->vertices.empty()) {
             // Exact triangle walk over the retained CPU geometry (the
             // same data the GPU draws — node-local positions mapped by
@@ -431,7 +431,7 @@ std::optional<EditorApp::SubHit> EditorApp::PickSubObject(int vpIdx,
             return;
         if (found && tca - r >= bestT)
             return;
-        const smvk::StaticMeshUpload* up = MeshUploadOf(item.mesh);
+        const smvk::MeshData* up = MeshUploadOf(item.mesh);
         if (!up || up->vertices.empty() || up->indices.empty())
             return; // no exact geometry: no sub-object info
         const size_t vcount = up->vertices.size();
@@ -514,7 +514,7 @@ std::optional<EditorApp::SubHit> EditorApp::PickFlatUvWindow(float mouseX,
 		const uint32_t meshIdx = row.mesh;
 		if (useSubtree && !subtree.contains(node))
 			continue;
-		const smvk::StaticMeshUpload* up = MeshUploadOf(meshIdx);
+		const smvk::MeshData* up = MeshUploadOf(meshIdx);
 		if (!up || up->vertices.empty() || up->indices.empty())
 			continue;
 		const size_t tcount = up->indices.size() / 3;
@@ -577,7 +577,7 @@ void EditorApp::ApplySubSelection(const SubHit& h) {
 bool EditorApp::SelectedFaceUvs(glm::vec2 outUv[3], ViewMode mode) const {
     if (m_selFaceNode == UINT32_MAX || m_selFaceTri == UINT32_MAX)
         return false;
-    const smvk::StaticMeshUpload* up = NodeMeshUpload(m_selFaceNode);
+    const smvk::MeshData* up = NodeMeshUpload(m_selFaceNode);
     if (!up || m_selFaceTri >= up->indices.size() / 3)
         return false;
     const bool lightmap = (mode == ViewMode::FlatUv1);
@@ -598,7 +598,7 @@ bool EditorApp::SelectedFaceWorld(glm::vec3 outW[3]) const {
     if (m_selFaceNode == UINT32_MAX || m_selFaceTri == UINT32_MAX || !m_world ||
         m_selFaceNode >= m_world->scene.hierarchy.size())
         return false;
-    const smvk::StaticMeshUpload* up = NodeMeshUpload(m_selFaceNode);
+    const smvk::MeshData* up = NodeMeshUpload(m_selFaceNode);
     if (!up || m_selFaceTri >= up->indices.size() / 3)
         return false;
     const uint32_t ix[3] = {up->indices[size_t(m_selFaceTri) * 3 + 0],
@@ -617,7 +617,7 @@ bool EditorApp::SelectedVertWorld(glm::vec3& outW) const {
     if (m_selVertNode == UINT32_MAX || m_selVertIdx == UINT32_MAX || !m_world ||
         m_selVertNode >= m_world->scene.hierarchy.size())
         return false;
-    const smvk::StaticMeshUpload* up = NodeMeshUpload(m_selVertNode);
+    const smvk::MeshData* up = NodeMeshUpload(m_selVertNode);
     if (!up || m_selVertIdx >= up->vertices.size())
         return false;
     outW = glm::vec3(m_world->scene.globalTransform[m_selVertNode] *
@@ -628,7 +628,7 @@ bool EditorApp::SelectedVertWorld(glm::vec3& outW) const {
 bool EditorApp::SelectedVertUv(glm::vec2& outUv, ViewMode mode) const {
     if (m_selVertNode == UINT32_MAX || m_selVertIdx == UINT32_MAX)
         return false;
-    const smvk::StaticMeshUpload* up = NodeMeshUpload(m_selVertNode);
+    const smvk::MeshData* up = NodeMeshUpload(m_selVertNode);
     if (!up || m_selVertIdx >= up->vertices.size())
         return false;
     outUv = (mode == ViewMode::FlatUv1) ? up->vertices[m_selVertIdx].texCoord2

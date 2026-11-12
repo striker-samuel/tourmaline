@@ -2223,7 +2223,7 @@ int main() {
         // ---- the static-mesh heap: one quad (the retirement-fuzz path).
         smvk::AllocateStaticVertexFmt(rm);
         auto cluster = std::make_unique<smvk::Cluster>(&rm);
-        smvk::StaticMeshUpload up;
+        smvk::MeshData up;
         up.vertices.resize(4);
         up.vertices[0].pos = glm::vec3(-0.5f, 0.0f, -0.5f);
         up.vertices[1].pos = glm::vec3(0.5f, 0.0f, -0.5f);
@@ -2237,7 +2237,7 @@ int main() {
         up.indices = {0, 1, 2, 0, 2, 3};
         up.aabbMin = glm::vec3(-0.5f, 0.0f, -0.5f);
         up.aabbMax = glm::vec3(0.5f, 0.0f, 0.5f);
-        const auto meshHandle = cluster->UploadStaticMesh(up);
+        const auto meshHandle = cluster->UploadMesh(up);
         Check(!meshHandle.empty(), "gpu.draw-mesh-uploaded");
         const smvk::StaticMesh* mesh = cluster->staticMeshes.get(meshHandle);
         Check(mesh && !mesh->geometry.surfaces.empty(), "gpu.draw-mesh-surface");

@@ -36,16 +36,16 @@ float ComputeAcmr(const uint32_t* indices, size_t indexCount, size_t vertexCount
 
 float ComputeOverdraw(const uint32_t* indices,
                       size_t indexCount,
-                      const ImportStaticVertex* vertices,
+                      const MeshVertex* vertices,
                       size_t vertexCount) {
     if (indexCount < 3 || vertexCount == 0)
         return 1.0f;
     const meshopt_OverdrawStatistics stats = meshopt_analyzeOverdraw(
-        indices, indexCount, &vertices[0].pos.x, vertexCount, sizeof(ImportStaticVertex));
+        indices, indexCount, &vertices[0].pos.x, vertexCount, sizeof(MeshVertex));
     return stats.overdraw;
 }
 
-void RecomputeBounds(StaticMeshUpload& upload) {
+void RecomputeBounds(MeshData& upload) {
     if (upload.vertices.empty()) {
         upload.aabbMin = glm::vec3(0.0f);
         upload.aabbMax = glm::vec3(0.0f);
@@ -63,7 +63,7 @@ void RecomputeBounds(StaticMeshUpload& upload) {
 
 } // namespace
 
-void ComputeSmoothNormals(StaticMeshUpload& upload) {
+void ComputeSmoothNormals(MeshData& upload) {
     const size_t vcount = upload.vertices.size();
     if (vcount == 0)
         return;
@@ -140,7 +140,7 @@ void ComputeSmoothNormals(StaticMeshUpload& upload) {
                   << std::flush;
 }
 
-void GenerateTangents(StaticMeshUpload& upload) {
+void GenerateTangents(MeshData& upload) {
     const size_t vcount = upload.vertices.size();
     if (vcount == 0)
         return;
@@ -198,7 +198,7 @@ void GenerateTangents(StaticMeshUpload& upload) {
     }
 }
 
-bool OptimizeStaticMeshUpload(StaticMeshUpload& upload,
+bool OptimizeMeshData(MeshData& upload,
                               const MeshOptConfig& config,
                               uint32_t lodGroupId,
                               MeshOptStats* outStats,
@@ -231,12 +231,12 @@ bool OptimizeStaticMeshUpload(StaticMeshUpload& upload,
     if (!config.enabled || vcount == 0 || icount < 3 || (icount % 3) != 0)
         return finish(false);
 
-    // ImportStaticVertex must be bit-comparable for the weld (no padding bytes).
+    // MeshVertex must be bit-comparable for the weld (no padding bytes).
     // chartId rides the weld key: seam twins (identical but for chart)
     // never merge — the split the stamp created survives optimization.
-    static_assert(sizeof(ImportStaticVertex) == 76,
-                  "ImportStaticVertex layout changed; update weld assumptions");
-    static_assert(alignof(ImportStaticVertex) <= 4, "ImportStaticVertex alignment changed");
+    static_assert(sizeof(MeshVertex) == 76,
+                  "MeshVertex layout changed; update weld assumptions");
+    static_assert(alignof(MeshVertex) <= 4, "MeshVertex alignment changed");
 
     stats.acmrBefore = ComputeAcmr(upload.indices.data(), icount, vcount);
     stats.overdrawBefore =
@@ -259,7 +259,7 @@ bool OptimizeStaticMeshUpload(StaticMeshUpload& upload,
         size_t uniqueCount = 0;
         if (hasSkin) {
             const meshopt_Stream streams[2] = {
-                {upload.vertices.data(), sizeof(ImportStaticVertex), sizeof(ImportStaticVertex)},
+                {upload.vertices.data(), sizeof(MeshVertex), sizeof(MeshVertex)},
                 {upload.skin.data(), sizeof(PackedSkinInfluences), sizeof(PackedSkinInfluences)},
             };
             uniqueCount = meshopt_generateVertexRemapMulti(
@@ -270,14 +270,14 @@ bool OptimizeStaticMeshUpload(StaticMeshUpload& upload,
                                                       icount,
                                                       upload.vertices.data(),
                                                       vcount,
-                                                      sizeof(ImportStaticVertex));
+                                                      sizeof(MeshVertex));
         }
         if (uniqueCount > 0 && uniqueCount < vcount) {
-            std::vector<ImportStaticVertex> welded(uniqueCount);
+            std::vector<MeshVertex> welded(uniqueCount);
             meshopt_remapVertexBuffer(welded.data(),
                                       upload.vertices.data(),
                                       vcount,
-                                      sizeof(ImportStaticVertex),
+                                      sizeof(MeshVertex),
                                       remap.data());
             upload.vertices = std::move(welded);
             if (hasSkin) {
@@ -311,7 +311,7 @@ bool OptimizeStaticMeshUpload(StaticMeshUpload& upload,
     }
 
     // 3. Overdraw optimization. Needs float3 positions at offset 0, which
-    // ImportStaticVertex guarantees (pos is the first member).
+    // MeshVertex guarantees (pos is the first member).
     if (config.overdraw) {
         std::vector<uint32_t> optimized(icount);
         meshopt_optimizeOverdraw(reinterpret_cast<unsigned int*>(optimized.data()),
@@ -319,7 +319,7 @@ bool OptimizeStaticMeshUpload(StaticMeshUpload& upload,
                                  icount,
                                  &upload.vertices[0].pos.x,
                                  nvcount,
-                                 sizeof(ImportStaticVertex),
+                                 sizeof(MeshVertex),
                                  config.overdrawThreshold);
         indices = std::move(optimized);
     }
@@ -329,11 +329,11 @@ bool OptimizeStaticMeshUpload(StaticMeshUpload& upload,
         std::vector<unsigned int> remap(nvcount);
         meshopt_optimizeVertexFetchRemap(
             remap.data(), reinterpret_cast<const unsigned int*>(indices.data()), icount, nvcount);
-        std::vector<ImportStaticVertex> reordered(nvcount);
+        std::vector<MeshVertex> reordered(nvcount);
         meshopt_remapVertexBuffer(reordered.data(),
                                   upload.vertices.data(),
                                   nvcount,
-                                  sizeof(ImportStaticVertex),
+                                  sizeof(MeshVertex),
                                   remap.data());
         const bool hasSkin = !upload.skin.empty() && upload.skin.size() == nvcount;
         std::vector<PackedSkinInfluences> reorderedSkin;
@@ -376,7 +376,7 @@ bool OptimizeStaticMeshUpload(StaticMeshUpload& upload,
     return finish(true);
 }
 
-bool BuildLodChainForUpload(const StaticMeshUpload& lod0,
+bool BuildLodChainForUpload(const MeshData& lod0,
                             const MeshOptConfig& config,
                             std::vector<CookedLod>& out,
                             bool preserveCoverage,
@@ -389,9 +389,9 @@ bool BuildLodChainForUpload(const StaticMeshUpload& lod0,
     if (!config.generateLods || config.lodRatios.empty())
         return true; // valid input, no candidates requested
 
-    static_assert(offsetof(ImportStaticVertex, pos) == 0, "pos must be first for meshopt");
+    static_assert(offsetof(MeshVertex, pos) == 0, "pos must be first for meshopt");
     const float* positions = &lod0.vertices[0].pos.x;
-    const float localScale = meshopt_simplifyScale(positions, vcount, sizeof(ImportStaticVertex));
+    const float localScale = meshopt_simplifyScale(positions, vcount, sizeof(MeshVertex));
     if (!(localScale > 0.0f) || !std::isfinite(localScale))
         return true; // degenerate extents: nothing sensible to simplify
 
@@ -472,7 +472,7 @@ bool BuildLodChainForUpload(const StaticMeshUpload& lod0,
             std::vector<uint32_t> byPos(vcount);
             for (uint32_t i = 0; i < vcount; ++i)
                 byPos[i] = i;
-            const ImportStaticVertex* verts = lod0.vertices.data();
+            const MeshVertex* verts = lod0.vertices.data();
             std::sort(byPos.begin(), byPos.end(), [verts](uint32_t a, uint32_t b) {
                 return std::memcmp(&verts[a].pos, &verts[b].pos, 12) < 0;
             });
@@ -526,7 +526,7 @@ bool BuildLodChainForUpload(const StaticMeshUpload& lod0,
                                                          icount,
                                                          positions,
                                                          vcount,
-                                                         sizeof(ImportStaticVertex),
+                                                         sizeof(MeshVertex),
                                                          cutoutAttrPtr,
                                                          sizeof(float) * 2,
                                                          cutoutWeights,
@@ -545,7 +545,7 @@ bool BuildLodChainForUpload(const StaticMeshUpload& lod0,
                                                          icount,
                                                          positions,
                                                          vcount,
-                                                         sizeof(ImportStaticVertex),
+                                                         sizeof(MeshVertex),
                                                          lmAttrs.data(),
                                                          sizeof(float) * 3,
                                                          kLmAttrWeights,
@@ -566,7 +566,7 @@ bool BuildLodChainForUpload(const StaticMeshUpload& lod0,
                                                          icount,
                                                          positions,
                                                          vcount,
-                                                         sizeof(ImportStaticVertex),
+                                                         sizeof(MeshVertex),
                                                          uvAttrs.data(),
                                                          sizeof(float) * 2,
                                                          kUvAttrWeights,
@@ -582,7 +582,7 @@ bool BuildLodChainForUpload(const StaticMeshUpload& lod0,
                                            icount,
                                            positions,
                                            vcount,
-                                           sizeof(ImportStaticVertex),
+                                           sizeof(MeshVertex),
                                            targetIndices,
                                            targetError,
                                            config.lodSimplifyOptions,
@@ -609,7 +609,7 @@ bool BuildLodChainForUpload(const StaticMeshUpload& lod0,
                                                        icount,
                                                        positions,
                                                        vcount,
-                                                       sizeof(ImportStaticVertex),
+                                                       sizeof(MeshVertex),
                                                        targetIndices,
                                                        targetError,
                                                        config.lodSimplifyOptions,
@@ -652,9 +652,9 @@ bool BuildLodChainForUpload(const StaticMeshUpload& lod0,
                                          reinterpret_cast<const unsigned int*>(indices.data()),
                                          resultCount,
                                          vcount);
-        std::vector<ImportStaticVertex> verts(vcount);
+        std::vector<MeshVertex> verts(vcount);
         meshopt_remapVertexBuffer(
-            verts.data(), lod0.vertices.data(), vcount, sizeof(ImportStaticVertex), remap.data());
+            verts.data(), lod0.vertices.data(), vcount, sizeof(MeshVertex), remap.data());
         std::vector<uint32_t> remapped(resultCount);
         meshopt_remapIndexBuffer(reinterpret_cast<unsigned int*>(remapped.data()),
                                  reinterpret_cast<const unsigned int*>(indices.data()),
@@ -747,8 +747,8 @@ StringViewT BaseMeshUriForLod(StringViewT uri) {
 // ---------------------------------------------------------------------------
 // Lightmap-safety audit (see mesh_optimizer.h).
 // ---------------------------------------------------------------------------
-bool AuditLodLightmap(const StaticMeshUpload& lod0,
-                      const StaticMeshUpload& sibling,
+bool AuditLodLightmap(const MeshData& lod0,
+                      const MeshData& sibling,
                       const glm::mat4& world,
                       const std::vector<glm::vec4>& chartXforms,
                       uint32_t atlasWidth,
@@ -776,7 +776,7 @@ bool AuditLodLightmap(const StaticMeshUpload& lod0,
         return false;
 
     // Chart-local -> atlas-space (same math as the VS unpack).
-    auto resolveAtlas = [&chartXforms](const ImportStaticVertex& v) {
+    auto resolveAtlas = [&chartXforms](const MeshVertex& v) {
         if (v.chartId != 0xFFFFFFFFu && v.chartId < chartXforms.size()) {
             const glm::vec4& xf = chartXforms[v.chartId];
             return v.texCoord2 * glm::vec2(xf.x, xf.y) + glm::vec2(xf.z, xf.w);
@@ -788,9 +788,9 @@ bool AuditLodLightmap(const StaticMeshUpload& lod0,
     // atlas corners sweep more than one chart rect — smears the whole
     // atlas between them. No texel number can describe that.
     auto uv2Span = [&sibling, &resolveAtlas](size_t t) {
-        const ImportStaticVertex& va = sibling.vertices[sibling.indices[t * 3 + 0]];
-        const ImportStaticVertex& vb = sibling.vertices[sibling.indices[t * 3 + 1]];
-        const ImportStaticVertex& vc = sibling.vertices[sibling.indices[t * 3 + 2]];
+        const MeshVertex& va = sibling.vertices[sibling.indices[t * 3 + 0]];
+        const MeshVertex& vb = sibling.vertices[sibling.indices[t * 3 + 1]];
+        const MeshVertex& vc = sibling.vertices[sibling.indices[t * 3 + 2]];
         if (va.chartId != vb.chartId || va.chartId != vc.chartId)
             return 1e30f; // chart-id mismatch: cross-chart by construction
         const glm::vec2 a = resolveAtlas(va);
@@ -822,7 +822,7 @@ bool AuditLodLightmap(const StaticMeshUpload& lod0,
         glm::vec3 wp[3];
         glm::vec2 uv[3];
         for (int k = 0; k < 3; ++k) {
-            const ImportStaticVertex& v = sibling.vertices[sibling.indices[t * 3 + k]];
+            const MeshVertex& v = sibling.vertices[sibling.indices[t * 3 + k]];
             wp[k] = glm::vec3(world * glm::vec4(v.pos, 1.0f));
             uv[k] = resolveAtlas(v);
         }
@@ -934,7 +934,7 @@ bool CookLodSiblings(Cluster& cluster,
             continue;
         if (BaseMeshUriForLod(uri) != uri)
             continue; // a sibling itself: chains grow from base meshes only
-        const StaticMeshUpload* upload = cluster.GetRetainedUpload(handle);
+        const MeshData* upload = cluster.GetRetainedUpload(handle);
         if (!upload || upload->vertices.empty() || upload->indices.empty())
             continue;
         // Consider every world-space instance of this shared mesh.
@@ -1053,7 +1053,7 @@ bool CookLodSiblings(Cluster& cluster,
         uint32_t registered = 0;
         for (size_t li = 0; li < chain.size(); ++li) {
             const CookedLod& kept = chain[li];
-            const auto lh = cluster.UploadStaticMesh(kept.upload);
+            const auto lh = cluster.UploadMesh(kept.upload);
             if (!lh.valid())
                 continue;
             const StringViewT lodUri = LodSiblingUri(uri, uint32_t(li + 1));

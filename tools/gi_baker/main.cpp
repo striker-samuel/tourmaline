@@ -1745,7 +1745,7 @@ int Run(Args& args) {
         struct LmWork {
             std::string name;
             glm::mat4 g;
-            const smvk::StaticMeshUpload* up;
+            const smvk::MeshData* up;
         };
         std::vector<LmWork> works;
         std::vector<SgLightmapXatlasMeshInput> xins;
@@ -1770,7 +1770,7 @@ int Run(Args& args) {
             if (!mat->castsShadows && mat->alphaMode != smvk::AlphaMode::Mask)
                 continue;
             const smvk::ClusterStaticMeshHandle handle = cluster->staticMeshes.getHandle(meshIdx);
-            const smvk::StaticMeshUpload* up = cluster->GetRetainedUpload(handle);
+            const smvk::MeshData* up = cluster->GetRetainedUpload(handle);
             if (!up || up->vertices.empty())
                 continue;
             const glm::mat4 g = cluster->scene.globalTransform[node];

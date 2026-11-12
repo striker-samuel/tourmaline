@@ -178,7 +178,7 @@ using ExternalTextureResolver = std::function<TextureHandle(Cluster&, const std:
 
 // Rebuilds a Cluster from a parsed pak: textures (parallel from embedded
 // .ktx2 bytes) -> materials (texture URIs re-resolved) -> meshes (GPU
-// upload via Cluster::UploadStaticMesh, streamer-batched, caller issues
+// upload via Cluster::UploadMesh, streamer-batched, caller issues
 // ctx.FlushUploads() afterwards) -> scene graph (pak-local ids remapped to
 // fresh handles, global transforms recomputed). Asset URI maps are
 // re-registered so AssetRef resolution works on the loaded cluster.

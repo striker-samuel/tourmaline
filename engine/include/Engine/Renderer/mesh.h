@@ -466,7 +466,7 @@ inline void PackTerrainVertex(const TerrainVertexSrc& src, TerrainVertex& out) n
 // per-draw flag, never on the value). chartId is the owning lightmap
 // chart index (0xFFFFFFFF = uncharted), stamped by the cook alongside
 // texCoord2 (seam corners are duplicated per chart).
-struct ImportStaticVertex {
+struct MeshVertex {
     glm::vec3 pos;
     glm::vec4 color;
     glm::vec2 texCoord;
@@ -475,7 +475,7 @@ struct ImportStaticVertex {
     glm::vec4 tangent;
     uint32_t chartId = 0xFFFFFFFFu;
 
-    bool operator==(const ImportStaticVertex& other) const {
+    bool operator==(const MeshVertex& other) const {
         return pos == other.pos && color == other.color && texCoord == other.texCoord &&
                texCoord2 == other.texCoord2 && normal == other.normal && tangent == other.tangent &&
                chartId == other.chartId;
@@ -484,13 +484,13 @@ struct ImportStaticVertex {
 
 // One AoS import vertex -> one PackedVertexPosition + one
 // PackedVertexShading + one PackedVertexLightmap (the exact GPU
-// heap-stream layout). Shared by Cluster::UploadStaticMesh(es)
+// heap-stream layout). Shared by Cluster::UploadMesh(es)
 // (runtime upload) and the pak cooker's packed-SoA mesh blobs (v5;
 // cooked geometry round-trips the heap layout verbatim) — the two
 // must never diverge. The lightmap word pair packs unconditionally;
 // the STREAM decision (whether the mesh carves a lightmap range at
 // all) happens at allocation — any chartId != 0xFFFFFFFF.
-inline void PackStaticVertex(const ImportStaticVertex& src,
+inline void PackMeshVertex(const MeshVertex& src,
                              PackedVertexPosition& pos,
                              PackedVertexShading& shade,
                              PackedVertexLightmap& lm) noexcept {
@@ -506,10 +506,10 @@ inline void PackStaticVertex(const ImportStaticVertex& src,
 // Inverse pack (the .mesh-asset cook path rebuilds AoS uploads from
 // the packed SoA streams; lossy exactly like the GPU fetch, so the
 // round trip is byte-stable).
-inline void UnpackStaticVertex(const PackedVertexPosition& pos,
+inline void UnpackMeshVertex(const PackedVertexPosition& pos,
                                const PackedVertexShading& shade,
                                const PackedVertexLightmap& lm,
-                               ImportStaticVertex& out) noexcept {
+                               MeshVertex& out) noexcept {
     out.pos = pos.pos;
     const glm::vec4 c = glm::unpackUnorm4x8(shade.color);
     out.color = c;
@@ -561,7 +561,7 @@ static_assert(sizeof(DebugLineVertex) == 12);
 namespace smvk {
 using ::tour::AlphaMode;
 using ::tour::DebugLineVertex;
-using ::tour::ImportStaticVertex;
+using ::tour::MeshVertex;
 using ::tour::kMaterialFlagReceiveContactShadows;
 using ::tour::kSpecLitNormalMap;
 using ::tour::kSpecLitSpecular;
@@ -577,7 +577,7 @@ using ::tour::PackedSkinInfluences;
 using ::tour::PackedVertexLightmap;
 using ::tour::PackedVertexPosition;
 using ::tour::PackedVertexShading;
-using ::tour::PackStaticVertex;
+using ::tour::PackMeshVertex;
 using ::tour::PackTerrainFarVertex;
 using ::tour::PackTerrainVertex;
 using ::tour::ShaderLodPolicy;
@@ -588,7 +588,7 @@ using ::tour::TerrainFarVertex;
 using ::tour::TerrainVertex;
 using ::tour::TerrainVertexSrc;
 using ::tour::TransparentMode;
-using ::tour::UnpackStaticVertex;
+using ::tour::UnpackMeshVertex;
 } // namespace smvk
 
 // Engine-owned vertex layout definitions now live in Renderer/vertex_layouts.h.
@@ -711,8 +711,8 @@ struct StaticMesh {
 // Upload structure
 // -----------------------------------------------------------------------------
 
-struct StaticMeshUpload {
-    std::vector<ImportStaticVertex> vertices;
+struct MeshData {
+    std::vector<MeshVertex> vertices;
     std::vector<uint32_t> indices;
     std::vector<Surface> surfaces;
     glm::vec3 aabbMin{};
@@ -738,7 +738,7 @@ namespace smvk {
 using ::tour::AllocateStaticVertexFmt;
 using ::tour::Geometry;
 using ::tour::StaticMesh;
-using ::tour::StaticMeshUpload;
+using ::tour::MeshData;
 using ::tour::Surface;
 } // namespace smvk
 
