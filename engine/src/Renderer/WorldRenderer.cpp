@@ -107,6 +107,24 @@ static double s_benchUpdates = 0.0, s_benchPasses = 0.0, s_benchReadbacks = 0.0,
 // ---------------------------------------------------------------------------
 namespace engine {
 
+smvk::ShaderProgram& WorldRenderer::GiStatsProgramFor(const smvk::ShaderProgram& base,
+                                                      uint32_t gv,
+                                                      bool stdTwin) {
+    smvk::ShaderProgram& slot = stdTwin ? m_giStatsProgramGiStd[gv] : m_giStatsProgramGi[gv];
+    if (slot.shaderCount == 0 && base.shaderCount == 2) {
+        // Forge the telemetry twin ONCE: the same modules + a spec payload
+        // flipping SPEC_GI_STATS to 1 on the fragment stage. Pipelines key
+        // on the spec, so this mints its own PSOs on first bind.
+        auto spec = std::make_shared<smvk::ShaderSpecialization>();
+        spec->SetBool(tour::kSpecGiStats, true);
+        slot = base;
+        for (size_t i = 0; i < slot.shaderCount; ++i)
+            if (slot.shaders[i].stage == smvk::ShaderStage::Fragment)
+                slot.shaders[i].specialization = spec;
+    }
+    return slot;
+}
+
 smvk::ShaderProgram& WorldRenderer::MainLitProgramFor(uint32_t materialId) {
     const GIVariant giVar = GetActiveGIVariant();
     const uint32_t gv = static_cast<uint32_t>(giVar);
@@ -141,8 +159,13 @@ smvk::ShaderProgram& WorldRenderer::MainLitProgramFor(uint32_t materialId) {
     if (giVar != GIVariant::None) {
         smvk::ShaderProgram& gi = m_resources.mainProgramGi[gv];
         if (gi.shaderCount == 2) {
-            if (!layered && m_resources.mainProgramGiStd[gv].shaderCount == 2)
+            if (!layered && m_resources.mainProgramGiStd[gv].shaderCount == 2) {
+                if (m_giVolumeStatsArmed)
+                    return GiStatsProgramFor(m_resources.mainProgramGiStd[gv], gv, true);
                 return m_resources.mainProgramGiStd[gv];
+            }
+            if (m_giVolumeStatsArmed)
+                return GiStatsProgramFor(gi, gv, false);
             return gi;
         }
         return stdReady ? m_resources.mainProgramStd : m_resources.mainProgram;

@@ -302,7 +302,9 @@ void SgGiVolumeSample(FrameUniforms frame, uint vol, float3 pos,
 
     // Weighted-path telemetry (TOURMALINE_GI_STATS=1): one invocation
     // per call; the weighted branch adds the surviving-corner histogram.
-    const bool giStats = frame.giVolumeStatsEnabled != 0u;
+    // giStatsCompile (SPEC_GI_STATS) folds this WHOLE block out in the
+    // normal/timing build — the uninstrumented shader is bit-identical.
+    const bool giStats = (giStatsCompile != 0u) && (frame.giVolumeStatsEnabled != 0u);
     if (giStats)
         InterlockedAdd(frame.giVolumeStats.Get().totalCalls, 1u);
 

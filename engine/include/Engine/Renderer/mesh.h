@@ -93,8 +93,8 @@ enum class AlphaMode : uint8_t {
 // state settings, CookedMeshlets, smvk::vertexpack::) stay smvk:: and are
 // spelled QUALIFIED. The smvk re-exports at the bottom of the file
 // keep every smvk::/unqualified consumer spelling resolving; retire
-// them as call sites migrate. The RHI owns the vertex layout schema; engine-owned layout values live in
-// Engine/Renderer/vertex_layouts.h.
+// them as call sites migrate. The RHI owns the vertex layout schema; engine-owned layout values
+// live in Engine/Renderer/vertex_layouts.h.
 namespace tour {
 
 // -------------------------------------------------------------------------
@@ -202,6 +202,9 @@ struct ShaderLodPolicy {
 // Must match common.hlsli (SPEC_LIT_*).
 inline constexpr uint32_t kSpecLitSpecular = 20;
 inline constexpr uint32_t kSpecLitNormalMap = 21;
+// GI-volume weighted-path telemetry (TOURMALINE_GI_STATS=1). Must match
+// common.hlsli SPEC_GI_STATS.
+inline constexpr uint32_t kSpecGiStats = 22;
 
 struct MaterialCreateInfo {
     // Primary PBR textures – baseColorTexture == diffuse for backward compat.
@@ -491,9 +494,9 @@ struct MeshVertex {
 // the STREAM decision (whether the mesh carves a lightmap range at
 // all) happens at allocation — any chartId != 0xFFFFFFFF.
 inline void PackMeshVertex(const MeshVertex& src,
-                             PackedVertexPosition& pos,
-                             PackedVertexShading& shade,
-                             PackedVertexLightmap& lm) noexcept {
+                           PackedVertexPosition& pos,
+                           PackedVertexShading& shade,
+                           PackedVertexLightmap& lm) noexcept {
     pos.pos = src.pos;
     shade.color = smvk::vertexpack::PackColorUnorm8(src.color);
     shade.uv = smvk::vertexpack::PackUvHalf(src.texCoord);
@@ -507,9 +510,9 @@ inline void PackMeshVertex(const MeshVertex& src,
 // the packed SoA streams; lossy exactly like the GPU fetch, so the
 // round trip is byte-stable).
 inline void UnpackMeshVertex(const PackedVertexPosition& pos,
-                               const PackedVertexShading& shade,
-                               const PackedVertexLightmap& lm,
-                               MeshVertex& out) noexcept {
+                             const PackedVertexShading& shade,
+                             const PackedVertexLightmap& lm,
+                             MeshVertex& out) noexcept {
     out.pos = pos.pos;
     const glm::vec4 c = glm::unpackUnorm4x8(shade.color);
     out.color = c;
@@ -561,7 +564,6 @@ static_assert(sizeof(DebugLineVertex) == 12);
 namespace smvk {
 using ::tour::AlphaMode;
 using ::tour::DebugLineVertex;
-using ::tour::MeshVertex;
 using ::tour::kMaterialFlagReceiveContactShadows;
 using ::tour::kSpecLitNormalMap;
 using ::tour::kSpecLitSpecular;
@@ -573,6 +575,7 @@ using ::tour::MaterialFlagsToWord;
 using ::tour::MaterialPipelineState;
 using ::tour::MaterialShaderFamily;
 using ::tour::MaterialValues;
+using ::tour::MeshVertex;
 using ::tour::PackedSkinInfluences;
 using ::tour::PackedVertexLightmap;
 using ::tour::PackedVertexPosition;
@@ -737,8 +740,7 @@ void AllocateStaticVertexFmt(smvk::ResourceManager& ctx);
 namespace smvk {
 using ::tour::AllocateStaticVertexFmt;
 using ::tour::Geometry;
-using ::tour::StaticMesh;
 using ::tour::MeshData;
+using ::tour::StaticMesh;
 using ::tour::Surface;
 } // namespace smvk
-
