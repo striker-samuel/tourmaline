@@ -863,11 +863,10 @@ struct ScreenSpaceReflections {
         ImageCreateInfo ci{};
         ci.extent = {ext.width, ext.height, 1};
         ci.format = format;
-        // TransferSrc: debug stage dumps (TOURMALINE_SSR_DUMP) copy the
-        // targets back through DownloadDataFromImage — armed dumps only.
-        ci.usage = ImageUsage::ColorAttachment | ImageUsage::Sampled;
-        if (DebugImageDumpArmed())
-            ci.usage |= ImageUsage::TransferSrc;
+        // TransferSrc: debug stage dumps (TOURMALINE_SSR_DUMP) + the
+        // roughness/metal capture copy these targets back — a usage bit
+        // only, no resource or performance cost.
+        ci.usage = ImageUsage::ColorAttachment | ImageUsage::Sampled | ImageUsage::TransferSrc;
         ci.mipLevels = 1;
         ci.arrayLayers = 1;
         ci.name = name;

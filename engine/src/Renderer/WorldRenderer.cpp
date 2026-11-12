@@ -9675,6 +9675,26 @@ void WorldRenderer::ExportIrradianceCapture(smvk::Extent2D extent) {
         meta << "{\"width\":" << w << ",\"height\":" << h << ",\"format\":\"RGBA16F\",\"bytes\":["
              << (w * 4u * 2u) << "," << (h * 4u * 2u) << "]}\n";
     }
+    // Roughness/metal twin (the SSR thin G-buffer, RGBA8: normal RG,
+    // roughness B, metal A — see gbuffer.frag.hlsl) for the
+    // roughness-conditioned specular error bins.
+    if (m_viewportResources.ssr.gbuffer.Valid()) {
+        std::vector<uint8_t> gb(w * h * 4u);
+        if (m_context->DownloadDataFromImage(m_viewportResources.ssr.gbuffer.image,
+                                             smvk::ImageLayout::ColorAttachmentOptimal,
+                                             gb.data(),
+                                             gb.size())) {
+            std::ofstream raw(m_giExportIrradianceDir + "/roughness_metal.raw", std::ios::binary);
+            raw.write(reinterpret_cast<const char*>(gb.data()),
+                      static_cast<std::streamsize>(gb.size()));
+            std::cout << "[GIV] roughness/metal exported: " << m_giExportIrradianceDir
+                      << "/roughness_metal.raw\n";
+        } else {
+            std::cerr << "[GIV] roughness/metal readback failed\n";
+        }
+    } else {
+        std::cerr << "[GIV] roughness/metal target unavailable (SSR G-buffer off)\n";
+    }
     std::cout << "[GIV] irradiance exported: " << m_giExportIrradianceDir << "/irradiance.raw ("
               << w << "x" << h << " RGBA16F)\n";
 }

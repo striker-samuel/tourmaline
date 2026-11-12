@@ -36,8 +36,21 @@ def main(argv=None):
     irradiance = arr[..., :3].astype(np.float32)
     valid_mask = (arr[..., 3] > 0.5).astype(np.uint8)
 
+    arrays = {"irradiance": irradiance, "valid_mask": valid_mask}
+
+    # Optional roughness/metal twin (the SSR thin G-buffer, RGBA8: normal
+    # RG, roughness B, metal A) for the roughness-conditioned bins. When
+    # present, the octahedral normal (RG != 0) is the authoritative
+    # opaque-surface mask — the specular export's alpha is meaningless.
+    rm_path = args.dir / "roughness_metal.raw"
+    if rm_path.exists():
+        rm = np.frombuffer(rm_path.read_bytes(), dtype=np.uint8).reshape(h, w, 4)
+        arrays["roughness"] = (rm[..., 2].astype(np.float32) / 255.0)
+        arrays["metal"] = (rm[..., 3].astype(np.float32) / 255.0)
+        arrays["valid_mask"] = (rm[..., 0:2].astype(np.int16) != 0).any(axis=2).astype(np.uint8)
+
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(args.output, irradiance=irradiance, valid_mask=valid_mask)
+    np.savez_compressed(args.output, **arrays)
     print(f"wrote {args.output} ({w}x{h})")
 
 
