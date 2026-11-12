@@ -184,11 +184,13 @@ smvk::ShaderProgram& WorldRenderer::MainLitProgramFor(uint32_t materialId) {
                                       : m_giCoeffConstArmed ? tour::kSpecGiCoeffConst
                                                             : 0u;
             const uint32_t envVisSpec = m_giFixedEnvVisArmed ? tour::kSpecGiFixedEnvVis : 0u;
-            const uint32_t exportSpec = m_giExportIrradianceArmed ? tour::kSpecGiExportIrradiance
-                                        : m_giExportConstantArmed ? tour::kSpecGiExportConstant
-                                        : m_giExportEnvSpecArmed  ? tour::kSpecGiExportEnvSpec
-                                        : m_giExportDiagArmed     ? tour::kSpecGiExportDiag
-                                                                  : 0u;
+            const uint32_t exportSpec = m_giExportIrradianceArmed   ? tour::kSpecGiExportIrradiance
+                                        : m_giExportConstantArmed   ? tour::kSpecGiExportConstant
+                                        : m_giExportRawEnvSpecArmed ? tour::kSpecGiExportRawEnvSpec
+                                        : m_giExportEnvSpecArmed    ? tour::kSpecGiExportEnvSpec
+                                        : m_giExportInitSpecArmed   ? tour::kSpecGiExportInitSpec
+                                        : m_giExportDiagArmed       ? tour::kSpecGiExportDiag
+                                                                    : 0u;
             const uint32_t statsSpec = m_giVolumeStatsArmed ? tour::kSpecGiStats : 0u;
 
             const bool stdTwin = !layered && m_resources.mainProgramGiStd[gv].shaderCount == 2;
@@ -1461,6 +1463,18 @@ bool WorldRenderer::onAttach() {
         if (eEnv[0] != '\0') {
             m_giExportEnvSpecArmed = true;
             m_giExportIrradianceDir = eEnv;
+        }
+    }
+    if (const char* aEnv = std::getenv("TOURMALINE_GI_EXPORT_RAWENVSPEC")) {
+        if (aEnv[0] != '\0') {
+            m_giExportRawEnvSpecArmed = true;
+            m_giExportIrradianceDir = aEnv;
+        }
+    }
+    if (const char* cEnv2 = std::getenv("TOURMALINE_GI_EXPORT_INITSPEC")) {
+        if (cEnv2[0] != '\0') {
+            m_giExportInitSpecArmed = true;
+            m_giExportIrradianceDir = cEnv2;
         }
     }
     if (const char* dEnv = std::getenv("TOURMALINE_GI_EXPORT_DIAG")) {
@@ -9650,8 +9664,17 @@ void WorldRenderer::ExportIrradianceCapture(smvk::Extent2D extent) {
     }
     {
         std::ofstream meta(m_giExportIrradianceDir + "/meta.json");
+        const char* stage = m_giExportIrradianceArmed   ? "irradiance"
+                            : m_giExportConstantArmed   ? "constant"
+                            : m_giExportRawEnvSpecArmed ? "rawEnvSpec"
+                            : m_giExportEnvSpecArmed    ? "envSpec"
+                            : m_giExportInitSpecArmed   ? "initSpec"
+                            : m_giExportDiagArmed       ? "diag"
+                            : m_giExportSpecularArmed   ? "specular"
+                                                        : "none";
         meta << "{\"width\":" << w << ",\"height\":" << h << ",\"format\":\"RGBA16F\","
-             << "\"octahedral\":" << (m_giOctahedralArmed ? 1 : 0)
+             << "\"stage\":\"" << stage << "\""
+             << ",\"octahedral\":" << (m_giOctahedralArmed ? 1 : 0)
              << ",\"hybrid\":" << (m_giHybridArmed ? 1 : 0)
              << ",\"fixedEnvVis\":" << (m_giFixedEnvVisArmed ? 1 : 0)
              << ",\"coeffConst\":" << (m_giCoeffConstArmed ? 1 : 0) << ",\"bytes\":["
@@ -10079,7 +10102,8 @@ void WorldRenderer::PollCaptureReadback() {
         m_sequenceReadbackPending = false;
         ExportSequenceScreenshot(m_captureExtent);
     } else if (m_giExportIrradianceArmed || m_giExportSpecularArmed || m_giExportConstantArmed ||
-               m_giExportEnvSpecArmed || m_giExportDiagArmed) {
+               m_giExportEnvSpecArmed || m_giExportRawEnvSpecArmed || m_giExportInitSpecArmed ||
+               m_giExportDiagArmed) {
         ExportIrradianceCapture(m_captureExtent);
     } else {
         ExportScreenshot(m_captureExtent);

@@ -1383,6 +1383,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     float3 R = reflect(-V, N);
     float3 Fenv = FresnelSchlickRoughness(NdotV, F0, shadingRoughness);
     // (Same far-LOD gate: no specular env fetch when simplified.)
+    float3 rawEnvSpec = float3(0.0f, 0.0f, 0.0f);
     float3 envSpec = float3(0.0f, 0.0f, 0.0f);
     if (litSpecular != 0u)
     {
@@ -1394,8 +1395,9 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
             if (stx < pc.fpTileCountX)
                 specTileIdx = sty * pc.fpTileCountX + stx;
         }
-        envSpec = EvaluateSpecularEnv(R, Fenv, shadingRoughness, frame.env, IN.worldPos, pc.frameUniforms.Get(), specTileIdx,
-            pc.fpLightCount, pc.fpMaxPerTile, pc.fpTileCounts, pc.fpTileIndices, pc.fpLights, metallic) * occlusion;
+        rawEnvSpec = EvaluateSpecularEnv(R, Fenv, shadingRoughness, frame.env, IN.worldPos, pc.frameUniforms.Get(), specTileIdx,
+            pc.fpLightCount, pc.fpMaxPerTile, pc.fpTileCounts, pc.fpTileIndices, pc.fpLights, metallic);
+        envSpec = rawEnvSpec * occlusion;
     }
 float envVis = 1.0f;
     float3 ambientSpec = envSpec;
@@ -1903,8 +1905,12 @@ float envVis = 1.0f;
     // the linear-HDR diffuse irradiance + covered flag instead.
     if (giExportConstantCompile != 0u)
         OUT.outEnvSpec = float4(1.0, 1.0, 1.0, 1.0);
+    else if (giExportRawEnvSpecCompile != 0u)
+        OUT.outEnvSpec = float4(rawEnvSpec, 1.0); // stage A: raw cubemap response
     else if (giExportEnvSpecCompile != 0u)
-        OUT.outEnvSpec = float4(envSpec, 1.0);
+        OUT.outEnvSpec = float4(envSpec, 1.0); // stage B: rawEnvSpec x occlusion
+    else if (giExportInitSpecCompile != 0u)
+        OUT.outEnvSpec = float4(envSpec * envVis, 1.0); // stage C: pre-crossover ambientSpec
     else if (giExportDiagCompile != 0u)
         OUT.outEnvSpec = float4(occlusion, envVis,
                                 saturate((shadingRoughness - 0.45f) / 0.25f), 1.0);
@@ -1912,7 +1918,7 @@ float envVis = 1.0f;
         OUT.outEnvSpec = float4(giExportE, giExportCovered);
     else
         OUT.outEnvSpec = float4(
-            SanitizeHdr(ambientSpec * occlusion), 0.0f);
+            SanitizeHdr(ambientSpec * occlusion), 0.0f); // stage D: SSR export
 #if defined(ALPHA_TO_COVERAGE)
     // Coverage remap (2x MSAA): below-cutoff texels drop to 0 covered
     // samples (matches the discard cutout plane of the 1x depth passes);

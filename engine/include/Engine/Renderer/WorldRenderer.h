@@ -4132,6 +4132,10 @@ class WorldRenderer : public IRenderer {
     bool m_giExportDiagArmed = false;
     smvk::ShaderProgram m_exportDiagProgramGi[4];
     smvk::ShaderProgram m_exportDiagProgramGiStd[4];
+    // Stage A / C export twins (rawEnvSpec / envSpec*envVis). Forged +
+    // selected through the composed m_specCache like the other exports.
+    bool m_giExportRawEnvSpecArmed = false;
+    bool m_giExportInitSpecArmed = false;
     // Linear-HDR diffuse-irradiance capture twins (giExportIrradianceCompile
     // =1, optionally + giOctaCompile=1): forged + selected when
     // TOURMALINE_GI_EXPORT_IRRADIANCE=1.
