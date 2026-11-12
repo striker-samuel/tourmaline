@@ -4795,15 +4795,10 @@ int Run(const CookArgs& c) {
     }
 
     // ---------------------------------------------------------------------------
-    // IMPORTED-PREPROCESSING VALIDATION: --lods/--meshlets are now
-    // REQUIREMENTS against the imported artifacts, not cook operations —
-    // the LOD chains + meshlet sets are an IMPORT product (the .geometry
-    // carries them; see DeriveConfig/ImportMeshSource), and the cook
-    // NEVER regenerates them (the old final-pass regeneration + geometry
-    // write-back is retired). A scene referencing geometry imported
-    // without the requested preprocessing fails HERE with an actionable
-    // diagnostic — reimport the source (Project.exe import / Import.exe),
-    // do not silently fall back to direct draws.
+    // PREPROCESSING VALIDATION: meshlets are imported, while scene-aware
+    // LOD siblings may also be generated above after replay. Only meshes
+    // sufficiently large in the effective scene count as chainable.
+    // Missing derivations for eligible meshes remain an actionable error.
     // ---------------------------------------------------------------------------
     if (args.lods || args.meshlets) {
         for (auto& sc : sceneClusters) {
@@ -6939,13 +6934,10 @@ int Run(const CookArgs& c) {
                     << "\n";
     }
 
-    // COOK WRITE-BACK: the <stem>.cooked manifests are the pak's freshness
-    // contract — always written. The imported .geometry is CANONICAL and is
-    // persisted ONLY when the (deprecated) lightmap flow actually mutated
-    // blobs (stamped chart UVs / lm bindings — a scene-specific derivation
-    // kept inside that flow); the plain path writes markers only and never
-    // touches the imported artifacts. pak.exe assembles the .pak from the
-    // imported artifacts + the loose bake files (pure serialization).
+    // COOK WRITE-BACK: the <stem>.cooked markers are always written.
+    // Scene-aware LOD selection and the lightmap flow both mutate the
+    // geometry family and require an artifact write before Pak replays it.
+    // The plain cook path still writes markers only.
     const auto t1 = std::chrono::steady_clock::now();
     WriteBackStats wb;
     std::string werr;
