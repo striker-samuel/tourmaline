@@ -1460,6 +1460,12 @@ void TestGiVolumePrecisionRoundTrip() {
     rotation.text = "rotation";
     rotation.vec4 = glm::vec4(13.123456f, 27.876543f, -41.234567f, 0.0f);
     doc.commands.push_back(rotation);
+    smvk::tour::Command spacing{};
+    spacing.verb = smvk::tour::Verb::SetGiVolumeAttr;
+    spacing.node = smvk::tour::kCreateGiVolumeRefBase;
+    spacing.text = "spacing";
+    spacing.number = 0.456789123456789;
+    doc.commands.push_back(spacing);
 
     std::string err;
     Check(smvk::tour::SaveTour(TempTour(), doc, err),
@@ -1478,6 +1484,8 @@ void TestGiVolumePrecisionRoundTrip() {
     Check(glm::all(glm::equal(reloaded.commands[1].vec4, size.vec4)) &&
               glm::all(glm::equal(reloaded.commands[2].vec4, rotation.vec4)),
           "GI volume size/rotation attr bit-exact roundtrip");
+    Check(reloaded.commands[3].number == spacing.number,
+          "GI volume scalar attr double-exact roundtrip");
 }
 
 void TestGiVolumeVerbs() {
