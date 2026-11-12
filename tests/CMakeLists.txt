@@ -1616,3 +1616,8 @@ add_executable(GpuSceneHlodTests test_gpu_scene_hlod.cpp)
 target_include_directories(GpuSceneHlodTests PRIVATE ${CMAKE_SOURCE_DIR}/engine/include)
 set_target_properties(GpuSceneHlodTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME gpu_scene_hlod_tests COMMAND GpuSceneHlodTests)
+
+# CPU-only first slice of the game-facing custom render-target selection contract.
+add_executable(RenderTargetSelectionTests test_render_target_selection.cpp)
+target_include_directories(RenderTargetSelectionTests PRIVATE ${CMAKE_SOURCE_DIR}/engine/include)
+add_test(NAME render_target_selection_tests COMMAND RenderTargetSelectionTests)
