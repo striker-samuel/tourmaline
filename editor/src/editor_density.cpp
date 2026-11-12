@@ -101,12 +101,12 @@ void EditorApp::RefreshCubemapDensity() {
             const tour::ClusterStaticMeshHandle h = clusterPtr->staticMeshes.getHandle(meshIdx);
             if (!h.valid())
                 continue;
-            const smvk::StaticMeshUpload* up = clusterPtr->GetRetainedUpload(h);
+            const smvk::MeshData* up = clusterPtr->GetRetainedUpload(h);
             if (!up || up->vertices.empty() || up->indices.empty())
                 continue;
             const glm::mat4& g = scene.globalTransform[node];
             const uint32_t base = uint32_t(soupPos.size());
-            for (const smvk::ImportStaticVertex& v : up->vertices)
+            for (const smvk::MeshVertex& v : up->vertices)
                 soupPos.push_back(glm::vec3(g * glm::vec4(v.pos, 1.0f)));
             for (uint32_t k : up->indices)
                 soupIdx.push_back(base + k);
