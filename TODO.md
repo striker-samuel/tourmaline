@@ -67,14 +67,14 @@
 
 ### P1 — incomplete integration and design work
 
-- [ ] **GPU-scene compact PSO submissions (#296 superseded by #301).**
-  Four-bin fixed indirect ranges remain the live implementation. #301 landed
-  the deterministic, atomics-free four-class PSO compaction (CPU oracle +
-  prefix count/scan/scatter kernels + device-free tests); the wave-atomic
-  append draft #296 is closed. Still to wire: conservative per-source budget
-  accounting to per-flight publication, barriers, count-buffer indirect
-  submissions, temporal/depth/Hi-Z consumers, no-drop overflow fallback,
-  DXC/Vulkan checks, and frame-time/image parity before enabling.
+- [ ] **Integrate four-class GPU-scene PSO submissions (#301; PARTIAL).**
+  The atomics-free count/prefix/scatter kernels, CPU oracle and device-free
+  tests are already implemented in #301; the superseded #296 wave-atomic
+  design is NOT a work item. Wire conservative per-source/per-flight budget
+  accounting, barriers and count-buffer indirect submissions; migrate
+  temporal/depth/Hi-Z consumers; provide a no-dropped-draw overflow path;
+  then pass DXC/Vulkan and frame-time/image parity gates before enabling.
+  See `docs/gpu_scene_pso_prefix_compaction.md`.
 - [ ] **Scene mutation journaling (#182).** Complete remaining direct
   local/global transform caller classification/migration and deterministic +
   randomized CPU/GPU parity for reparent, remove/reuse, transform, visibility
@@ -97,11 +97,11 @@
   validation (moved/floating viewport, DPI, selection, save/revert/failed-open,
   keyboard focus). The #193 F1/F2 issue remains unverified.
 - [ ] **Build publication and tooling (#186/#189/#190/#201).**
-  Automate release/installer publishing; test real TLS gateway; validate
-  publication receipts/locks and interruption recovery on Linux and Windows,
-  noting power-loss durability is not fsync-guaranteed. Receipt generation and
-  operational recovery instructions **already LANDED** in #190. Define
+  Automate release/installer publishing; test the real TLS gateway; exercise
+  receipt/lock handling and interrupted-publication recovery on Linux and
+  Windows (power-loss durability is not fsync-guaranteed). Define a
   golden-sequence baseline policy and perform multi-machine aggregation.
+  Do not re-implement #190's landed receipt generation or recovery guidance.
 - [ ] **Particle/placement feature tail (#137/#141/#199; legacy PR07).**
   Soft-depth dust fading, terrain-following emission and dense-alpha ordering;
   particle typed-graph/editor workflow, material-aware PBR mesh-particle draw
@@ -117,8 +117,11 @@
   world-map/viewport live visual behavior (#153/#159/#193), and MSAA coverage
   silhouettes (#198). Separate code defects found from mere missing GPU runs.
 - [ ] Revisit legacy deferred items **only with a current reproducer**:
-  pak overflow guards, missing barrier diagnostics, bindless fail-closed,
-  nullable gfx LOD filter callback, transient graph reuse, skinned filter
+  pak overflow guards, missing barrier diagnostics, remaining caller-side
+  bindless exhaustion propagation (the RHI empty-handle and freed-slot null
+  writes already landed), avoid the `gfxLodFilterable` per-frame copy (the
+  inspected prepass call is already null-guarded), transient graph reuse,
+  skinned filter
   diagnostics, two-sided shadow policies, Forward+ optimizations, per-draw
   animation palettes, audio upgrades, and namespace/API cleanup.
 
@@ -307,10 +310,11 @@ TOURMALINE_SHADER_SWAP=20 frame-safety pin — 0.00% differing pixels),
    TOURMALINE_SHADER_RELOAD/_SRC/_SWAP join kKnown — the "unknown var
    (typo?)" warning is gone (verified live: clean swap-arm messages
    only).
-3. Proofread backlog items 1-5 (the legacy block below): pak.cpp
-   overflow guards, impl.cpp barrier assert+log, bindless fail-closed,
-   gfxLodFilterable null-guard, NewFrame transient reuse — each is a
-   small, test-covered change.
+3. Reproduce/recheck the legacy proofread backlog before coding: pak.cpp
+   overflow guards, impl.cpp barrier diagnostics/SDSM flight indexing,
+   ForwardPlus `gfxLodFilterable` callback copy/lifetime, and NewFrame
+   transient reuse. Bindless RHI empty-handle/null-slot behavior is
+   already implemented; only separately reproduced caller failures remain.
 4. [Audit 01] #182's remaining CALLER MIGRATION — ~80 direct
    localTransform/globalTransform write sites (engine/editor/tests),
    each needing the loader-vs-live-writer classification from the
@@ -570,11 +574,14 @@ TODO
    regression coverage for copied and cross-reader entries.
 2. `impl.cpp` barrier collection: `continue`-on-missing skips (assert+log
    instead); `%2` SDSM slots vs 3 flights (verify/convert to flight count).
-3. Bindless: exhaustion must fail closed (`UINT32_MAX`, not assert-only);
-   destroy path is being hardened upstream (`NullBindlessSlotWrites`) —
-   coordinate, don't duplicate.
-4. `AppFrameContext::gfxLodFilterable` (`std::function`, nullable): null-guard
-   at call sites; don't copy per frame.
+3. Bindless: RHI pool-full returns an empty handle and deferred slot removal
+   writes the nil descriptor (IMPLEMENTED; do not duplicate). If a caller
+   still assumes registration succeeds, track that caller with a reproducer
+   and its own failure-path test.
+4. `AppFrameContext::gfxLodFilterable` (`std::function`, nullable): the inspected
+   ForwardPlus prepass call is already null-guarded; remaining work is to
+   avoid its per-frame `std::function` copy while preserving RenderGraph
+   deferred-recording lifetime safety.
 5. `RenderGraph::NewFrame` pool growth: free/reuse transients, don't
    `AddImage` per frame without free.
 
