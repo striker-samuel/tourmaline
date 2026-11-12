@@ -353,47 +353,47 @@ void GiVolume::PackGpuLayersBc6h(std::vector<uint8_t> out[9]) const {
                  job = nextJob.fetch_add(1)) {
                 const uint32_t lobe = job / nz;
                 const uint32_t z = job % nz;
-            std::fill(slice.begin(), slice.end(), uint16_t(0));
-            for (uint32_t y = 0; y < ny; ++y)
-                for (uint32_t x = 0; x < nx; ++x) {
-                    const glm::vec3& a =
-                        coeffs[((size_t(z) * ny + y) * nx + x) * kSgLobeCount + lobe];
-                    const size_t t = (size_t(y) * w4 + x) * 3;
-                    slice[t + 0] = PackHalf(a.r);
-                    slice[t + 1] = PackHalf(a.g);
-                    slice[t + 2] = PackHalf(a.b);
-                }
-            // PAD PREFILL (the Frostbite discipline, bc6h.h's header):
-            // zero pads expand the endpoint box ([0, max] instead of
-            // the tight valid range) and quantize the VALID texels
-            // worse — boundary blocks dominate at non-multiple-of-4
-            // dims. Each 4x4 block's pad texels take that block's
-            // VALID-texel average per channel.
-            for (uint32_t by = 0; by < h4; by += 4)
-                for (uint32_t bx = 0; bx < w4; bx += 4) {
-                    glm::dvec3 sum(0.0);
-                    uint32_t valid = 0;
-                    for (uint32_t y = by; y < by + 4 && y < ny; ++y)
-                        for (uint32_t x = bx; x < bx + 4 && x < nx; ++x) {
-                            const size_t t = (size_t(y) * w4 + x) * 3;
-                            sum += glm::dvec3(UnpackHalf(slice[t + 0]),
-                                              UnpackHalf(slice[t + 1]),
-                                              UnpackHalf(slice[t + 2]));
-                            ++valid;
-                        }
-                    if (valid == 0 || valid == 16)
-                        continue; // empty or full block: nothing to fill
-                    const glm::vec3 avg = glm::vec3(sum / double(valid));
-                    for (uint32_t y = by; y < by + 4; ++y)
-                        for (uint32_t x = bx; x < bx + 4; ++x) {
-                            if (x < nx && y < ny)
-                                continue; // a valid texel
-                            const size_t t = (size_t(y) * w4 + x) * 3;
-                            slice[t + 0] = PackHalf(avg.r);
-                            slice[t + 1] = PackHalf(avg.g);
-                            slice[t + 2] = PackHalf(avg.b);
-                        }
-                }
+                std::fill(slice.begin(), slice.end(), uint16_t(0));
+                for (uint32_t y = 0; y < ny; ++y)
+                    for (uint32_t x = 0; x < nx; ++x) {
+                        const glm::vec3& a =
+                            coeffs[((size_t(z) * ny + y) * nx + x) * kSgLobeCount + lobe];
+                        const size_t t = (size_t(y) * w4 + x) * 3;
+                        slice[t + 0] = PackHalf(a.r);
+                        slice[t + 1] = PackHalf(a.g);
+                        slice[t + 2] = PackHalf(a.b);
+                    }
+                // PAD PREFILL (the Frostbite discipline, bc6h.h's header):
+                // zero pads expand the endpoint box ([0, max] instead of
+                // the tight valid range) and quantize the VALID texels
+                // worse — boundary blocks dominate at non-multiple-of-4
+                // dims. Each 4x4 block's pad texels take that block's
+                // VALID-texel average per channel.
+                for (uint32_t by = 0; by < h4; by += 4)
+                    for (uint32_t bx = 0; bx < w4; bx += 4) {
+                        glm::dvec3 sum(0.0);
+                        uint32_t valid = 0;
+                        for (uint32_t y = by; y < by + 4 && y < ny; ++y)
+                            for (uint32_t x = bx; x < bx + 4 && x < nx; ++x) {
+                                const size_t t = (size_t(y) * w4 + x) * 3;
+                                sum += glm::dvec3(UnpackHalf(slice[t + 0]),
+                                                  UnpackHalf(slice[t + 1]),
+                                                  UnpackHalf(slice[t + 2]));
+                                ++valid;
+                            }
+                        if (valid == 0 || valid == 16)
+                            continue; // empty or full block: nothing to fill
+                        const glm::vec3 avg = glm::vec3(sum / double(valid));
+                        for (uint32_t y = by; y < by + 4; ++y)
+                            for (uint32_t x = bx; x < bx + 4; ++x) {
+                                if (x < nx && y < ny)
+                                    continue; // a valid texel
+                                const size_t t = (size_t(y) * w4 + x) * 3;
+                                slice[t + 0] = PackHalf(avg.r);
+                                slice[t + 1] = PackHalf(avg.g);
+                                slice[t + 2] = PackHalf(avg.b);
+                            }
+                    }
                 blocks.clear();
                 Bc6hEncodeImage(slice.data(), w4, h4, blocks);
                 std::memcpy(out[lobe].data() + size_t(z) * sliceBlocks,
