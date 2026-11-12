@@ -28,7 +28,16 @@ inline bool ResolveProjectResource(const std::string& projectRoot,
         return false;
     }
     const fs::path root = fs::absolute(fs::path(projectRoot)).lexically_normal();
-    const fs::path source = fs::path(input).lexically_normal();
+    const fs::path rawSource(input);
+    // Refuse authored ".." components rather than normalizing them
+    // away (e.g. content/../outside must not become a valid selector).
+    for (const auto& component : rawSource) {
+        if (component == "..") {
+            error = "asset reference contains parent traversal: " + input;
+            return false;
+        }
+    }
+    const fs::path source = rawSource.lexically_normal();
     fs::path relative;
     if (source.is_absolute()) {
         relative = source.lexically_relative(root);
