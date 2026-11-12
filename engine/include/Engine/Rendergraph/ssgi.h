@@ -616,7 +616,10 @@ struct Ssgi {
         ImageCreateInfo ci{};
         ci.extent = {extent.width, extent.height, 1};
         ci.format = format;
-        ci.usage = ImageUsage::ColorAttachment | ImageUsage::Sampled;
+        // TransferSrc lets the irradiance-capture diagnostic (and any
+        // future readback) copy these targets out — a usage bit only, no
+        // resource or performance cost.
+        ci.usage = ImageUsage::ColorAttachment | ImageUsage::Sampled | ImageUsage::TransferSrc;
         ci.mipLevels = 1;
         ci.arrayLayers = 1;
         ci.name = name;

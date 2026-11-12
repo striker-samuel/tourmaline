@@ -4549,6 +4549,10 @@ class WorldRenderer : public IRenderer {
     void ExportNeutralLut();
     void EnsureCaptureTarget(smvk::Extent2D extent);
     void ExportScreenshot(smvk::Extent2D extent);
+    // Linear-HDR diffuse-irradiance capture (TOURMALINE_GI_EXPORT_IRRADIANCE):
+    // reads the envSpec MRT (E.rgb + covered.a, RGBA16F) and dumps it as a
+    // raw typed buffer + metadata for the offline .npz packager.
+    void ExportIrradianceCapture(smvk::Extent2D extent);
     // ---- SMAA post-process antialiasing (see Engine/Rendergraph/smaa.h) ----
     // AA mode combo drives everything (MSAA 2x only runs in its own mode):
     // Off / Msaa2x / Smaa1x / SmaaT2x. T2x adds a quarter-pixel alternating

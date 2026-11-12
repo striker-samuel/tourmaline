@@ -9610,6 +9610,42 @@ void WorldRenderer::ExportScreenshot(smvk::Extent2D extent) {
         std::cerr << "[WorldRenderer] screenshot write failed (" << path << ")\n";
 }
 
+void WorldRenderer::ExportIrradianceCapture(smvk::Extent2D extent) {
+    // Read the envSpec MRT (RGBA16F: E.rgb = the combined diffuse
+    // irradiance, .a = the covered flag — see SPEC_GI_EXPORT_IRRADIANCE)
+    // and dump it as a raw typed buffer + metadata for the offline .npz
+    // packager (tools/irradiance_to_npz.py). The device is idle here
+    // (PollCaptureReadback waits before this).
+    if (!m_viewportResources.ssgi.envSpec.Valid()) {
+        std::cerr << "[GIV] irradiance export: envSpec target unavailable\n";
+        return;
+    }
+    const size_t w = extent.width, h = extent.height;
+    const size_t bytes = w * h * 4u * 2u; // RGBA16F = 4 halfs per texel
+    std::vector<uint8_t> px(bytes);
+    if (!m_context->DownloadDataFromImage(m_viewportResources.ssgi.envSpec.image,
+                                          smvk::ImageLayout::ColorAttachmentOptimal,
+                                          px.data(),
+                                          px.size())) {
+        std::cerr << "[GIV] irradiance export readback failed\n";
+        return;
+    }
+    std::error_code ec;
+    std::filesystem::create_directories(m_giExportIrradianceDir, ec);
+    {
+        std::ofstream raw(m_giExportIrradianceDir + "/irradiance.raw", std::ios::binary);
+        raw.write(reinterpret_cast<const char*>(px.data()),
+                  static_cast<std::streamsize>(px.size()));
+    }
+    {
+        std::ofstream meta(m_giExportIrradianceDir + "/meta.json");
+        meta << "{\"width\":" << w << ",\"height\":" << h << ",\"format\":\"RGBA16F\",\"bytes\":["
+             << (w * 4u * 2u) << "," << (h * 4u * 2u) << "]}\n";
+    }
+    std::cout << "[GIV] irradiance exported: " << m_giExportIrradianceDir << "/irradiance.raw ("
+              << w << "x" << h << " RGBA16F)\n";
+}
+
 // ------------------------------------------------------------------
 // LAYER / ELEMENT driver (nvpro-style, see Engine/App/Element.h). Sync
 // stays outside: the host acquires fb, drives the stack, presents.
@@ -10007,6 +10043,8 @@ void WorldRenderer::PollCaptureReadback() {
     } else if (m_sequenceReadbackPending) {
         m_sequenceReadbackPending = false;
         ExportSequenceScreenshot(m_captureExtent);
+    } else if (m_giExportIrradianceArmed) {
+        ExportIrradianceCapture(m_captureExtent);
     } else {
         ExportScreenshot(m_captureExtent);
     }
