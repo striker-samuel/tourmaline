@@ -1713,7 +1713,7 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
                     g.lightmap.resize(up->vertices.size());
                     bool charted = false;
                     for (size_t v = 0; v < up->vertices.size(); ++v) {
-                        smvk::PackStaticVertex(
+                        smvk::PackMeshVertex(
                             up->vertices[v], g.positions[v], g.shading[v], g.lightmap[v]);
                         if (up->vertices[v].chartId != 0xFFFFFFFFu)
                             charted = true;
@@ -1757,7 +1757,7 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
                             s.geo.lightmap.resize(up->vertices.size());
                             bool charted = false;
                             for (size_t v = 0; v < up->vertices.size(); ++v) {
-                                smvk::PackStaticVertex(up->vertices[v],
+                                smvk::PackMeshVertex(up->vertices[v],
                                                        s.geo.positions[v],
                                                        s.geo.shading[v],
                                                        s.geo.lightmap[v]);
