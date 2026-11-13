@@ -69,13 +69,11 @@ void TestSpatialDerivativeWorldSizing() {
           "derivatives.local-unit-small");
     glm::mat4 enlarged(1.0f);
     enlarged[0][0] = 3.0f;
-    Check(smvk::EligibleForSpatialDerivatives(mn, mx, 6, enlarged),
-          "derivatives.world-scaled-up");
+    Check(smvk::EligibleForSpatialDerivatives(mn, mx, 6, enlarged), "derivatives.world-scaled-up");
     glm::mat4 downscaled(1.0f);
     downscaled[0][0] = 0.01f;
-    Check(!smvk::EligibleForSpatialDerivatives(glm::vec3(0.0f),
-                                                glm::vec3(100.0f, 1.0f, 1.0f),
-                                                6, downscaled),
+    Check(!smvk::EligibleForSpatialDerivatives(
+              glm::vec3(0.0f), glm::vec3(100.0f, 1.0f, 1.0f), 6, downscaled),
           "derivatives.world-scaled-down");
     glm::mat4 negativeScale(1.0f);
     negativeScale[2][2] = -3.0f;
@@ -2262,14 +2260,15 @@ void TestLodSelection() {
         }
 
         // ---- Shader LODs (per-material far-level shading) -----------
-        // The farthest level of a cooked chain substitutes vertex-lit
-        // when the material programs it (see ShaderLodPolicy), or stays
-        // on lit with the material's quality specialization; every other
-        // level, out-of-range probes and invalid materials resolve
-        // default (full-lit, no spec). World node ids are re-based on
-        // merge (the world reserves its own root), so the material is
-        // located by (cluster, handle) in materialLocations, not by the
-        // cluster-scene node id.
+        // Vertex-lit whole-program substitution is KILLED: the farthest
+        // level of a cooked chain stays on the lit program (with the
+        // material's quality specialization when declared) and never
+        // swaps to the cheap per-vertex program. Every other level,
+        // out-of-range probes and invalid materials resolve default
+        // (full-lit, no spec). World node ids are re-based on merge (the
+        // world reserves its own root), so the material is located by
+        // (cluster, handle) in materialLocations, not by the cluster-
+        // scene node id.
         uint32_t shaderLodMat = UINT32_MAX;
         for (uint32_t i = 0; i < (uint32_t)world.materialLocations.size(); ++i) {
             const auto& loc = world.materialLocations[i];
@@ -2281,16 +2280,18 @@ void TestLodSelection() {
             const auto fs0 = world.FarShadingAt(0, 0, shaderLodMat);
             Check(fs0.isDefault() && !fs0.vertexLit, "lod.shader.l0");
             const auto fs1 = world.FarShadingAt(0, 1, shaderLodMat);
-            Check(!fs1.isDefault() && fs1.vertexLit, "lod.shader.farthest");
+            // allowFarVertexLit is ignored: the farthest level stays
+            // full-lit (default quality) instead of demoting.
+            Check(fs1.isDefault() && !fs1.vertexLit, "lod.shader.farthest-stays-lit");
             const auto fs2 = world.FarShadingAt(0, 2, shaderLodMat);
             Check(fs2.isDefault(), "lod.shader.oob");
             const auto fsBad = world.FarShadingAt(0, 1, UINT32_MAX);
             Check(fsBad.isDefault(), "lod.shader.badmat");
         }
         Check(world.LodChainLength(0) == 2, "lod.shader.chainlen");
-        // Opt-out: a material that disallows the cheap program stays on
-        // lit at the farthest level (default quality = default shading),
-        // and a non-default quality resolves specialized (and back).
+        // The farthest level stays on lit: default quality = default
+        // shading, and a non-default quality resolves specialized (and
+        // back). allowFarVertexLit is dead — it never demotes.
         if (smvk::Material* m = world.GetMaterial(shaderLodMat)) {
             m->shaderLod.allowFarVertexLit = false;
             const auto fsOpt = world.FarShadingAt(0, 1, shaderLodMat);
@@ -2303,7 +2304,7 @@ void TestLodSelection() {
             m->shaderLod.farQuality.specular = true;
             m->shaderLod.allowFarVertexLit = true;
             const auto fsBack = world.FarShadingAt(0, 1, shaderLodMat);
-            Check(!fsBack.isDefault() && fsBack.vertexLit, "lod.shader.optin");
+            Check(fsBack.isDefault() && !fsBack.vertexLit, "lod.shader.optin-stays-lit");
         } else {
             Check(false, "lod.shader.matfetch");
         }
@@ -2442,7 +2443,9 @@ void TestLodSelection() {
                   "lod.shader.uncooked.oob");
             {
                 const auto fsRe = world.FarShadingAt(cookedMesh, 1, shaderLodMat2);
-                Check(!fsRe.isDefault() && fsRe.vertexLit, "lod.shader.restamp");
+                // allowFarVertexLit is dead: the re-stamped farthest level
+                // stays full-lit instead of demoting to vertex-lit.
+                Check(fsRe.isDefault() && !fsRe.vertexLit, "lod.shader.restamp-stays-lit");
             }
         }
     }

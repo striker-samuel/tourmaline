@@ -68,11 +68,11 @@ struct LodFrameInputs {
 // stamped on the level. The Main pass reads the resolved program,
 // geometry consumers — shadows, prepass, motion, culling — ignore
 // it. The farthest level of a cooked chain keeps the coarsest
-// geometry and — when the material allows it — downgrades shading
-// to the cheap vertex-lit program: lighting is computed per vertex
-// (directional sun + ambient, no shadow-map sampling, no forward+
-// lights, no specular, no textures), so far instances trade shading
-// quality for fragment cost. Every other level (and every uncooked
+// geometry and shades on the LIT program with the material's quality
+// specialization (see ShaderLodQuality). The cheap vertex-lit
+// whole-program substitution is KILLED: a far LOD never downgrades
+// to per-vertex shading, so far instances keep the full lit pipeline
+// (modulo the quality knobs). Every other level (and every uncooked
 // chain) stays fully lit.
 
 typedef enum IteratorFlagBits {
@@ -847,10 +847,11 @@ struct World {
     //
     // One LEVEL = one geometry sibling; the shading program is
     // resolved per (level, material) off the same level index
-    // (UseVertexLitShaderAt) — there is no separate shader LOD
-    // level. The farthest level of a cooked chain (length > 1)
-    // shades vertex-lit when the material allows it (see
-    // ShaderLodPolicy); level 0 and uncooked chains stay lit.
+    // (FarShadingAt) — there is no separate shader LOD level. The
+    // farthest level of a cooked chain (length > 1) shades on the
+    // lit program with the material's quality specialization (see
+    // ShaderLodPolicy); vertex-lit substitution is killed, and level
+    // 0 and uncooked chains stay lit.
     struct LodChain {
         // Resolved levels, LOD0..N (levels[0].mesh == meshLocations[i]).
         struct Level {
@@ -886,13 +887,14 @@ struct World {
     float LodErrorAt(uint32_t meshIndex, uint32_t lodIndex) const;
     // Resolved far-level shading for a (mesh level, material) pair
     // (shader LODs; see ShaderLodPolicy): the farthest level of a
-    // cooked chain (length > 1) either substitutes the cheap
-    // vertex-lit program (the material allows it) or stays on the
-    // lit program with the material's quality specialization.
-    // Every other level, every uncooked chain, out-of-range probes
-    // and invalid materials resolve default (full-lit, no spec).
+    // cooked chain (length > 1) stays on the lit program with the
+    // material's quality specialization. The cheap vertex-lit
+    // whole-program substitution is KILLED (vertexLit is always
+    // false; the flag is retained on the wire + struct for future
+    // use). Every other level, every uncooked chain, out-of-range
+    // probes and invalid materials resolve default (full-lit, no spec).
     struct FarShading {
-        bool vertexLit = false;     // use the cheap vertex-lit program
+        bool vertexLit = false;     // killed: never set (retained for ABI)
         ShaderLodQuality quality{}; // quality spec when staying on lit
         // Default full-lit shading: neither substitution nor
         // specialization (the level draws exactly like LOD0).

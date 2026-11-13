@@ -29,9 +29,9 @@
 #include <Engine/Rendergraph/terrain_meta.h>
 #include <Engine/Rendergraph/terrain_occlusion.h>
 #include <Engine/Scene/scene.h>
+#include <cstdio>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
-#include <cstdio>
 
 namespace tour {
 // (migration compat) the impl still spells the RHI/engine smvk
@@ -1836,8 +1836,8 @@ bool DecomposeNodeTrs(const glm::mat4& frame,
         return false;
     return std::isfinite(position.x) && std::isfinite(position.y) && std::isfinite(position.z) &&
            std::isfinite(scale.x) && std::isfinite(scale.y) && std::isfinite(scale.z) &&
-           std::isfinite(rotation.x) && std::isfinite(rotation.y) &&
-           std::isfinite(rotation.z) && std::isfinite(rotation.w);
+           std::isfinite(rotation.x) && std::isfinite(rotation.y) && std::isfinite(rotation.z) &&
+           std::isfinite(rotation.w);
 }
 
 bool FiniteVec3(const glm::vec3& v) {
@@ -1873,11 +1873,10 @@ bool World::SetNodeScale(NodeHandle node, const glm::vec3& scale) {
         return false;
     glm::vec3 position{}, previousScale{};
     glm::quat rotation{};
-    if (!DecomposeNodeTrs(scene.localTransform[NodeHandleSlot(node)],
-                          position, rotation, previousScale))
+    if (!DecomposeNodeTrs(
+            scene.localTransform[NodeHandleSlot(node)], position, rotation, previousScale))
         return false;
-    const glm::mat4 frame = glm::translate(glm::mat4(1.0f), position) *
-                            glm::mat4_cast(rotation) *
+    const glm::mat4 frame = glm::translate(glm::mat4(1.0f), position) * glm::mat4_cast(rotation) *
                             glm::scale(glm::mat4(1.0f), scale);
     return tour::scene::SetLocalTransform(scene, node, frame);
 }
@@ -2448,20 +2447,20 @@ World::FarShading World::FarShadingAt(uint32_t meshIndex,
     if (!mat)
         return out;
     // ProjectLit materials stay FULL-LIT at every level (design §9
-    // "LOD"): both far-shading mechanisms shade through STOCK
-    // modules — the cheap vertex-lit FS never executes the lit body
-    // (the hooks would silently vanish at distance), and the
-    // quality-specialized twins are the standard family's programs
-    // (the family's own spec twins do not exist). Default keeps the
-    // far level on the family's lit program (the direct pick
-    // consults the family), so the effect survives to the farthest
-    // LOD — the documented v1 cost.
+    // "LOD"): the quality-specialized far twins are the standard
+    // family's programs (the family's own spec twins do not exist),
+    // so a spec'd far level would silently drop the hooks. Default
+    // keeps the far level on the family's lit program (the direct
+    // pick consults the family), so the effect survives to the
+    // farthest LOD — the documented v1 cost.
     if (ShaderFamilyOf(materialIndex) == smvk::MaterialShaderFamily::ProjectLit)
         return out;
-    if (mat->shaderLod.allowFarVertexLit) {
-        out.vertexLit = true;
-        return out;
-    }
+    // Vertex-lit whole-program substitution is KILLED: the farthest level
+    // never swaps to the cheap per-vertex program. It stays on the lit
+    // program (with the material's quality specialization when declared),
+    // so a far LOD shades exactly like LOD0 modulo the quality knobs. The
+    // allowFarVertexLit flag is retained on the wire + struct but ignored
+    // here — far LODs render full-lit instead of demoting.
     out.quality = mat->shaderLod.farQuality;
     return out;
 }
@@ -3019,15 +3018,14 @@ void Avx2ItemIndices(std::vector<uint32_t>& indices,
     const __m256i offsets = _mm256_setr_epi32(0, 1, 2, 3, 4, 5, 6, 7);
     size_t i = 0;
     for (; i + 8 <= n; i += 8) {
-        const __m256i flags = _mm256_loadu_si256(
-            reinterpret_cast<const __m256i*>(itemFlags.data() + i));
+        const __m256i flags =
+            _mm256_loadu_si256(reinterpret_cast<const __m256i*>(itemFlags.data() + i));
         const __m256i pass = _mm256_cmpeq_epi32(_mm256_and_si256(flags, req), req);
-        const unsigned mask = static_cast<unsigned>(
-            _mm256_movemask_ps(_mm256_castsi256_ps(pass)));
+        const unsigned mask = static_cast<unsigned>(_mm256_movemask_ps(_mm256_castsi256_ps(pass)));
         if (mask == 0)
             continue;
-        const __m256i selection = _mm256_loadu_si256(
-            reinterpret_cast<const __m256i*>(lanes[mask].data()));
+        const __m256i selection =
+            _mm256_loadu_si256(reinterpret_cast<const __m256i*>(lanes[mask].data()));
         const __m256i selected = _mm256_permutevar8x32_epi32(offsets, selection);
         const __m256i base = _mm256_set1_epi32(static_cast<int>(i));
         _mm256_storeu_si256(reinterpret_cast<__m256i*>(output + written),

@@ -162,17 +162,15 @@ enum class MaterialShaderFamily : uint8_t {
 
 // ---- Shader-LOD policy (per material) ---------------------------
 // Replaces the old hardcoded LodShader enum: each material declares
-// how its farthest cooked LOD level shades. Two mechanisms, both
-// data-driven per material:
-//   1. Whole-program substitution: the farthest level may use the
-//      cheap vertex-lit program (per-vertex sun + ambient, no
-//      textures/shadows), so far instances trade shading quality
-//      for fragment cost; materials the cheap program cannot shade
-//      stay fully lit at every level.
-//   2. Quality specialization: when the farthest level stays on the
-//      lit program, it binds with the specialization constants below
-//      (simplified BRDF, no normal-map fetch, ...), so the far
-//      program pays for only what the material needs at distance.
+// how its farthest cooked LOD level shades. Data-driven per material:
+//   - Quality specialization: the farthest level stays on the lit
+//     program and binds with the specialization constants below
+//     (simplified BRDF, no normal-map fetch, ...), so the far
+//     program pays for only what the material needs at distance.
+//   - (KILLED) Whole-program substitution: the cheap vertex-lit
+//     program is no longer selected for any material — the farthest
+//     level always stays on the lit program. allowFarVertexLit is
+//     retained on the wire + struct but ignored at resolve time.
 struct ShaderLodQuality {
     // GGX specular lobe (false = Lambert-only "simplified BRDF": no
     // specular math, no specular env fetch, no per-light specular).
@@ -183,18 +181,17 @@ struct ShaderLodQuality {
     bool operator==(const ShaderLodQuality&) const = default;
 };
 struct ShaderLodPolicy {
-    // Farthest cooked level may use the cheap vertex-lit program.
-    // DEFAULT OFF: the glTF importer only derives this when the
-    // derive config opts in (DeriveConfig::shaderLods — see
-    // asset_export.h); tour/material authoring still sets it
-    // explicitly per material. Disable for materials that need the
-    // full program at distance (alpha-tested cutouts with alpha
-    // textures, emissives you want to keep glowing, view-dependent
-    // effects...).
+    // KILLED: the farthest cooked level never demotes to the cheap
+    // vertex-lit program (World::FarShadingAt ignores this flag).
+    // Retained on the wire + struct so existing paks/authoring stay
+    // loadable without a format bump. DEFAULT OFF: the glTF importer
+    // only derives this when the derive config opts in
+    // (DeriveConfig::shaderLods — see asset_export.h); tour/material
+    // authoring still sets it explicitly per material.
     bool allowFarVertexLit = false;
     // Quality spec applied to the lit program when the farthest
-    // level stays lit (allowFarVertexLit == false). Default =
-    // full quality (indistinguishable from the base program).
+    // level shades lit (the only path now that vertex-lit is killed).
+    // Default = full quality (indistinguishable from the base program).
     ShaderLodQuality farQuality{};
 };
 

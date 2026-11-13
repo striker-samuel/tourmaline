@@ -618,9 +618,10 @@ void TestMaterialInstances() {
 // per-base-material ProjectLit opt-in — set/read/refusal, the re-key
 // survival through resolves (the same (owner, handle) capture as the
 // userdata lane), instances staying a VALUE-only lane over a family
-// material, and the FarShadingAt opt-out (ProjectLit materials never
-// substitute the cheap vertex-lit program at the farthest cooked LOD —
-// the hooks would silently vanish at distance).
+// material, and FarShadingAt (ProjectLit materials stay FULL-LIT at the
+// farthest cooked LOD — no quality specialization — so the hooks never
+// silently vanish at distance; vertex-lit whole-program substitution is
+// killed engine-wide, so the farthest level never demotes).
 // ---------------------------------------------------------------------------
 
 void TestMaterialShaderFamily() {
@@ -679,15 +680,16 @@ void TestMaterialShaderFamily() {
     Check(bool(inst) && w.IsMaterialInstanceAlive(inst), "family.instance-over-family-material");
     Check(w.SetMaterialInstanceUserData(inst, 0x0000FF00u), "family.instance-override-still-works");
     // FarShadingAt: ProjectLit materials stay FULL-LIT at the farthest
-    // level (default{} — no vertex-lit substitution, no quality spec),
-    // while the same material with the family off goes vertex-lit.
+    // level (default{} — no vertex-lit substitution, no quality spec);
+    // vertex-lit substitution is killed engine-wide, so the same material
+    // with the family off also stays lit (no demotion).
     const uint32_t meshIdx = 0; // the single registered LOD0 mesh
     Check(w.FarShadingAt(meshIdx, 1, materialIdx).vertexLit == false, "family.far-stays-lit");
     Check(w.FarShadingAt(meshIdx, 1, materialIdx).isDefault(), "family.far-no-spec");
     Check(w.FarShadingAt(meshIdx, 0, materialIdx).vertexLit == false, "family.near-stays-lit");
     w.SetMaterialShaderFamily(materialIdx, MaterialShaderFamily::StandardLit);
-    Check(w.FarShadingAt(meshIdx, 1, materialIdx).vertexLit == true,
-          "family.standard-far-vertex-lit");
+    Check(w.FarShadingAt(meshIdx, 1, materialIdx).vertexLit == false,
+          "family.standard-far-stays-lit");
 }
 
 void TestDecalEntities() {
