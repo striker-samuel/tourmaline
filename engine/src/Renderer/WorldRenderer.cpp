@@ -2116,6 +2116,10 @@ bool WorldRenderer::onAttach() {
             auto& pair = m_resources.debugPrograms[size_t(slot)];
             pair.direct = pairVsFs(m_resources.vertShader, frag);
             pair.filtered = m_gfxRenderer.FilteredProgramWith(*m_context, frag);
+            // Keep the module by slot so RenderFrame can build the task/mesh
+            // debug twin without re-loading it (the raw handle aliases the
+            // named member's module — the Holder keeps ownership).
+            m_resources.debugFsModules[size_t(slot)] = frag;
         }
         // SSR contribution debug view (env/UI only): NOT part of the
         // pairs — its FS declares its own 64B push
@@ -11393,7 +11397,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // default and wins automatically when any dependency is unavailable.
     static const bool s_gpuSceneTaskMesh = [] {
         const char* env = std::getenv("TOURMALINE_GPU_SCENE_TASK_MESH");
-        return env && std::strcmp(env, "0") != 0;
+        // The GPU Scene task/mesh cutover is the CANONICAL geometry path:
+        // ON by default (the env pin is an explicit opt-OUT, "0" only).
+        return !env || std::strcmp(env, "0") != 0;
     }();
     if (s_gpuSceneTaskMesh && smvk::SupportsMeshShaders()) {
         const char* const taskComputePaths[3] = {
@@ -11481,7 +11487,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                                               .shaderCount = 3};
                             }
                         } catch (...) {
-                            // Missing debug FS falls back to the lit Main view.
+                            // Missing debug FS: the compute-cull indexed raster
+                            // is the only admissible fallback (no Lit downgrade).
                         }
                     }
                     if (!m_gpuSceneRasterGbufferFsModule.empty()) {
@@ -11520,6 +11527,32 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         "[GpuSceneTaskMesh] task/mesh SPIR-V unavailable; indexed fallback\n");
                     warned = true;
                 }
+            }
+        }
+        // Per-view shading-debug twins of the task/mesh Main program: same
+        // AS + MS, but the view's real debug FS (default_unlit/cascade/
+        // vertexcolor/uv/pom/normals/PBR/...) instead of the lit body. Built
+        // lazily per slot once the AS/MS modules and that view's FS module
+        // are both loaded; a missing FS keeps the slot shaderCount 0 and the
+        // view falls back to Lit at record time (see the debugPrograms gate).
+        if (m_gpuSceneTaskMainProgram.shaderCount == 3 && !m_gpuSceneTaskAsModule.empty() &&
+            !m_gpuSceneTaskMsModule.empty()) {
+            for (size_t slot = 0; slot < size_t(DebugFs::Count); ++slot) {
+                auto& prog = m_gpuSceneTaskDebugPrograms[slot];
+                if (prog.shaderCount == 3)
+                    continue;
+                const smvk::ShaderModuleHandle fsMod = m_resources.debugFsModules[slot];
+                if (fsMod.empty())
+                    continue;
+                smvk::Shader as{.module = m_gpuSceneTaskAsModule,
+                                .entryPoint = "mainAS",
+                                .stage = smvk::ShaderStage::Task};
+                smvk::Shader ms{.module = m_gpuSceneTaskMsModule,
+                                .entryPoint = "mainMS",
+                                .stage = smvk::ShaderStage::Mesh};
+                smvk::Shader fs{
+                    .module = fsMod, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment};
+                prog = {.shaders = {as, ms, fs}, .shaderCount = 3};
             }
         }
     }
@@ -16656,16 +16689,27 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                           1u,
                                           sizeof(tour::gpu_scene::TaskMeshIndirectCommand));
             };
+            // Shading debug views (F2/F4/F6/F9/F10/F11 + normals/PBR/...)
+            // render their REAL debug FS on the canonical task/mesh path
+            // (per-DebugFs twin), not a silent lit downgrade; a missing twin
+            // keeps the lit program. Meshlets/Lods keep the flat-meshlet twin.
+            const std::optional<DebugFs> sceneTaskDbg = DebugFsForView(m_debugView);
+            const bool sceneTaskDbgValid =
+                sceneTaskDbg && m_gpuSceneTaskDebugPrograms[size_t(*sceneTaskDbg)].shaderCount == 3;
             auto& sceneTaskLit =
                 (m_debugView == ViewMode::Meshlets || m_debugView == ViewMode::Lods)
                     ? m_gpuSceneTaskDebugProgram
-                    : (sceneGiVariant == 0u ? m_gpuSceneTaskMainProgram
-                                            : m_gpuSceneTaskGiPrograms[sceneGiVariant]);
+                    : (sceneTaskDbgValid
+                           ? m_gpuSceneTaskDebugPrograms[size_t(*sceneTaskDbg)]
+                           : (sceneGiVariant == 0u ? m_gpuSceneTaskMainProgram
+                                                   : m_gpuSceneTaskGiPrograms[sceneGiVariant]));
             drawTaskBin(0u, sceneTaskLit, smvk::CullMode::Back, msaaSettings);
             if (sceneRasterTwoSided)
                 drawTaskBin(1u, sceneTaskLit, smvk::CullMode::None, msaaSettings);
+            // A2C is a lit-FS twin; a shading debug view shades the masked
+            // bin through its own FS (sceneTaskLit), so A2C never applies.
             const bool taskA2c =
-                useMsaa && m_msaaAlphaToCoverage &&
+                !sceneTaskDbgValid && useMsaa && m_msaaAlphaToCoverage &&
                 (sceneGiVariant == 0u
                      ? m_gpuSceneTaskMaskedA2cProgram.shaderCount == 3
                      : m_gpuSceneTaskGiA2cPrograms[sceneGiVariant].shaderCount == 3);
@@ -16687,9 +16731,19 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             }
         }
         if (sceneRasterActive && sceneRasterCommandCount > 0 && !sceneTaskActive) {
-            auto& sceneIndexedLit = sceneGiVariant == 0u
-                                        ? m_gpuSceneRasterProgram
-                                        : m_gpuSceneRasterGiPrograms[sceneGiVariant];
+            // Shading debug views ride the indexed raster leg with their
+            // filtered twin (gpu_scene_raster.vert + the view's debug FS) —
+            // the SAME FS the task/mesh twin binds, so the two GPU Scene
+            // paths shade identically. Missing twin -> lit program.
+            const std::optional<DebugFs> sceneRasterDbg = DebugFsForView(m_debugView);
+            const bool sceneRasterDbgValid =
+                sceneRasterDbg &&
+                m_resources.debugPrograms[size_t(*sceneRasterDbg)].filtered.shaderCount == 2;
+            auto& sceneIndexedLit =
+                sceneRasterDbgValid
+                    ? m_resources.debugPrograms[size_t(*sceneRasterDbg)].filtered
+                    : (sceneGiVariant == 0u ? m_gpuSceneRasterProgram
+                                            : m_gpuSceneRasterGiPrograms[sceneGiVariant]);
             cmd.BindStaticVertexFmt();
             cmd.BindRenderPipeline(sceneIndexedLit,
                                    ::tour::vertex_layouts::Static,
@@ -16757,7 +16811,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // The lit FS already applies the material's baseColor texture
             // alpha cutoff, using the flat per-work material ID at location 7.
             const bool sceneMaskedA2c =
-                useMsaa && m_msaaAlphaToCoverage &&
+                !sceneRasterDbgValid && useMsaa && m_msaaAlphaToCoverage &&
                 (sceneGiVariant == 0u
                      ? m_gpuSceneRasterMaskedA2cProgram.shaderCount == 2
                      : m_gpuSceneRasterGiA2cPrograms[sceneGiVariant].shaderCount == 2);
@@ -16821,19 +16875,21 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         ViewMode effView = m_debugView;
         // Meshlets (F3) and Lods (F5) render the GPU Scene cull survivors
         // through the task/mesh debug program (per-meshlet flat color /
-        // per-LOD palette). Missing debug program -> Lit.
-        if ((effView == ViewMode::Meshlets || effView == ViewMode::Lods) &&
-            m_gpuSceneTaskDebugProgram.shaderCount != 3)
-            effView = ViewMode::Lit;
+        // per-LOD palette). This is the CANONICAL GPU Scene path — no Lit
+        // fallback: when the task/mesh program is unavailable the
+        // compute-cull indexed raster (below) is the only admissible
+        // fallback, so the view keeps reflecting the real cull survivors.
         if (effView == ViewMode::SsrContribution &&
             m_resources.ssrContributionDebugProgram.shaderCount != 2)
             effView = ViewMode::Lit;
-        // Shading views: one program PAIR per DebugFs slot; either
-        // twin missing -> Lit.
+        // Shading views: one program PAIR per DebugFs slot; the direct +
+        // transparent legs bind pair.direct (the GPU Scene legs validate
+        // their own task/mesh + indexed-raster twins separately), so only
+        // the direct twin gates this fallback. A missing direct twin -> Lit.
         std::optional<DebugFs> shadingDbgFs = DebugFsForView(effView);
         if (shadingDbgFs) {
             const auto& pair = m_resources.debugPrograms[size_t(*shadingDbgFs)];
-            if (pair.direct.shaderCount != 2 || pair.filtered.shaderCount != 2) {
+            if (pair.direct.shaderCount != 2) {
                 shadingDbgFs.reset();
                 effView = ViewMode::Lit;
             }

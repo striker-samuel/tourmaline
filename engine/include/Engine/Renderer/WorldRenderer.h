@@ -1452,6 +1452,12 @@ struct AppResources {
         smvk::ShaderProgram filtered;
     };
     DebugProgramPair debugPrograms[size_t(DebugFs::Count)]{};
+    // The shading debug FS modules by DebugFs slot (the same modules the
+    // direct/filtered pairs above share). RenderFrame builds the task/mesh
+    // debug twins from these; a missing module keeps the slot's program
+    // shaderCount 0 (mirrors the empty-pair fallback at record time).
+    // Raw handles (copyable): the named Holder members own the modules.
+    std::array<smvk::ShaderModuleHandle, size_t(DebugFs::Count)> debugFsModules{};
     smvk::Holder<smvk::ShaderModuleHandle> fragUnlitShader;       // default_unlit (F2)
     smvk::Holder<smvk::ShaderModuleHandle> fragCascadeShader;     // default_cascade_debug (F4)
     smvk::Holder<smvk::ShaderModuleHandle> fragVertexColorShader; // default_vertexcolor_debug (F6)
@@ -2463,6 +2469,14 @@ class WorldRenderer : public IRenderer {
     // survivors instead of bypassing the chain.
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneTaskDebugFsModule{};
     smvk::ShaderProgram m_gpuSceneTaskDebugProgram{};
+    // Per-view shading-debug twins of the task/mesh Main program: same AS +
+    // MS, but the view's REAL debug FS (default_unlit/cascade/vertexcolor/
+    // uv/pom/normals/PBR/...) instead of the lit body — so F2/F4/F6/F9/F10/
+    // F11 and the combo views render their readout on the canonical GPU
+    // Scene path instead of a silent lit downgrade. Index = DebugFs. A slot
+    // whose FS module failed to load stays shaderCount 0 and the view falls
+    // back to Lit at record time.
+    std::array<smvk::ShaderProgram, size_t(DebugFs::Count)> m_gpuSceneTaskDebugPrograms{};
     bool m_gpuSceneTaskMeshActive = false;
     tour::gpu_scene::TaskMeshDispatchPlan m_gpuSceneTaskMeshPlan{};
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneTaskTemporalClearModule{};
