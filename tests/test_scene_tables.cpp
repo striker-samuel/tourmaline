@@ -666,9 +666,9 @@ int main() {
         Check(Near(rb.half.x, 5.0f) && Near(rb.half.z, 3.0f), "rotated box keeps its half extents");
         Check(Near(SpatialVolumeWeight(rb, glm::vec3(0.0f, 2.0f, 4.0f), inFade, outFade), 1.0f),
               "rotated box full inside (along the rotated axis)");
-        // GI PARITY: the shared weight equals GiVolumeDef::Weight over
-        // the same rotated shape (the plane math is the GI volume's
-        // own — one convention, two implementations, pinned equal).
+        // GI now uses hard hull containment, not SpatialVolumeWeight:
+        // generic audio-room fades remain unchanged. Verify GI weight
+        // matches the rotated OBB membership independent of fades.
         {
             tour::gi::GiVolumeDef def;
             def.planes =
@@ -682,10 +682,14 @@ int main() {
                                       glm::vec3(-3, 3.4f, 2),
                                       glm::vec3(0, 6.5f, 0),
                                       glm::vec3(9, 2, 4)}) {
-                if (std::fabs(def.Weight(p) - SpatialVolumeWeight(rb, p, inFade, outFade)) > 1e-4f)
+                const glm::vec3 delta = p - rb.center;
+                bool inside = true;
+                for (int axis = 0; axis < 3; ++axis)
+                    inside &= std::fabs(glm::dot(rb.axes[axis], delta)) <= rb.half[axis];
+                if (def.Weight(p) != (inside ? 1.0f : 0.0f))
                     parity = false;
             }
-            Check(parity, "spatial volume parity with the GI planes");
+            Check(parity, "GI hard hull matches shared spatial OBB geometry");
         }
         // Degenerate shapes cover nothing (never NaN).
         {
