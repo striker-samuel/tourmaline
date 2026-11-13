@@ -5,13 +5,28 @@
 #   <out>/<view>/<perm>/specular.png     tonemapped env-specular slice
 #   <out>/<view>/<perm>/irradiance.png   tonemapped diffuse irradiance
 param(
-    [Parameter(Mandatory=$true)][string]$View,
-    [Parameter(Mandatory=$true)][string]$CamPos,
-    [Parameter(Mandatory=$true)][string]$CamFwd,
+    [string]$View,
+    [string]$CamPos,
+    [string]$CamFwd,
+    [string]$FromScenario,
     [string]$Out = "F:\REPOS\tourmaline\out\screenshots"
 )
 
 $repo = "F:\REPOS\tourmaline"
+
+# Free camera choice: -FromScenario <id> looks up the named pose in
+# benchmarks/scenarios.json (the bistro-gi-* list) instead of spelling out
+# -CamPos/-CamFwd by hand.
+if ($FromScenario) {
+    $scen = (Get-Content (Join-Path $repo "benchmarks\scenarios.json") -Raw |
+        ConvertFrom-Json).scenarios | Where-Object { $_.id -eq $FromScenario } |
+        Select-Object -First 1
+    if (-not $scen) { throw "unknown scenario '$FromScenario' (see benchmarks/scenarios.json)" }
+    $View = $FromScenario
+    $CamPos = ($scen.camera.position -join ',')
+    $CamFwd = ($scen.camera.forward -join ',')
+}
+
 $exe = Join-Path $repo "out\build\x64-Release\App.exe"
 $exeDir = Split-Path $exe  # the renderer CWD; screenshots land in $exeDir\exports
 Push-Location $exeDir       # App.exe resolves content/paks + exports relative to CWD

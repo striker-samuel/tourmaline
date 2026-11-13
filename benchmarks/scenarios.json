@@ -733,6 +733,336 @@
         "TOURMALINE_LIGHT_CROWD": "96"
       },
       "frames": 180
+    },
+    {
+      "id": "bistro-gi-atrium",
+      "label": "Bistro GI atrium (the established GI benchmark camera)",
+      "subsystem": "gi",
+      "notes": "The canonical bistro atrium viewpoint (same camera as bistro-ssr-stress). GI screenshot canon: beauty + specular + irradiance via tools/capture_gi_shots.ps1. G-buffer profile: 57% rough (>0.45), 19% rough (>0.70), ~0% metallic.",
+      "source_args": [
+        "--pak",
+        "content/paks/bistro.pak"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          24.26,
+          1.82,
+          -9.52
+        ],
+        "forward": [
+          -0.947,
+          -0.022,
+          -0.321
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "24.26,1.82,-9.52",
+        "TOURMALINE_CAM_FWD": "-0.947,-0.022,-0.321",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off"
+      },
+      "frames": 120
+    },
+    {
+      "id": "bistro-gi-rough-highlight",
+      "label": "Bistro GI rough-specular highlight (80% rough surfaces)",
+      "subsystem": "gi",
+      "notes": "The roughest bistro view found via the G-buffer sweep: 80% of pixels have roughness > 0.45 (47% > 0.70), the highest mean specular luma of the sampled views (28.5). Where Oct8's missing rough-specular is most visible. Camera (22, 1.2, -10), forward (-0.7, -0.3, -0.6).",
+      "source_args": [
+        "--pak",
+        "content/paks/bistro.pak"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          22.0,
+          1.2,
+          -10.0
+        ],
+        "forward": [
+          -0.7,
+          -0.3,
+          -0.6
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "22,1.2,-10",
+        "TOURMALINE_CAM_FWD": "-0.7,-0.3,-0.6",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off"
+      },
+      "frames": 120
+    },
+    {
+      "id": "bistro-gi-thin-wall-doorway",
+      "label": "Bistro GI thin-wall / doorway (highest normal variance)",
+      "subsystem": "gi",
+      "notes": "The doorway/thin-wall candidate picked by the G-buffer normal-variance sweep (0.529, the most structural of the sampled views). Intended for GI visibility-leak testing. Camera (16, 1.5, -16), forward (-0.9, 0.05, -0.3).",
+      "source_args": [
+        "--pak",
+        "content/paks/bistro.pak"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          16.0,
+          1.5,
+          -16.0
+        ],
+        "forward": [
+          -0.9,
+          0.05,
+          -0.3
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "16,1.5,-16",
+        "TOURMALINE_CAM_FWD": "-0.9,0.05,-0.3",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off"
+      },
+      "frames": 120
+    },
+    {
+      "id": "bistro-gi-explore-c1",
+      "label": "Bistro GI explore c1 (58% rough)",
+      "subsystem": "gi",
+      "notes": "Exploration candidate. Camera (18, 1.5, -6), forward (-0.9, -0.1, -0.4). 58% rough, 12% very rough.",
+      "source_args": [
+        "--pak",
+        "content/paks/bistro.pak"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          18.0,
+          1.5,
+          -6.0
+        ],
+        "forward": [
+          -0.9,
+          -0.1,
+          -0.4
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "18,1.5,-6",
+        "TOURMALINE_CAM_FWD": "-0.9,-0.1,-0.4",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off"
+      },
+      "frames": 120
+    },
+    {
+      "id": "bistro-gi-explore-c2",
+      "label": "Bistro GI explore c2 (59% rough)",
+      "subsystem": "gi",
+      "notes": "Exploration candidate. Camera (20, 1.5, -12), forward (-0.8, 0.0, -0.6). 59% rough, 17% very rough, 0.1% metal.",
+      "source_args": [
+        "--pak",
+        "content/paks/bistro.pak"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          20.0,
+          1.5,
+          -12.0
+        ],
+        "forward": [
+          -0.8,
+          0.0,
+          -0.6
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "20,1.5,-12",
+        "TOURMALINE_CAM_FWD": "-0.8,0.0,-0.6",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off"
+      },
+      "frames": 120
+    },
+    {
+      "id": "bistro-gi-explore-c3",
+      "label": "Bistro GI explore c3 (32% rough, 0.7% metal)",
+      "subsystem": "gi",
+      "notes": "Exploration candidate. Camera (26, 1.5, -14), forward (-0.9, 0.1, -0.4). The least-rough of the early candidates, with the most metal (0.7%).",
+      "source_args": [
+        "--pak",
+        "content/paks/bistro.pak"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          26.0,
+          1.5,
+          -14.0
+        ],
+        "forward": [
+          -0.9,
+          0.1,
+          -0.4
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "26,1.5,-14",
+        "TOURMALINE_CAM_FWD": "-0.9,0.1,-0.4",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off"
+      },
+      "frames": 120
+    },
+    {
+      "id": "bistro-gi-explore-c4",
+      "label": "Bistro GI explore c4 (29% rough, 0.6% metal)",
+      "subsystem": "gi",
+      "notes": "Exploration candidate. Camera (16, 1.5, -8), forward (-0.95, 0.0, 0.3).",
+      "source_args": [
+        "--pak",
+        "content/paks/bistro.pak"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          16.0,
+          1.5,
+          -8.0
+        ],
+        "forward": [
+          -0.95,
+          0.0,
+          0.3
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "16,1.5,-8",
+        "TOURMALINE_CAM_FWD": "-0.95,0.0,0.3",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off"
+      },
+      "frames": 120
+    },
+    {
+      "id": "bistro-gi-explore-c6",
+      "label": "Bistro GI explore c6 (46% rough)",
+      "subsystem": "gi",
+      "notes": "Exploration candidate. Camera (14, 1.6, -4), forward (-0.9, -0.05, -0.45). Low camera height.",
+      "source_args": [
+        "--pak",
+        "content/paks/bistro.pak"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          14.0,
+          1.6,
+          -4.0
+        ],
+        "forward": [
+          -0.9,
+          -0.05,
+          -0.45
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "14,1.6,-4",
+        "TOURMALINE_CAM_FWD": "-0.9,-0.05,-0.45",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off"
+      },
+      "frames": 120
+    },
+    {
+      "id": "bistro-gi-explore-d1",
+      "label": "Bistro GI explore d1 (22% rough)",
+      "subsystem": "gi",
+      "notes": "Doorway/entrance exploration candidate. Camera (10, 1.5, -2), forward (-0.9, -0.05, 0.25).",
+      "source_args": [
+        "--pak",
+        "content/paks/bistro.pak"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          10.0,
+          1.5,
+          -2.0
+        ],
+        "forward": [
+          -0.9,
+          -0.05,
+          0.25
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "10,1.5,-2",
+        "TOURMALINE_CAM_FWD": "-0.9,-0.05,0.25",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off"
+      },
+      "frames": 120
+    },
+    {
+      "id": "bistro-gi-explore-d2",
+      "label": "Bistro GI explore d2 (27% rough)",
+      "subsystem": "gi",
+      "notes": "Doorway/entrance exploration candidate. Camera (6, 1.5, -12), forward (0.0, 0.0, -1.0).",
+      "source_args": [
+        "--pak",
+        "content/paks/bistro.pak"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          6.0,
+          1.5,
+          -12.0
+        ],
+        "forward": [
+          0.0,
+          0.0,
+          -1.0
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "6,1.5,-12",
+        "TOURMALINE_CAM_FWD": "0.0,0.0,-1.0",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off"
+      },
+      "frames": 120
+    },
+    {
+      "id": "bistro-gi-explore-d3",
+      "label": "Bistro GI explore d3 (31% rough, flat)",
+      "subsystem": "gi",
+      "notes": "Doorway/entrance exploration candidate. Camera (4, 1.5, -6), forward (0.3, 0.0, -0.95). Lowest normal variance (0.09) - likely a flat/degenerate view.",
+      "source_args": [
+        "--pak",
+        "content/paks/bistro.pak"
+      ],
+      "app_args": [],
+      "camera": {
+        "position": [
+          4.0,
+          1.5,
+          -6.0
+        ],
+        "forward": [
+          0.3,
+          0.0,
+          -0.95
+        ]
+      },
+      "environment": {
+        "TOURMALINE_CAM_POS": "4,1.5,-6",
+        "TOURMALINE_CAM_FWD": "0.3,0.0,-0.95",
+        "TOURMALINE_AUTO_EXPOSURE": "0",
+        "TOURMALINE_AA": "off"
+      },
+      "frames": 120
     }
   ]
 }
