@@ -4036,10 +4036,13 @@ bool WorldRenderer::BuildGiVolumeSet(std::vector<GiVolumeResources>& built,
         }
         // Compact rough-specular atlas (PackGpuOctahedralSpecular): the SG
         // specular response baked over octahedral reflection directions at
-        // kGiSpecRoughLevels roughness samples. SOFT failure like the
+        // kGiSpecRoughLevels roughness samples. Baked + uploaded ONLY when
+        // the compact path is armed (TOURMALINE_GI_COMPACT_SPECULAR=1) —
+        // the bake + upload is ~9 GB of GPU atlas for the dense bistro
+        // volume, and SG9/Oct8 never sample it. SOFT failure like the
         // diffuse atlas: a missing atlas keeps the SG specular crossover
-        // (the slot stays UINT32_MAX).
-        {
+        // (the slots stay UINT32_MAX).
+        if (m_giCompactSpecArmed) {
             std::vector<uint16_t> specAtlas;
             uint32_t specCols = 0, specRows = 0;
             cv.volume.PackGpuOctahedralSpecular(specAtlas, specCols, specRows);
