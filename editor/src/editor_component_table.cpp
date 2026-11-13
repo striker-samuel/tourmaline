@@ -30,8 +30,8 @@ constexpr Column kGi[] = {
     {"Spacing", "spacing", ColumnKind::Float, 0.001f, 100},
     {"Spacing low", "spacinglow", ColumnKind::Float, 0, 100},
     {"Spacing high", "spacinghigh", ColumnKind::Float, 0, 100},
-    {"Inside fade", "inside", ColumnKind::Float, 0, 100},
-    {"Outside fade", "outside", ColumnKind::Float, 0, 100},
+    // No GI fade columns: old authoring fades are legacy serialization
+    // only; sky visibility and probe interpolation own the transitions.
 };
 constexpr Column kRoom[] = {
     {"Enabled", "enabled", ColumnKind::Bool, 0, 1},
