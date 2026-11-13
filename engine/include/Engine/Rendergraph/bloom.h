@@ -54,6 +54,7 @@ struct BloomDesc {
     float intensity = 0.6f;               // composite strength (tonemap side)
     float upsampleRadius = 1.0f;          // tent radius in higher-mip texels
     bool useSpd = true;                   // single-pass compute downsample (needs mipCount == 5)
+    bool useFft = false;                  // opt-in tiled FFT convolution quality mode
     const char* name = "bloom";
 };
 
@@ -104,14 +105,25 @@ static_assert(sizeof(SpdPush) == 48);
 static constexpr uint32_t kSpdMipLevels = 5; // cascade depth the shader implements
 static constexpr uint32_t kSpdBlock = 16;    // workgroup tile of mip 0 pixels
 
+// FFT convolution push constants (16 bytes); output is a separate half-res image.
+struct FftBloomPush {
+    uint32_t srcIndex = UINT32_MAX;
+    uint32_t dstIndex = UINT32_MAX;
+    uint32_t width = 0;
+    uint32_t height = 0;
+};
+static_assert(sizeof(FftBloomPush) == 16);
+
 // Default SPVs (fullscreen-triangle VS shared with tonemap + down/up PS).
 inline constexpr const char* kBloomFullscreenVsPath = "content/shaders/tonemap.vert.hlsl.spv";
 inline constexpr const char* kBloomDownPsPath = "content/shaders/bloom_down.frag.hlsl.spv";
 inline constexpr const char* kBloomUpPsPath = "content/shaders/bloom_up.frag.hlsl.spv";
 inline constexpr const char* kBloomSpdCsPath = "content/shaders/spd_downsample.cs.hlsl.spv";
+inline constexpr const char* kBloomFftCsPath = "content/shaders/fft_bloom.cs.hlsl.spv";
 
 struct BloomChain {
     MipBuilder::BuiltChain chain{};
+    MipBuilder::BuiltChain fftOutput{};
     BloomDesc desc{};
     Extent2D hdrExtent{0, 0};
 
@@ -121,9 +133,11 @@ struct BloomChain {
     Holder<ShaderModuleHandle> downFragModule;
     Holder<ShaderModuleHandle> upFragModule;
     Holder<ShaderModuleHandle> spdModule;
+    Holder<ShaderModuleHandle> fftModule;
     ShaderProgram downProgram{};
     ShaderProgram upProgram{};
     ShaderProgram spdProgram{};
+    ShaderProgram fftProgram{};
 
     [[nodiscard]] bool Valid() const {
         return chain.Valid();
@@ -137,6 +151,12 @@ struct BloomChain {
     }
     // SPD replaces the raster down chain only for the integer it was
     // written for (5 mips); anything else keeps the 13-tap path.
+    [[nodiscard]] bool FftShadersValid() const {
+        return fftProgram.shaderCount != 0 && !fftModule.empty();
+    }
+    [[nodiscard]] bool FftPathAvailable() const {
+        return desc.useFft && fftOutput.Valid() && FftShadersValid();
+    }
     [[nodiscard]] bool SpdPathAvailable() const {
         return desc.useSpd && chain.MipCount() == kSpdMipLevels && SpdShadersValid();
     }
@@ -150,11 +170,11 @@ struct BloomChain {
     }
     [[nodiscard]] LogicalImageViewHandle MipView(uint32_t i) const {
         assert(i < chain.mips.size());
-        return chain.mips[i].logical;
+        return i == 0 && FftPathAvailable() ? fftOutput.mips[0].logical : chain.mips[i].logical;
     }
     [[nodiscard]] uint32_t MipBindless(uint32_t i) const {
         assert(i < chain.mips.size());
-        return chain.mips[i].bindlessIndex;
+        return i == 0 && FftPathAvailable() ? fftOutput.mips[0].bindlessIndex : chain.mips[i].bindlessIndex;
     }
 
     static Extent2D BaseExtentFor(Extent2D hdr, uint32_t divisor) {
@@ -181,6 +201,23 @@ struct BloomChain {
             return false;
         Shader cs{.module = spdModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute};
         spdProgram = {.shaders = {cs}, .shaderCount = 1};
+        return true;
+    }
+
+    // Best-effort quality shader: unavailable SPV leaves the standard bloom intact.
+    bool EnsureFftShaders(ResourceManager& ctx, const char* path = kBloomFftCsPath) {
+        if (FftShadersValid())
+            return true;
+        try {
+            if (fftModule.empty())
+                fftModule = ctx.CreateShaderModule(readFile(path ? path : kBloomFftCsPath), "bloomFftCS");
+        } catch (...) {
+            return false;
+        }
+        if (fftModule.empty())
+            return false;
+        Shader cs{.module = fftModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute};
+        fftProgram = {.shaders = {cs}, .shaderCount = 1};
         return true;
     }
 
@@ -217,6 +254,8 @@ struct BloomChain {
             upProgram = {.shaders = {vs, upPS}, .shaderCount = 2};
         }
         EnsureSpdShaders(ctx, spdPath);
+        if (desc.useFft)
+            EnsureFftShaders(ctx);
         return true;
     }
 
@@ -224,10 +263,12 @@ struct BloomChain {
         downProgram = ShaderProgram();
         upProgram = ShaderProgram();
         spdProgram = ShaderProgram();
+        fftProgram = ShaderProgram();
         vsModule = {};
         downFragModule = {};
         upFragModule = {};
         spdModule = {};
+        fftModule = {};
     }
 
     // HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): swap every
@@ -244,11 +285,14 @@ struct BloomChain {
         any |= SwapShaderModule(ctx, kBloomDownPsPath, "bloomDownFrag", downFragModule, retired);
         any |= SwapShaderModule(ctx, kBloomUpPsPath, "bloomUpFrag", upFragModule, retired);
         any |= SwapShaderModule(ctx, kBloomSpdCsPath, "bloomSpdCS", spdModule, retired);
+        if (desc.useFft)
+            any |= SwapShaderModule(ctx, kBloomFftCsPath, "bloomFftCS", fftModule, retired);
         if (!any)
             return false;
         downProgram = ShaderProgram();
         upProgram = ShaderProgram();
         spdProgram = ShaderProgram();
+        fftProgram = ShaderProgram();
         EnsureShaders(ctx);
         return true;
     }
@@ -283,10 +327,17 @@ struct BloomChain {
         chain = std::move(built);
         desc = d;
         hdrExtent = hdr;
+        if (d.useFft) {
+            // Independent image so the compute pass never samples and writes the same resource.
+            fftOutput = MipBuilder::BuildSeparated(ctx, rg, base, 1, d.format,
+                ImageUsage::Storage | ImageUsage::Sampled, "bloom_fft", ImageLayout::General);
+            // A failed allocation is a quality-mode fallback, not a failed bloom chain.
+        }
         return EnsureShaders(ctx, vsPath, downPath, upPath, spdPath);
     }
 
     void Destroy(RenderGraph& rg) {
+        MipBuilder::DestroySeparated(rg, fftOutput);
         MipBuilder::DestroySeparated(rg, chain);
         hdrExtent = {0, 0};
     }
@@ -305,7 +356,8 @@ struct BloomChain {
         if (Valid() && hdrExtent.width == hdr.width && hdrExtent.height == hdr.height &&
             chain.MipCount() == d.mipCount && chain.format == d.format &&
             chain.baseExtent.width == wantBase.width &&
-            chain.baseExtent.height == wantBase.height) {
+            chain.baseExtent.height == wantBase.height &&
+            desc.useFft == d.useFft) {
             desc = d; // live-update threshold/intensity without realloc
             return EnsureShaders(ctx, vsPath, downPath, upPath, spdPath);
         }
@@ -395,6 +447,33 @@ struct BloomChain {
             .SetColor(
                 {chain.mips[mipIndex].logical}, AttachmentLoadOp::Load, AttachmentStoreOp::Store);
         return pass;
+    }
+
+    // Optional local FFT convolution after the ordinary multi-scale reconstruction.
+    // A 32x32 transform produces each 16x16 output tile with an 8-pixel halo.
+    void AddFftQualityPass(RenderGraph& rg) const {
+        assert(FftPathAvailable());
+        RenderPass& pass = rg.AddComputePass("BloomFFTQuality");
+        ImageSyncRequest src{};
+        src.barrierMasks.accessMask = AccessFlags::ShaderRead;
+        src.barrierMasks.stageMask = PipelineStageBit_Compute;
+        src.layout = ImageLayout::ShaderReadOnlyOptimal;
+        ImageSyncRequest dst{};
+        dst.barrierMasks.accessMask = AccessFlags::ShaderWrite;
+        dst.barrierMasks.stageMask = PipelineStageBit_Compute;
+        dst.layout = ImageLayout::General;
+        pass.AddImageHint(chain.mips[0].logical, src);
+        pass.AddImageHint(fftOutput.mips[0].logical, dst);
+        FftBloomPush push{chain.mips[0].bindlessIndex, fftOutput.mips[0].bindlessIndex,
+                          chain.baseExtent.width, chain.baseExtent.height};
+        ShaderProgram program = fftProgram;
+        const uint32_t gx = (push.width + 15u) / 16u;
+        const uint32_t gy = (push.height + 15u) / 16u;
+        pass.SetRecordingFunc([program, push, gx, gy](CommandBuffer& cmd) mutable {
+            cmd.BindComputePipeline(program);
+            cmd.PushConstants(0, sizeof(FftBloomPush), &push, ShaderStage::Compute);
+            cmd.Dispatch(gx, gy, 1);
+        });
     }
 
     // ---- One-call helper: emits down chain + up chain with recordings ----
@@ -497,6 +576,8 @@ struct BloomChain {
             AddSpdDownsamplePass(
                 rg, const_cast<ShaderProgram&>(spdProgram), hdrView, hdrBindlessIndex);
             AddUpsampleChain(rg, const_cast<ShaderProgram&>(upProgram), linearSamplerIndex);
+            if (FftPathAvailable())
+                AddFftQualityPass(rg);
             return;
         }
         AddBloomPasses(rg,
@@ -505,6 +586,8 @@ struct BloomChain {
                        hdrView,
                        hdrBindlessIndex,
                        linearSamplerIndex);
+        if (FftPathAvailable())
+            AddFftQualityPass(rg);
     }
 };
 
