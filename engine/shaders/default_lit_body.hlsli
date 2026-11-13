@@ -1580,6 +1580,42 @@ float envVis = 1.0f;
             }
         }
     }
+    else if (giCompactSpecCompile != 0u)
+    {
+        // Compact rough-specular path: octahedral diffuse + the baked SG
+        // specular response sampled from the compact atlas (the 9-lobe SG
+        // amplitude reconstruction replaced by directional lookups). The
+        // cubemap control region + roughW crossover semantics are unchanged.
+        float3 octaE;
+        float volTrans = 1.0;
+        bool volHit = false;
+        SgGiVolumeCompositeOctahedral(frame, SgGiVolumeTileMask(frame, clipPos.xy),
+            IN.worldPos, N, octaE, volTrans, volHit);
+        E = octaE;
+        E += irradiance * (iblOn * volTrans); // analytic sky diffuse base
+        covered = volHit;
+        if (covered)
+        {
+            const float3 giE = E * giScale;
+            giSource = 4u;
+            bakedE = giE;
+            envVis = SpecularOcclusionFromGI(giE, giScale, N, frame.env, shadingRoughness);
+            if ((frame.flags & FRAME_FLAG_GI_FIXED_ENVVIS) != uint64_t(0))
+                envVis = 1.0;
+            ambientSpec = envSpec * envVis;
+            if (!isBlendMat)
+                ambient += kD * baseColor * (giE / PI) * occlusion;
+            const float roughW = saturate((shadingRoughness - 0.45f) / 0.25f);
+            if (roughW > 0.0f)
+            {
+                float3 compactSpec;
+                SgGiVolumeCompositeSpecular(frame, SgGiVolumeTileMask(frame, clipPos.xy),
+                    IN.worldPos, R, shadingRoughness, compactSpec);
+                const float3 giSpecular = compactSpec * giScale * Fenv * occlusion;
+                ambientSpec = lerp(ambientSpec, giSpecular, roughW);
+            }
+        }
+    }
     else if (giOctaCompile != 0u)
     {
         float3 octaE;

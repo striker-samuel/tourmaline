@@ -80,6 +80,12 @@
 // (envSpec x envVis, the ambientSpec value right after the envVis multiply and
 // BEFORE the roughW crossover lerp) to outEnvSpec.
 #define SPEC_GI_EXPORT_INITSPEC 32
+// Compact rough-specular path (TOURMALINE_GI_COMPACT_SPECULAR=1): octahedral
+// diffuse + the baked SG specular response sampled from the compact atlas
+// (SgGiVolumeCompositeSpecular) instead of the 9-lobe SG amplitude
+// reconstruction. Replaces the SG specular crossover fetch; the cubemap
+// control region and the roughW crossover semantics are unchanged.
+#define SPEC_GI_COMPACT_SPECULAR 33
 
 //#define kBinding_Textures 0
 //#define kBinding_Samplers 1
@@ -1008,6 +1014,14 @@ uint decalCount;                                         // 776 0 = decals off
     // UINT32_MAX slot = absent (the shader falls back to the SG path). ----
     uint giVolumeOctaLayers[8];                                    // 3156 atlas slots (textures[])
     uint giVolumeOctaDims[8];                                      // 3188 packed cols | rows << 16
+    // ---- Compact rough-specular atlas (the SG specular response baked per
+    // probe over octahedral reflection directions at kGiSpecRoughLevels
+    // roughness samples; PackGpuOctahedralSpecular). Same slot + packed-dims
+    // shape as the diffuse octahedral atlas, but the atlas is 4x taller (the
+    // roughness slices stacked vertically). UINT32_MAX slot = absent (the
+    // runtime keeps the SG specular crossover). ----
+    uint giVolumeSpecLayers[32];                                   // 3220 atlas slots (4 roughness layers x 8 volumes)
+    uint giVolumeSpecDims[8];                                      // 3348 packed cols | rows << 16
 };
 
 // Deferred-shadow push constants + shared helpers (needs FrameUniforms
@@ -1048,6 +1062,7 @@ uint decalCount;                                         // 776 0 = decals off
 [[vk::constant_id(SPEC_GI_EXPORT_DIAG)]] const uint giExportDiagCompile = 0; // 0=normal, 1=write (occlusion, envVis, roughW)
 [[vk::constant_id(SPEC_GI_EXPORT_RAWENVSPEC)]] const uint giExportRawEnvSpecCompile = 0; // 0=normal, 1=write rawEnvSpec (stage A)
 [[vk::constant_id(SPEC_GI_EXPORT_INITSPEC)]] const uint giExportInitSpecCompile = 0; // 0=normal, 1=write envSpec*envVis (stage C)
+[[vk::constant_id(SPEC_GI_COMPACT_SPECULAR)]] const uint giCompactSpecCompile = 0; // 0=SG/hybrid specular, 1=compact atlas specular
 
 #if !defined(TONEMAP_PASS) && !defined(BLOOM_PASS) && !defined(MOTIONBLUR_PASS) && !defined(MOTIONBLUR_TILES_PASS) && !defined(MOTIONBLUR_TILEDILATE_PASS) && !defined(SSAO_PASS) && !defined(GTAO_PASS) && !defined(SAO_PASS) && !defined(FORWARDPLUS_PASS) && !defined(UI_PASS) && !defined(GFXFILTER_PASS) && !defined(GFXFILTERED_PASS) && !defined(HZB_PASS) && !defined(GFXSEED_PASS) && !defined(EXPOSURE_PASS) && !defined(SMAA_PASS) && !defined(DS_PASS) && !defined(EVSM_BLUR_PASS) && !defined(EVSM_RESOLVE_PASS) && !defined(SDSM_STATS_PASS) && !defined(DOF_PASS) && !defined(SSR_PASS) && !defined(VOLUMETRIC_PASS) && !defined(VOLUMETRIC_COMPOSITE_PASS) && !defined(PARTICLES_PASS) && !defined(UVFLAT1_PASS) && !defined(DEFAULT_DIRECT_PASS) && !defined(SHADOW_DIRECT_PASS) && !defined(PLACEMENT_INSTANCED_PASS) && !defined(PROBEBALL_PASS) && !defined(GIPROBE_PASS) && !defined(SPD_PASS) && !defined(GFXMESH_PASS) && !defined(GFXBATCHCULL_PASS) && !defined(GFXDRAWCULL_PASS) && !defined(GFXSKINBOUNDS_PASS) && !defined(GFXSKINNING_PASS) && !defined(GFXCONEDEBUG_PASS) && !defined(TERRAIN_NOPC) && !defined(PROBEPREMIX_WEIGHTS_PASS) && !defined(PROBEPREMIX_MIX_PASS) && !defined(GFXSKINNING_PASS) && !defined(MATBALL_PASS) && !defined(SSGI_DIFFUSE_PASS) && !defined(GODRAYS_PASS) && !defined(CONTACT_SHADOW_PASS) && !defined(PLANAR_REFLECTION_PASS) && !defined(GPU_SCENE_RASTER_HIZCULL_PASS)
 // ENGINE_HAS_PC: this translation unit sees the scene-wide `pc` push

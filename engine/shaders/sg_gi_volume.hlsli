@@ -803,6 +803,15 @@ void SgGiVolumeComposite(FrameUniforms frame, uint volMask, float3 pos,
 
 static const uint kGiOctRes = 8; // octahedral map resolution (tile size)
 
+// Compact rough-specular atlas constants (MUST match kGiSpecRoughness /
+// kGiSpecRoughMin / kGiSpecRoughMax in Engine/GI/cubemap_volume.h). The
+// atlas stores the SG specular response at these roughness samples, stacked
+// vertically (slice s at row offset s * atlasRows * kGiOctRes).
+static const uint kGiSpecRoughLevels = 4;
+static const float kGiSpecRoughness[4] = {0.45, 0.65, 0.85, 1.0};
+static const float kGiSpecRoughMin = 0.45;
+static const float kGiSpecRoughMax = 1.0;
+
 float2 SgGiOctEncode(float3 n) {
     n /= (abs(n.x) + abs(n.y) + abs(n.z));
     float2 e = (n.z >= 0.0) ? n.xy
@@ -894,6 +903,127 @@ void SgGiVolumeCompositeOctahedral(FrameUniforms frame, uint volMask, float3 pos
             break; // deep inside: lower priorities + base contribute 0
     }
     // (no B-set blend here — the prototype is diffuse-only over the A set)
+}
+
+// ***************************************************************************
+// THE COMPACT ROUGH-SPECULAR PATH: the SG specular response pre-evaluated
+// per probe over the octahedral reflection directions at kGiSpecRoughLevels
+// roughness samples (PackGpuOctahedralSpecular). The runtime point-fetches
+// the two bracketing roughness slices per surviving corner at the reflection
+// vector R and linearly interpolates, retaining the eight-corner visibility
+// weights. Replaces the 9-lobe SG amplitude reconstruction for the rough
+// crossover: the specular is linear in the amplitudes at fixed (R, rough),
+// so blending the baked per-volume responses equals the SG path's blend-then-
+// evaluate, to within the directional/roughness discretization.
+// ***************************************************************************
+
+// One volume's compact specular response at R (world-space reflection
+// vector), visibility-weighted over the 8 surrounding probes.
+void SgGiVolumeSampleSpecular(FrameUniforms frame, uint vol, float3 pos, float3 R, float roughness,
+    out float3 specular)
+{
+    const GiVolumeGpu v = frame.giVolumes.Get().volumes[vol];
+    const float3 uvw = saturate(pos * v.uvwScale.xyz + v.uvwBias.xyz);
+    const uint specBaseSlot = vol * 4u; // 4 roughness slices per volume
+    const uint packed = frame.giVolumeSpecDims[vol];
+    const uint atlasCols = packed & 0xffffu;
+    const uint atlasRows = packed >> 16u;
+
+    const float3 dims = float3(v.uvwScale.w, v.uvwBias.w, v.aabbMax.w);
+    const float3 rel = uvw * dims;
+    const int3 b = clamp(int3(floor(rel - 0.5)), 0, int3(dims) - 2);
+    const float3 f = saturate(rel - 0.5 - float3(b));
+
+    const uint visSlotA = frame.giVolumeVisLayers[vol * 2u];
+    const uint visSlotB = frame.giVolumeVisLayers[vol * 2u + 1u];
+    const bool weighted = (visSlotB != 0xffffffffu) &&
+        (volumeTextures[visSlotB].Load(int4(b, 0)).z < 0.5);
+
+    const int2 octTexel = min(int2(SgGiOctEncode(R) * float(kGiOctRes)),
+                              int2(int(kGiOctRes) - 1, int(kGiOctRes) - 1));
+
+    // Roughness -> bracketing slices (4 samples; small branch chain). The
+    // roughness samples are EXPLICIT constants (not a dynamic-indexed array,
+    // which DXC can promote to an unbound constant buffer).
+    const float r = clamp(roughness, 0.45, 1.0);
+    uint lo = 0u;
+    float loR = 0.45;
+    float hiR = 0.65;
+    if (r > 0.65)
+    {
+        lo = 1u;
+        loR = 0.65;
+        hiR = 0.85;
+    }
+    if (r > 0.85)
+    {
+        lo = 2u;
+        loR = 0.85;
+        hiR = 1.0;
+    }
+    const uint hi = lo + 1u;
+    const float frac = (r - loR) / (hiR - loR + 1e-6);
+
+    float3 acc = float3(0.0, 0.0, 0.0);
+    float wSum = 0.0;
+    [unroll]
+    for (uint c = 0; c < 8; ++c)
+    {
+        const int3 cc = int3(b) + int3(c & 1 ? 1 : 0, c & 2 ? 1 : 0, c & 4 ? 1 : 0);
+        float wv = 1.0;
+        if (weighted)
+        {
+            const float3 dRel = rel - (float3(cc) + 0.5);
+            const float4 visA = volumeTextures[visSlotA].Load(int4(cc, 0));
+            const float4 visB = volumeTextures[visSlotB].Load(int4(cc, 0));
+            wv = SgGiVolumeVisFactor(dRel, visA, visB);
+        }
+        const float3 t3 = float3(c & 1 ? f.x : 1.0 - f.x,
+            c & 2 ? f.y : 1.0 - f.y, c & 4 ? f.z : 1.0 - f.z);
+        const float wt = wv * (t3.x * t3.y * t3.z);
+        if (wt <= 0.0)
+            continue;
+        const uint probeIdx = (uint(cc.z) * uint(dims.y) + uint(cc.y)) * uint(dims.x) + uint(cc.x);
+        const int2 tile = int2(probeIdx % atlasCols, probeIdx / atlasCols);
+        const int2 texel = int2(tile.x * int(kGiOctRes) + octTexel.x,
+                                tile.y * int(kGiOctRes) + octTexel.y);
+        const float3 sLo = textures[frame.giVolumeSpecLayers[specBaseSlot + lo]].Load(int3(texel, 0)).rgb;
+        const float3 sHi = textures[frame.giVolumeSpecLayers[specBaseSlot + hi]].Load(int3(texel, 0)).rgb;
+        const float3 rgb = lerp(sLo, sHi, frac);
+        acc += rgb * wt;
+        wSum += wt;
+    }
+    specular = (wSum > 1e-4) ? (acc / wSum) : float3(0.0, 0.0, 0.0);
+}
+
+// Multi-volume composite of the compact specular response (the SG path's
+// SgGiVolumeComposite twin over the baked atlas).
+void SgGiVolumeCompositeSpecular(FrameUniforms frame, uint volMask, float3 pos, float3 R, float roughness,
+    out float3 specular)
+{
+    specular = float3(0.0, 0.0, 0.0);
+    if (frame.giVolumesEnabled == 0u)
+        return;
+    const uint volCount = min(frame.giVolumeCount, (uint)SG_GI_VOLUME_MAX);
+    float transmission = 1.0;
+    [loop]
+    for (int v = int(volCount) - 1; v >= 0; --v) // HIGH priority first
+    {
+        if ((volMask & (1u << uint(v))) == 0u)
+            continue;
+        const GiVolumeGpu vol = frame.giVolumes.Get().volumes[uint(v)];
+        const float w = SgGiVolumeWeight(frame, vol, pos);
+        [branch]
+        if (w <= 0.0)
+            continue;
+        float3 vSpec;
+        SgGiVolumeSampleSpecular(frame, uint(v), pos, R, roughness, vSpec);
+        const float c = transmission * w;
+        specular += vSpec * c;
+        transmission *= 1.0 - w;
+        if (transmission <= 0.0)
+            break;
+    }
 }
 
 // ***************************************************************************

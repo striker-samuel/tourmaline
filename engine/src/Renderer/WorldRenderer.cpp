@@ -179,10 +179,11 @@ smvk::ShaderProgram& WorldRenderer::MainLitProgramFor(uint32_t materialId) {
             //   envVis  fixed-envVis (optional)
             //   export  irradiance / constant / envSpec / diag (optional)
             //   stats   weighted-path telemetry (standalone primary)
-            const uint32_t pathSpec = m_giOctahedralArmed   ? tour::kSpecGiOctahedral
-                                      : m_giHybridArmed     ? tour::kSpecGiHybrid
-                                      : m_giCoeffConstArmed ? tour::kSpecGiCoeffConst
-                                                            : 0u;
+            const uint32_t pathSpec = m_giOctahedralArmed    ? tour::kSpecGiOctahedral
+                                      : m_giHybridArmed      ? tour::kSpecGiHybrid
+                                      : m_giCompactSpecArmed ? tour::kSpecGiCompactSpecular
+                                      : m_giCoeffConstArmed  ? tour::kSpecGiCoeffConst
+                                                             : 0u;
             // fixed-envVis is a RUNTIME flag bit (FrameUniforms::flags),
             // not a specialization constant — the spec-constant form made
             // the octahedral specular export non-deterministic. So it no
@@ -1445,6 +1446,14 @@ bool WorldRenderer::onAttach() {
     if (const char* hybridEnv = std::getenv("TOURMALINE_GI_HYBRID")) {
         if (std::atoi(hybridEnv) == 1)
             m_giHybridArmed = true;
+    }
+    // Compact rough-specular path: octahedral diffuse + the baked SG
+    // specular response sampled from the compact atlas (PackGpuOctahedral-
+    // Specular). Selects the giCompactSpecCompile=1 lit twin.
+    //   TOURMALINE_GI_COMPACT_SPECULAR=1
+    if (const char* compactEnv = std::getenv("TOURMALINE_GI_COMPACT_SPECULAR")) {
+        if (std::atoi(compactEnv) == 1)
+            m_giCompactSpecArmed = true;
     }
     // Fixed-envVis diagnostic: force SpecularOcclusionFromGI to 1 in the GI
     // volume paths, isolating the occlusion coupling from the specular
@@ -4025,6 +4034,40 @@ bool WorldRenderer::BuildGiVolumeSet(std::vector<GiVolumeResources>& built,
                 cv.octaDimsPacked = atlasCols | (atlasRows << 16);
             }
         }
+        // Compact rough-specular atlas (PackGpuOctahedralSpecular): the SG
+        // specular response baked over octahedral reflection directions at
+        // kGiSpecRoughLevels roughness samples. SOFT failure like the
+        // diffuse atlas: a missing atlas keeps the SG specular crossover
+        // (the slot stays UINT32_MAX).
+        {
+            std::vector<uint16_t> specAtlas;
+            uint32_t specCols = 0, specRows = 0;
+            cv.volume.PackGpuOctahedralSpecular(specAtlas, specCols, specRows);
+            const uint32_t specW = specCols * tour::gi::kGiOctRes;
+            const uint32_t layerH = specRows * tour::gi::kGiOctRes;
+            const size_t layerHalfs = size_t(specW) * layerH * 4;
+            // One 2D texture per roughness slice: the stacked 4-slice atlas
+            // exceeds the 2D texture dimension limit for dense volumes
+            // (bistro is 4.4M voxels -> a single 32768 x 34528 image).
+            for (uint32_t s = 0; s < tour::gi::kGiSpecRoughLevels; ++s) {
+                smvk::ImageCreateInfo sci{};
+                sci.type = smvk::ImageType::Image2D;
+                sci.extent = {specW, layerH, 1};
+                sci.format = smvk::Format::RGBA16_Float;
+                sci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::TransferDst;
+                sci.mipLevels = 1;
+                sci.arrayLayers = 1;
+                sci.name = "gi volume specular atlas";
+                auto specTex = m_context->CreateTexture(sci, specAtlas.data() + s * layerHalfs);
+                if (specTex.empty()) {
+                    std::cerr << "[GIV] specular atlas layer " << s << " creation failed\n";
+                    continue;
+                }
+                cv.specLayers[s] = std::move(specTex);
+                cv.specSlots[s] = m_context->GetTextureBindlessIndex(cv.specLayers[s]);
+            }
+            cv.specDimsPacked = specCols | (specRows << 16);
+        }
         // Visibility twins (PackGpuVisLayers - the through-wall
         // rejection): 2 RGBA8_UNORM 3D textures (the 6 axis
         // distances + the clean-cell flag). SOFT failure: a failed
@@ -5136,6 +5179,10 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
             // Octahedral diffuse atlas (UINT32_MAX = absent -> SG path).
             data.giVolumeOctaLayers[v] = m_giVolumes[v].octaSlot;
             data.giVolumeOctaDims[v] = m_giVolumes[v].octaDimsPacked;
+            // Compact rough-specular atlas (4 roughness slices per volume).
+            for (uint32_t s = 0; s < 4; ++s)
+                data.giVolumeSpecLayers[v * 4u + s] = m_giVolumes[v].specSlots[s];
+            data.giVolumeSpecDims[v] = m_giVolumes[v].specDimsPacked;
         }
         data.giVolumeCount = n;
         data.giVolumesEnabled = ProbesWanted() ? 1u : 0u;
@@ -5148,6 +5195,8 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
         for (uint32_t& slot : data.giVolumeMeanLayers)
             slot = UINT32_MAX;
         for (uint32_t& slot : data.giVolumeOctaLayers)
+            slot = UINT32_MAX;
+        for (uint32_t& slot : data.giVolumeSpecLayers)
             slot = UINT32_MAX;
         data.giVolumeCount = 0u;
         data.giVolumesEnabled = 0u;

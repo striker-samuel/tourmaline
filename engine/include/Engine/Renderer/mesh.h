@@ -235,6 +235,9 @@ inline constexpr uint32_t kSpecGiExportRawEnvSpec = 31;
 // Initial-specular export (TOURMALINE_GI_EXPORT_INITSPEC=1). Must match
 // common.hlsli SPEC_GI_EXPORT_INITSPEC.
 inline constexpr uint32_t kSpecGiExportInitSpec = 32;
+// Compact rough-specular path (TOURMALINE_GI_COMPACT_SPECULAR=1). Must match
+// common.hlsli SPEC_GI_COMPACT_SPECULAR.
+inline constexpr uint32_t kSpecGiCompactSpecular = 33;
 
 struct MaterialCreateInfo {
     // Primary PBR textures – baseColorTexture == diffuse for backward compat.

@@ -1180,6 +1180,11 @@ struct FrameUniforms {
     // = absent (the shader falls back to the SG path).
     uint32_t giVolumeOctaLayers[8] = {}; // 3156 atlas slots (textures[])
     uint32_t giVolumeOctaDims[8] = {};   // 3188 packed cols | rows << 16
+    // Compact rough-specular atlas (PackGpuOctahedralSpecular): same slot +
+    // packed-dims shape as the diffuse octahedral atlas, 4 roughness slices
+    // stacked vertically. UINT32_MAX slot = absent (SG specular crossover).
+    uint32_t giVolumeSpecLayers[32] = {}; // 3220 atlas slots (4 rough layers x 8 vols)
+    uint32_t giVolumeSpecDims[8] = {};    // 3348 packed cols | rows << 16
 };
 // FrameUniforms layout insurance: the HLSL mirror (common.hlsli) reads
 // every field by absolute offset — any drift desyncs the GPU reads.
@@ -1241,6 +1246,10 @@ static_assert(offsetof(FrameUniforms, giVolumeOctaLayers) == 3156,
               "giVolumeOctaLayers offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, giVolumeOctaDims) == 3188,
               "giVolumeOctaDims offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giVolumeSpecLayers) == 3220,
+              "giVolumeSpecLayers offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giVolumeSpecDims) == 3348,
+              "giVolumeSpecDims offset: HLSL mirror");
 // Env-zone block (the append-only tail): the per-frame EnvZoneGpu slice
 // BDA + count + reserved words, pinned like every other HLSL-mirrored
 // member. The reserved array keeps the old 208-byte block size so the
@@ -1289,10 +1298,11 @@ static_assert(offsetof(FrameUniforms, fogShadowEnabled) == 2148,
               "fogShadowEnabled offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, contactShadowIndex) == 2152,
               "contactShadowIndex offset: HLSL mirror (the old tail pad's first word)");
-static_assert(sizeof(FrameUniforms) == 3232,
+static_assert(sizeof(FrameUniforms) == 3392,
               "FrameUniforms size: HLSL mirror (the GI-blend tail grew the struct 2160 -> 2500; "
               "the §1.1 layer tables append 2500 -> 3140, the 64-bit telemetry BDA 8-aligns to "
-              "3144 -> 3152, the octahedral atlas tail appends 3156 -> 3232; every pre-blend "
+              "3144 -> 3152, the octahedral atlas tail appends 3156 -> 3220, the compact "
+              "specular atlas appends 3220 -> 3380 (+12 pad to 16-align); every pre-blend "
               "offset above is unchanged)");
 
 // FramePSHot — tiny per-frame data frequently accessed by the pixel shader.
@@ -4072,6 +4082,15 @@ class WorldRenderer : public IRenderer {
         smvk::Holder<smvk::TextureHandle> octaTex;
         uint32_t octaSlot = UINT32_MAX;
         uint32_t octaDimsPacked = 0; // atlasCols | atlasRows << 16
+        // Compact rough-specular atlas (PackGpuOctahedralSpecular): 4
+        // RGBA16F 2D textures (one per roughness slice) in textures[], each
+        // (atlasCols x kGiOctRes) x (atlasRows x kGiOctRes). The stacked
+        // 4-slice atlas exceeds the 2D texture dimension limit for dense
+        // volumes (bistro is 4.4M voxels), so the slices are separate
+        // textures. UINT32_MAX slot = absent (SG specular crossover).
+        smvk::Holder<smvk::TextureHandle> specLayers[4];
+        uint32_t specSlots[4] = {UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
+        uint32_t specDimsPacked = 0; // atlasCols | atlasRows << 16
         // The probe-sphere instance table (Rendergraph/giprobe.h - the
         // ImGui probe-dot overlay's 3D successor): the strided static
         // lattice subset (position + integer grid coords), built once by
@@ -4120,6 +4139,10 @@ class WorldRenderer : public IRenderer {
     bool m_giHybridArmed = false;
     smvk::ShaderProgram m_hybridProgramGi[4];
     smvk::ShaderProgram m_hybridProgramGiStd[4];
+    // Compact rough-specular twins (giCompactSpecCompile=1): octahedral
+    // diffuse + the baked SG specular response sampled from the compact
+    // atlas. Forged + selected when TOURMALINE_GI_COMPACT_SPECULAR=1.
+    bool m_giCompactSpecArmed = false;
     // Fixed-envVis diagnostic: a runtime FrameUniforms flag bit
     // (kFrameFlagGiFixedEnvVis), NOT a spec constant (the spec-constant
     // form was non-deterministic). m_giFixedEnvVisArmed only gates the
