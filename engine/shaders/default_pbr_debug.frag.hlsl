@@ -50,6 +50,7 @@ struct PSIn
     [[vk::location(2)]] float3 worldPos : TEXCOORD1;
     [[vk::location(3)]] float3 normal : TEXCOORD2;
     [[vk::location(4)]] float4 tangent : TANGENT;
+    [[vk::location(7)]] nointerpolation uint meshMaterial : TEXCOORD5;
     // Dither-on-closeup flag (flat, per-draw; see common.hlsli
     // CloseupDitherKeep + default_unlit's note): EXPLICIT locations on
     // every input (DXC rejects partial explicit assignment; a decoration
@@ -67,13 +68,13 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 {
     PSOut OUT;
 
-    MaterialValues mat = pc.bMats.Get().mats[pc.materialId];
+    MaterialValues mat = pc.bMats.Get().mats[IN.meshMaterial];
 
     // The one shared evaluation site: raw + renderer-effective values +
     // validation bits, identical math to the lit body (layered blends,
     // the <0.004 skip, glTF G/B packing).
     PSInBridge bridge = { IN.color, IN.uv };
-    EvaluatedPbrMaterial e = EvaluatePbrMaterial(pc.materialId, bridge);
+    EvaluatedPbrMaterial e = EvaluatePbrMaterial(IN.meshMaterial, bridge);
 
     // Enum-like state from layer 0 (layered convention: factors blend,
     // state does not).

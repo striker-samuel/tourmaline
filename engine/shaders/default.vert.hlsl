@@ -135,6 +135,12 @@ struct VSOut
     // vert) carries the real per-draw chunk. Static/dynamic GI
     // separation keys off this + FrameUniforms.lmEnabled.
     [[vk::location(6)]] nointerpolation uint lmChunk : TEXCOORD4;
+    // Flat per-draw material id (the direct twin of the filtered legs'
+    // location-7 meshMaterial — the GPU scene raster VS and the task/mesh
+    // shader both emit it). The debug FS family reads this channel so a
+    // single compile serves BOTH the direct and filtered legs (the direct
+    // legs have no draws ring, so the push-constant materialId rides here).
+    [[vk::location(7)]] nointerpolation uint meshMaterial : TEXCOORD5;
     // Dither-on-closeup flag (flat; Scene::ditherCloseup): the direct
     // legs' per-draw pc word (byte 240) forwarded so the FS family reads
     // one channel on both paths (the filtered legs deliver the Draw
@@ -199,6 +205,7 @@ VSOut mainVS(VSIn IN)
     // the opt-in static lightmap variant alone evaluates this path.
     OUT.lightmapUv = float2(0.0f, 0.0f);
     OUT.lmChunk = 0xFFFFFFFFu;
+    OUT.meshMaterial = pcDB.materialId;
 #if defined(DIRECT_LIGHTMAP_PASS) && !defined(TOURMALINE_DXIL)
     if (pcDB.skinned == 0u && pcDB.hasXforms != 0u
         && pcDB.lmMagic == DIRECT_LM_PULL_MAGIC

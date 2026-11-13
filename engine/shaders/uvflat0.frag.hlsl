@@ -9,12 +9,13 @@
 
 struct PSIn
 {
-    float4 color : COLOR0;
-    float2 uv : TEXCOORD0;
-    float3 worldPos : TEXCOORD1;
-    float3 normal : TEXCOORD2;
-    float4 tangent : TANGENT;
-    float2 lightmapUv : TEXCOORD3;
+    [[vk::location(0)]] float4 color : COLOR0;
+    [[vk::location(1)]] float2 uv : TEXCOORD0;
+    [[vk::location(2)]] float3 worldPos : TEXCOORD1;
+    [[vk::location(3)]] float3 normal : TEXCOORD2;
+    [[vk::location(4)]] float4 tangent : TANGENT;
+    [[vk::location(5)]] float2 lightmapUv : TEXCOORD3;
+    [[vk::location(7)]] nointerpolation uint meshMaterial : TEXCOORD5;
     bool isFrontFace : SV_IsFrontFace;
 };
 
@@ -27,7 +28,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 {
     PSOut OUT;
 
-    MaterialValues mat = pc.bMats.Get().mats[pc.materialId];
+    MaterialValues mat = pc.bMats.Get().mats[IN.meshMaterial];
 
     float3 c = mat.diffuse.rgb;
     float alpha = mat.diffuse.a;

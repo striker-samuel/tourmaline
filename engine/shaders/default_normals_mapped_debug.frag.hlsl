@@ -29,7 +29,7 @@
 // readouts stay unfogged by discipline).
 //
 // Unlike the geometric sibling this FS READS the material table
-// (pc.bMats + pc.materialId, the gbuffer.frag pattern) + the uv +
+// (pc.bMats + IN.meshMaterial, the gbuffer.frag pattern) + the uv +
 // tangent VS outputs.
 //
 // MASK cutout + closeup dither mirror default_unlit.frag.hlsl (and the
@@ -44,6 +44,7 @@ struct PSIn
     [[vk::location(2)]] float3 worldPos : TEXCOORD1;
     [[vk::location(3)]] float3 normal : TEXCOORD2;
     [[vk::location(4)]] float4 tangent : TANGENT;
+    [[vk::location(7)]] nointerpolation uint meshMaterial : TEXCOORD5;
     // ALL inputs carry EXPLICIT locations (DXC rejects partial explicit
     // assignment; see default_unlit.frag.hlsl's note). The locations the
     // FS does not consume (lightmapUv 5 / lmChunk 6) stay undeclared -
@@ -61,7 +62,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 {
     PSOut OUT;
 
-    MaterialValues mat = pc.bMats.Get().mats[pc.materialId];
+    MaterialValues mat = pc.bMats.Get().mats[IN.meshMaterial];
     const bool layered = (mat.layerMaterials.w > 1);
     int normalIdx = mat.tex.z;
     float normalScale = mat.params2.y;

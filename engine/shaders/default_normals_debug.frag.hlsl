@@ -30,6 +30,7 @@ struct PSIn
     [[vk::location(2)]] float3 worldPos : TEXCOORD1;
     [[vk::location(3)]] float3 normal : TEXCOORD2;
     [[vk::location(4)]] float4 tangent : TANGENT;
+    [[vk::location(7)]] nointerpolation uint meshMaterial : TEXCOORD5;
     // ALL inputs carry EXPLICIT locations (DXC rejects partial explicit
     // assignment; see default_unlit.frag.hlsl's note). The locations the
     // FS does not consume (lightmapUv 5 / lmChunk 6) stay undeclared -
@@ -47,7 +48,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 {
     PSOut OUT;
 
-    MaterialValues mat = pc.bMats.Get().mats[pc.materialId];
+    MaterialValues mat = pc.bMats.Get().mats[IN.meshMaterial];
 
     // Match the lit path's closeup dissolve (default_unlit's block,
     // verbatim): a flagged subtree must screen-door away here too or it

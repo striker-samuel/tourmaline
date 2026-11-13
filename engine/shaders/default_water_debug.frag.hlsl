@@ -41,6 +41,7 @@ struct PSIn
     [[vk::location(2)]] float3 worldPos : TEXCOORD1;
     [[vk::location(3)]] float3 normal : TEXCOORD2;
     [[vk::location(4)]] float4 tangent : TANGENT;
+    [[vk::location(7)]] nointerpolation uint meshMaterial : TEXCOORD5;
     [[vk::location(8)]] nointerpolation uint ditherCloseup : TEXCOORD7;
     bool isFrontFace : SV_IsFrontFace;
 };
@@ -117,7 +118,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 {
     PSOut OUT;
 
-    MaterialValues mat = pc.bMats.Get().mats[pc.materialId];
+    MaterialValues mat = pc.bMats.Get().mats[IN.meshMaterial];
 
     FrameUniforms frame = pc.frameUniforms.Get();
     FramePSHot hot = frame.frameHot.Get();
@@ -128,7 +129,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // flags a water material authored with garbage inputs (the Health
     // view reads the SAME evaluation).
     PSInBridge bridge = { IN.color, IN.uv };
-    EvaluatedPbrMaterial e = EvaluatePbrMaterial(pc.materialId, bridge);
+    EvaluatedPbrMaterial e = EvaluatePbrMaterial(IN.meshMaterial, bridge);
 
     const float alphaCutoff = mat.params.x;
     const float shadingModelF = mat.params.w;
