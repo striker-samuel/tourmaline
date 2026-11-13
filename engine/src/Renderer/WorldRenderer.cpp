@@ -17097,9 +17097,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     if (!meshDesc)
                         return;
                     // Shader-LOD overlay: when the subsystem is on, instances
-                    // with non-default far shading (vertex-lit substitution
-                    // or quality specialization) report WHITE instead of
-                    // their LOD palette color, so shading downgrades are
+                    // with non-default far shading (quality specialization;
+                    // vertex-lit substitution is killed) report WHITE instead
+                    // of their LOD palette color, so shading downgrades are
                     // visible next to geometry ones.
                     static const float kLodVertexLit[3] = {1.0f, 1.0f, 1.0f};
                     const bool vlitLevel =
@@ -17124,9 +17124,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // (The flat debug views skip this leg: they drew
             // everything direct above, filter bypassed so culled
             // data stays visible.)
-            // Shader LODs: the vertex-lit program is tracked alongside the
+            // Shader LODs: the far-shading program is tracked alongside the
             // material because the same material can shade lit (near level)
-            // and vertex-lit (farthest level) in one material-sorted walk.
+            // and quality-specialized (farthest level) in one material-sorted
+            // walk (vertex-lit substitution is killed, so farSpec is the only
+            // non-default far program).
             const bool shaderLodOn = ShaderLodActive();
             uint32_t boundMaterial = UINT32_MAX;
             smvk::ShaderProgram* boundProgram = nullptr;
@@ -17385,11 +17387,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     }
                     continue;
                 }
-                // Shader LODs: farthest-level transparents shade vertex-lit
-                // (or the quality-specialized lit program when the
-                // material opts out) with a full push (the per-material
-                // delta push below feeds the lit program only). Same
-                // coarsest geometry.
+                // Shader LODs: farthest-level transparents shade the
+                // quality-specialized lit program (vertex-lit substitution
+                // is killed) with a full push (the per-material delta push
+                // below feeds the lit program only). Same coarsest geometry.
                 const smvk::World::FarShading farShadingTrans =
                     transShaderLodOn ? FarShadingForNode(d.node, d.meshId, d.materialId)
                                      : smvk::World::FarShading{};
