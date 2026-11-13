@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "common.hlsli"
+#include "material_coverage.hlsli"
 
 // World-space normals debug view (combo/env only - no free F-key; see
 // ViewMode::Normals): the interpolated GEOMETRIC normal as false color,
@@ -63,24 +64,25 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
             discard;
     }
 
-    // Single-layer MASK material (matches lit/unlit): discard below the
-    // alpha cutoff so masked cutouts keep their authored silhouette
-    // instead of drawing transparent texels as false color.
-    if (mat.params.w == 2.0f)
+    // Masked cutout + dithered Blend (matches lit/unlit): the ONE keep
+    // test, so masked cutouts keep their authored silhouette instead of
+    // drawing transparent texels as false color.
+    const float alphaCutoff = mat.params.x;
+    const float shadingModelF = mat.params.w;
+    const float alphaModeF = mat.params2.w;
+    const bool ditheredTransp = (pc.pad_pc == 0);
+
+    float texelAlpha = 1.0f;
+    const int baseColorIdx = mat.tex.x;
+    if (baseColorIdx >= 0)
     {
-        float alpha = mat.diffuse.a * IN.color.a;
-        int baseColorIdx = mat.tex.x;
-
-        if (baseColorIdx >= 0)
-        {
-            alpha *= textures[
-                NonUniformResourceIndex((uint)baseColorIdx)]
-                .Sample(samplers[0], IN.uv).a;
-        }
-
-        if (alpha < mat.params.x)
-            discard;
+        texelAlpha = textures[NonUniformResourceIndex((uint)baseColorIdx)]
+                         .Sample(samplers[0], IN.uv).a;
     }
+    const float baseAlpha = TM_CoverageAlpha(mat.diffuse.a, texelAlpha, IN.color.a);
+    if (!TM_CoverageKeep(baseAlpha, alphaCutoff, shadingModelF, alphaModeF,
+                         ditheredTransp, clipPos.xy))
+        discard;
 
     // Interpolated world-space geometric normal -> false color. The
     // pipeline is always back-face cull, so isFrontFace is constant true

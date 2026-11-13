@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "common.hlsli"
+#include "material_coverage.hlsli"
 #include "material_evaluation.hlsli"
 
 // PBR Material Validation Debugger (the Alan Wake 2 environment-art
@@ -93,10 +94,9 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         if (!CloseupDitherKeep(IN.worldPos, hotEarly.cameraPos, clipPos.xy))
             discard;
     }
-    if (shadingModelF == 2.0f && e.alpha < alphaCutoff)
-        discard; // Masked cutout (matches lit)
-    if (isBlendMat && ditheredTransp && !DitherKeep(e.alpha, clipPos.xy))
-        discard; // Dithered transparency for Blend (matches lit)
+    if (!TM_CoverageKeep(e.alpha, alphaCutoff, shadingModelF, alphaModeF,
+                         ditheredTransp, clipPos.xy))
+        discard; // Masked cutout + dithered Blend (matches lit)
 
     const bool invalid = PbrHasError(e.validationFlags);
     const bool warning = PbrHasWarning(e.validationFlags);

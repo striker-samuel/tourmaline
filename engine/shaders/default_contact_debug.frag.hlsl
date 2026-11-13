@@ -3,6 +3,7 @@
 
 #include "light.hlsli"
 #include "common.hlsli"
+#include "material_coverage.hlsli"
 
 // Must be defined after common.hlsli symbols
 #include "shadows.hlsli"
@@ -86,12 +87,11 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         Texture2D baseTex = textures[NonUniformResourceIndex(slot)];
         baseAlpha *= baseTex.Sample(samplers[0], IN.uv).a;
     }
-    if (shadingModelF == 2.0f && baseAlpha < alphaCutoff)
-        discard;
-    float alphaModeF = mat.params2.w;
+    const float alphaModeF = mat.params2.w;
     const bool ditheredTransp = (pc.pad_pc == 0);
     const bool isBlendMat = (alphaModeF == 2.0f);
-    if (isBlendMat && ditheredTransp && !DitherKeep(baseAlpha, clipPos.xy))
+    if (!TM_CoverageKeep(baseAlpha, alphaCutoff, shadingModelF, alphaModeF,
+                         ditheredTransp, clipPos.xy))
         discard;
 
     FrameUniforms frame = pc.frameUniforms.Get();

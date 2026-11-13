@@ -6,6 +6,7 @@
 // the diffuse layout look like over its texture" view. Alpha cutout +
 // dithered Blend discard match the lit path so shells agree.
 #include "common.hlsli"
+#include "material_coverage.hlsli"
 
 struct PSIn
 {
@@ -42,16 +43,13 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         alpha *= t.a;
     }
 
-    // Alpha cutout so holes match the lit view.
+    // Alpha cutout + dithered Blend (matches lit): the ONE keep test.
     const float alphaCutoff = mat.params.x;
     const float shadingModelF = mat.params.w;
-    if (shadingModelF == 2.0f && alpha < alphaCutoff)
-        discard;
-
     const float alphaModeF = mat.params2.w;
     const bool ditheredTransp = (pc.pad_pc == 0);
-    const bool isBlendMat = (alphaModeF == 2.0f);
-    if (isBlendMat && ditheredTransp && !DitherKeep(alpha, clipPos.xy))
+    if (!TM_CoverageKeep(alpha, alphaCutoff, shadingModelF, alphaModeF,
+                         ditheredTransp, clipPos.xy))
         discard;
 
     OUT.outColor = float4(SanitizeHdr(c), 1.0);

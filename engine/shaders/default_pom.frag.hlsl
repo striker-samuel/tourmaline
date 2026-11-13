@@ -3,6 +3,7 @@
 
 #include "light.hlsli"
 #include "common.hlsli"
+#include "material_coverage.hlsli"
 #include "environment.hlsli"
 
 // Must be defined after common.hlsli symbols
@@ -279,14 +280,12 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 
     // Alpha cutout + dithered Blend discard at the DISPLACED uv: holes
     // carve with the surface (differs from F1 by design, see header).
-    float shadingModelF = mat.params.w;
-    if (shadingModelF == 2.0f && baseAlpha < alphaCutoff)
-        discard;
-
-    float alphaModeF = mat.params2.w;
+    const float shadingModelF = mat.params.w;
+    const float alphaModeF = mat.params2.w;
     const bool ditheredTransp = (pc.pad_pc == 0);
     const bool isBlendMat = (alphaModeF == 2.0f);
-    if (isBlendMat && ditheredTransp && !DitherKeep(baseAlpha, clipPos.xy))
+    if (!TM_CoverageKeep(baseAlpha, alphaCutoff, shadingModelF, alphaModeF,
+                         ditheredTransp, clipPos.xy))
         discard;
 
     // ---------------------------------------------------------------

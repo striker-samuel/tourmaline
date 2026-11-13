@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include "common.hlsli"
+#include "material_coverage.hlsli"
 #include "environment.hlsli"
 
 // SSR receiver-mask debug view (UI combo + TOURMALINE_DEBUGVIEW=ssrmask;
@@ -76,15 +77,12 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         baseAlpha *= baseTex.Sample(samplers[0], IN.uv).a;
     }
 
-    // Masked cutout (matches lit).
-    if (shadingModelF == 2.0f && baseAlpha < alphaCutoff)
-        discard;
-
-    // Dithered transparency for Blend (matches lit).
-    float alphaModeF = mat.params2.w;
+    // Masked cutout + dithered Blend (matches lit): the ONE keep test.
+    const float alphaModeF = mat.params2.w;
     const bool ditheredTransp = (pc.pad_pc == 0);
     const bool isBlendMat = (alphaModeF == 2.0f);
-    if (isBlendMat && ditheredTransp && !DitherKeep(baseAlpha, clipPos.xy))
+    if (!TM_CoverageKeep(baseAlpha, alphaCutoff, shadingModelF, alphaModeF,
+                         ditheredTransp, clipPos.xy))
         discard;
 
     // Receiver roughness/metal: the G-buffer writer's exact combine
