@@ -163,6 +163,14 @@ inline constexpr uint32_t kGiVolumeMaxDim = 256; // per-axis grid cap (sgrv pari
 // Octahedral diffuse-irradiance resolution per probe (the atlas tile is
 // kGiOctRes x kGiOctRes; power-of-2 so the atlas tiles align).
 inline constexpr uint32_t kGiOctRes = 8;
+// Compact rough-specular atlas (the SgSpecular response baked per probe):
+// kGiSpecRoughLevels octahedral slices per probe, one directional map at
+// each roughness sample. The runtime linearly interpolates between the two
+// bracketing slices and bilinearly between octahedral texels.
+inline constexpr uint32_t kGiSpecRoughLevels = 4;
+inline constexpr float kGiSpecRoughness[kGiSpecRoughLevels] = {0.45f, 0.65f, 0.85f, 1.0f};
+inline constexpr float kGiSpecRoughMin = 0.45f; // below this the cubemap path is exact
+inline constexpr float kGiSpecRoughMax = 1.0f;
 
 class GiVolume {
   public:
@@ -268,6 +276,20 @@ class GiVolume {
     void PackGpuOctahedral(std::vector<uint16_t>& out,
                            uint32_t& atlasCols,
                            uint32_t& atlasRows) const;
+    // Compact rough-specular atlas: the SG specular response
+    // SgSpecular(coeffs, r, roughness) pre-evaluated per probe over the
+    // octahedral reflection directions, at kGiSpecRoughLevels roughness
+    // samples. Each probe occupies a kGiOctRes x kGiOctRes tile per
+    // roughness slice; the slices are stacked vertically (slice s at row
+    // offset s * atlasRows * kGiOctRes), so the atlas is (atlasCols *
+    // kGiOctRes) x (kGiSpecRoughLevels * atlasRows * kGiOctRes) RGBA16F.
+    // The runtime bilinearly samples directions and linearly interpolates
+    // between the two bracketing roughness slices. Memory is
+    // kGiSpecRoughLevels * kGiOctRes^2 halfs per probe (the diagnostic
+    // shape, not a production-compressed one).
+    void PackGpuOctahedralSpecular(std::vector<uint16_t>& out,
+                                   uint32_t& atlasCols,
+                                   uint32_t& atlasRows) const;
     // Resident bytes/voxel: BC6H = 9 (9 lobes x 1 B) + 8 vis + 8 mean;
     // the legacy RGBA16F shape = 56 + 8 + 8.
     size_t GpuBytes() const;

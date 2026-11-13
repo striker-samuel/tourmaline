@@ -3255,6 +3255,90 @@ void TestGiOctahedralPack() {
     Check(texelsMatch, "gi.oct.texels-match-diffuse-eval");
 }
 
+// The compact rough-specular atlas (PackGpuOctahedralSpecular): per-probe
+// 8x8 octahedral maps of the SG specular response at kGiSpecRoughLevels
+// roughness samples, stacked vertically. Pins the bake against the exact
+// SgSpecular CPU twin (the runtime's reference), and the linearity in the
+// lobe amplitudes (the property that keeps spatial interpolation exact).
+void TestGiOctahedralSpecularPack() {
+    using namespace smvk::gi;
+    using tour::gi::kGiOctRes;
+    using tour::gi::kGiSpecRoughLevels;
+    using tour::gi::kGiSpecRoughness;
+    GiVolume vol;
+    vol.gridMin = glm::vec3(0.0f);
+    vol.spacing = 0.5f;
+    vol.dims[0] = vol.dims[1] = vol.dims[2] = 1; // one probe
+    vol.Resize();
+    for (uint32_t l = 0; l < kSgLobeCount; ++l)
+        vol.coeffs[l] = (l == 0) ? glm::vec3(1.0f, 0.5f, 0.25f) : glm::vec3(0.0f);
+
+    std::vector<uint16_t> atlas;
+    uint32_t cols = 0, rows = 0;
+    vol.PackGpuOctahedralSpecular(atlas, cols, rows);
+    Check(cols == 1 && rows == 1, "gi.spec.single-probe-tile-grid");
+    Check(atlas.size() == size_t(kGiOctRes) * kGiOctRes * 4 * kGiSpecRoughLevels,
+          "gi.spec.atlas-size");
+
+    const auto octDecode = [](const glm::vec2& oct01) -> glm::vec3 {
+        float x = oct01.x * 2.0f - 1.0f;
+        float y = oct01.y * 2.0f - 1.0f;
+        float z = 1.0f - std::abs(x) - std::abs(y);
+        if (z < 0.0f) {
+            const float tx = (1.0f - std::abs(y)) * (x >= 0.0f ? 1.0f : -1.0f);
+            const float ty = (1.0f - std::abs(x)) * (y >= 0.0f ? 1.0f : -1.0f);
+            x = tx;
+            y = ty;
+        }
+        const float l2 = x * x + y * y + z * z;
+        if (!(l2 > 1e-24f))
+            return glm::vec3(0.0f, 0.0f, 1.0f);
+        return glm::vec3(x, y, z) / std::sqrt(l2);
+    };
+    bool texelsMatch = true;
+    const uint32_t sliceH = kGiOctRes; // one probe: slice s starts at row s*kGiOctRes
+    for (uint32_t s = 0; s < kGiSpecRoughLevels && texelsMatch; ++s)
+        for (uint32_t oy = 0; oy < kGiOctRes && texelsMatch; ++oy)
+            for (uint32_t ox = 0; ox < kGiOctRes && texelsMatch; ++ox) {
+                const glm::vec2 oct01((float(ox) + 0.5f) / float(kGiOctRes),
+                                      (float(oy) + 0.5f) / float(kGiOctRes));
+                const glm::vec3 expected =
+                    SgSpecular(&vol.coeffs[0], octDecode(oct01), kGiSpecRoughness[s]);
+                const size_t py = (size_t(s) * sliceH + oy);
+                const size_t o = (py * kGiOctRes + ox) * 4;
+                const glm::vec3 got(
+                    UnpackHalf(atlas[o + 0]), UnpackHalf(atlas[o + 1]), UnpackHalf(atlas[o + 2]));
+                if (glm::length(got - expected) > 1e-2f)
+                    texelsMatch = false;
+            }
+    Check(texelsMatch, "gi.spec.texels-match-sg-specular-eval");
+
+    // Linearity in the amplitudes (the property that makes spatial
+    // interpolation of the baked field exact): S(A + B) == S(A) + S(B).
+    GiVolume vol2 = vol;
+    GiVolume volSum = vol;
+    for (uint32_t l = 0; l < kSgLobeCount; ++l) {
+        vol2.coeffs[l] = (l == 1) ? glm::vec3(0.25f, 0.5f, 1.0f) : glm::vec3(0.0f);
+        volSum.coeffs[l] = vol.coeffs[l] + vol2.coeffs[l];
+    }
+    std::vector<uint16_t> a1, a2, aSum;
+    uint32_t c1 = 0, r1 = 0, c2 = 0, r2 = 0, cs = 0, rs = 0;
+    vol.PackGpuOctahedralSpecular(a1, c1, r1);
+    vol2.PackGpuOctahedralSpecular(a2, c2, r2);
+    volSum.PackGpuOctahedralSpecular(aSum, cs, rs);
+    bool linear = true;
+    for (size_t i = 0; i < a1.size(); ++i) {
+        if (i % 4 == 3)
+            continue; // alpha is a constant 1.0, not a specular channel
+        // half-precision round-trip: compare the decoded sum, tolerance for
+        // the two independent packings' rounding.
+        const float x = UnpackHalf(a1[i]) + UnpackHalf(a2[i]);
+        if (std::abs(x - UnpackHalf(aSum[i])) > 2e-2f)
+            linear = false;
+    }
+    Check(linear, "gi.spec.linear-in-amplitudes");
+}
+
 // DecodeBc6hCoeffs reconstructs the coeffs within the codec's
 // tolerance band (the TestBc6hCodec convention: 0.12x relative).
 void TestGiVolumeBc6hRoundTrip() {
@@ -3544,6 +3628,7 @@ int main() {
     TestTraceSceneFromWorld();
     TestGiVolumeBc6hRoundTrip();
     TestGiOctahedralPack();
+    TestGiOctahedralSpecularPack();
     TestBakeInputHashFolds();
 
     std::cout << "gi_tests: " << (g_checks - g_failures) << "/" << g_checks << " checks passed\n";
