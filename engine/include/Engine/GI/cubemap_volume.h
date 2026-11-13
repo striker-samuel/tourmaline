@@ -96,13 +96,14 @@ inline float GiVolumeSmoothStep(float e0, float e1, float x) {
     return t * t * (3.0f - 2.0f * t);
 }
 
-// Per-plane fade weight (authored-fades reference; the GPU packs this
-// into one folded float4 at upload time — weightEquation =
-// (-n*fadeScale, fadeBias - d*fadeScale) — see sg_gi_volume.hlsli for the
-// algebraic equivalence and the degenerate-span note).
+// GI RETIREMENT (2026-11): Black Ops 3-style per-face fade is no longer
+// a lighting model. A region owns its baked field up to its convex hull;
+// door/window transitions belong in directional sky transport and probe
+// visibility, not in an artist-tuned distance to an arbitrary box face.
+// Keep the old fade members on disk temporarily to read existing bakes,
+// but NEVER use them to decide GI region membership.
 inline float GiVolumePlaneWeight(const GiVolumePlane& p, const glm::vec3& pos) {
-    const float inside = -(glm::dot(p.normal, pos) + p.d);
-    return GiVolumeSmoothStep(-p.outsideFade, p.insideFade, inside);
+    return glm::dot(p.normal, pos) + p.d <= 0.0f ? 1.0f : 0.0f;
 }
 
 struct GiVolumeDef {
@@ -110,15 +111,12 @@ struct GiVolumeDef {
     uint32_t priority = 0;             // higher = composited later = wins
     std::string name;                  // authoring id (bake output naming)
 
-    // Per-face weight: min over planes of the per-plane smoothstep.
+    // Hard spatial ownership, never a face-distance blend. A GI region
+    // must not darken/brighten merely because a wall or door happens to
+    // coincide with its editor bounds. Lighting continuity is the sampled
+    // field's job, independently of this hull membership predicate.
     float Weight(const glm::vec3& pos) const {
-        float w = 1.0f;
-        for (const GiVolumePlane& p : planes) {
-            w = std::min(w, GiVolumePlaneWeight(p, pos));
-            if (w <= 0.0f)
-                break;
-        }
-        return w;
+        return Contains(pos) ? 1.0f : 0.0f;
     }
 
     bool Contains(const glm::vec3& pos) const {
