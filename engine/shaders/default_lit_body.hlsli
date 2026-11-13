@@ -1735,8 +1735,11 @@ float envVis = 1.0f;
         }
         if (giDbgMode == 1u)
         {
-            OUT.outColor = float4(SanitizeHdr(bakedE
-                * max(frame.exposure, 1e-6f)), 1.0f);
+            // bakedE is HDR radiance (lux-scale): output it RAW — the
+            // tonemap applies the exposure (hdr * exposure) exactly once,
+            // like the lit path. The old * exposure here double-applied it
+            // (exposure ~0.001 -> ~1e-6) and crushed the view to black.
+            OUT.outColor = float4(SanitizeHdr(bakedE), 1.0f);
             return OUT;
         }
         if (giDbgMode == 3u || giDbgMode == 4u)
@@ -1802,8 +1805,11 @@ float envVis = 1.0f;
                     : lerp(float3(1, 1, 0), float3(0, 1, 0),
                         (wSum - 0.5) * 2.0);
             }
+            // dbgCol is a flat 0..1 palette (not HDR): pre-scale by
+            // 1/exposure so the tonemap's hdr * exposure reproduces it —
+            // the same convention as the source-palette + no-coverage paths.
             OUT.outColor = float4(SanitizeHdr(dbgCol
-                * max(frame.exposure, 1e-6f)), 1.0f);
+                / max(frame.exposure, 1e-6f)), 1.0f);
             return OUT;
         }
         float3 pal = (giSource == 1u) ? float3(1.0f, 0.0f, 0.0f)
