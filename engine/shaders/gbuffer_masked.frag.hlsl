@@ -93,14 +93,24 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
         float4 s = baseTex.Sample(samplers[0], IN.uv);
         baseAlpha *= s.a;
     }
+    // Masked (shadingModel == 2) materials: alpha-cutoff test. Gated on the
+    // SHADING MODEL, not "alphaMode != Blend" — an Opaque material
+    // (shadingModel 0, alphaMode 0) that reaches this leg via the dither-fade
+    // routing must NOT alpha-test (the "holes on opaque meshes" regression).
+    // Mirrors shadow_body.hlsli (the depth prepass twin) and the lit/debug FS
+    // family. The two gates are INDEPENDENT (not if/else-if).
+    const float shadingModelF = mat.params.w;
     const float alphaModeF = mat.params2.w;
+    if (shadingModelF == 2.0f && baseAlpha < alphaCutoff)
+        discard;
+
+    // Dithered Blend (alphaMode == 2, dithered frame): stochastic screen-door
+    // discard — holes write neither depth nor G-buffer.
     if (alphaModeF == 2.0f && pc.pad_pc == 0)
     {
         if (!DitherKeep(baseAlpha, pos.xy))
             discard;
     }
-    else if (baseAlpha < alphaCutoff)
-        discard;
 
     // glTF metallicRoughness factors x texture (the same tap as
     // gbuffer.frag / the lit path's non-layered branch — the bare

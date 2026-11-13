@@ -115,17 +115,26 @@ ShadowPSOut mainPS(float4 clipPos : SV_Position, ShadowPSIn IN)
         baseAlpha *= s.a;
     }
 
-    // Dithered Blend (alphaMode == 2, dithered frame): screen-door discard
-    // so the depth prepass stores dithered depth for transparent materials.
-    // Masked and blended-Blend keep the classic alpha-cutout test.
-    float alphaModeF = mat.params2.w;
+    // Masked (shadingModel == 2) materials: alpha-cutoff test. Gated on the
+    // SHADING MODEL, not "alphaMode != Blend" — an Opaque material
+    // (shadingModel 0, alphaMode 0) that reaches this leg via the dither-fade
+    // routing must NOT alpha-test (the "holes on opaque meshes" regression).
+    // The lit/debug FS family gates on shadingModel == 2 exactly; the
+    // prepass matches. The two gates are INDEPENDENT (not if/else-if) so a
+    // masked material never takes the blend dither branch.
+    const float shadingModelF = mat.params.w;
+    const float alphaModeF = mat.params2.w;
+    if (shadingModelF == 2.0f && baseAlpha < alphaCutoff)
+        discard;
+
+    // Dithered Blend (alphaMode == 2, dithered frame): stochastic screen-door
+    // discard so the depth prepass stores dithered depth for transparent
+    // materials.
     if (alphaModeF == 2.0f && pc.pad_pc == 0)
     {
         if (!DitherKeep(baseAlpha, clipPos.xy))
             discard;
     }
-    else if (baseAlpha < alphaCutoff)
-        discard;
 
     return OUT;
 }
