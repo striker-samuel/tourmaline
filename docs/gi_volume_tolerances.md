@@ -236,7 +236,7 @@ The shader walks HIGH first (reverse index). Ties keep the manifest
 order. A volume with weight 1 (deep inside every fade) zeroes the
 transmittance and the walk breaks — lower priorities never contribute.
 
-### 4b. The hull FADE — authored per-plane, `insideFade` + `outsideFade`
+### 4b. GI hull fades — retired (hard ownership)
 
 **File:** `engine/include/Engine/GI/cubemap_volume.h` (`GiVolumePlane`)
 
