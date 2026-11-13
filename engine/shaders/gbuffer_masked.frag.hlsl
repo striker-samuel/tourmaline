@@ -3,6 +3,7 @@
 
 #include "common.hlsli"
 #include "vertex_pack.hlsli"
+#include "material_coverage.hlsli"
 
 // Thin G-buffer writer, MASK (cutout) variant — the gbuffer.frag.hlsl
 // twin with the alpha test (see that file for the G-buffer layout).
@@ -81,36 +82,27 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
     // MASK cutout under the textured cutoff, dithered Blend under the
     // screen-door keep test — holes write neither depth nor G-buffer.
     const float alphaCutoff = mat.params.x;
-    float baseAlpha = mat.diffuse.a;
+    // COLOR_0.a is the vertex-color alpha on the GPU-scene leg; the direct
+    // leg contributes 1.0 (its lit twin also omits it).
 #ifdef GPU_SCENE_GBUFFER
-    baseAlpha *= IN.color.a;
+    const float colorAlpha = IN.color.a;
+#else
+    const float colorAlpha = 1.0f;
 #endif
+    float texelAlpha = 1.0f;
     const int baseColorIdx = mat.tex.x;
     if (baseColorIdx >= 0)
     {
-        uint slot = (uint)baseColorIdx;
-        Texture2D baseTex = textures[NonUniformResourceIndex(slot)];
-        float4 s = baseTex.Sample(samplers[0], IN.uv);
-        baseAlpha *= s.a;
+        const uint slot = (uint)baseColorIdx;
+        texelAlpha = textures[NonUniformResourceIndex(slot)].Sample(samplers[0], IN.uv).a;
     }
-    // Masked (shadingModel == 2) materials: alpha-cutoff test. Gated on the
-    // SHADING MODEL, not "alphaMode != Blend" — an Opaque material
-    // (shadingModel 0, alphaMode 0) that reaches this leg via the dither-fade
-    // routing must NOT alpha-test (the "holes on opaque meshes" regression).
-    // Mirrors shadow_body.hlsli (the depth prepass twin) and the lit/debug FS
-    // family. The two gates are INDEPENDENT (not if/else-if).
+    const float baseAlpha = TM_CoverageAlpha(mat.diffuse.a, texelAlpha, colorAlpha);
+
     const float shadingModelF = mat.params.w;
     const float alphaModeF = mat.params2.w;
-    if (shadingModelF == 2.0f && baseAlpha < alphaCutoff)
+    if (!TM_CoverageKeep(baseAlpha, alphaCutoff, shadingModelF, alphaModeF,
+                         pc.pad_pc == 0, pos.xy))
         discard;
-
-    // Dithered Blend (alphaMode == 2, dithered frame): stochastic screen-door
-    // discard — holes write neither depth nor G-buffer.
-    if (alphaModeF == 2.0f && pc.pad_pc == 0)
-    {
-        if (!DitherKeep(baseAlpha, pos.xy))
-            discard;
-    }
 
     // glTF metallicRoughness factors x texture (the same tap as
     // gbuffer.frag / the lit path's non-layered branch — the bare

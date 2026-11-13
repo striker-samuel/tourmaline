@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
+#include "material_coverage.hlsli"
 // -------------------------------------------------------------------------
 // Shared PBR material evaluator (the PBR Material Validation Debugger's
 // Phase-2 "one evaluation site"): the EXACT material-input math of the lit
@@ -185,7 +186,7 @@ EvaluatedPbrMaterial EvaluatePbrMaterial(int materialId, PSInBridge IN)
     float3 vcolTint = layered ? float3(1.0f, 1.0f, 1.0f) : IN.color.rgb;
     e.baseColorLinear = baseColorFactor * vcolTint * baseSample.rgb;
     // Preserve glTF COLOR_0 alpha, including baked seam-ribbon edge fade.
-    e.alpha = baseAlphaFactor * baseSample.a * (layered ? 1.0f : IN.color.a);
+    e.alpha = TM_CoverageAlpha(baseAlphaFactor, baseSample.a, layered ? 1.0f : IN.color.a);
 
     // ---------------------------------------------------------------
     // Metallic-roughness (glTF packing: G = roughness, B = metallic;

@@ -25,6 +25,8 @@
 //                             seed, remainder; clear 0 + GreaterEqual) ->
 //                             SV_DepthLessEqual (never nearer, raw float).
 
+#include "material_coverage.hlsli"
+
 struct ShadowPSIn
 {
     [[vk::location(0)]] float4 color : COLOR0;
@@ -98,43 +100,35 @@ ShadowPSOut mainPS(float4 clipPos : SV_Position, ShadowPSIn IN)
     MaterialValues mat = pc.bMats.Get().mats[pc.materialId];
 #endif
 
-    float alphaCutoff = mat.params.x;
-    float baseAlpha = mat.diffuse.a;
+    const float alphaCutoff = mat.params.x;
+    // COLOR_0.a is the vertex-color alpha on the GPU-scene leg; the direct
+    // leg has no such varying, so it contributes 1.0 there (its lit twin
+    // also omits it).
 #ifdef GPU_SCENE_MASKED_DEPTH
-    // Main's masked lit path multiplies COLOR_0.a into coverage. The
-    // GPU-scene depth pass must make the identical decision at UV0.
-    baseAlpha *= IN.color.a;
+    const float colorAlpha = IN.color.a;
+#else
+    const float colorAlpha = 1.0f;
 #endif
-
-    int baseColorIdx = mat.tex.x;
+    float texelAlpha = 1.0f;
+    const int baseColorIdx = mat.tex.x;
     if (baseColorIdx >= 0)
     {
-        uint slot = (uint)baseColorIdx;
-        Texture2D baseTex = textures[NonUniformResourceIndex(slot)];
-        float4 s = baseTex.Sample(samplers[0], IN.uv);
-        baseAlpha *= s.a;
+        const uint slot = (uint)baseColorIdx;
+        texelAlpha = textures[NonUniformResourceIndex(slot)].Sample(samplers[0], IN.uv).a;
     }
+    const float baseAlpha = TM_CoverageAlpha(mat.diffuse.a, texelAlpha, colorAlpha);
 
     // Masked (shadingModel == 2) materials: alpha-cutoff test. Gated on the
     // SHADING MODEL, not "alphaMode != Blend" — an Opaque material
     // (shadingModel 0, alphaMode 0) that reaches this leg via the dither-fade
     // routing must NOT alpha-test (the "holes on opaque meshes" regression).
-    // The lit/debug FS family gates on shadingModel == 2 exactly; the
-    // prepass matches. The two gates are INDEPENDENT (not if/else-if) so a
-    // masked material never takes the blend dither branch.
+    // TM_CoverageKeep is the ONE keep test shared with the G-buffer, lit and
+    // debug FS, so every consumer agrees on which samples survive.
     const float shadingModelF = mat.params.w;
     const float alphaModeF = mat.params2.w;
-    if (shadingModelF == 2.0f && baseAlpha < alphaCutoff)
+    if (!TM_CoverageKeep(baseAlpha, alphaCutoff, shadingModelF, alphaModeF,
+                         pc.pad_pc == 0, clipPos.xy))
         discard;
-
-    // Dithered Blend (alphaMode == 2, dithered frame): stochastic screen-door
-    // discard so the depth prepass stores dithered depth for transparent
-    // materials.
-    if (alphaModeF == 2.0f && pc.pad_pc == 0)
-    {
-        if (!DitherKeep(baseAlpha, clipPos.xy))
-            discard;
-    }
 
     return OUT;
 }

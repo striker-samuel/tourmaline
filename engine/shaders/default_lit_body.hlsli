@@ -10,6 +10,8 @@
 // Entry files include light/common/environment/sggi first and define (or
 // not) ALPHA_TO_COVERAGE before including this body.
 
+#include "material_coverage.hlsli"
+
 // Material fetch override (mesh-shader path): the mesh FS twin feeds
 // per-draw material through a flat varying (one dispatch covers many
 // materials, so the per-range pc.materialId push cannot work there).
@@ -652,7 +654,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     float3 vcolTint = layered ? float3(1.0f, 1.0f, 1.0f) : IN.color.rgb;
     float3 baseColor = baseColorFactor * vcolTint * baseSample.rgb;
     // glTF COLOR_0 alpha is part of vertex coverage (seam ribbons use it).
-    float baseAlpha = baseAlphaFactor * baseSample.a * (layered ? 1.0f : IN.color.a);
+    float baseAlpha = TM_CoverageAlpha(baseAlphaFactor, baseSample.a, layered ? 1.0f : IN.color.a);
 
 #if defined(ALPHA_TO_COVERAGE)
     // A2C variant: NO discard anywhere in the module (OpKill disables the
@@ -664,18 +666,15 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     const bool ditheredTransp = (pc.pad_pc == 0);
     const bool isBlendMat = (alphaModeF == 2.0f);
 #else
-    // Alpha test for Masked (ShadingModel::Masked == 2)
-    // Also respect alphaMode Mask – both encode to 2 historically.
-    if (shadingModelF == 2.0f && baseAlpha < alphaCutoff)
-        discard;
-
-    // Dithered transparency for Blend (alphaMode == 2 in params2.w):
-    // screen-door discard, opaque output. Blend mode skips this and
-    // relies on the AlphaBlend pipeline state instead.
+    // Alpha test for Masked (ShadingModel::Masked == 2) + dithered
+    // transparency for Blend (alphaMode == 2) — the ONE keep test shared
+    // with the depth prepass, G-buffer and debug FS (TM_CoverageKeep), so
+    // every consumer agrees on which samples survive.
     float alphaModeF = mat.params2.w;
     const bool ditheredTransp = (pc.pad_pc == 0);
     const bool isBlendMat = (alphaModeF == 2.0f);
-    if (isBlendMat && ditheredTransp && !DitherKeep(baseAlpha, clipPos.xy))
+    if (!TM_CoverageKeep(baseAlpha, alphaCutoff, shadingModelF, alphaModeF,
+                         ditheredTransp, clipPos.xy))
         discard;
 #endif
 

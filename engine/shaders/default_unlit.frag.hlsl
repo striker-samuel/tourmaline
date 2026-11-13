@@ -3,6 +3,7 @@
 
 #include "common.hlsli"
 #include "environment.hlsli"
+#include "material_coverage.hlsli"
 
 // Unlit debug view (F2): baseColor + emissive only, no lighting/shadows.
 // Pairs with default.vert.hlsl (same PSIn as default_lit). Alpha cutout +
@@ -143,15 +144,12 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
             discard;
     }
 
-    // Masked cutout (matches lit).
-    if (shadingModelF == 2.0f && baseAlpha < alphaCutoff)
-        discard;
-
-    // Dithered transparency for Blend (matches lit).
-    float alphaModeF = mat.params2.w;
+    // Masked cutout + dithered Blend (matches lit): the ONE keep test.
+    const float alphaModeF = mat.params2.w;
     const bool ditheredTransp = (pc.pad_pc == 0);
     const bool isBlendMat = (alphaModeF == 2.0f);
-    if (isBlendMat && ditheredTransp && !DitherKeep(baseAlpha, clipPos.xy))
+    if (!TM_CoverageKeep(baseAlpha, alphaCutoff, shadingModelF, alphaModeF,
+                         ditheredTransp, clipPos.xy))
         discard;
 
     float3 emissive = emissiveFactor * emissiveStrength;
