@@ -78,7 +78,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // silhouette must agree or the readout lies at every leaf edge.
     float alphaCutoff = mat.params.x;
     float shadingModelF = mat.params.w;
-    float baseAlpha = mat.diffuse.a;
+    float baseAlpha = mat.diffuse.a * IN.color.a;
     int baseColorIdx = mat.tex.x;
     if (baseColorIdx >= 0)
     {

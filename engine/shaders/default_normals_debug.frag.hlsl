@@ -68,7 +68,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // instead of drawing transparent texels as false color.
     if (mat.params.w == 2.0f)
     {
-        float alpha = mat.diffuse.a;
+        float alpha = mat.diffuse.a * IN.color.a;
         int baseColorIdx = mat.tex.x;
 
         if (baseColorIdx >= 0)

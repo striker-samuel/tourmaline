@@ -68,7 +68,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     float baseAlphaFactor = mat.diffuse.a;
 
     // Base alpha for the cutout test (matches lit: factor * texture).
-    float baseAlpha = baseAlphaFactor;
+    float baseAlpha = baseAlphaFactor * IN.color.a;
     if (baseColorIdx >= 0)
     {
         uint slot = (uint) baseColorIdx;

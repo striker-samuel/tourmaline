@@ -87,7 +87,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // domain (same convention as the mapped-normal fallback below).
     if (mat.params.w == 2.0f)
     {
-        float alpha = mat.diffuse.a;
+        float alpha = mat.diffuse.a * IN.color.a;
         int baseColorIdx = mat.tex.x;
 
         if (baseColorIdx >= 0)

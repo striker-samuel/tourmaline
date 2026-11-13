@@ -127,7 +127,10 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     }
     float3 vcolTint = layered ? float3(1.0f, 1.0f, 1.0f) : IN.color.rgb;
     float3 baseColor = baseColorFactor * vcolTint * baseSample.rgb;
-    float baseAlpha = baseAlphaFactor * baseSample.a;
+    // Match the lit FS: non-layered coverage multiplies the vertex color
+    // alpha (the same factor the depth prepass and lit body apply), so a
+    // debug view never changes which samples survive vs Lit.
+    float baseAlpha = baseAlphaFactor * baseSample.a * (layered ? 1.0f : IN.color.a);
 
     // Dither-on-closeup (matches lit): the flagged subtree screen-doors
     // away with the same keep-test so the unlit silhouette agrees with

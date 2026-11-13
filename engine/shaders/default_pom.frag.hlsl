@@ -275,7 +275,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     }
     float3 vcolTint = layered ? float3(1.0f, 1.0f, 1.0f) : IN.color.rgb;
     float3 baseColor = mat.diffuse.rgb * vcolTint * baseSample.rgb;
-    float  baseAlpha = mat.diffuse.a * baseSample.a;
+    float  baseAlpha = mat.diffuse.a * baseSample.a * IN.color.a;
 
     // Alpha cutout + dithered Blend discard at the DISPLACED uv: holes
     // carve with the surface (differs from F1 by design, see header).

@@ -62,7 +62,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // Alpha cutout so holes match the lit view (color itself is debug).
     float alphaCutoff = mat.params.x;
     float shadingModelF = mat.params.w;
-    float baseAlpha = mat.diffuse.a;
+    float baseAlpha = mat.diffuse.a * IN.color.a;
     int baseColorIdx = mat.tex.x;
     if (baseColorIdx >= 0)
     {

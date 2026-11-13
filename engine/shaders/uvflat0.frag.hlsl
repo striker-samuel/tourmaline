@@ -31,7 +31,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     MaterialValues mat = pc.bMats.Get().mats[IN.meshMaterial];
 
     float3 c = mat.diffuse.rgb;
-    float alpha = mat.diffuse.a;
+    float alpha = mat.diffuse.a * IN.color.a;
     const int baseColorIdx = mat.tex.x;
     if (baseColorIdx >= 0)
     {

@@ -98,7 +98,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     }
     else
     {
-        baseAlpha = mat.diffuse.a;
+        baseAlpha = mat.diffuse.a * IN.color.a;
         if (mat.tex.x >= 0)
         {
             uint slot = (uint)mat.tex.x;
