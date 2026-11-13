@@ -59,14 +59,14 @@
 // same values below any content-relevant epsilon; no authored content
 // hits it.
 
-// Volume weight at a world position: min over planes of the normalized
-// fade position, ONE cubic at the end — smoothstep is monotone
-// increasing on [0,1], so
-//     min(smoothstep(t_0), ..., smoothstep(t_n))
-//  == smoothstep(min(t_0, ..., t_n))
-// exactly (six per-plane cubics collapsed into one). The header's
-// fade-expanded AABB rejects far-off volumes before a single plane slot
-// is fetched (the tile mask above it rejects whole volumes per TILE).
+// GI FADE RETIREMENT (2026-11): the authored face fades were an old
+// dense-probe blending trick. Regions now express hard ownership; a
+// doorway's light transfer must be encoded by sky visibility/probe data,
+// not by a distance-to-OBB ramp. The packed plane ABI is retained for
+// existing .givolume files; its normalized ramp midpoint represents the
+// plane for symmetric or zero fades. Re-bake legacy asymmetric fades
+// when migrating, since their midpoint differs from the geometric hull.
+// The hull AABB and tile mask remain broad-phase only.
 // §1.2 (docs/gi_volume_perf_investigation.md): the plane pool is PER SET.
 // The core takes the pool explicitly so A walks read giVolumes and B walks
 // read giVolumesB — the previous single helper always read the A pool,
@@ -81,21 +81,19 @@ float SgGiVolumeWeightInPool(FrameUniforms frame, GiVolumeGpu v, float3 pos,
     if (any(pos < v.aabbMin.xyz) || any(pos > v.aabbMax.xyz))
         return 0.0;
     const uint count = min(v.planeCountBase.x, (uint)SG_GI_VOLUME_MAX_PLANES);
-    float minT = 1.0;
+    if (count == 0u)
+        return 0.0;
     [loop]
     for (uint i = 0; i < count; ++i)
     {
-        // One 16 B slot: the folded ramp — one dot3 + FMA + saturate.
-        // Early out: once one plane is fully outside, the min cannot
-        // recover.
+        // Keep the packed 16-byte plane ABI, but use only the binary
+        // half-space decision. No cubic smoothstep or outside bleed.
         const float4 p =
             pool.Get().planes[v.planeCountBase.y + i].weightEquation;
-        const float t = saturate(dot(p.xyz, pos) + p.w);
-        minT = min(minT, t);
-        if (minT <= 0.0)
+        if (dot(p.xyz, pos) + p.w < 0.5)
             return 0.0;
     }
-    return minT * minT * (3.0 - 2.0 * minT);
+    return 1.0;
 }
 
 // Set-specific wrappers (§1.2): the A pool for the A walks, the B pool for
