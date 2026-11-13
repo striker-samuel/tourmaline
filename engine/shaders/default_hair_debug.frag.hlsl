@@ -4,6 +4,7 @@
 #include "light.hlsli"
 #include "common.hlsli"
 #include "environment.hlsli"
+#include "material_coverage.hlsli"
 #include "material_evaluation.hlsli"
 
 // Must be defined after common.hlsli symbols
@@ -91,9 +92,8 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     if (IN.ditherCloseup != 0u
         && !CloseupDitherKeep(IN.worldPos, hot.cameraPos, clipPos.xy))
         discard;
-    if (shadingModelF == 2.0f && e.alpha < alphaCutoff)
-        discard;
-    if (isBlendMat && ditheredTransp && !DitherKeep(e.alpha, clipPos.xy))
+    if (!TM_CoverageKeep(e.alpha, alphaCutoff, shadingModelF, alphaModeF,
+                         ditheredTransp, clipPos.xy))
         discard;
 
     // ---------------------------------------------------------------
