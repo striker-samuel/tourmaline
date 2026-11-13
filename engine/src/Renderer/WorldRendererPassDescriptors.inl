@@ -58,6 +58,9 @@ static smvk::BloomDesc MakeBloomDesc() {
 	if (const char* spdEnv = std::getenv("TOURMALINE_SPD")) {
 		d.useSpd = std::atoi(spdEnv) != 0;
 	}
+	// Opt-in tiled spectral convolution; standard bloom remains the default.
+	if (const char* fftEnv = std::getenv("TOURMALINE_BLOOM_FFT"))
+		d.useFft = std::atoi(fftEnv) != 0;
 	return d;
 }
 
