@@ -238,12 +238,29 @@ transmittance and the walk breaks — lower priorities never contribute.
 
 ### 4b. GI hull fades — retired (hard ownership)
 
-**File:** `engine/include/Engine/GI/cubemap_volume.h` (`GiVolumePlane`)
+**Files:** `engine/include/Engine/GI/cubemap_volume.h`,
+`engine/src/GI/cubemap_volume.cpp`, and `engine/shaders/sg_gi_volume.hlsli`.
 
-Each hull plane carries an inside fade (full weight before the
-surface) and an outside fade (weight beyond the surface). The
-per-pixel weight is the min over planes of the smoothstep across
-the fade band. Authored in the tour (`-t` packs `insideFade outsideFade`).
+GI volumes now use hard convex-hull membership (inside = 1, outside = 0).
+The former per-face `insideFade` and `outsideFade` UI controls have been
+removed. Their serialized slots are retained for compatibility, but volume
+reads and writes normalize them to zero. The packed GPU plane ABI is
+unchanged and the shader makes a binary membership decision.
+
+**Rationale:** the distance-to-face smoothstep was inherited from dense
+Black Ops 3-style probe volumes. In the open-world interior-visibility
+design, SpatialVolumes define *ownership*, not light attenuation.
+Doorways, windows, and sky openings need directional visibility and
+transport represented within the lighting field. An artist-authored
+fade at the volume boundary does not represent a physically meaningful
+opening and can cause bleed through walls.
+
+**Compatibility:** older `.givolume` files are still readable, but their
+authored fade settings are ignored at load. Re-bake captures if their
+previous appearance depended on fades. Generic `SpatialVolumeWeight`
+and audio-room fade controls are *not* removed. Transitions between
+nonmatching fields still require boundary-compatible data; this change
+does not by itself eliminate lighting seams.
 
 ### 4c. The MAX VOLUME count — `8`
 
