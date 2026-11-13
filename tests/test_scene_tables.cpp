@@ -1,3 +1,4 @@
+#include "Engine/Scene/ambient_mask_volume.h"
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
@@ -698,6 +699,42 @@ int main() {
             Check(SpatialVolumeWeight(bad, glm::vec3(0.0f), inFade, outFade) == 0.0f,
                   "non-finite box covers nothing (never NaN)");
         }
+    }
+
+    {
+        // Ambient visibility is a property of the shared oriented volume,
+        // not a second placement geometry or a baked-radiance multiplier.
+        using namespace tour::scene;
+        std::array<AmbientMaskSample, 8> data{};
+        for (auto& sample : data) {
+            sample.axis[0] = 0.25f; // local +X blocked
+            sample.axis[1] = 0.75f; // local -X mostly open
+        }
+        AmbientMaskVolume mask;
+        mask.box = VolumeBoxFromGlobalTransform(
+            glm::scale(glm::mat4(1.0f), glm::vec3(10.0f)));
+        mask.field = {2, 2, 2, data};
+        Check(Near(AmbientMaskVisibility(mask, glm::vec3(0), glm::vec3(1, 0, 0)),
+                   0.25f), "ambient mask samples local +X");
+        Check(Near(AmbientMaskVisibility(mask, glm::vec3(0), glm::vec3(-1, 0, 0)),
+                   0.75f), "ambient mask samples local -X");
+        Check(Near(AmbientMaskVisibility(mask, glm::vec3(10), glm::vec3(1, 0, 0)),
+                   1.0f), "ambient mask leaves positions outside untouched");
+        Check(Near(AmbientMaskVisibility(mask, glm::vec3(0), glm::vec3(0, 1, 0)),
+                   1.0f), "ambient mask other axes remain open");
+        Check(Near(AmbientMaskCombine(0.5f, 0.6f), 0.5f),
+              "ambient mask overlap does not multiply darkness");
+
+        const glm::mat4 rotated =
+            glm::rotate(glm::mat4(1.0f), glm::radians(90.0f),
+                        glm::vec3(0, 1, 0)) *
+            glm::scale(glm::mat4(1.0f), glm::vec3(10.0f));
+        mask.box = VolumeBoxFromGlobalTransform(rotated);
+        Check(Near(AmbientMaskVisibility(mask, glm::vec3(0), mask.box.axes[0]),
+                   0.25f), "ambient mask respects rotated local axes");
+        mask.field.nx = 0;
+        Check(Near(AmbientMaskVisibility(mask, glm::vec3(0), glm::vec3(1, 0, 0)),
+                   1.0f), "invalid ambient field falls back to unoccluded");
     }
 
     if (g_failures > 0) {
