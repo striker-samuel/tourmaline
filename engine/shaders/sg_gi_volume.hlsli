@@ -39,27 +39,12 @@
 // bindless volumeTextures mirror (samplers[2] = linear clamp) — the
 // same GPU layout and unpack as the regular grids (SgRegularUnpack).
 //
-// GPU data (sg_lightmap_types.hlsli): 80 B headers (fade-expanded AABB
-// for broad-phase rejection + the CPU-precomputed world->uvw transform
-// + the plane span) and a shared packed plane pool (16 B/plane — plane
-// equation + fade ramp folded into ONE pre-normalized float4, no
-// per-plane division, no 560 B aggregate copies). The tile cull
-// (forwardplus.cs.hlsl) additionally writes a per-tile volume bitmask
-// (frame.giVolumeTileMasks) so pixels only walk volumes that can reach
-// their tile.
+// GPU data (sg_lightmap_types.hlsli): fixed 16 B per plane legacy
+// ramp ABI. GI bake IO now zeros historical fades; the packed ramp is
+// therefore a near-step at the geometric plane. Only its binary
+// midpoint decision is used; there is no arbitrary box-face blend.
 //
-// CPU parity: the PACKED form is algebraically equal to GiVolumePlaneWeight /
-// GiVolumeDef::Weight (cubemap_volume.h): min-of-smoothsteps ==
-// smoothstep-of-min (the cubic is monotone on [0,1]) and
-// saturate(dot(weightEquation.xyz, pos) + weightEquation.w) ==
-// saturate((inside + outsideFade) / span) with
-// weightEquation = (-n * fadeScale, fadeBias - d * fadeScale).
-// Degenerate spans (insideFade + outsideFade < 1e-5) pack as a 1e-5 m
-// ramp — the authored CPU step branch (GiVolumeSmoothStep) collapses to the
-// same values below any content-relevant epsilon; no authored content
-// hits it.
-
-// GI FADE RETIREMENT (2026-11): the authored face fades were an old
+//// GI FADE RETIREMENT (2026-11): the authored face fades were an old
 // dense-probe blending trick. Regions now express hard ownership; a
 // doorway's light transfer must be encoded by sky visibility/probe data,
 // not by a distance-to-OBB ramp. The packed plane ABI is retained for
