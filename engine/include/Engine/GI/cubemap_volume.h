@@ -26,20 +26,15 @@
 // global octree -> town volume -> building volume -> small room, one
 // algorithm for all of them.
 //
-// Volume shape: an intersection of half-spaces
-//     n_i . P + d_i <= 0        (inside plane i)
-// with PER-PLANE blend distances (the FOX innerScales idea): walls get
-// 0.1 m fades, a doorway plane gets a 2 m fade, so the outdoor field
-// transitions gradually through openings and never through walls:
+// Volume shape: a hard convex intersection of half-spaces:
+//     n_i . P + d_i <= 0
+// No authored face-distance fades. This removes the old dense-probe
+// Black Ops 3-style blend controls: room/window illumination must be
+// encoded in sky visibility and probe/transport data, not in a ramp
+// around arbitrary editor hull faces. Shared SpatialVolumeWeight still
+// serves audio and other use cases that really require smooth transitions.
 //
-//     d_i(P) = -(n_i . P + d_i)                  signed distance inside
-//     w_i(P) = smoothstep(-outsideFade_i, insideFade_i, d_i)
-//     Weight(P) = min_i w_i(P)                   nearest face dominates
-//
-// min-combining keeps a doorway fade alive next to a tight floor (a
-// product would crush it to zero at the threshold corner).
-//
-// Bake (BakeGiVolume): DIRECT per-probe path trace. This shipped as the
+//// Bake (BakeGiVolume): DIRECT per-probe path trace. This shipped as the
 // published BO3 pipeline — sparse radiance+depth captures reprojected
 // into the dense probes — but the capture-support dependency cost real
 // coverage: probes whose enclosing capture cell had no valid capture
@@ -83,10 +78,11 @@ inline constexpr uint32_t kGiVolumeMaxPlanes = 16; // must match SG_GI_VOLUME_MA
 struct GiVolumePlane {
     glm::vec3 normal{0.0f, 1.0f, 0.0f}; // unit; inside: dot(n, P) + d <= 0
     float d = 0.0f;                     // plane offset (n . P + d)
-    float insideFade = 0.1f;            // blend width INSIDE the face (m)
-    float outsideFade = 0.1f;           // blend width OUTSIDE the face (m) — the
-                                        // volume keeps partial influence in the
-                                        // doorway bleed zone
+    // Legacy format/authoring fields only (GV6H reserves two floats per
+    // plane). Bake readers and writers normalize both to zero. Audio room
+    // fades use a separate spatial-volume path and remain supported.
+    float insideFade = 0.0f;
+    float outsideFade = 0.0f;
 };
 
 inline float GiVolumeSmoothStep(float e0, float e1, float x) {
@@ -96,13 +92,14 @@ inline float GiVolumeSmoothStep(float e0, float e1, float x) {
     return t * t * (3.0f - 2.0f * t);
 }
 
-// Per-plane fade weight (authored-fades reference; the GPU packs this
-// into one folded float4 at upload time — weightEquation =
-// (-n*fadeScale, fadeBias - d*fadeScale) — see sg_gi_volume.hlsli for the
-// algebraic equivalence and the degenerate-span note).
+// GI RETIREMENT (2026-11): Black Ops 3-style per-face fade is no longer
+// a lighting model. A region owns its baked field up to its convex hull;
+// door/window transitions belong in directional sky transport and probe
+// visibility, not in an artist-tuned distance to an arbitrary box face.
+// Keep the old fade members on disk temporarily to read existing bakes,
+// but NEVER use them to decide GI region membership.
 inline float GiVolumePlaneWeight(const GiVolumePlane& p, const glm::vec3& pos) {
-    const float inside = -(glm::dot(p.normal, pos) + p.d);
-    return GiVolumeSmoothStep(-p.outsideFade, p.insideFade, inside);
+    return glm::dot(p.normal, pos) + p.d <= 0.0f ? 1.0f : 0.0f;
 }
 
 struct GiVolumeDef {
@@ -110,15 +107,12 @@ struct GiVolumeDef {
     uint32_t priority = 0;             // higher = composited later = wins
     std::string name;                  // authoring id (bake output naming)
 
-    // Per-face weight: min over planes of the per-plane smoothstep.
+    // Hard spatial ownership, never a face-distance blend. A GI region
+    // must not darken/brighten merely because a wall or door happens to
+    // coincide with its editor bounds. Lighting continuity is the sampled
+    // field's job, independently of this hull membership predicate.
     float Weight(const glm::vec3& pos) const {
-        float w = 1.0f;
-        for (const GiVolumePlane& p : planes) {
-            w = std::min(w, GiVolumePlaneWeight(p, pos));
-            if (w <= 0.0f)
-                break;
-        }
-        return w;
+        return Contains(pos) ? 1.0f : 0.0f;
     }
 
     bool Contains(const glm::vec3& pos) const {
@@ -140,8 +134,8 @@ struct GiVolumeDef {
 // order: -x, +x, -y, +y, -z, +z (indices for per-face fade retuning).
 std::vector<GiVolumePlane> GiVolumeBoxPlanes(const glm::vec3& mn,
                                              const glm::vec3& mx,
-                                             float insideFade = 0.1f,
-                                             float outsideFade = 0.1f);
+                                             float insideFade = 0.0f,
+                                             float outsideFade = 0.0f);
 
 // ROTATED box (OBB) helper: center + orthonormal axes as mat3 COLUMNS
 // (normalized defensively) + half extents -> six planes. The authored
@@ -152,8 +146,8 @@ std::vector<GiVolumePlane> GiVolumeBoxPlanes(const glm::vec3& mn,
 std::vector<GiVolumePlane> GiVolumeBoxPlanesRotated(const glm::vec3& center,
                                                     const glm::mat3& axes,
                                                     const glm::vec3& half,
-                                                    float insideFade = 0.1f,
-                                                    float outsideFade = 0.1f);
+                                                    float insideFade = 0.0f,
+                                                    float outsideFade = 0.0f);
 
 // ---------------------------------------------------------------------------
 // Volume (cooked)
