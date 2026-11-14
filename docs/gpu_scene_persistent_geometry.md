@@ -175,11 +175,18 @@ Task/mesh dispatch still checks its packed-stream readiness, whereas
 Vulkan 1.3 indexed raster can operate when that optional stream is
 unavailable.
 
-The implementation still uses the compatibility Gfx registration *number*
-for correlating shared mesh LODs with the task/mesh tables, but the raster
-**physical range** comes from World, not GfxFilter. Eliminating the
-revision-local registration number and allocating native generational IDs
-end-to-end remain future work.
+The indexed registry uses Gfx mesh IDs only as a compatibility **prefix**
+when a cooked meshlet registration exists. Resident static LODs with no
+meshlet registration receive native-only **suffix** IDs pointing straight at
+their World surface. Thus Vulkan 1.3 indexed draws can admit ordinary static
+geometry without requiring meshlet cooking. If native-only IDs exist, the
+optional task/mesh dispatch is conservatively skipped and indexed raster
+handles that frame. The persistent mesh-slot/generation/LOD key and per-flight
+alias map remain authoritative for stale-ID protection.
+
+The eventual full deletion of GfxRenderer's optional meshlet registration
+and replacement of revision-local transient IDs with generational work
+references remains separate from this physical residency cutover.
 
 **Not yet verified as full device parity:** Vulkan flight-retirement,
 GPU-LOD demand feedback, promotion/eviction, mixed static/dynamic scenes,
