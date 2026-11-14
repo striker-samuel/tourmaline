@@ -203,19 +203,22 @@ class SceneRegistry {
                               (src.boundsKnown ? LodFlagBoundsKnown : 0u) |
                               (filterable ? LodFlagFilterable : 0u)};
             const Submesh* prevSub = db.submeshes.Get(state.submeshes[level]);
-            if (!prevSub || std::memcmp(prevSub, &sub, sizeof(sub)) != 0)
-                (void)db.submeshes.Update(state.submeshes[level], sub);
+            if ((!prevSub || std::memcmp(prevSub, &sub, sizeof(sub)) != 0) &&
+                !db.submeshes.Update(state.submeshes[level], sub))
+                return false;
             const Lod* prevLod = db.lods.Get(state.lods[level]);
-            if (!prevLod || std::memcmp(prevLod, &lod, sizeof(lod)) != 0)
-                (void)db.lods.Update(state.lods[level], lod);
+            if ((!prevLod || std::memcmp(prevLod, &lod, sizeof(lod)) != 0) &&
+                !db.lods.Update(state.lods[level], lod))
+                return false;
         }
         const Mesh desc{state.lods.front().slot,
                         uint32_t(count),
                         residentMask,
                         allBoundsKnown ? MeshFlagCompleteBounds : 0u};
         const Mesh* old = db.meshes.Get(state.id);
-        if (!old || std::memcmp(old, &desc, sizeof(desc)) != 0)
-            (void)db.meshes.Update(state.id, desc);
+        if ((!old || std::memcmp(old, &desc, sizeof(desc)) != 0) &&
+            !db.meshes.Update(state.id, desc))
+            return false;
         return true;
     }
 
@@ -504,8 +507,15 @@ class WorldSynchronizer {
             if (uniqueCount)
                 std::copy_n(scratchMeshes, uniqueCount, meshSources_);
             std::destroy_n(scratchMeshes, meshCount);
-            stats.geometryMeshesVisited = PublishGeometry(world, db, geometryLookup);
+            // A failed streamed geometry update must not publish stale
+            // mesh/LOD residency to this frame's GPU readers. Leave both
+            // revision cursors untouched so the next frame retries the
+            // topology + geometry publication rather than caching failure.
+            stats.leafPublicationOk =
+                PublishGeometry(world, db, geometryLookup, stats.geometryMeshesVisited);
             stats.geometryRefreshed = true;
+            if (!stats.leafPublicationOk)
+                return stats;
             const bool meshPublicationChanged = geometryRevision_ != geometryRevision;
             revision_ = world.gpuSceneTopologyRevision;
             geometryRevision_ = geometryRevision;
@@ -520,8 +530,11 @@ class WorldSynchronizer {
         // scanning drawItems, rebuilding nodeKeys, or reconciling instances.
         const bool meshPublicationChanged = geometryRevision_ != geometryRevision;
         if (meshPublicationChanged) {
-            stats.geometryMeshesVisited = PublishGeometry(world, db, geometryLookup);
+            stats.leafPublicationOk =
+                PublishGeometry(world, db, geometryLookup, stats.geometryMeshesVisited);
             stats.geometryRefreshed = true;
+            if (!stats.leafPublicationOk)
+                return stats; // keep prior revision; retry before any GPU upload
             geometryRevision_ = geometryRevision;
         }
         // Recalc can append the same node multiple times before a frame.
@@ -572,8 +585,11 @@ class WorldSynchronizer {
     }
 
   private:
-    uint32_t PublishGeometry(World& world, RenderDatabase& db, const GeometryLookup& geometryLookup) {
-        uint32_t visited = 0;
+    [[nodiscard]] bool PublishGeometry(World& world,
+                                       RenderDatabase& db,
+                                       const GeometryLookup& geometryLookup,
+                                       uint32_t& visited) {
+        visited = 0;
         // The source-to-mesh mapping is refreshed by topology reconciliation.
         // Geometry revisions must not force another O(instances) scan.
         for (size_t meshIdx = 0; meshIdx < meshSourceCount_; ++meshIdx) {
@@ -598,12 +614,13 @@ class WorldSynchronizer {
                     geometryLookup ? geometryLookup(worldIndex, i) : InvalidIndex;
                 levels[i] = LevelSource{l.error, gfxId, l.resident, l.boundsKnown};
             }
-            (void)registry_.PublishMesh(source,
-                                        std::span<const LevelSource>(levels.data(), chain.size()),
-                                        complete, db);
+            if (!registry_.PublishMesh(source,
+                                       std::span<const LevelSource>(levels.data(), chain.size()),
+                                       complete, db))
+                return false;
             ++visited;
         }
-        return visited;
+        return true;
     }
     [[nodiscard]] bool SyncLeaves(RenderDatabase& db, bool meshChanged) {
         SceneRegistry::Deltas changes = registry_.TakeDeltas();
