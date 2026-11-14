@@ -180,8 +180,10 @@ void CheckStableCompaction() {
 
 void CheckSubmeshWorkExpansion() {
     CHECK(sizeof(SceneSubmeshWork) == 32);
-    CHECK(sizeof(WorkSelectPush) == 128);
-    CHECK(offsetof(WorkSelectPush, lodEyeBudget) == 96);
+    CHECK(sizeof(WorkSelectPush) == 144);
+    CHECK(offsetof(WorkSelectPush, demand) == 64);
+    CHECK(offsetof(WorkSelectPush, limits) == 80);
+    CHECK(offsetof(WorkSelectPush, lodEyeBudget) == 112);
     CHECK(sizeof(WorkPrefixPush) == 24);
     CHECK(sizeof(WorkScatterPush) == 48);
 
@@ -226,13 +228,11 @@ void CheckSubmeshWorkExpansion() {
     instance.refs.w |= InstanceFlagMasked;
     CHECK(db.instances.Update(id, instance));
     work = ReferenceExpandWork(db, visible);
-    CHECK(work.size() == 2u && work[0].detail.z == 3u &&
-          work[1].detail.z == 3u);
+    CHECK(work.size() == 2u && work[0].detail.z == 3u && work[1].detail.z == 3u);
     instance.refs.w &= ~InstanceFlagDoubleSided;
     CHECK(db.instances.Update(id, instance));
     work = ReferenceExpandWork(db, visible);
-    CHECK(work.size() == 2u && work[0].detail.z == 2u &&
-          work[1].detail.z == 2u);
+    CHECK(work.size() == 2u && work[0].detail.z == 2u && work[1].detail.z == 2u);
     instance.refs.w &= ~InstanceFlagMasked;
     CHECK(db.instances.Update(id, instance));
 
@@ -276,9 +276,8 @@ void CheckRasterPsoBins() {
         for (uint32_t bin = 0; bin < kRasterPipelineClassCount; ++bin) {
             const auto cmd = MakeRasterBinnedCommand(geometry, slots[cls], cls, bin);
             if (bin == cls) {
-                CHECK(cmd.indexCount == 36u && cmd.instanceCount == 1u &&
-                      cmd.firstIndex == 72u && cmd.vertexOffset == -5 &&
-                      cmd.firstInstance == slots[cls]);
+                CHECK(cmd.indexCount == 36u && cmd.instanceCount == 1u && cmd.firstIndex == 72u &&
+                      cmd.vertexOffset == -5 && cmd.firstInstance == slots[cls]);
                 ++admitted;
             } else {
                 CHECK(cmd.indexCount == 0u && cmd.instanceCount == 0u);
@@ -292,15 +291,14 @@ void CheckRasterPsoBins() {
 
 void CheckProjectedErrorWorkSelection() {
     RenderDatabase db{};
-    const std::array<Submesh, 3> subs{{Submesh{10u, 0u, 0u, 0u},
-                                        Submesh{11u, 0u, 0u, 0u},
-                                        Submesh{12u, 0u, 0u, 0u}}};
+    const std::array<Submesh, 3> subs{
+        {Submesh{10u, 0u, 0u, 0u}, Submesh{11u, 0u, 0u, 0u}, Submesh{12u, 0u, 0u, 0u}}};
     const auto subIds = db.submeshes.InsertContiguous(subs);
     CHECK(subIds.size() == 3);
-    const std::array<Lod, 3> lods{{
-        Lod{subIds[0].slot, 1u, 0.0f, LodFlagResident | LodFlagFilterable},
-        Lod{subIds[1].slot, 1u, 1.0f, LodFlagResident | LodFlagFilterable},
-        Lod{subIds[2].slot, 1u, 10.0f, LodFlagResident | LodFlagFilterable}}};
+    const std::array<Lod, 3> lods{
+        {Lod{subIds[0].slot, 1u, 0.0f, LodFlagResident | LodFlagFilterable},
+         Lod{subIds[1].slot, 1u, 1.0f, LodFlagResident | LodFlagFilterable},
+         Lod{subIds[2].slot, 1u, 10.0f, LodFlagResident | LodFlagFilterable}}};
     const auto lodIds = db.lods.InsertContiguous(lods);
     CHECK(lodIds.size() == 3);
     auto mesh = db.meshes.Insert(Mesh{lodIds[0].slot, 3u, 7u, MeshFlagCompleteBounds});
