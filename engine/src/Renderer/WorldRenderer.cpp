@@ -2696,6 +2696,7 @@ bool WorldRenderer::onAttach() {
         m_gfxRenderer.RegisterWorldMeshes(*m_world);
         ++m_gpuSceneGeometryRevision;
         m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
+        RefreshGpuScenePhysicalIndexedRanges();
         {
             // Geometry LOD streaming census: the cluster loads
             // deferred their middle LOD siblings (the serializer's
@@ -6165,6 +6166,7 @@ void WorldRenderer::UpdateGeometryStreaming() {
             SMVK_PROFILE_STREAM("GeoStreaming_UploadStaticData");
             m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
         }
+        RefreshGpuScenePhysicalIndexedRanges();
         {
             SMVK_PROFILE_STREAM("GeoStreaming_FlushUploads");
             m_context->FlushUploads();
@@ -11646,8 +11648,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                        m_gpuSceneDatabase,
                                        m_gpuSceneGeometryRevision,
                                        [this](uint32_t worldMesh, uint32_t lod) {
-                                           return m_gfxRenderer.State().indexedRangesResident
-                                                      ? m_gfxRenderer.GfxMeshForLod(worldMesh, lod)
+                                           const uint32_t id = m_gfxRenderer.GfxMeshForLod(worldMesh, lod);
+                                           return id < m_gpuScenePhysicalIndexedRanges.size() &&
+                                                          m_gpuScenePhysicalIndexedRanges[id].indexCount != 0u
+                                                      ? id
                                                       : tour::gpu_scene::InvalidIndex;
                                        });
         if (gpuSceneSync.leafPublicationOk)
@@ -11660,7 +11664,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // registration numbering. This bridge still resolves physical index
         // ranges from its compatibility heap until GeometryStreamer exports
         // the native indexed descriptor metadata.
-        if (m_gpuSceneDatabaseReady && m_gfxRenderer.State().indexedRangesResident) {
+        if (m_gpuSceneDatabaseReady && !m_gpuScenePhysicalIndexedRanges.empty()) {
             const auto tables = GpuSceneIndexedTables(m_gfxRenderer.State(), m_gpuScenePhysicalIndexedRanges);
             m_gpuSceneDatabaseReady =
                 m_gpuScenePersistentRegistry.Synchronize(m_gpuSceneDatabase, tables) &&
@@ -11670,7 +11674,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // Never submit stale aliases from a previous physical registration:
         // an incomplete streaming upload forces direct rendering this frame.
         m_gpuSceneDatabaseReady = m_gpuSceneDatabaseReady &&
-                                  m_gfxRenderer.State().indexedRangesResident;
+                                  !m_gpuScenePhysicalIndexedRanges.empty();
         if (m_gpuSceneDatabaseReady)
             m_gpuSceneDatabaseReady =
                 m_gpuSceneRasterView.Publish(*m_context,
