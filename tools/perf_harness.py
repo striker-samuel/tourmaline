@@ -552,9 +552,15 @@ def main(argv=None):
         cap_root.mkdir(parents=True, exist_ok=True)
         report["capture_dir"] = str(cap_root)
         report["scratch_dir"] = str(args.scratch_dir) if args.scratch_dir else None
+        # --terminate-after-capture makes ngfx-capture stop the app right after
+        # the requested frame is written (exit code 119) instead of letting the
+        # full --bench budget run to natural completion (exit 0). Without it,
+        # ngfx-capture reports "expected terminate-after-capture code 119" and
+        # exits non-zero even though a valid .ngfx-capture was produced.
         plan = [{"invocation": [capture, "--exe", str(args.exe.resolve()), "--working-dir", str(workdir),
                                 "--args", subprocess.list2cmdline(argv_app[1:]),
-                                "--capture-frame", str(args.capture_frame), "--frame-count", "1", "--output-dir", str(cap_root)],
+                                "--capture-frame", str(args.capture_frame), "--frame-count", "1",
+                                "--terminate-after-capture", "--output-dir", str(cap_root)],
                  "env": env, "name": "capture-01.log", "resolution": None}]
     if args.dry_run:
         print(json.dumps({"mode": args.mode, "command": plan[0]["invocation"],
