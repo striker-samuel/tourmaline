@@ -2672,7 +2672,9 @@ class WorldRenderer : public IRenderer {
     // native-only suffix supports meshes with no cooked meshlet registration.
     std::vector<std::vector<uint32_t>> m_gpuScenePhysicalLodIds;
     bool m_gpuSceneTaskGeometryIdsCompatible = false;
-    void RefreshGpuScenePhysicalIndexedRanges();
+    const smvk::World* m_gpuScenePhysicalWorld = nullptr;
+    uint64_t m_gpuScenePhysicalTopologyRevision = ~uint64_t(0);
+    void RefreshGpuScenePhysicalIndexedRanges(bool nativeOnly = false);
     smvk::mem::LinearPtr<smvk::World> m_worldOwned; // the source-moved form
     smvk::World* m_borrowedWorld = nullptr;         // the embedded-host form
 
