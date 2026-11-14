@@ -156,7 +156,34 @@ The topology and geometry revision cursors are left unchanged on failure, so
 the next frame retries the publication instead of considering the failed
 revision complete. The direct renderer remains the fallback.
 
-This is a CPU-side correctness hardening step, **not full streaming parity**:
-physical index/vertex residency still uses the compatibility registration
-heap, and Vulkan flight-retirement, GPU-LOD promotion/eviction captures,
-shader-side residency and temporal parity still require device validation.
+### World-native indexed physical ranges
+
+The indexed raster publisher now consumes `World::LodChain::Level::mesh`
+physical `Surface::firstIndex/indexCount/baseVertex` directly. These are
+the same static vertex/index allocations the direct renderer uses, including
+the same promotion/eviction retirement mechanism. The separate cluster-ordered
+index copy is **not** used for indexed indirect drawing. A missing resident
+LOD, invalid triangle range, an out-of-bounds physical allocation, or an
+incompatible alias publishes a zero-index tombstone and fails admission to
+the direct fallback. `WorldRenderer` refreshes the physical indexed ranges
+on registration changes and after streamer promotions/evictions.
+
+The optional task/mesh path retains cooked cluster/meshlet streams and a
+separate upload; these meshlets already contain heap-global vertex IDs and
+must **not** apply the raw indexed descriptor's baseVertex a second time.
+Task/mesh dispatch still checks its packed-stream readiness, whereas
+Vulkan 1.3 indexed raster can operate when that optional stream is
+unavailable.
+
+The implementation still uses the compatibility Gfx registration *number*
+for correlating shared mesh LODs with the task/mesh tables, but the raster
+**physical range** comes from World, not GfxFilter. Eliminating the
+revision-local registration number and allocating native generational IDs
+end-to-end remain future work.
+
+**Not yet verified as full device parity:** Vulkan flight-retirement,
+GPU-LOD demand feedback, promotion/eviction, mixed static/dynamic scenes,
+temporal occlusion, and hardware image captures all need testing. In
+particular, the GPU-driven LOD selector does not by itself guarantee the
+GeometryStreamer's CPU demand/touch bookkeeping receives equivalent signals.
+
