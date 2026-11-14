@@ -311,9 +311,6 @@ int main() {
         const auto stats = registry.Reconcile(std::span<const SourceRecord>(&source, 1), db);
         CHECK(stats.created == 1u);
         const auto meshId = registry.FindMesh(source.mesh);
-        const auto* mesh = db.meshes.Get(meshId);
-        CHECK(mesh != nullptr);
-        const auto lodSlot = mesh ? mesh->firstLod : InvalidIndex;
         // A provisional registration starts with no LOD rows. Publish one.
         const LevelSource resident{0.0f, 5u, true, true};
         CHECK(registry.PublishMesh(source.mesh, std::span(&resident, 1), true, db));
@@ -333,7 +330,6 @@ int main() {
             const LevelSource evicted{0.0f, InvalidIndex, false, true};
             CHECK(!registry.PublishMesh(source.mesh, std::span(&evicted, 1), true, db));
         }
-        (void)lodSlot;
     }
     // Geometry-only revisions must not revisit CPU drawItems or reconcile
     // the complete instance registry. The empty World tests the control
