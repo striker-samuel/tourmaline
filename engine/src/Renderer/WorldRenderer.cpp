@@ -10570,20 +10570,24 @@ void WorldRenderer::RefreshGpuScenePhysicalIndexedRanges() {
 // GPU-scene indexed-geometry publisher consumes. The narrowing lives HERE, in
 // engine implementation code, so the public header carries no RHI/gfx::State
 // exposure (the R8 boundary guard in tests/test_architecture.cpp).
-static tour::gpu_scene::IndexedGeometryTables GpuSceneIndexedTables(const tour::gfx::State& gfx) {
+static tour::gpu_scene::IndexedGeometryTables GpuSceneIndexedTables(
+    const tour::gfx::State& gfx,
+    std::span<const tour::gfx::IndexedRange> physical) {
     tour::gpu_scene::IndexedGeometryTables tables;
     tables.meshes = gfx.meshes.data();
     tables.meshCount = uint32_t(gfx.meshes.size());
     tables.clusters = gfx.clusters.data();
     tables.clusterCount = uint32_t(gfx.clusters.size());
-    tables.indexBase = gfx.clusterIndexBase;
-    // StaticGeometry owns these packed, upload-validated physical index
-    // ranges. GfxRenderer::State inherits that geometry storage, but its
-    // per-view GfxFilter cluster/draw state is not the descriptor authority.
-    tables.nativeRanges = gfx.indexedRanges.data();
-    tables.nativeRangeCount = uint32_t(gfx.indexedRanges.size());
-    tables.nativeIndexWordCount = uint32_t(gfx.filterIndices.size());
-    tables.nativeResident = gfx.indexedRangesResident;
+    // Direct World::Surface firstIndex is already an absolute position in
+    // the static index monoblock. Meshlet/debug retains the separate cooked
+    // cluster copy, but indexed raster never consumes that index region.
+    tables.indexBase = 0u;
+    tables.nativeRanges = physical.data();
+    tables.nativeRangeCount = uint32_t(physical.size());
+    tables.nativeIndexWordCount = uint32_t(std::min<uint64_t>(
+        smvk::staticVertexFmtHeap.m_staticIndexBlock.Capacity() / sizeof(uint32_t),
+        std::numeric_limits<uint32_t>::max()));
+    tables.nativeResident = !physical.empty();
     return tables;
 }
 
@@ -11657,7 +11661,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // ranges from its compatibility heap until GeometryStreamer exports
         // the native indexed descriptor metadata.
         if (m_gpuSceneDatabaseReady && m_gfxRenderer.State().indexedRangesResident) {
-            const auto tables = GpuSceneIndexedTables(m_gfxRenderer.State());
+            const auto tables = GpuSceneIndexedTables(m_gfxRenderer.State(), m_gpuScenePhysicalIndexedRanges);
             m_gpuSceneDatabaseReady =
                 m_gpuScenePersistentRegistry.Synchronize(m_gpuSceneDatabase, tables) &&
                 m_gpuScenePersistentGeometry.Publish(
@@ -11717,7 +11721,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             uint32_t doubleSidedCount = 0;
             uint32_t maskedBackCount = 0;
             uint32_t maskedDoubleSidedCount = 0;
-            const auto gfxTables = GpuSceneIndexedTables(m_gfxRenderer.State());
+            const auto gfxTables = GpuSceneIndexedTables(m_gfxRenderer.State(), m_gpuScenePhysicalIndexedRanges);
             constexpr uint32_t requiredFlags =
                 smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
                 smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_Static;
@@ -12602,7 +12606,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     if (!topologyValid) {
                         topoFailReason = "empty cluster/index topology or index base over capacity";
                     } else {
-                        const auto tables = GpuSceneIndexedTables(gfx);
+                        const auto tables = GpuSceneIndexedTables(gfx, m_gpuScenePhysicalIndexedRanges);
                         for (uint32_t meshIndex = 0; meshIndex < gfx.meshes.size(); ++meshIndex) {
                             const auto& mesh = gfx.meshes[meshIndex];
                             tour::gpu_scene::IndexedGeometry checked{};
