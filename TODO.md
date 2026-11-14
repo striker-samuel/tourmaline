@@ -19,10 +19,14 @@
 
 - [ ] **GPU-scene physical geometry ownership (PARTIAL; #294/#295).**
   Stable generation/LOD-indexed descriptor identities, per-flight publication,
-  transient-ID aliasing, and live raster-command handoff **LANDED**. Replace
-  GfxFilter's cluster-ordered physical index heap with GeometryStreamer-native
-  indexed/vertex allocation metadata; eliminate transient work IDs only after
-  consumers use stable geometry identities end to end. Implement generation-aware
+  transient-ID aliasing, and live raster-command handoff **LANDED**.
+  **#356 DRAFT** moves indexed indirect descriptors to World-owned physical
+  Surface ranges, adds native-only IDs for resident LODs without meshlets,
+  retries failed metadata publication, and avoids duplicate cooked registration
+  on Vulkan 1.3 indexed-only devices. Still eliminate transient work IDs only
+  after all consumers use stable geometry identities end to end; add GPU-driven
+  LOD promotion demand/touch feedback and device-tested safe retirement.
+  Implement generation-aware
   slot reuse with flight-fenced retirement (current cap: 65,535 non-recyclable
   geometry slots, fail-closed). Validate eviction, re-registration, multiple
   flights, and streaming on Vulkan. See
