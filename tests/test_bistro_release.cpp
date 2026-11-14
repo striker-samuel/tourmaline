@@ -13,10 +13,11 @@
 // texture reference resolves to an existing, unique texture blob, and the
 // bakery sign's baseColor is the bakery diffuse (never the wicker basket).
 //
-// Dependency: the demo-content release pak (bistro_static.tapp +
-// bistro_static-<hash>.pak) fetched into <build>/content/paks by the
-// `demo_content` CMake target. The test SKIPS (passes) when the pak is
-// absent so offline / hosted CI stays green — the fetch is the opt-in.
+// Dependency: a cooked bistro pak (bistro_static-<hash>.pak). Bistro is
+// a recreate-from-source demo (see releases/bistro/README.md), so the pak
+// is produced by `tools/recreate_bistro.ps1` / `.sh` (output into
+// releases/bistro/build) or staged into content/paks. The test SKIPS
+// (passes) when the pak is absent so offline / hosted CI stays green.
 //
 // GPU-free on purpose: it reads the pak TOC + material/texture blobs with
 // the file-backed PakReader (positional page reads, no whole-image load)
@@ -90,7 +91,7 @@ struct Cur {
 // bistro_static.pak from a manual deploy also matches). Returns "" when
 // absent (the skip path).
 static std::string FindBistroPak() {
-    const char* dirs[] = {"content/paks", "releases/paks"};
+    const char* dirs[] = {"content/paks", "releases/paks", "releases/bistro/build"};
     for (const char* dir : dirs) {
         std::error_code ec;
         if (!std::filesystem::exists(dir, ec))
@@ -200,8 +201,8 @@ int main() {
     const std::string pak = FindBistroPak();
     if (pak.empty()) {
         std::cout << "SKIP bistro_release_tests: no bistro_static*.pak found under "
-                     "content/paks or releases/paks (run cmake --build <build-dir> "
-                     "--target demo_content to fetch it).\n";
+                     "content/paks, releases/paks or releases/bistro/build (run "
+                     "tools/recreate_bistro.ps1 to recreate it).\n";
         return 0;
     }
     TestBistroPak(pak);
