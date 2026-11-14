@@ -143,3 +143,20 @@ of optional `VK_EXT_mesh_shader` / task-shader support.
 promotion/eviction, multi-flight reuse, masked materials and fallback.
 Tests added here exercise indexed range readiness, overflow, and
 persistent identity; hardware parity has not been verified.
+
+## Streaming publication failure handling (residency safety)
+
+A streamed promotion/eviction invalidates the GPU-scene geometry revision.
+The `WorldSynchronizer` refreshes each live mesh's resident mask and LOD/
+submesh rows in-place, without rebuilding draw-item identity. If any DB
+submesh, LOD, or mesh update fails (for example, due to a stale generational
+handle), geometry publication now fails closed for that flight. The renderer
+will not upload or admit GPU-scene draws from a partially refreshed snapshot.
+The topology and geometry revision cursors are left unchanged on failure, so
+the next frame retries the publication instead of considering the failed
+revision complete. The direct renderer remains the fallback.
+
+This is a CPU-side correctness hardening step, **not full streaming parity**:
+physical index/vertex residency still uses the compatibility registration
+heap, and Vulkan flight-retirement, GPU-LOD promotion/eviction captures,
+shader-side residency and temporal parity still require device validation.
