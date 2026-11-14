@@ -44,6 +44,18 @@ class ScenarioMatrixTests(unittest.TestCase):
         self.assertEqual(verdict("snapshot", 0, {"ok": True}), "pass")
         self.assertEqual(verdict("bench", 1, {"ok": False}), "error")
 
+    def test_record_preserves_reproducibility_metadata(self):
+        metadata = {
+            "os": {"windows": {"build": 26100}},
+            "gpu": {"windows_adapters": [{"name": "GPU", "driver_version": "123"}]},
+            "dxc": {"version_text": "DXC 1.9", "sha256": "abc"},
+        }
+        record = matrix.make_record("gpu", "setup", "scene", "bench",
+                                    str(uuid.uuid4()), "commit", {"ok": True}, 0,
+                                    metadata)
+        self.assertEqual(record["environment"], metadata)
+        self.assertEqual(collector.validate_record(record), record)
+
     def test_collector_rejects_traversal_and_bad_ids(self):
         record = matrix.make_record("gpu", "setup", "scene", "cull", str(uuid.uuid4()),
                                     "commit", {"ok": True}, 0)

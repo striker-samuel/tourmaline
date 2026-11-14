@@ -13,13 +13,15 @@
 #   powershell -ExecutionPolicy Bypass -File install_dependencies.ps1
 #   powershell -ExecutionPolicy Bypass -File install_dependencies.ps1 -Force
 #   powershell -ExecutionPolicy Bypass -File install_dependencies.ps1 -IncludeUnused
+#   powershell -ExecutionPolicy Bypass -File install_dependencies.ps1 -Extended
 #
 # Linux: run install_dependencies.sh instead (same pins; skips the
 # Windows-only binary packages: SDL3 prebuilt, dxc, Streamline).
 
 param(
     [switch]$Force,
-    [switch]$IncludeUnused
+    [switch]$IncludeUnused,
+    [switch]$Extended
 )
 
 $ErrorActionPreference = 'Stop'
@@ -314,6 +316,23 @@ foreach ($pin in $Pins) {
         Write-Warning "[$name] at line $($_.InvocationInfo.ScriptLineNumber): $($_.InvocationInfo.Line.Trim())"
         $failures += $name
     }
+}
+
+# Only extended installs add Python packages. Standard remains unchanged.
+if ($Extended) {
+    $python = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $python) {
+        Write-Warning "[extended] python not found in PATH"
+        $failures += 'extended'
+    } else {
+        & $python.Source -m pip install -r (Join-Path $RepoRoot 'tools/requirements-extended.txt')
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "[extended] optional Python requirements failed (exit $LASTEXITCODE)"
+            $failures += 'extended'
+        }
+    }
+} else {
+    Write-Host "[extended] skipped (pass -Extended for DuckDB/Parquet and Pillow)"
 }
 
 ""

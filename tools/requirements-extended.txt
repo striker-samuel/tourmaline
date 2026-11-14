@@ -1,0 +1,4 @@
+# Optional analytics and screenshot-comparison tooling.
+# DuckDB exports Parquet directly; pyarrow is NOT required.
+duckdb>=1.2,<2
+Pillow>=11,<13
