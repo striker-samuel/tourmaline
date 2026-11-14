@@ -147,6 +147,26 @@ int main() {
         clusters[1].indexOffset = 7; // not a contiguous index interval
         CHECK(!ResolveIndexedGeometry(tables, 0, indexed));
         CHECK(indexed.indexCount == 0);
+
+        // Native registration-time physical ranges need no GfxFilter
+        // cluster scan and become visible only after index upload.
+        const std::array<tour::gfx::IndexedRange, 1> packed{{{0u, 15u}}};
+        IndexedGeometryTables native{};
+        native.meshCount = 1u;
+        native.indexBase = 16u;
+        native.nativeRanges = packed.data();
+        native.nativeRangeCount = uint32_t(packed.size());
+        CHECK(!ResolveIndexedGeometry(native, 0u, indexed));
+        native.nativeResident = true;
+        CHECK(ResolveIndexedGeometry(native, 0u, indexed));
+        CHECK(indexed.firstIndex == 16u && indexed.indexCount == 15u);
+        CHECK(!ResolveIndexedGeometry(native, 1u, indexed));
+        CHECK(indexed.indexCount == 0u);
+        native.indexBase = UINT32_MAX;
+        CHECK(!ResolveIndexedGeometry(native, 0u, indexed));
+        native.indexBase = 16u;
+        native.nativeRangeCount = 0u;
+        CHECK(!ResolveIndexedGeometry(native, 0u, indexed));
     }
     // Indexed geometry is keyed by persistent mesh slot + generation + LOD,
     // not by a transient filter mesh number. Re-registration must not
@@ -186,6 +206,23 @@ int main() {
         CHECK(registry.Synchronize(db, tables));
         CHECK(registry.Revision() == originalRevision);
         CHECK(registry.AliasRevision() == originalAliasRevision); // no redundant uploads
+
+        // Switching descriptor discovery to the native registration table
+        // preserves persistent identity, alias slots and upload revisions.
+        const std::array<tour::gfx::IndexedRange, 2> registered{{
+            {0u, 6u}, {6u, 6u}
+        }};
+        IndexedGeometryTables nativeTables = tables;
+        nativeTables.nativeRanges = registered.data();
+        nativeTables.nativeRangeCount = uint32_t(registered.size());
+        nativeTables.nativeResident = true;
+        CHECK(registry.Synchronize(db, nativeTables));
+        CHECK(registry.Find(key) == stable);
+        CHECK(registry.Revision() == originalRevision);
+        CHECK(registry.AliasRevision() == originalAliasRevision);
+        nativeTables.nativeResident = false;
+        CHECK(!registry.Synchronize(db, nativeTables));
+        CHECK(registry.Revision() == originalRevision);
 
         // GfxFilter re-registers this same logical LOD under a new
         // transient ID. The persistent key and descriptor slot survive.
