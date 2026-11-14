@@ -5857,19 +5857,9 @@ WorldRenderer::FrameBindlessMap WorldRenderer::BuildPoolToBindlessMap() const {
             continue;
         // The serialization enumeration allocates and sorts an owning
         // vector. Hot-path remapping only needs the live handles.
-        clusterPtr->ForEachTextureUri([&](smvk::StringViewT uri, smvk::TextureHandle h) {
-            if (!h.empty()) {
-                const uint32_t bindless = m_context->GetTextureBindlessIndex(h);
-                byPool[h.index()] = bindless;
-                if (std::getenv("TOURMALINE_KD") && bindless >= 4600u && bindless <= 4620u) {
-                    std::fprintf(stderr,
-                                 "[KD] tex uri=%.*s pool=%u bindless=%u\n",
-                                 (int)uri.size(),
-                                 uri.data(),
-                                 h.index(),
-                                 bindless);
-                }
-            }
+        clusterPtr->ForEachTextureUri([&](smvk::StringViewT, smvk::TextureHandle h) {
+            if (!h.empty())
+                byPool[h.index()] = m_context->GetTextureBindlessIndex(h);
         });
     }
     return byPool;
@@ -16495,27 +16485,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                               smvk::ShaderStage::All);
             cmd.PushConstants(
                 0, offsetof(IRenderer::PushConstants, frameUniforms), &pc, smvk::ShaderStage::All);
-            // KD diagnostic: the direct leg's per-draw material (the
-            // "alpha clip with wrong texture" root-cause pin). Logs the
-            // material id + shading model + baseColor texture for the
-            // first 96 direct draws.
-            if (std::getenv("TOURMALINE_KD")) {
-                static uint32_t s_kdMainDrawn = 0;
-                if (s_kdMainDrawn < 96) {
-                    const smvk::Material* mat = m_world->GetMaterial(materialId);
-                    std::fprintf(stderr,
-                                 "[KD] main-draw node=%u material=%u shading=%.0f cpuShading=%d "
-                                 "alpha=%.0f cpuAlpha=%d tex=%d\n",
-                                 (uint32_t)node,
-                                 materialId,
-                                 mat ? mat->values.params.w : -1.0f,
-                                 mat ? (int)mat->shadingModel : -1,
-                                 mat ? mat->values.params2.w : -1.0f,
-                                 mat ? (int)mat->alphaMode : -1,
-                                 mat ? mat->values.textures.x : -1);
-                    ++s_kdMainDrawn;
-                }
-            }
             for (auto& draw_set : meshDesc->geometry.surfaces) {
                 cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
             }

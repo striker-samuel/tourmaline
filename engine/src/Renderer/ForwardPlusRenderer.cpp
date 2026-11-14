@@ -136,20 +136,6 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base, bool fallbackO
         if (!mask.empty())
             staticMask = std::make_shared<std::vector<uint8_t>>(std::move(mask));
     }
-    if (std::getenv("TOURMALINE_KD")) {
-        static uint32_t s_kdMaskLog = 0;
-        if (s_kdMaskLog++ < 3) {
-            uint32_t visible = 0;
-            if (staticMask)
-                for (uint8_t v : *staticMask)
-                    visible += (v != 0);
-            std::fprintf(stderr,
-                         "[KD] prepass cull: hasMainView=%d staticMask=%zu visible=%u\n",
-                         hasMainView ? 1 : 0,
-                         staticMask ? staticMask->size() : 0,
-                         visible);
-        }
-    }
 
     using NodeId = ::NodeId;
 
@@ -276,25 +262,28 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base, bool fallbackO
                     if (((item.flags & smvk::IteratorFlagBit_Masked) != 0 || ditherFade) !=
                         maskedPhase)
                         return;
-                    // KD diagnostic (TOURMALINE_KD): BOTH depth phases'
-                    // per-draw material + Masked flag + shading model. If an
-                    // OPAQUE material (shading 0) shows up in the "masked"
-                    // phase here, the phase split is wrong; if it shows in the
-                    // "solid" phase but still samples a texture in the capture,
-                    // the solid pipeline is not the VS-only program.
-                    if (std::getenv("TOURMALINE_KD")) {
-                        static uint32_t s_kdDepthDrawn = 0;
-                        if (s_kdDepthDrawn < 200) {
-                            const smvk::Material* mat = world->GetMaterial(item.material);
+                    // KD diagnostic (TOURMALINE_KD): the masked-depth phase's
+                    // per-draw material id. A misassigned material shows up here
+                    // as a single id for every draw (e.g. "material=220" over and
+                    // over) instead of the ~20 distinct masked materials bistro
+                    // authors. One-shot: the first 96 draws + a tally of the first
+                    // 256 so the spread (or lack of it) is visible at a glance.
+                    if (maskedPhase && std::getenv("TOURMALINE_KD")) {
+                        static uint32_t s_kdMaskedDrawn = 0;
+                        static uint32_t s_kdMaskedByMat[512] = {0};
+                        if (s_kdMaskedDrawn < 96)
                             std::fprintf(stderr,
-                                         "[KD] depth-draw phase=%s node=%u material=%u "
-                                         "masked=%u shading=%.0f\n",
-                                         maskedPhase ? "masked" : "solid",
+                                         "[KD] masked-depth draw node=%u material=%u\n",
                                          (uint32_t)item.node,
-                                         item.material,
-                                         (item.flags & smvk::IteratorFlagBit_Masked) ? 1u : 0u,
-                                         mat ? mat->values.params.w : -1.0f);
-                            ++s_kdDepthDrawn;
+                                         item.material);
+                        if (item.material < 512u)
+                            ++s_kdMaskedByMat[item.material];
+                        if (++s_kdMaskedDrawn == 256u) {
+                            std::fprintf(stderr, "[KD] masked-depth tally (first 256):\n");
+                            for (uint32_t m = 0; m < 512u; ++m)
+                                if (s_kdMaskedByMat[m])
+                                    std::fprintf(
+                                        stderr, "  material=%u count=%u\n", m, s_kdMaskedByMat[m]);
                         }
                     }
                     // Fallback-only mode (Northlight depth split): the gfx
