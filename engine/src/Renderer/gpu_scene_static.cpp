@@ -160,6 +160,21 @@ static uint32_t FinishMesh(StaticGeometry& s, uint32_t clusterStart) {
     else
         bound = glm::vec4((mn + mx) * 0.5f, glm::length((mx - mn) * 0.5f));
     s.meshBounds.push_back(bound);
+    // Mesh clusters append into the same packed index stream, so the
+    // physical range is known at registration time rather than rediscovered
+    // by walking a separate renderer-side mesh/cluster table.
+    IndexedRange range{};
+    if (entry.clusterCount != 0u) {
+        const Cluster& first = s.clusters[clusterStart];
+        const Cluster& last = s.clusters.back();
+        const uint64_t end = uint64_t(last.indexOffset) + uint64_t(last.triCount) * 3u;
+        if (end <= std::numeric_limits<uint32_t>::max() &&
+            end > first.indexOffset && end <= s.filterIndices.size()) {
+            range.firstIndex = first.indexOffset;
+            range.indexCount = uint32_t(end - first.indexOffset);
+        }
+    }
+    s.indexedRanges.push_back(range);
     s.meshes.push_back(entry);
     return (uint32_t)s.meshes.size() - 1;
 }
@@ -301,12 +316,17 @@ void ResetStaticRegistrations(StaticGeometry& s) {
     s.clusters.clear();
     s.meshes.clear();
     s.meshBounds.clear();
+    s.indexedRanges.clear();
+    s.indexedRangesResident = false;
     // clusterIndexBase/AllocBits + the table buffers stay — they are
     // UploadStaticData's to retire/replace (alloc-new-first, the old region
     // frees deferred).
 }
 
 void UploadStaticData(StaticGeometry& s, ResourceManager& ctx, RenderGraph& rg) {
+    // The current upload must complete before any indexed-range descriptor
+    // can become visible to GPU Scene. Failure leaves all ranges unusable.
+    s.indexedRangesResident = false;
     if (!s.clusterLogical.empty())
         rg.FreeBuffer(s.clusterLogical);
     s.clusterLogical = {};
@@ -367,6 +387,9 @@ void UploadStaticData(StaticGeometry& s, ResourceManager& ctx, RenderGraph& rg) 
                            PipelineStage(PipelineStageBit_Compute),
                            AccessFlags::ShaderRead);
     s.clusterLogical = rg.AddExternalBuffer(s.clusterBuffer, "gpu-scene clusters");
+    if (s.clusterLogical.empty())
+        return;
+    s.indexedRangesResident = true;
     if (!s.meshletVertexLogical.empty())
         rg.FreeBuffer(s.meshletVertexLogical);
     s.meshletVertexLogical = {};

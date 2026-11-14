@@ -111,3 +111,35 @@ Device validation remains required. In particular, test multiple frames
 in flight with LOD promotion/eviction, re-registration, missed residency,
 masked foliage and no GPU scene ownership on a failed indexed publication.
 A headless test cannot replace these Vulkan captures.
+
+
+## Stage 3: native indexed range publication (draft implementation)
+
+`StaticGeometry` now records one `IndexedRange` per mesh at registration
+time, from the same packed cluster-ordered index stream that is uploaded
+to the GPU. On successful index/cluster upload, `indexedRangesResident`
+allows these descriptors to be used; reset and upload failure leave them
+unavailable. `WorldRenderer` publishes this native descriptor source
+to `PersistentGeometryRegistry`, instead of recalculating an indexed range
+from GfxFilter's per-cluster records. The existing persistent geometry key,
+transient alias map, GPU-scene raster work ABI, and fallback policies are
+unchanged.
+
+**Not a complete GfxRenderer retirement:** `GfxRenderer::State` currently
+inherits the `StaticGeometry` storage and its registration still supplies
+revision-local IDs to `WorldSynchronizer`. This stage removes a redundant
+descriptor *derivation*, not the shared physical geometry registration,
+cluster-index buffer, optional task/mesh geometry, Hi-Z services or direct
+fallback. The filtered rendering gate stays disabled. Subsequent migration
+should make GPU-scene geometry the caller-owned registration authority and
+replace transient IDs with residency-safe persistent references before
+deleting the compatibility registration sidecar.
+
+The indexed raster backend remains the Vulkan 1.3 baseline, independent
+of optional `VK_EXT_mesh_shader` / task-shader support.
+
+**Validation required before merging:** compile on Windows/Linux, run
+`GpuSceneWorldTests`, and capture Vulkan mixed-scene frames through stream
+promotion/eviction, multi-flight reuse, masked materials and fallback.
+Tests added here exercise indexed range readiness, overflow, and
+persistent identity; hardware parity has not been verified.

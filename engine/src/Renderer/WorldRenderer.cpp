@@ -10524,6 +10524,12 @@ static tour::gpu_scene::IndexedGeometryTables GpuSceneIndexedTables(const tour::
     tables.clusters = gfx.clusters.data();
     tables.clusterCount = uint32_t(gfx.clusters.size());
     tables.indexBase = gfx.clusterIndexBase;
+    // StaticGeometry owns these packed, upload-validated physical index
+    // ranges. GfxRenderer::State inherits that geometry storage, but its
+    // per-view GfxFilter cluster/draw state is not the descriptor authority.
+    tables.nativeRanges = gfx.indexedRanges.data();
+    tables.nativeRangeCount = uint32_t(gfx.indexedRanges.size());
+    tables.nativeResident = gfx.indexedRangesResident;
     return tables;
 }
 

@@ -41,6 +41,12 @@ struct IndexedGeometryTables {
     const tour::gfx::Cluster* clusters = nullptr;
     uint32_t clusterCount = 0;
     uint32_t indexBase = 0; // absolute firstIndex base of the index heap
+    // Native registration-time indexed descriptors, published by the static
+    // geometry owner after a successful index-heap upload. When supplied,
+    // use these instead of reconstructing ranges from GfxFilter clusters.
+    const tour::gfx::IndexedRange* nativeRanges = nullptr;
+    uint32_t nativeRangeCount = 0;
+    bool nativeResident = false;
 };
 
 // Admission guard for streamed LOD metadata. The persistent instance sphere
@@ -70,7 +76,22 @@ struct IndexedGeometryTables {
                                                  uint32_t meshIndex,
                                                  IndexedGeometry& out) noexcept {
     out = {};
-    if (meshIndex >= tables.meshCount)
+    if (tables.nativeRanges) {
+        if (!tables.nativeResident || meshIndex >= tables.nativeRangeCount)
+            return false;
+        const auto& range = tables.nativeRanges[meshIndex];
+        const uint64_t absolute = uint64_t(tables.indexBase) + range.firstIndex;
+        // The whole [absolute, absolute + indexCount) span must fit the
+        // uint32 index domain: reject a range whose END overflows even when
+        // its start is in bounds.
+        if (range.indexCount == 0u || absolute > std::numeric_limits<uint32_t>::max() ||
+            absolute + range.indexCount > uint64_t(std::numeric_limits<uint32_t>::max()) + 1u)
+            return false;
+        out.indexCount = range.indexCount;
+        out.firstIndex = uint32_t(absolute);
+        return true;
+    }
+    if (meshIndex >= tables.meshCount || !tables.meshes || !tables.clusters)
         return false;
     const tour::gfx::Mesh& mesh = tables.meshes[meshIndex];
     if (mesh.clusterCount == 0 || mesh.clusterStart > tables.clusterCount ||
@@ -133,8 +154,13 @@ struct PersistentGeometryKeyHash {
 class PersistentGeometryRegistry {
   public:
     [[nodiscard]] bool Synchronize(const RenderDatabase& db, const IndexedGeometryTables& source) {
-        if ((source.meshCount && !source.meshes) || (source.clusterCount && !source.clusters))
+        if (source.nativeRanges) {
+            if (source.nativeRangeCount != source.meshCount || !source.nativeResident)
+                return false;
+        } else if ((source.meshCount && !source.meshes) ||
+                   (source.clusterCount && !source.clusters)) {
             return false;
+        }
         auto nextKeys = ids_;
         auto nextRows = rows_;
         // Retire all previous descriptors unless a live DB mesh/LOD

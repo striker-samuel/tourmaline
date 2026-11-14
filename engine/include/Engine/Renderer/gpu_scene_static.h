@@ -58,6 +58,16 @@ struct Mesh {
     uint32_t clusterCount = 0;
 };
 
+// Physical indexed range generated alongside the static index stream.
+// firstIndex is relative to clusterIndexBase until upload completes. This
+// describes the SAME immutable index payload as the meshlet registrations,
+// without re-walking GfxFilter's cluster table in the raster publisher.
+struct IndexedRange {
+    uint32_t firstIndex = 0;
+    uint32_t indexCount = 0;
+};
+static_assert(sizeof(IndexedRange) == 8);
+
 // GPU byte-mirror of Cluster (uploaded by UploadStaticData).
 struct ClusterConstants {
     uint32_t indexOffset = 0; // into the cluster-ordered index buffer (uints)
@@ -83,6 +93,8 @@ struct StaticGeometry {
     std::vector<uint32_t> meshletTriangles; // 3 packed u8 local ids per uint
     std::vector<Cluster> clusters;
     std::vector<Mesh> meshes;
+    std::vector<IndexedRange> indexedRanges; // one range per mesh registration
+    bool indexedRangesResident = false; // false across reset or failed upload
     std::vector<glm::vec4> meshBounds;  // per-mesh union bound (center.xyz, radius)
     uint32_t clusterIndexBase = 0;      // region base in uint32 indices (0 = none)
     uint64_t clusterIndexAllocBits = 0; // VMA virtual-allocation bits
