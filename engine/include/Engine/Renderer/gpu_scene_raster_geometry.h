@@ -55,6 +55,41 @@ namespace tour::gpu_scene {
     return true;
 }
 
+// Build one revision-local indexed alias table: retain compatibility Gfx
+// IDs in its prefix, but allow a native-only suffix for valid World LODs
+// with no cooked meshlet registration. A collision tombstones the slot so
+// no later indirect work can address ambiguous physical allocations.
+[[nodiscard]] inline uint32_t RegisterNativeIndexedRange(
+    std::vector<tour::gfx::IndexedRange>& rows,
+    std::span<uint8_t> conflicting,
+    const tour::gfx::IndexedRange& physical,
+    uint32_t gfxId,
+    bool& taskIdsCompatible) {
+    if (!physical.indexCount)
+        return InvalidIndex;
+    if (gfxId < conflicting.size()) {
+        if (gfxId >= rows.size() || conflicting[gfxId])
+            return InvalidIndex;
+        auto& prior = rows[gfxId];
+        if (prior.indexCount != 0u &&
+            (prior.firstIndex != physical.firstIndex ||
+             prior.indexCount != physical.indexCount ||
+             prior.vertexOffset != physical.vertexOffset)) {
+            prior = {};
+            conflicting[gfxId] = 1u;
+            return InvalidIndex;
+        }
+        prior = physical;
+        return gfxId;
+    }
+    if (rows.size() >= kMaxRasterDrawGroups)
+        return InvalidIndex;
+    taskIdsCompatible = false;
+    const uint32_t id = uint32_t(rows.size());
+    rows.push_back(physical);
+    return id;
+}
+
 // The static GfxFilter geometry tables this publisher reads: a narrow
 // pointer+count VIEW, never the whole gfx::State. Engine-facing headers do not
 // carry RHI implementation state (the R8 boundary guard in
