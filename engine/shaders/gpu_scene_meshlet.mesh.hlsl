@@ -190,7 +190,12 @@ void mainMS(uint3 gid : SV_GroupID,
         if (valid) {
             const uint geoSlot=p.aliases.Get().slots[geometryId];
             valid=geoSlot<p.geometryCount && geoSlot<GS_MAX_GEO;
-            if (valid) geo=p.geometry.Get().rows[geoSlot];
+            if (valid) {
+                geo=p.geometry.Get().rows[geoSlot];
+                // Indexed ranges now reflect World::Surface residency.
+                // Do not emit meshlets from a tombstoned physical LOD.
+                valid=geo.indexCount!=0u;
+            }
         }
     }
     if (valid) {
