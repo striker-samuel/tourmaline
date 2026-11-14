@@ -10521,11 +10521,14 @@ void WorldRenderer::MountContentVfs(smvk::OverlayVfs& vfs) const {
 // allocations, not a second cluster-ordered GfxFilter index copy. Rebuild
 // only after an asset/LOD registration revision; the per-flight publisher
 // snapshots these ranges before any indirect command can consume them.
-void WorldRenderer::RefreshGpuScenePhysicalIndexedRanges() {
+void WorldRenderer::RefreshGpuScenePhysicalIndexedRanges(bool nativeOnly) {
     const auto& gfx = m_gfxRenderer.State();
     m_gpuScenePhysicalIndexedRanges.assign(gfx.meshes.size(), {});
     m_gpuScenePhysicalLodIds.clear();
-    m_gpuSceneTaskGeometryIdsCompatible = true;
+    m_gpuSceneTaskGeometryIdsCompatible = !nativeOnly;
+    m_gpuScenePhysicalWorld = m_world;
+    m_gpuScenePhysicalTopologyRevision =
+        m_world ? m_world->gpuSceneTopologyRevision : ~uint64_t(0);
     if (!m_world)
         return;
     m_gpuScenePhysicalLodIds.resize(m_world->lodChains.size());
@@ -10552,7 +10555,8 @@ void WorldRenderer::RefreshGpuScenePhysicalIndexedRanges() {
             if (!tour::gpu_scene::ResolveWorldSurfaceIndexedRange(
                     *mesh, indexWords, vertexLimit, physical))
                 continue;
-            const uint32_t gfxId = m_gfxRenderer.GfxMeshForLod(worldMesh, lod);
+            const uint32_t gfxId = nativeOnly ? UINT32_MAX
+                                              : m_gfxRenderer.GfxMeshForLod(worldMesh, lod);
             if (gfxId >= gfx.meshes.size()) {
                 if (m_gpuScenePhysicalIndexedRanges.size() >=
                     tour::gpu_scene::kMaxRasterDrawGroups)
@@ -11655,6 +11659,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // GPUIR scene mirror: topology reconciliation or dirty transforms,
     // then flight-safe GPU table publication. Draws still use GfxFilter.
     if (m_world) {
+        if (m_gpuScenePhysicalWorld != m_world ||
+            m_gpuScenePhysicalTopologyRevision != m_world->gpuSceneTopologyRevision) {
+            // World topology can mutate independently of LOD streaming:
+            // GPU-scene must not reuse a Gfx mesh ID from an obsolete map.
+            // Rebuild physical ranges using native-only transient IDs and
+            // keep task/mesh disabled until a full cooked re-registration.
+            RefreshGpuScenePhysicalIndexedRanges(/*nativeOnly=*/true);
+            ++m_gpuSceneGeometryRevision;
+        }
         const auto gpuSceneSync =
             m_gpuSceneSync.Synchronize(*m_world,
                                        m_gpuSceneDatabase,
