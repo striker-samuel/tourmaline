@@ -31,6 +31,29 @@
 
 namespace tour::gpu_scene {
 
+// Indexed raster consumes the SAME physical World::Surface allocation as
+// direct drawing. Meshlet GPU streams remain optional acceleration data;
+// their cluster-ordered index copy is not an indexed draw source.
+// The caller proves the selected LOD is physically resident before entry.
+[[nodiscard]] inline bool ResolveWorldSurfaceIndexedRange(
+    const tour::StaticMesh& mesh,
+    uint64_t indexWordCapacity,
+    uint64_t vertexCapacity,
+    tour::gfx::IndexedRange& out) noexcept {
+    out = {};
+    if (mesh.geometry.topology != smvk::PrimitiveTopology::TriangleList ||
+        mesh.geometry.surfaces.size() != 1u)
+        return false;
+    const auto& surface = mesh.geometry.surfaces.front();
+    if (surface.indexCount == 0u || (surface.indexCount % 3u) != 0u ||
+        uint64_t(surface.firstIndex) + surface.indexCount > indexWordCapacity ||
+        surface.baseVertex < 0 ||
+        uint64_t(surface.baseVertex) + mesh.geometry.vertexCount > vertexCapacity)
+        return false;
+    out = {surface.firstIndex, surface.indexCount, surface.baseVertex};
+    return true;
+}
+
 // The static GfxFilter geometry tables this publisher reads: a narrow
 // pointer+count VIEW, never the whole gfx::State. Engine-facing headers do not
 // carry RHI implementation state (the R8 boundary guard in
