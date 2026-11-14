@@ -12903,7 +12903,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 tour::gpu_scene::CandidateValidator::MeshletCompactPlan meshletPlan{};
                 bool meshletCompactReady = false;
                 if (!taskReady && s_gpuSceneMeshlets && gpuSceneRasterMode && workReady &&
-                    rasterReady && m_gfxRenderer.State().indexedRangesResident &&
+                    rasterReady && m_gpuSceneTaskGeometryIdsCompatible &&
+                    m_gfxRenderer.State().indexedRangesResident &&
                     m_gpuSceneMeshletPrograms[0].shaderCount == 1 &&
                     m_gpuSceneMeshletPrograms[1].shaderCount == 1 &&
                     m_gpuSceneMeshletPrograms[2].shaderCount == 1 &&
