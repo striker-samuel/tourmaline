@@ -3642,6 +3642,7 @@ std::unique_ptr<Cluster> DeserializeCluster(ResourceManager& ctx,
         cluster->cookedStaticBvh = std::move(cookedBvh.tree);
         cluster->cookedStaticBvhStateHash = cookedBvh.stateHash;
         cluster->cookedStaticBvhNodeCount = cookedBvh.bakedNodeCount;
+        cluster->cookedStaticBvhPresent = cookedBvh.present;
         if (!sceneName.empty())
             std::cerr << "DeserializeCluster: scene[" << sceneIndex << "] '" << sceneName << "'\n";
         // The skeleton (the knight's joint table + inverse binds) landed

@@ -327,13 +327,13 @@ void TestAnimPakKind() {
     const std::string path = "content/models/knight/walk.anim";
     const std::string text = "tourAnim test clip bytes";
     smvk::PakWriter writer;
-    Check(writer.AddBlob(smvk::PakAssetKind::Anim, path,
-                         std::vector<uint8_t>(text.begin(), text.end())),
+    Check(writer.AddBlob(
+              smvk::PakAssetKind::Anim, path, std::vector<uint8_t>(text.begin(), text.end())),
           "anim.writer-adds-dedicated-kind");
     const auto image = writer.Finalize();
     std::string err;
-    auto backend = smvk::PakBackend::Open(std::make_shared<std::vector<uint8_t>>(image),
-                                          "anim-test", err);
+    auto backend =
+        smvk::PakBackend::Open(std::make_shared<std::vector<uint8_t>>(image), "anim-test", err);
     Check(backend != nullptr, "anim.pak-opens");
     if (!backend)
         return;
@@ -343,13 +343,11 @@ void TestAnimPakKind() {
           "anim.not-classified-as-texture");
     Check(backend->Exists(path), "anim.vfs-exists");
     auto bytes = backend->TryRead(path);
-    Check(bytes && std::string(bytes->begin(), bytes->end()) == text,
-          "anim.vfs-returns-raw-clip");
+    Check(bytes && std::string(bytes->begin(), bytes->end()) == text, "anim.vfs-returns-raw-clip");
     const auto stat = backend->Stat(path);
     Check(stat && stat->size == text.size(), "anim.vfs-stat-raw-size");
     const auto listing = backend->ListDir("content/models/knight");
-    Check(std::find(listing.begin(), listing.end(), path) != listing.end(),
-          "anim.vfs-listed");
+    Check(std::find(listing.begin(), listing.end(), path) != listing.end(), "anim.vfs-listed");
 }
 
 // ---- Corruption handling (smvk::PakBackend::Open fail-closed) ----
@@ -455,6 +453,7 @@ std::unique_ptr<smvk::World> WorldWithOneCluster(bool staticsSerialized, bool sk
     addNode(cluster->scene, 0, 1);
     cluster->scene.staticRoot.assign(cluster->scene.hierarchy.size(), 0);
     cluster->scene.staticRootsSerialized = staticsSerialized;
+    cluster->cookedStaticBvhPresent = staticsSerialized; // cooked paks carry both sections
     cluster->hasSkeleton = skeleton;
     world->RegisterCluster(std::move(cluster));
     return world;
@@ -575,11 +574,12 @@ void TestStaticFlagApplication() {
         app::ApplyCookedStaticFlags(*world, "marked.pak");
         Check(s.staticRoot[0] == 1, "pakhost.staticflags.cooked-marks-preserved");
     }
-    // LEGACY (pre-section) non-skinned cluster: the loud compat fallback
-    // freezes the root — the documented old-pak behavior, now the ONLY
-    // route to a viewer-side freeze.
+    // LEGACY (pre-section) non-skinned cluster: strict by default (the
+    // load path FAILS), and the legacyStaticFallback bool re-enables the
+    // documented viewer-side freeze (the ONLY route to a freeze now).
     {
         auto world = WorldWithOneCluster(false, false);
+        world->legacyStaticFallback = true;
         app::ApplyCookedStaticFlags(*world, "legacy.pak");
         Check(!AllNodesDynamic(*world) && world->clusters.front()->scene.staticRoot[0] == 1,
               "pakhost.staticflags.legacy-fallback-freezes");
@@ -1123,8 +1123,7 @@ void TestProjectScenes() {
     {
         const NodeHandle imported = MakeNodeHandle(world.scene, NodeId(0));
         const glm::vec3 moved(7.f, 8.f, 9.f);
-        Check(imported != kNodeInvalidHandle &&
-                  world[imported].SetPosition(moved) &&
+        Check(imported != kNodeInvalidHandle && world[imported].SetPosition(moved) &&
                   glm::distance(glm::vec3(world.scene.localTransform[0][3]), moved) < 1e-4f,
               "pscenes.imported-world-node-set-position");
     }
@@ -1143,12 +1142,10 @@ void TestProjectScenes() {
         app::ProjectScenes boundScenes(context);
         boundScenes.clusterLoader = scenes.clusterLoader;
         auto added = boundScenes.LoadSceneAdditive(world, 0x1000, err);
-        Check(bool(added) && boundScenes.IsLoaded(added) &&
-                  boundScenes.LoadedSceneCount() == 1 &&
+        Check(bool(added) && boundScenes.IsLoaded(added) && boundScenes.LoadedSceneCount() == 1 &&
                   world.lightLocations.size() == 3,
               "pscenes.context-additive");
-        Check(boundScenes.RemoveScene(added, world, err) &&
-                  world.lightLocations.size() == 2,
+        Check(boundScenes.RemoveScene(added, world, err) && world.lightLocations.size() == 2,
               "pscenes.context-additive-cleanup");
     }
 
@@ -1646,10 +1643,12 @@ void TestAssetManager() {
         Check(world[gameNode].SetPosition(testPosition) &&
                   world[gameNode].SetRotation(testRotation) &&
                   world[gameNode].SetScale(testScale) &&
-                  glm::distance(glm::vec3(world.scene.localTransform[gameSlot][3]), testPosition) < 1e-4f,
+                  glm::distance(glm::vec3(world.scene.localTransform[gameSlot][3]), testPosition) <
+                      1e-4f,
               "am.world-node-local-trs-setters");
         Check(!world[gameNode].SetScale(glm::vec3(std::numeric_limits<float>::infinity())) &&
-                  glm::distance(glm::vec3(world.scene.localTransform[gameSlot][3]), testPosition) < 1e-4f,
+                  glm::distance(glm::vec3(world.scene.localTransform[gameSlot][3]), testPosition) <
+                      1e-4f,
               "am.world-node-rejects-nonfinite-scale");
         Check(world[gameNode].SetMesh(tree) && FindMesh(world.scene, gameSlot) &&
                   FindMesh(world.scene, gameSlot)->mesh == assets.MeshWorldIndex(tree),
@@ -1960,6 +1959,11 @@ int main() {
     // CTest captures stdout through a pipe: flush each check so a Linux
     // crash identifies the last completed assertion in the job log.
     std::cout << std::unitbuf;
+    // The pscenes/scene tests load hand-built paks WITHOUT the cooked
+    // static-cull BVH section; the strict fail-on-open gate (added for the
+    // deployment/launch path) would abort them. Opt this test process into
+    // the legacy fallback so those hand-built paks freeze roots viewer-side.
+    _putenv_s("TOURMALINE_LEGACY_STATIC_FALLBACK", "1");
     TestParallelCrcFirstUse();
     TestCliParse();
     TestRuntime();

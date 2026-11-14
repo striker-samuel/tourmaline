@@ -101,6 +101,15 @@ struct Cluster {
     // PREFIX — the world may append runtime-owned nodes post-parse).
     uint64_t cookedStaticBvhStateHash = 0;
     uint32_t cookedStaticBvhNodeCount = 0;
+    // SECTION PRESENCE (CookedStaticBvhOut::present): distinguishes a NEW
+    // pak whose scene blob carried the static-cull BVH section (possibly a
+    // zero-prim tree) from a PRE-SECTION pak that carried none. The load
+    // path fails on a pre-section pak unless World::legacyStaticFallback
+    // opts into the on-load rebuild.
+    bool cookedStaticBvhPresent = false;
+    [[nodiscard]] bool hasBvh() const {
+        return cookedStaticBvhPresent;
+    }
 
     smvk::Pool<StaticMesh, StaticMesh> staticMeshes;
     // smvk::Pool<SkinnedMesh, SkinnedMesh> skinnedMesh;
@@ -120,8 +129,7 @@ struct Cluster {
     // Handles return in input order. All-or-nothing: {} when ANY entry
     // fails (degenerate mesh, heap full) — nothing is staged to the GPU
     // in that case. Cook mode / retainUploads mirror the single path.
-    std::vector<ClusterStaticMeshHandle> UploadMeshes(
-        std::span<const MeshData> uploads);
+    std::vector<ClusterStaticMeshHandle> UploadMeshes(std::span<const MeshData> uploads);
     // Direct-addressed batched upload (v4 fast-load path): the sources
     // are packed-SoA stream subranges of ONE blob (`content` — the
     // loaded pak image) addressed by byte offsets, so the upload is

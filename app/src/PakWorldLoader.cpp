@@ -155,6 +155,11 @@ void PostLoadTail(tour::World& world, const std::string& pakStem, app::ProjectRu
     {
         // Cooked static flags + the node hierarchy resolve/fixup tail.
         SMVK_PROFILE_IO("PakWorld_Fixup");
+        // The legacy-static fallback toggle: pre-section paks FAIL by
+        // default (recook); TOURMALINE_LEGACY_STATIC_FALLBACK=1 opts into
+        // the viewer-side freeze + on-load BVH rebuild.
+        if (const char* lsf = std::getenv("TOURMALINE_LEGACY_STATIC_FALLBACK"))
+            world.legacyStaticFallback = std::atoi(lsf) != 0;
         ApplyCookedStaticFlags(world, pakStem);
         world.ResolveAndFixup_clusters();
     }
@@ -227,11 +232,41 @@ void ApplyCookedStaticFlags(tour::World& world, const std::string& pakName) {
         tour::Cluster* c = clusterPtr.get();
         if (!c || c->scene.hierarchy.empty())
             continue;
-        if (c->scene.staticRootsSerialized)
-            continue; // cooked: honor the recorded marks verbatim
-                      // (all-zero = authored all-dynamic)
         if (c->hasSkeleton)
-            continue; // skinned clusters stay dynamic (the anim driver)
+            continue; // skinned clusters stay dynamic (the anim driver) —
+                      // never GPU-scene-owned, so no static-cull BVH needed
+        // LEGACY-STATIC FALLBACK (the opt-in toggle): force the viewer-side
+        // freeze (mark every node static) so a scene with no authored
+        // static marking still engages the GPU-scene path — the meshes need
+        // the Static flag to be admitted. This is the testing lever to put
+        // bistro-class content on the GPU-driven culling + seed-history
+        // chain without a recook.
+        if (world.legacyStaticFallback) {
+            std::cerr << "[App] cluster '" << pakName
+                      << "' (legacyStaticFallback) freezing its roots viewer-side"
+                         " to engage the GPU-scene path\n";
+            MarkSubtreeStatic(c->scene, 0);
+            continue;
+        }
+        // STRICT COOKED-BVH GATE (fail on open): a non-skinned pak WITHOUT
+        // the static-cull BVH section (pre-section OR pre-BVH-section) has
+        // no baked static culling, so no mesh ever carries the Static flag
+        // and GPU-scene admission never engages.
+        if (!c->hasBvh()) {
+            std::fprintf(stderr,
+                         "[App] FATAL: cluster '%s' has no cooked static-cull BVH "
+                         "(pre-section/legacy pak); recook the pak, or launch with "
+                         "TOURMALINE_LEGACY_STATIC_FALLBACK=1 to freeze roots "
+                         "viewer-side.\n",
+                         pakName.c_str());
+            std::abort();
+        }
+        // A cooked (new) pak honors the serialized static section verbatim
+        // (all-zero == authored all-dynamic).
+        if (c->scene.staticRootsSerialized)
+            continue;
+        // Skew: BVH section present but static section missing — freeze for
+        // safety (the meshes otherwise carry no static marking).
         std::cerr << "[App] cluster '" << pakName
                   << "' carries no serialized static section (a legacy pak);"
                      " freezing its roots viewer-side — recook for authored"

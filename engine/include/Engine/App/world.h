@@ -1155,6 +1155,15 @@ struct World {
     [[nodiscard]] bool HasStaticBvh() const {
         return staticBvhValid_ && !staticBvh_.nodes.empty() && !staticBvh_.primIndices.empty();
     }
+    // Legacy-static fallback toggle (the app load path owns it): a
+    // PRE-SECTION pak (Cluster::hasBvh() == false — no cooked static-cull
+    // section) is a deployment error because the static marking that gates
+    // GPU-scene admission never exists, so the whole GPU-driven culling/
+    // seed-history chain silently degrades to the legacy path. Default
+    // FALSE = FAIL ON OPEN (the load path aborts with a recook message).
+    // Set TRUE (TOURMALINE_LEGACY_STATIC_FALLBACK=1) to opt into the
+    // viewer-side freeze + on-load BVH rebuild for genuinely legacy paks.
+    bool legacyStaticFallback = false;
     // Frustum-culls the static tree against caller planes (e.g. the
     // main RenderView's 6 guarded planes) and returns a per-node mask
     // sized to scene.hierarchy.size(): 1 = static node visible OR any
