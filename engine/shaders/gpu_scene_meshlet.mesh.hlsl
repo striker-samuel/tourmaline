@@ -225,13 +225,13 @@ void mainMS(uint3 gid : SV_GroupID,
     const bool fastNormal=(pc.vertexOptFlags & 1u) != 0u;
     const uint vertexBase=c.a.z;
     const uint triBase=c.e.x;
-    // One unique vertex per lane. The meshlet vertex stream is already
-    // heap-global (lifted at registration); only the geometry's signed
-    // vertexOffset is applied, mirroring vkCmdDrawIndexedIndirect.
+    // The meshlet vertex stream is already heap-global (lifted at cook
+    // registration). Indexed raster now uses the World::Surface baseVertex
+    // in its physical descriptor; applying that offset again here would
+    // corrupt optional task/mesh rendering.
     for (uint v=tid.x;v<vertexCount;v+=GS_MESH_THREADS) {
         const uint globalId=p.meshletVertices.Get().id[vertexBase+v];
-        const int64_t vertexSigned=(int64_t)globalId+(int64_t)geo.vertexOffset;
-        verts[v]=FetchVertex((uint)vertexSigned,frame,p,fastNormal);
+        verts[v]=FetchVertex(globalId,frame,p,fastNormal);
         if (p.debugMode!=0u)
             verts[v].color=dbgColor;
     }
