@@ -12,6 +12,7 @@
 #include <Engine/Scene/scene.h>
 
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
 #include <imgui.h>
 
 #include <algorithm>
@@ -198,11 +199,11 @@ void HairBundle(MeshRecipe& mesh, float size, int resolution) {
 }
 
 smvk::MeshData MakeFixture(int shape,
-                                   float size,
-                                   int resolution,
-                                   float thickness,
-                                   float amplitude,
-                                   float frequency) {
+                           float size,
+                           int resolution,
+                           float thickness,
+                           float amplitude,
+                           float frequency) {
     MeshRecipe mesh;
     switch (shape) {
     case 0:
@@ -280,13 +281,12 @@ void RuntimeProcedurals::ApplyRuntimeProceduralRequest() {
     smvk::Cluster& dyn = World()->EnsureDynamicCluster(m_host.GetResourceManager());
 
     if (request == 1) {
-        const smvk::MeshData upload =
-            MakeFixture(std::clamp(m_runtimeProcShape, 0, 7),
-                        std::clamp(m_runtimeProcSize, 0.2f, 20.0f),
-                        std::clamp(m_runtimeProcResolution, 8, 64),
-                        std::clamp(m_runtimeProcThickness, 0.02f, 5.0f),
-                        std::clamp(m_runtimeProcWaveHeight, 0.0f, 3.0f),
-                        std::clamp(m_runtimeProcWaveFreq, 0.25f, 10.0f));
+        const smvk::MeshData upload = MakeFixture(std::clamp(m_runtimeProcShape, 0, 7),
+                                                  std::clamp(m_runtimeProcSize, 0.2f, 20.0f),
+                                                  std::clamp(m_runtimeProcResolution, 8, 64),
+                                                  std::clamp(m_runtimeProcThickness, 0.02f, 5.0f),
+                                                  std::clamp(m_runtimeProcWaveHeight, 0.0f, 3.0f),
+                                                  std::clamp(m_runtimeProcWaveFreq, 0.25f, 10.0f));
         if (upload.vertices.empty() || upload.indices.empty())
             return;
         const auto newMesh = dyn.UploadMesh(upload);
@@ -336,6 +336,62 @@ void RuntimeProcedurals::ApplyRuntimeProceduralRequest() {
         m_runtimeProcMesh = {};
         m_runtimeProcMaterial = {};
     }
+}
+
+// Queued by ImGui during the last frame, applied at the frame boundary
+// like the fixture request. Spawns a REAL SceneLight spot (dynamic
+// cluster) at the camera, aimed along the camera's forward — no
+// renderer-synthetic crowd, so it rides authored light selection,
+// shadows and per-tile lists exactly like an editor spot.
+void RuntimeProcedurals::ApplyRuntimeSpotRequest() {
+    if (m_runtimeSpotRequest == 0 || !World() || !m_host.GetResourceManager()) {
+        m_runtimeSpotRequest = 0;
+        return;
+    }
+    const int request = std::exchange(m_runtimeSpotRequest, 0);
+    smvk::Cluster& dyn = World()->EnsureDynamicCluster(m_host.GetResourceManager());
+
+    if (request == 1) {
+        const auto& cam = m_renderer.CameraPositioner();
+        // Spot aim = node local -Z (GltfPunctualAimAxis == (0,0,-1));
+        // the camera's forward is also its local -Z, so casting the
+        // camera orientation into the node frame points the cone where
+        // the camera looks. Translate * Rotate (parent = root -> global
+        // == local).
+        const glm::mat4 frame = glm::translate(glm::mat4(1.0f), cam.cameraPosition_) *
+                                glm::mat4_cast(cam.getOrientation());
+        const int node = addNode(dyn.scene, -1, 0);
+        if (node < 0)
+            return;
+        ::SceneLight def{};
+        def.type = ::SceneLight::Type::Spot;
+        def.color = m_spotColor;
+        def.intensity = std::max(m_spotIntensity, 0.0f);
+        def.range = std::max(m_spotRange, 0.0f);
+        def.innerConeAngle = glm::radians(std::clamp(m_spotInnerDeg, 0.0f, 89.0f));
+        def.outerConeAngle = glm::radians(std::clamp(m_spotOuterDeg, 0.0f, 89.0f));
+        def.flags = ::SceneLight::kSceneLightFlag_CastShadow;
+        def.name = "runtime_spot";
+        const smvk::ClusterLightHandle handle = dyn.CreateLight(std::move(def));
+        if (!handle.valid()) {
+            RetireNodeSlot(dyn.scene, node);
+            return;
+        }
+        dyn.scene.localTransform[size_t(node)] = frame;
+        dyn.scene.globalTransform[size_t(node)] = frame;
+        SetLight(dyn.scene, uint32_t(node), handle.index());
+        m_runtimeSpotNode = uint32_t(node);
+        m_runtimeSpotLight = handle;
+    } else if (request == 2) {
+        if (m_runtimeSpotNode == UINT32_MAX)
+            return;
+        RemoveLight(dyn.scene, m_runtimeSpotNode);
+        RetireNodeSlot(dyn.scene, m_runtimeSpotNode);
+        dyn.lights.destroy(m_runtimeSpotLight);
+        m_runtimeSpotNode = UINT32_MAX;
+        m_runtimeSpotLight = {};
+    }
+    World()->MarkClusterDirty(dyn);
 }
 
 void RuntimeProcedurals::DrawRuntimeProceduralsTab() {
@@ -408,6 +464,9 @@ void RuntimeProcedurals::DrawRuntimeProceduralsTab() {
     ImGui::TextDisabled(m_renderer.LightCrowdCount() > 0 ? "(spawned)" : "(off)");
     ImGui::SliderInt("Count", &light.count, 0, 96);
     ImGui::SliderFloat3("Center", &light.center.x, -30.0f, 30.0f);
+    ImGui::SameLine();
+    if (ImGui::Button("At camera"))
+        light.center = m_renderer.CameraPositioner().cameraPosition_;
     ImGui::SliderFloat("Spiral radius (m)", &light.radius, 0.5f, 30.0f);
     ImGui::SliderFloat("Height (m)", &light.height, 0.0f, 12.0f);
     ImGui::SliderFloat("Bob (m)", &light.bob, 0.0f, 4.0f);
@@ -425,6 +484,23 @@ void RuntimeProcedurals::DrawRuntimeProceduralsTab() {
         if (ImGui::SliderInt("Shadow casters", &shadows, 0, cap))
             light.shadowCount = shadows;
     }
+
+    ImGui::SeparatorText("Spotlight (from camera)");
+    ImGui::SliderFloat("Spot intensity (cd)", &m_spotIntensity, 0.0f, 200000.0f, "%.0f");
+    ImGui::SliderFloat("Spot range (m)", &m_spotRange, 0.5f, 60.0f);
+    ImGui::SliderFloat("Inner cone (deg)", &m_spotInnerDeg, 0.0f, 89.0f);
+    ImGui::SliderFloat("Outer cone (deg)", &m_spotOuterDeg, 0.0f, 89.0f);
+    ImGui::ColorEdit3("Spot color", &m_spotColor.x);
+    const bool spotCanSpawn = World() != nullptr;
+    ImGui::BeginDisabled(!spotCanSpawn);
+    if (ImGui::Button("Spawn spot at camera"))
+        m_runtimeSpotRequest = 1;
+    ImGui::SameLine();
+    if (ImGui::Button("Remove spot") && m_runtimeSpotNode != UINT32_MAX)
+        m_runtimeSpotRequest = 2;
+    ImGui::EndDisabled();
+    if (!spotCanSpawn)
+        ImGui::TextDisabled("Only available in the standalone App, not borrowed editor worlds.");
 }
 
 void RuntimeProcedurals::RetireResources() {
@@ -452,6 +528,7 @@ void RuntimeProcedurals::onUpdate(float) {
     // Last frame's World resolution no longer references retired handles.
     RetireResources();
     ApplyRuntimeProceduralRequest();
+    ApplyRuntimeSpotRequest();
 }
 
 void RuntimeProcedurals::onDetach() {
