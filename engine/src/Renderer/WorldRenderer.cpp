@@ -11691,6 +11691,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 // alpha-mode bit is checked separately below so one mesh can
                 // admit opaque + masked + blend instances through the SAME
                 // authoritative source — no double bookkeeping.
+                // The GPU-scene indexed and task/mesh Main programs bind the
+                // full gfxmesh_lit fragment body (not MAT_STANDARD). COLOR0
+                // already carries RGBA layer weights and inst.refs.z is the
+                // base material ID; layers 1..3 resolve from MaterialValues.
+                // Only opaque layering shares the existing depth/G-buffer
+                // contract. Cutout/BLEND layering requires coverage parity.
                 const smvk::Material* itemMaterial = m_world->GetMaterial(item.material);
                 const bool materialRasterEligible =
                     itemMaterial && tour::gpu_scene::OpaqueLayeredRasterEligible(*itemMaterial);
