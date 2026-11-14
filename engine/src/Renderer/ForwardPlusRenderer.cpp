@@ -14,8 +14,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
-#include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <memory>
 #include <vector>
@@ -262,30 +260,6 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base, bool fallbackO
                     if (((item.flags & smvk::IteratorFlagBit_Masked) != 0 || ditherFade) !=
                         maskedPhase)
                         return;
-                    // KD diagnostic (TOURMALINE_KD): the masked-depth phase's
-                    // per-draw material id. A misassigned material shows up here
-                    // as a single id for every draw (e.g. "material=220" over and
-                    // over) instead of the ~20 distinct masked materials bistro
-                    // authors. One-shot: the first 96 draws + a tally of the first
-                    // 256 so the spread (or lack of it) is visible at a glance.
-                    if (maskedPhase && std::getenv("TOURMALINE_KD")) {
-                        static uint32_t s_kdMaskedDrawn = 0;
-                        static uint32_t s_kdMaskedByMat[512] = {0};
-                        if (s_kdMaskedDrawn < 96)
-                            std::fprintf(stderr,
-                                         "[KD] masked-depth draw node=%u material=%u\n",
-                                         (uint32_t)item.node,
-                                         item.material);
-                        if (item.material < 512u)
-                            ++s_kdMaskedByMat[item.material];
-                        if (++s_kdMaskedDrawn == 256u) {
-                            std::fprintf(stderr, "[KD] masked-depth tally (first 256):\n");
-                            for (uint32_t m = 0; m < 512u; ++m)
-                                if (s_kdMaskedByMat[m])
-                                    std::fprintf(
-                                        stderr, "  material=%u count=%u\n", m, s_kdMaskedByMat[m]);
-                        }
-                    }
                     // Fallback-only mode (Northlight depth split): the gfx
                     // filter's temporal set owns this item's depth — the seed
                     // pass covers its prev∩curr clusters and the remainder
