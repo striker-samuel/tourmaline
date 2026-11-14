@@ -16,6 +16,7 @@
 
 #include <Engine/GI/triangle_bvh.h>
 #include <Engine/Renderer/cubemap.h>
+#include <Engine/Renderer/cubemap_face_demand.h>
 #include <Engine/Renderer/cubemap_placement.h>
 #include <Engine/Renderer/cubemap_prefilter.h>
 #include <Engine/Rendergraph/forwardplus.h>
@@ -94,6 +95,61 @@ void TestFaceDominance() {
                       smvk::CubemapFaceName(smvk::CubemapFace(f)));
         Check(ok, name);
     }
+}
+
+
+void TestDirectionalFaceDemand() {
+    using smvk::CubemapFace;
+    using smvk::CubemapFaceBit;
+    using smvk::CubemapFacesForCone;
+    constexpr auto all = smvk::kAllCubemapFaces;
+    Check(CubemapFacesForCone({1, 0, 0}, 0.0f) == CubemapFaceBit(CubemapFace::Px),
+          "cubemap.face-demand.axis");
+    Check(CubemapFacesForCone({1, 1, 1}, 0.0f) ==
+              (CubemapFaceBit(CubemapFace::Px) | CubemapFaceBit(CubemapFace::Py) |
+               CubemapFaceBit(CubemapFace::Pz)),
+          "cubemap.face-demand.diagonal-three-faces");
+    Check(CubemapFacesForCone({1, 0, 0}, 0.8f) ==
+              (all & ~CubemapFaceBit(CubemapFace::Nx)),
+          "cubemap.face-demand.cone-conservative");
+    Check(CubemapFacesForCone({1, 0, 0}, 3.14159265f) == all,
+          "cubemap.face-demand.unbounded-ibl");
+    Check(CubemapFacesForCone({0, 0, 0}, 0.0f) == all &&
+              CubemapFacesForCone({1, 0, 0}, -1.0f) == all &&
+              CubemapFacesForCone({1, 0, 0}, std::nanf("")) == all,
+          "cubemap.face-demand.invalid-fails-open");
+
+    // A sampled ray within the cone must never select a face outside
+    // the demand mask, including near cube edges and at face corners.
+    bool conservative = true;
+    for (int x = -4; x <= 4; ++x)
+        for (int y = -4; y <= 4; ++y)
+            for (int z = -4; z <= 4; ++z) {
+                const glm::vec3 dir(float(x), float(y), float(z));
+                if (glm::dot(dir, dir) == 0.0f)
+                    continue;
+                const glm::vec3 axis = glm::normalize(dir);
+                for (float angle : {0.0f, 0.2f, 0.6f, 1.0f, 1.5f, 2.4f}) {
+                    const auto mask = CubemapFacesForCone(axis, angle);
+                    for (int a = -4; a <= 4; ++a)
+                        for (int b = -4; b <= 4; ++b)
+                            for (int c = -4; c <= 4; ++c) {
+                                const glm::vec3 ray(float(a), float(b), float(c));
+                                if (glm::dot(ray, ray) == 0.0f) continue;
+                                const glm::vec3 n = glm::normalize(ray);
+                                if (glm::dot(axis, n) < std::cos(angle) - 1e-6f)
+                                    continue;
+                                const float mx = std::max({std::abs(n.x), std::abs(n.y), std::abs(n.z)});
+                                if (std::abs(n.x) >= mx - 1e-6f)
+                                    conservative &= (mask & CubemapFaceBit(n.x >= 0 ? CubemapFace::Px : CubemapFace::Nx)) != 0;
+                                if (std::abs(n.y) >= mx - 1e-6f)
+                                    conservative &= (mask & CubemapFaceBit(n.y >= 0 ? CubemapFace::Py : CubemapFace::Ny)) != 0;
+                                if (std::abs(n.z) >= mx - 1e-6f)
+                                    conservative &= (mask & CubemapFaceBit(n.z >= 0 ? CubemapFace::Pz : CubemapFace::Nz)) != 0;
+                            }
+                }
+            }
+    Check(conservative, "cubemap.face-demand.conservative-ray-sweep");
 }
 
 void TestProceduralFaces() {
@@ -579,6 +635,7 @@ void TestProbePremixNdfWeights() {
 int main() {
     TestFaceCenters();
     TestFaceDominance();
+    TestDirectionalFaceDemand();
     TestProceduralFaces();
     TestVfsPath();
     TestManifestRoundtrip();
