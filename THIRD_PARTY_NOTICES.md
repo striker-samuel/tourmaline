@@ -92,6 +92,14 @@ a hand-written integration, or are an unpinnable snapshot:
   CRYENGINE. Attribution and KTX conversion do not establish permission
   to publish the pak; redistribution rights require separate verification.
   This notice is not a grant of rights in third-party assets.
+- **Bistro demo (`bistro_static.tapp` / `bistro_static-*.pak` and associated screenshots):**
+  The [Amazon Lumberyard Bistro](https://developer.nvidia.com/orca/amazon-lumberyard-bistro)
+  exterior scene (Amazon Lumberyard, 2017), released through NVIDIA's
+  Open Research Content Archive (ORCA) under
+  [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The Tourmaline
+  maintainer converted the source textures to KTX and the project
+  cooked/packaged them for its demo. See the detailed
+  [Bistro credits notice](BISTRO-CREDITS.md).
 
 ## Not vendored, but required at build time
 
