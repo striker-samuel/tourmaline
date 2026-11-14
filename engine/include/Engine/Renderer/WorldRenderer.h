@@ -2664,6 +2664,17 @@ class WorldRenderer : public IRenderer {
     // Transient gfx registration indices are reassigned on each rebuild.
     // Republish all mesh links when the source registration changes.
     uint64_t m_gpuSceneGeometryRevision = 0;
+    // Physically resident World::Surface index/vertex ranges, indexed by
+    // the current registration ID. These are the indexed raster authority;
+    // GfxRenderer's cluster index heap is only an optional meshlet source.
+    std::vector<tour::gfx::IndexedRange> m_gpuScenePhysicalIndexedRanges;
+    // Revision-local IDs for World base mesh + selected resident LOD; the
+    // native-only suffix supports meshes with no cooked meshlet registration.
+    std::vector<std::vector<uint32_t>> m_gpuScenePhysicalLodIds;
+    bool m_gpuSceneTaskGeometryIdsCompatible = false;
+    const smvk::World* m_gpuScenePhysicalWorld = nullptr;
+    uint64_t m_gpuScenePhysicalTopologyRevision = ~uint64_t(0);
+    void RefreshGpuScenePhysicalIndexedRanges(bool nativeOnly = false);
     smvk::mem::LinearPtr<smvk::World> m_worldOwned; // the source-moved form
     smvk::World* m_borrowedWorld = nullptr;         // the embedded-host form
 

@@ -65,8 +65,9 @@ struct Mesh {
 struct IndexedRange {
     uint32_t firstIndex = 0;
     uint32_t indexCount = 0;
+    int32_t vertexOffset = 0; // raw World::Surface baseVertex; meshlet form uses zero
 };
-static_assert(sizeof(IndexedRange) == 8);
+static_assert(sizeof(IndexedRange) == 12);
 
 // GPU byte-mirror of Cluster (uploaded by UploadStaticData).
 struct ClusterConstants {

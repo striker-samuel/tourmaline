@@ -16,6 +16,7 @@
 #include <Engine/Renderer/gpu_scene.h>
 #include <Engine/Renderer/gpu_scene_raster.h>
 #include <Engine/Renderer/gpu_scene_static.h>
+#include <Engine/Renderer/mesh.h> // StaticMesh/Surface physical indexed source
 #include <Engine/Renderer/gpu_scene_upload.h> // RenderDatabase (Database<MaxFramesInFlight>) for Synchronize
 
 #include <algorithm>
@@ -30,6 +31,64 @@
 #include <vector>
 
 namespace tour::gpu_scene {
+
+// Indexed raster consumes the SAME physical World::Surface allocation as
+// direct drawing. Meshlet GPU streams remain optional acceleration data;
+// their cluster-ordered index copy is not an indexed draw source.
+// The caller proves the selected LOD is physically resident before entry.
+[[nodiscard]] inline bool ResolveWorldSurfaceIndexedRange(
+    const tour::StaticMesh& mesh,
+    uint64_t indexWordCapacity,
+    uint64_t vertexCapacity,
+    tour::gfx::IndexedRange& out) noexcept {
+    out = {};
+    if (mesh.geometry.topology != smvk::PrimitiveTopology::TriangleList ||
+        mesh.geometry.surfaces.size() != 1u)
+        return false;
+    const auto& surface = mesh.geometry.surfaces.front();
+    if (surface.indexCount == 0u || (surface.indexCount % 3u) != 0u ||
+        uint64_t(surface.firstIndex) + surface.indexCount > indexWordCapacity ||
+        surface.baseVertex < 0 ||
+        uint64_t(surface.baseVertex) + mesh.geometry.vertexCount > vertexCapacity)
+        return false;
+    out = {surface.firstIndex, surface.indexCount, surface.baseVertex};
+    return true;
+}
+
+// Build one revision-local indexed alias table: retain compatibility Gfx
+// IDs in its prefix, but allow a native-only suffix for valid World LODs
+// with no cooked meshlet registration. A collision tombstones the slot so
+// no later indirect work can address ambiguous physical allocations.
+[[nodiscard]] inline uint32_t RegisterNativeIndexedRange(
+    std::vector<tour::gfx::IndexedRange>& rows,
+    std::span<uint8_t> conflicting,
+    const tour::gfx::IndexedRange& physical,
+    uint32_t gfxId,
+    bool& taskIdsCompatible) {
+    if (!physical.indexCount)
+        return InvalidIndex;
+    if (gfxId < conflicting.size()) {
+        if (gfxId >= rows.size() || conflicting[gfxId])
+            return InvalidIndex;
+        auto& prior = rows[gfxId];
+        if (prior.indexCount != 0u &&
+            (prior.firstIndex != physical.firstIndex ||
+             prior.indexCount != physical.indexCount ||
+             prior.vertexOffset != physical.vertexOffset)) {
+            prior = {};
+            conflicting[gfxId] = 1u;
+            return InvalidIndex;
+        }
+        prior = physical;
+        return gfxId;
+    }
+    if (rows.size() >= kMaxRasterDrawGroups)
+        return InvalidIndex;
+    taskIdsCompatible = false;
+    const uint32_t id = uint32_t(rows.size());
+    rows.push_back(physical);
+    return id;
+}
 
 // The static GfxFilter geometry tables this publisher reads: a narrow
 // pointer+count VIEW, never the whole gfx::State. Engine-facing headers do not
@@ -46,6 +105,8 @@ struct IndexedGeometryTables {
     // use these instead of reconstructing ranges from GfxFilter clusters.
     const tour::gfx::IndexedRange* nativeRanges = nullptr;
     uint32_t nativeRangeCount = 0;
+    // Physical index words in this upload's region, not total heap size.
+    uint32_t nativeIndexWordCount = 0;
     bool nativeResident = false;
 };
 
@@ -81,14 +142,16 @@ struct IndexedGeometryTables {
             return false;
         const auto& range = tables.nativeRanges[meshIndex];
         const uint64_t absolute = uint64_t(tables.indexBase) + range.firstIndex;
-        // The whole [absolute, absolute + indexCount) span must fit the
-        // uint32 index domain: reject a range whose END overflows even when
-        // its start is in bounds.
-        if (range.indexCount == 0u || absolute > std::numeric_limits<uint32_t>::max() ||
+        // Streaming may re-register a smaller payload at the same IDs.
+        // Check both the current region extent and absolute Vulkan indices.
+        const uint64_t end = uint64_t(range.firstIndex) + range.indexCount;
+        if (range.indexCount == 0u || end > tables.nativeIndexWordCount ||
+            absolute > std::numeric_limits<uint32_t>::max() ||
             absolute + range.indexCount > uint64_t(std::numeric_limits<uint32_t>::max()) + 1u)
             return false;
         out.indexCount = range.indexCount;
         out.firstIndex = uint32_t(absolute);
+        out.vertexOffset = range.vertexOffset;
         return true;
     }
     if (meshIndex >= tables.meshCount || !tables.meshes || !tables.clusters)

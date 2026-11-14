@@ -185,10 +185,15 @@ int main() {
         native.indexBase = 16u;
         native.nativeRanges = packed.data();
         native.nativeRangeCount = uint32_t(packed.size());
+        native.nativeIndexWordCount = 15u;
         CHECK(!ResolveIndexedGeometry(native, 0u, indexed));
         native.nativeResident = true;
         CHECK(ResolveIndexedGeometry(native, 0u, indexed));
         CHECK(indexed.firstIndex == 16u && indexed.indexCount == 15u);
+        native.nativeIndexWordCount = 14u; // streamed payload too short
+        CHECK(!ResolveIndexedGeometry(native, 0u, indexed));
+        native.nativeIndexWordCount = 15u;
+        CHECK(ResolveIndexedGeometry(native, 0u, indexed));
         CHECK(!ResolveIndexedGeometry(native, 1u, indexed));
         CHECK(indexed.indexCount == 0u);
         native.indexBase = UINT32_MAX;
@@ -196,6 +201,68 @@ int main() {
         native.indexBase = 16u;
         native.nativeRangeCount = 0u;
         CHECK(!ResolveIndexedGeometry(native, 0u, indexed));
+    }
+    // Native indexed raster must agree with direct DrawIndexed on the
+    // actual physical World surface, including its signed base vertex.
+    {
+        tour::StaticMesh mesh{};
+        mesh.geometry.vertexCount = 32u;
+        mesh.geometry.indexCount = 9u;
+        mesh.geometry.surfaces.push_back(tour::Surface{40u, 9u, 64});
+        tour::gfx::IndexedRange physical{};
+        CHECK(ResolveWorldSurfaceIndexedRange(mesh, 128u, 128u, physical));
+        CHECK(physical.firstIndex == 40u && physical.indexCount == 9u &&
+              physical.vertexOffset == 64);
+        IndexedGeometryTables source{};
+        source.meshCount = 1u;
+        source.nativeRanges = &physical;
+        source.nativeRangeCount = 1u;
+        source.nativeIndexWordCount = 128u;
+        source.nativeResident = true;
+        IndexedGeometry indexed{};
+        CHECK(ResolveIndexedGeometry(source, 0u, indexed));
+        CHECK(indexed.indexCount == 9u && indexed.firstIndex == 40u &&
+              indexed.vertexOffset == 64);
+        CHECK(!ResolveWorldSurfaceIndexedRange(mesh, 48u, 128u, physical));
+        CHECK(!ResolveWorldSurfaceIndexedRange(mesh, 128u, 90u, physical));
+        mesh.geometry.surfaces.front().baseVertex = -1;
+        CHECK(!ResolveWorldSurfaceIndexedRange(mesh, 128u, 128u, physical));
+        mesh.geometry.surfaces.front().baseVertex = 64;
+        mesh.geometry.surfaces.front().indexCount = 8u;
+        CHECK(!ResolveWorldSurfaceIndexedRange(mesh, 128u, 128u, physical));
+        mesh.geometry.surfaces.front().indexCount = 9u;
+        mesh.geometry.surfaces.push_back(tour::Surface{49u, 3u, 64});
+        CHECK(!ResolveWorldSurfaceIndexedRange(mesh, 128u, 128u, physical));
+    }
+    // Native indexed IDs reserve Gfx meshlet IDs when present but admit
+    // World-only resident surfaces through a suffix. One conflicting Gfx
+    // alias tombstones its descriptor instead of drawing wrong geometry.
+    {
+        std::vector<tour::gfx::IndexedRange> native(2);
+        std::vector<uint8_t> conflicts(2, 0u);
+        bool taskCompatible = true;
+        const tour::gfx::IndexedRange first{40u, 9u, 64};
+        const tour::gfx::IndexedRange different{80u, 6u, 96};
+        CHECK(RegisterNativeIndexedRange(
+            native, conflicts, first, 0u, taskCompatible) == 0u);
+        CHECK(RegisterNativeIndexedRange(
+            native, conflicts, first, 0u, taskCompatible) == 0u);
+        CHECK(taskCompatible);
+        CHECK(RegisterNativeIndexedRange(
+            native, conflicts, different, 0u, taskCompatible) == InvalidIndex);
+        CHECK(native[0].indexCount == 0u && conflicts[0] != 0u);
+        CHECK(RegisterNativeIndexedRange(
+            native, conflicts, first, 0u, taskCompatible) == InvalidIndex);
+        const uint32_t nativeOnly = RegisterNativeIndexedRange(
+            native, conflicts, first, InvalidIndex, taskCompatible);
+        CHECK(nativeOnly == 2u && native.size() == 3u && !taskCompatible);
+        CHECK(native[nativeOnly].vertexOffset == 64);
+        CHECK(RegisterNativeIndexedRange(
+            native, conflicts, tour::gfx::IndexedRange{}, InvalidIndex,
+            taskCompatible) == InvalidIndex);
+        native.resize(kMaxRasterDrawGroups);
+        CHECK(RegisterNativeIndexedRange(
+            native, conflicts, first, InvalidIndex, taskCompatible) == InvalidIndex);
     }
     // Indexed geometry is keyed by persistent mesh slot + generation + LOD,
     // not by a transient filter mesh number. Re-registration must not
@@ -244,6 +311,7 @@ int main() {
         IndexedGeometryTables nativeTables = tables;
         nativeTables.nativeRanges = registered.data();
         nativeTables.nativeRangeCount = uint32_t(registered.size());
+        nativeTables.nativeIndexWordCount = 12u;
         nativeTables.nativeResident = true;
         CHECK(registry.Synchronize(db, nativeTables));
         CHECK(registry.Find(key) == stable);
@@ -298,6 +366,38 @@ int main() {
         CHECK(!registry.Synchronize(db, tables));
         CHECK(registry.Revision() == beforeFailure);
         CHECK(registry.Descriptors()[newer].indexCount == 6u);
+    }
+    // A streamed metadata update must not report success when its registered
+    // DB submesh or LOD slot has been retired behind the bridge's back.
+    // Otherwise an evicted LOD can retain a previously resident descriptor.
+    {
+        RenderDatabase db{};
+        SceneRegistry registry{};
+        SourceRecord source{};
+        source.instance = {712u, 1u, 1u};
+        source.mesh = {712u, 2u, 1u};
+        const auto stats = registry.Reconcile(std::span<const SourceRecord>(&source, 1), db);
+        CHECK(stats.created == 1u);
+        const auto meshId = registry.FindMesh(source.mesh);
+        // A provisional registration starts with no LOD rows. Publish one.
+        const LevelSource resident{0.0f, 5u, true, true};
+        CHECK(registry.PublishMesh(source.mesh, std::span(&resident, 1), true, db));
+        const auto* published = db.meshes.Get(meshId);
+        CHECK(published && published->residentMask == 1u);
+        const uint32_t firstLod = published ? published->firstLod : InvalidIndex;
+        CHECK(firstLod < db.lods.Rows().size());
+        const auto* lodRow = firstLod < db.lods.Rows().size()
+                                 ? &db.lods.Rows()[firstLod] : nullptr;
+        const uint32_t firstSub = lodRow ? lodRow->value.firstSubmesh : InvalidIndex;
+        CHECK(firstSub < db.submeshes.Rows().size());
+        // An invalidated DB row makes the in-place streamed update fail
+        // closed, rather than silently accepting stale resident metadata.
+        if (firstSub < db.submeshes.Rows().size()) {
+            const auto generation = db.submeshes.Rows()[firstSub].identity.x;
+            CHECK(db.submeshes.Erase({firstSub, generation}));
+            const LevelSource evicted{0.0f, InvalidIndex, false, true};
+            CHECK(!registry.PublishMesh(source.mesh, std::span(&evicted, 1), true, db));
+        }
     }
     // Geometry-only revisions must not revisit CPU drawItems or reconcile
     // the complete instance registry. The empty World tests the control
@@ -355,6 +455,17 @@ int main() {
         CHECK(sync.Find(key1) && sync.Find(key2));
         const auto steady = sync.Synchronize(world, snapshot);
         CHECK(!steady.topologyReconciled && steady.created == 0);
+        // Streaming can temporarily present an invalid LOD chain after
+        // an asset reload. Do not accept an old resident mask or consume
+        // this geometry revision; retry once metadata is repaired.
+        auto savedChains = std::move(world.lodChains);
+        const auto rejected = sync.Synchronize(world, snapshot, 1u);
+        CHECK(rejected.geometryRefreshed && !rejected.leafPublicationOk);
+        world.lodChains = std::move(savedChains);
+        const auto recovered = sync.Synchronize(world, snapshot, 1u);
+        CHECK(recovered.geometryRefreshed && recovered.leafPublicationOk);
+        const auto stable = sync.Synchronize(world, snapshot, 1u);
+        CHECK(!stable.geometryRefreshed && stable.leafPublicationOk);
         CHECK(world.RemoveNode(first));
         const auto removed = sync.Synchronize(world, snapshot);
         CHECK(removed.retired == 1 && removed.meshesRetired == 0);

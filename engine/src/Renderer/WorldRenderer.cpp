@@ -107,6 +107,14 @@ static double s_benchUpdates = 0.0, s_benchPasses = 0.0, s_benchReadbacks = 0.0,
 // ---------------------------------------------------------------------------
 namespace engine {
 
+// The Vulkan 1.3 indexed path must not allocate/register a second cooked
+// cluster index stream. Build those optional resources only if task/mesh is
+// supported and has not been explicitly disabled by the user.
+static bool GpuSceneCookedMeshletsWanted() {
+    const char* env = std::getenv("TOURMALINE_GPU_SCENE_TASK_MESH");
+    return smvk::SupportsMeshShaders() && (!env || std::strcmp(env, "0") != 0);
+}
+
 smvk::ShaderProgram& WorldRenderer::SpecProgramFor(const smvk::ShaderProgram& base,
                                                    uint32_t specId,
                                                    uint32_t specId2,
@@ -2636,7 +2644,9 @@ bool WorldRenderer::onAttach() {
     // and its legacy direct-draws off path are gone. The availability
     // latch below only drops the leg when the filter cannot run at
     // all (Ensure failure / empty cluster heap).
-    if (m_passes.gfxFilter) {
+    // GPU-scene indexed raster needs static geometry even when the optional
+    // legacy-filter pass is disabled in the pass configuration.
+    if (m_passes.gfxFilter || m_gpuSceneRasterEnabled) {
         // The shader-module feed (ConfigureFrag/Sg/Gi/Std/A2C/Project*)
         // lives in FeedGfxRendererShaderModules — the onAttach path and
         // the hot-reload swap share it, so a swap re-feeds the fresh
@@ -2688,10 +2698,20 @@ bool WorldRenderer::onAttach() {
         if (!m_gfxRenderer.Ensure(*m_context, *m_rendergraph)) {
             std::cerr << "[WorldRenderer] GfxFilter unavailable - direct draws\n";
             m_gfxFilterAvailable = false;
-        } else {
+        }
+        // Static geometry is GPU-scene raster's physical publisher, even
+        // when the retired filter has no valid program or initial clusters.
+        const bool cookedMeshletBackend = GpuSceneCookedMeshletsWanted();
+        if (cookedMeshletBackend) {
+            // Only optional task/mesh needs the duplicate cooked cluster
+            // index/meshlet streams. Vulkan 1.3 indexed raster resolves
+            // physical World surfaces without registering them in Gfx.
             m_gfxRenderer.RegisterWorldMeshes(*m_world);
-            ++m_gpuSceneGeometryRevision;
             m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
+        }
+        ++m_gpuSceneGeometryRevision;
+        RefreshGpuScenePhysicalIndexedRanges(/*nativeOnly=*/!cookedMeshletBackend);
+        {
             // Geometry LOD streaming census: the cluster loads
             // deferred their middle LOD siblings (the serializer's
             // stderr line carries the per-cluster numbers); arm the
@@ -6148,21 +6168,19 @@ void WorldRenderer::UpdateGeometryStreaming() {
             ++m_gpuSceneGeometryRevision;
             m_world->RebuildLightmapChartTable();
         }
-        if (m_gfxFilterAvailable) {
-            {
-                // The from-scratch gfx mesh re-registration (the
-                // full rebuild IS the per-mesh removal mechanism).
-                SMVK_PROFILE_STREAM("GeoStreaming_RegisterMeshes");
-                smvk::gfx::ResetStaticRegistrations(m_gfxRenderer.State());
-                m_gfxRenderer.RegisterWorldMeshes(*m_world);
-                ++m_gpuSceneGeometryRevision;
-            }
-            {
-                // Static vertex/index table upload staging.
-                SMVK_PROFILE_STREAM("GeoStreaming_UploadStaticData");
-                m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
-            }
+        // The core Vulkan 1.3 indexed backend owns raw World ranges.
+        // Re-cook the additional cluster index/meshlet allocation only on
+        // devices that actually expose the optional mesh/task backend.
+        const bool cookedMeshletBackend = GpuSceneCookedMeshletsWanted();
+        if (cookedMeshletBackend) {
+            SMVK_PROFILE_STREAM("GeoStreaming_RegisterMeshes");
+            smvk::gfx::ResetStaticRegistrations(m_gfxRenderer.State());
+            m_gfxRenderer.RegisterWorldMeshes(*m_world);
+            SMVK_PROFILE_STREAM("GeoStreaming_UploadStaticData");
+            m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
         }
+        ++m_gpuSceneGeometryRevision;
+        RefreshGpuScenePhysicalIndexedRanges(/*nativeOnly=*/!cookedMeshletBackend);
         {
             SMVK_PROFILE_STREAM("GeoStreaming_FlushUploads");
             m_context->FlushUploads();
@@ -10513,23 +10531,75 @@ void WorldRenderer::MountContentVfs(smvk::OverlayVfs& vfs) const {
     std::cerr << "[VFS] loose mounts: content/ (0)"
               << (m_projectRoot.empty() ? "" : " + project root (-10)") << "\n";
 }
+// GPU-scene indexed raster reads the World-owned physical index/vertex
+// allocations, not a second cluster-ordered GfxFilter index copy. Rebuild
+// only after an asset/LOD registration revision; the per-flight publisher
+// snapshots these ranges before any indirect command can consume them.
+void WorldRenderer::RefreshGpuScenePhysicalIndexedRanges(bool nativeOnly) {
+    const auto& gfx = m_gfxRenderer.State();
+    m_gpuScenePhysicalIndexedRanges.assign(gfx.meshes.size(), {});
+    m_gpuScenePhysicalLodIds.clear();
+    m_gpuSceneTaskGeometryIdsCompatible = !nativeOnly;
+    m_gpuScenePhysicalWorld = m_world;
+    m_gpuScenePhysicalTopologyRevision =
+        m_world ? m_world->gpuSceneTopologyRevision : ~uint64_t(0);
+    if (!m_world)
+        return;
+    m_gpuScenePhysicalLodIds.resize(m_world->lodChains.size());
+    const uint64_t indexWords =
+        smvk::staticVertexFmtHeap.m_staticIndexBlock.Capacity() / sizeof(uint32_t);
+    const uint64_t vertexLimit =
+        smvk::staticVertexFmtHeap.m_staticVertexBlock.Capacity();
+    // The optional task/mesh backend uses Gfx mesh IDs. Keep those IDs in
+    // the prefix, but give non-meshlet static surfaces native suffix IDs so
+    // Vulkan 1.3 indexed raster never requires cooked/retained meshlets.
+    std::vector<uint8_t> conflicting(gfx.meshes.size(), uint8_t(0));
+    for (uint32_t worldMesh = 0; worldMesh < m_world->lodChains.size(); ++worldMesh) {
+        const auto& levels = m_world->lodChains[worldMesh].levels;
+        auto& lodIds = m_gpuScenePhysicalLodIds[worldMesh];
+        lodIds.assign(levels.size(), tour::gpu_scene::InvalidIndex);
+        for (uint32_t lod = 0; lod < levels.size(); ++lod) {
+            const auto& level = levels[lod];
+            if (!level.resident || !level.mesh.cluster || !level.mesh.handle.valid())
+                continue;
+            const auto* mesh = level.mesh.cluster->staticMeshes.get(level.mesh.handle);
+            if (!mesh)
+                continue;
+            tour::gfx::IndexedRange physical{};
+            if (!tour::gpu_scene::ResolveWorldSurfaceIndexedRange(
+                    *mesh, indexWords, vertexLimit, physical))
+                continue;
+            const uint32_t gfxId = nativeOnly ? UINT32_MAX
+                                              : m_gfxRenderer.GfxMeshForLod(worldMesh, lod);
+            lodIds[lod] = tour::gpu_scene::RegisterNativeIndexedRange(
+                m_gpuScenePhysicalIndexedRanges, conflicting, physical, gfxId,
+                m_gpuSceneTaskGeometryIdsCompatible);
+        }
+    }
+}
+
 // Narrow GfxFilter's static geometry state into the pointer+count view the
 // GPU-scene indexed-geometry publisher consumes. The narrowing lives HERE, in
 // engine implementation code, so the public header carries no RHI/gfx::State
 // exposure (the R8 boundary guard in tests/test_architecture.cpp).
-static tour::gpu_scene::IndexedGeometryTables GpuSceneIndexedTables(const tour::gfx::State& gfx) {
+static tour::gpu_scene::IndexedGeometryTables GpuSceneIndexedTables(
+    const tour::gfx::State& gfx,
+    std::span<const tour::gfx::IndexedRange> physical) {
     tour::gpu_scene::IndexedGeometryTables tables;
     tables.meshes = gfx.meshes.data();
-    tables.meshCount = uint32_t(gfx.meshes.size());
+    tables.meshCount = uint32_t(physical.size());
     tables.clusters = gfx.clusters.data();
     tables.clusterCount = uint32_t(gfx.clusters.size());
-    tables.indexBase = gfx.clusterIndexBase;
-    // StaticGeometry owns these packed, upload-validated physical index
-    // ranges. GfxRenderer::State inherits that geometry storage, but its
-    // per-view GfxFilter cluster/draw state is not the descriptor authority.
-    tables.nativeRanges = gfx.indexedRanges.data();
-    tables.nativeRangeCount = uint32_t(gfx.indexedRanges.size());
-    tables.nativeResident = gfx.indexedRangesResident;
+    // Direct World::Surface firstIndex is already an absolute position in
+    // the static index monoblock. Meshlet/debug retains the separate cooked
+    // cluster copy, but indexed raster never consumes that index region.
+    tables.indexBase = 0u;
+    tables.nativeRanges = physical.data();
+    tables.nativeRangeCount = uint32_t(physical.size());
+    tables.nativeIndexWordCount = uint32_t(std::min<uint64_t>(
+        smvk::staticVertexFmtHeap.m_staticIndexBlock.Capacity() / sizeof(uint32_t),
+        std::numeric_limits<uint32_t>::max()));
+    tables.nativeResident = !physical.empty();
     return tables;
 }
 
@@ -11583,13 +11653,27 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // GPUIR scene mirror: topology reconciliation or dirty transforms,
     // then flight-safe GPU table publication. Draws still use GfxFilter.
     if (m_world) {
+        if (m_gpuScenePhysicalWorld != m_world ||
+            m_gpuScenePhysicalTopologyRevision != m_world->gpuSceneTopologyRevision) {
+            // World topology can mutate independently of LOD streaming:
+            // GPU-scene must not reuse a Gfx mesh ID from an obsolete map.
+            // Rebuild physical ranges using native-only transient IDs and
+            // keep task/mesh disabled until a full cooked re-registration.
+            RefreshGpuScenePhysicalIndexedRanges(/*nativeOnly=*/true);
+            ++m_gpuSceneGeometryRevision;
+        }
         const auto gpuSceneSync =
             m_gpuSceneSync.Synchronize(*m_world,
                                        m_gpuSceneDatabase,
                                        m_gpuSceneGeometryRevision,
                                        [this](uint32_t worldMesh, uint32_t lod) {
-                                           return m_gfxFilterAvailable
-                                                      ? m_gfxRenderer.GfxMeshForLod(worldMesh, lod)
+                                           if (worldMesh >= m_gpuScenePhysicalLodIds.size() ||
+                                               lod >= m_gpuScenePhysicalLodIds[worldMesh].size())
+                                               return tour::gpu_scene::InvalidIndex;
+                                           const uint32_t id = m_gpuScenePhysicalLodIds[worldMesh][lod];
+                                           return id < m_gpuScenePhysicalIndexedRanges.size() &&
+                                                          m_gpuScenePhysicalIndexedRanges[id].indexCount != 0u
+                                                      ? id
                                                       : tour::gpu_scene::InvalidIndex;
                                        });
         if (gpuSceneSync.leafPublicationOk)
@@ -11602,13 +11686,17 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // registration numbering. This bridge still resolves physical index
         // ranges from its compatibility heap until GeometryStreamer exports
         // the native indexed descriptor metadata.
-        if (m_gpuSceneDatabaseReady && m_gfxFilterAvailable) {
-            const auto tables = GpuSceneIndexedTables(m_gfxRenderer.State());
+        if (m_gpuSceneDatabaseReady && !m_gpuScenePhysicalIndexedRanges.empty()) {
+            const auto tables = GpuSceneIndexedTables(m_gfxRenderer.State(), m_gpuScenePhysicalIndexedRanges);
             m_gpuSceneDatabaseReady =
                 m_gpuScenePersistentRegistry.Synchronize(m_gpuSceneDatabase, tables) &&
                 m_gpuScenePersistentGeometry.Publish(
                     *m_context, m_gpuScenePersistentRegistry, fb.frameIndex);
         }
+        // Never submit stale aliases from a previous physical registration:
+        // an incomplete streaming upload forces direct rendering this frame.
+        m_gpuSceneDatabaseReady = m_gpuSceneDatabaseReady &&
+                                  !m_gpuScenePhysicalIndexedRanges.empty();
         if (m_gpuSceneDatabaseReady)
             m_gpuSceneDatabaseReady =
                 m_gpuSceneRasterView.Publish(*m_context,
@@ -11659,7 +11747,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             uint32_t doubleSidedCount = 0;
             uint32_t maskedBackCount = 0;
             uint32_t maskedDoubleSidedCount = 0;
-            const auto gfxTables = GpuSceneIndexedTables(m_gfxRenderer.State());
+            const auto gfxTables = GpuSceneIndexedTables(m_gfxRenderer.State(), m_gpuScenePhysicalIndexedRanges);
             constexpr uint32_t requiredFlags =
                 smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
                 smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_Static;
@@ -12500,7 +12588,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 bool temporalTaskPrepared = false;
                 bool taskReady = false;
                 if (s_gpuSceneTaskMesh && gpuSceneRasterMode && workReady && rasterReady &&
-                    m_gfxFilterAvailable && smvk::SupportsMeshShaders() &&
+                    m_gpuSceneTaskGeometryIdsCompatible &&
+                    m_gfxRenderer.State().indexedRangesResident &&
+                    smvk::SupportsMeshShaders() &&
                     m_gpuSceneTaskMainProgram.shaderCount == 3 &&
                     (gpuSceneGiVariant == 0u ||
                      m_gpuSceneTaskGiPrograms[gpuSceneGiVariant].shaderCount == 3) &&
@@ -12544,7 +12634,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     if (!topologyValid) {
                         topoFailReason = "empty cluster/index topology or index base over capacity";
                     } else {
-                        const auto tables = GpuSceneIndexedTables(gfx);
+                        const auto tables = GpuSceneIndexedTables(gfx, m_gpuScenePhysicalIndexedRanges);
                         for (uint32_t meshIndex = 0; meshIndex < gfx.meshes.size(); ++meshIndex) {
                             const auto& mesh = gfx.meshes[meshIndex];
                             tour::gpu_scene::IndexedGeometry checked{};
@@ -12813,7 +12903,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 tour::gpu_scene::CandidateValidator::MeshletCompactPlan meshletPlan{};
                 bool meshletCompactReady = false;
                 if (!taskReady && s_gpuSceneMeshlets && gpuSceneRasterMode && workReady &&
-                    rasterReady && m_gfxFilterAvailable &&
+                    rasterReady && m_gpuSceneTaskGeometryIdsCompatible &&
+                    m_gfxRenderer.State().indexedRangesResident &&
                     m_gpuSceneMeshletPrograms[0].shaderCount == 1 &&
                     m_gpuSceneMeshletPrograms[1].shaderCount == 1 &&
                     m_gpuSceneMeshletPrograms[2].shaderCount == 1 &&
@@ -14370,12 +14461,13 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                          s_gpuSceneTemporal ? 1 : 0,
                          m_gpuSceneRasterDrawActive ? 1 : 0,
                          temporalProgramsReady ? 1 : 0,
-                         m_gfxFilterAvailable ? 1 : 0,
+                         !m_gpuScenePhysicalIndexedRanges.empty() ? 1 : 0,
                          temporalCommands,
                          temporalSlots);
     }
     if (s_gpuSceneTemporal && !m_gpuSceneMeshletCompactActive && !m_gpuSceneTaskMeshActive &&
-        m_gpuSceneRasterDrawActive && temporalProgramsReady && m_gfxFilterAvailable &&
+        m_gpuSceneRasterDrawActive && temporalProgramsReady &&
+        !m_gpuScenePhysicalIndexedRanges.empty() &&
         temporalCommands != 0 && temporalSlots != 0 && temporalCommands <= 4u * 1048576u &&
         temporalSlots <= 4194304u) {
         const uint32_t previousFlight = m_gpuSceneRasterLastHistoryFlight;

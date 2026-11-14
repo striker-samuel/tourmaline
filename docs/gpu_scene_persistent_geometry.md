@@ -143,3 +143,54 @@ of optional `VK_EXT_mesh_shader` / task-shader support.
 promotion/eviction, multi-flight reuse, masked materials and fallback.
 Tests added here exercise indexed range readiness, overflow, and
 persistent identity; hardware parity has not been verified.
+
+## Streaming publication failure handling (residency safety)
+
+A streamed promotion/eviction invalidates the GPU-scene geometry revision.
+The `WorldSynchronizer` refreshes each live mesh's resident mask and LOD/
+submesh rows in-place, without rebuilding draw-item identity. If any DB
+submesh, LOD, or mesh update fails (for example, due to a stale generational
+handle), geometry publication now fails closed for that flight. The renderer
+will not upload or admit GPU-scene draws from a partially refreshed snapshot.
+The topology and geometry revision cursors are left unchanged on failure, so
+the next frame retries the publication instead of considering the failed
+revision complete. The direct renderer remains the fallback.
+
+### World-native indexed physical ranges
+
+The indexed raster publisher now consumes `World::LodChain::Level::mesh`
+physical `Surface::firstIndex/indexCount/baseVertex` directly. These are
+the same static vertex/index allocations the direct renderer uses, including
+the same promotion/eviction retirement mechanism. The separate cluster-ordered
+index copy is **not** used for indexed indirect drawing. A missing resident
+LOD, invalid triangle range, an out-of-bounds physical allocation, or an
+incompatible alias publishes a zero-index tombstone and fails admission to
+the direct fallback. `WorldRenderer` refreshes the physical indexed ranges
+on registration changes and after streamer promotions/evictions.
+
+The optional task/mesh path retains cooked cluster/meshlet streams and a
+separate upload; these meshlets already contain heap-global vertex IDs and
+must **not** apply the raw indexed descriptor's baseVertex a second time.
+Task/mesh dispatch still checks its packed-stream readiness, whereas
+Vulkan 1.3 indexed raster can operate when that optional stream is
+unavailable.
+
+The indexed registry uses Gfx mesh IDs only as a compatibility **prefix**
+when a cooked meshlet registration exists. Resident static LODs with no
+meshlet registration receive native-only **suffix** IDs pointing straight at
+their World surface. Thus Vulkan 1.3 indexed draws can admit ordinary static
+geometry without requiring meshlet cooking. If native-only IDs exist, the
+optional task/mesh dispatch is conservatively skipped and indexed raster
+handles that frame. The persistent mesh-slot/generation/LOD key and per-flight
+alias map remain authoritative for stale-ID protection.
+
+The eventual full deletion of GfxRenderer's optional meshlet registration
+and replacement of revision-local transient IDs with generational work
+references remains separate from this physical residency cutover.
+
+**Not yet verified as full device parity:** Vulkan flight-retirement,
+GPU-LOD demand feedback, promotion/eviction, mixed static/dynamic scenes,
+temporal occlusion, and hardware image captures all need testing. In
+particular, the GPU-driven LOD selector does not by itself guarantee the
+GeometryStreamer's CPU demand/touch bookkeeping receives equivalent signals.
+
