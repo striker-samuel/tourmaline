@@ -234,6 +234,36 @@ int main() {
         mesh.geometry.surfaces.push_back(tour::Surface{49u, 3u, 64});
         CHECK(!ResolveWorldSurfaceIndexedRange(mesh, 128u, 128u, physical));
     }
+    // Native indexed IDs reserve Gfx meshlet IDs when present but admit
+    // World-only resident surfaces through a suffix. One conflicting Gfx
+    // alias tombstones its descriptor instead of drawing wrong geometry.
+    {
+        std::vector<tour::gfx::IndexedRange> native(2);
+        std::vector<uint8_t> conflicts(2, 0u);
+        bool taskCompatible = true;
+        const tour::gfx::IndexedRange first{40u, 9u, 64};
+        const tour::gfx::IndexedRange different{80u, 6u, 96};
+        CHECK(RegisterNativeIndexedRange(
+            native, conflicts, first, 0u, taskCompatible) == 0u);
+        CHECK(RegisterNativeIndexedRange(
+            native, conflicts, first, 0u, taskCompatible) == 0u);
+        CHECK(taskCompatible);
+        CHECK(RegisterNativeIndexedRange(
+            native, conflicts, different, 0u, taskCompatible) == InvalidIndex);
+        CHECK(native[0].indexCount == 0u && conflicts[0] != 0u);
+        CHECK(RegisterNativeIndexedRange(
+            native, conflicts, first, 0u, taskCompatible) == InvalidIndex);
+        const uint32_t nativeOnly = RegisterNativeIndexedRange(
+            native, conflicts, first, InvalidIndex, taskCompatible);
+        CHECK(nativeOnly == 2u && native.size() == 3u && !taskCompatible);
+        CHECK(native[nativeOnly].vertexOffset == 64);
+        CHECK(RegisterNativeIndexedRange(
+            native, conflicts, tour::gfx::IndexedRange{}, InvalidIndex,
+            taskCompatible) == InvalidIndex);
+        native.resize(kMaxRasterDrawGroups);
+        CHECK(RegisterNativeIndexedRange(
+            native, conflicts, first, InvalidIndex, taskCompatible) == InvalidIndex);
+    }
     // Indexed geometry is keyed by persistent mesh slot + generation + LOD,
     // not by a transient filter mesh number. Re-registration must not
     // renumber the descriptor, and retirement must tombstone its draw range.
