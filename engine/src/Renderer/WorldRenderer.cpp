@@ -10529,6 +10529,7 @@ static tour::gpu_scene::IndexedGeometryTables GpuSceneIndexedTables(const tour::
     // per-view GfxFilter cluster/draw state is not the descriptor authority.
     tables.nativeRanges = gfx.indexedRanges.data();
     tables.nativeRangeCount = uint32_t(gfx.indexedRanges.size());
+    tables.nativeIndexWordCount = uint32_t(gfx.filterIndices.size());
     tables.nativeResident = gfx.indexedRangesResident;
     return tables;
 }
