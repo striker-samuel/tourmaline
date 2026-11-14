@@ -16,6 +16,7 @@
 #include <Engine/Renderer/gpu_scene.h>
 #include <Engine/Renderer/gpu_scene_raster.h>
 #include <Engine/Renderer/gpu_scene_static.h>
+#include <Engine/Renderer/mesh.h> // StaticMesh/Surface physical indexed source
 #include <Engine/Renderer/gpu_scene_upload.h> // RenderDatabase (Database<MaxFramesInFlight>) for Synchronize
 
 #include <algorithm>
