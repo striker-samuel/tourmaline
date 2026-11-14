@@ -5,6 +5,7 @@
 #include <Engine/WorldPartition/SceneTileProvider.h>
 #include <Engine/WorldPartition/CubemapTileProvider.h>
 #include <Engine/WorldPartition/CubemapCapturePlanning.h>
+#include <Engine/WorldPartition/CubemapCaptureDiagnostics.h>
 #include <Engine/WorldPartition/StreamTicketLedger.h>
 #include <cstdlib>
 #include <iostream>
@@ -234,11 +235,78 @@ int main() {
                   wp::SelectCubemapCascade(v, 300.0) == 2 &&
                   wp::SelectCubemapCascade(v, 512.0) == 3,
               "cubemap distance tiers terminate at IBL/sky without baking");
+        // Per-tier budgets are independent: a dense near tier can be
+        // granted more probes without multiplying every far-tier cost.
+        v.cascades[0].maxProbesPerCell = 8;
+        v.cascades[1].maxProbesPerCell = 16;
+        v.cascades[2].maxProbesPerCell = 32;
+        std::vector<wp::CubemapTileCaptureSet> tiered;
+        check(wp::PlanCubemapTileCaptures(v, {}, tiered, err) &&
+                  tiered.size() == 6 &&
+                  tiered[0].probes.size() <= 8 &&
+                  tiered[1].probes.size() <= 16 &&
+                  tiered[2].probes.size() <= 32 &&
+                  tiered[3].probes.size() <= 8 &&
+                  tiered[4].probes.size() <= 16 &&
+                  tiered[5].probes.size() <= 32,
+              "cubemap cascade budgets bound each tile and tier separately");
         v.cascades[1].outerRadiusMeters = 32.0f;
         const size_t oldSize = sets.size();
         check(!wp::PlanCubemapTileCaptures(v, {}, sets, err) &&
                   sets.size() == oldSize,
               "invalid cascade config leaves existing captures untouched");
+    }
+    {
+        // Diagnostics must not conflate equal counts with identical
+        // placement. Compare tiers by one-to-one position matching.
+        wp::CubemapTileCaptureSet first{};
+        smvk::CubemapPlacedProbe a{};
+        a.position = {0.0f, 0.0f, 0.0f};
+        a.influenceRadius = 3.0f;
+        a.fadeRadius = 1.5f;
+        a.depth = 2;
+        smvk::CubemapPlacedProbe b = a;
+        b.position = {5.0f, 0.0f, 0.0f};
+        b.influenceRadius = 7.0f;
+        b.fadeRadius = 3.5f;
+        first.probes = {a, b};
+
+        const auto base = wp::AnalyzeCubemapCaptureQuality(first);
+        check(base.probes == 2 && !base.hasPrevious &&
+                  base.minInfluenceMeters == 3.0f &&
+                  base.medianInfluenceMeters == 7.0f &&
+                  base.maxInfluenceMeters == 7.0f,
+              "cubemap diagnostics measure probe radius distribution");
+
+        wp::CubemapTileCaptureSet copy = first;
+        const auto same = wp::AnalyzeCubemapCaptureQuality(copy, &first);
+        check(same.hasPrevious && same.matchingPreviousPositions == 2 &&
+                  same.equivalentToPrevious,
+              "cubemap diagnostics identify equivalent tiers");
+
+        copy.probes[1].position.x += 1.0f; // equal count, different geometry
+        const auto shifted = wp::AnalyzeCubemapCaptureQuality(copy, &first);
+        check(shifted.probes == 2 && shifted.matchingPreviousPositions == 1 &&
+                  !shifted.equivalentToPrevious,
+              "cubemap diagnostics distinguish equal-count shifted tiers");
+
+        copy = first;
+        copy.probes[0].influenceRadius += 2.0f;
+        const auto changedRadius = wp::AnalyzeCubemapCaptureQuality(copy, &first);
+        check(changedRadius.matchingPreviousPositions == 2 &&
+                  !changedRadius.equivalentToPrevious,
+              "cubemap diagnostics distinguish equal-position radius changes");
+
+        copy.probes = {a, a}; // two current probes cannot match one prior
+        const auto duplicate = wp::AnalyzeCubemapCaptureQuality(copy, &first);
+        check(duplicate.matchingPreviousPositions == 1 &&
+                  !duplicate.equivalentToPrevious,
+              "cubemap diagnostics one-to-one match prevents false overlap");
+
+        wp::CubemapTileCaptureSet empty{};
+        const auto emptyPair = wp::AnalyzeCubemapCaptureQuality(empty, &empty);
+        check(emptyPair.probes == 0 && emptyPair.equivalentToPrevious,
+              "cubemap diagnostics handle empty captures");
     }
     {
         // Cubemap capture tiles participate in the shared partition frame
