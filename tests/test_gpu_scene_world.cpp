@@ -185,10 +185,15 @@ int main() {
         native.indexBase = 16u;
         native.nativeRanges = packed.data();
         native.nativeRangeCount = uint32_t(packed.size());
+        native.nativeIndexWordCount = 15u;
         CHECK(!ResolveIndexedGeometry(native, 0u, indexed));
         native.nativeResident = true;
         CHECK(ResolveIndexedGeometry(native, 0u, indexed));
         CHECK(indexed.firstIndex == 16u && indexed.indexCount == 15u);
+        native.nativeIndexWordCount = 14u; // streamed payload too short
+        CHECK(!ResolveIndexedGeometry(native, 0u, indexed));
+        native.nativeIndexWordCount = 15u;
+        CHECK(ResolveIndexedGeometry(native, 0u, indexed));
         CHECK(!ResolveIndexedGeometry(native, 1u, indexed));
         CHECK(indexed.indexCount == 0u);
         native.indexBase = UINT32_MAX;
@@ -244,6 +249,7 @@ int main() {
         IndexedGeometryTables nativeTables = tables;
         nativeTables.nativeRanges = registered.data();
         nativeTables.nativeRangeCount = uint32_t(registered.size());
+        nativeTables.nativeIndexWordCount = 12u;
         nativeTables.nativeResident = true;
         CHECK(registry.Synchronize(db, nativeTables));
         CHECK(registry.Find(key) == stable);
