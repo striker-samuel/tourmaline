@@ -12093,7 +12093,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
           m_gpuSceneRasterMaskedGbufferProgram.shaderCount == 2)) &&
         !ShaderLodActive() && !m_wireframe &&
         (m_debugView == ViewMode::Lit || m_debugView == ViewMode::Meshlets ||
-         m_debugView == ViewMode::Lods) &&
+         m_debugView == ViewMode::Lods || DebugFsForView(m_debugView).has_value()) &&
         gpuSceneGiReady;
     // KD diagnostic: the full raster-mode breakdown (the temporal gate
     // downstream only names its own conditions - this names every reason
@@ -17151,6 +17151,13 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     | smvk::IteratorFlagBit_StaticVertexFmt,
                 [&](const smvk::World::RenderItem& item) {
                     if (item.material == smvk::World::kInvalidIndex)
+                        return;
+                    // GPU-scene-owned static opaque + MASK sources are
+                    // submitted by the task/indexed raster leg above; skip
+                    // them here so Main is drawn exactly once. Skinned/
+                    // legacy/transparent sources stay direct.
+                    if (sceneRasterActive &&
+                        m_gpuSceneRasterOwnership.OwnsGpu(m_gpuSceneSync.SourceForNode(item.node)))
                         return;
 #if 0 // TMP-DIAG scanlands hunt (disabled): TOURMALINE_SHOWGROUP="n"
       // shows ONLY LOD group n (mirrors the FilterMainView hack).
