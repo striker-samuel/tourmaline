@@ -16272,6 +16272,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                debugDrawRanges,
                                debugDrawFlight,
                                transparentCullView,
+                               liveMainCullView,
                                mainSkinBda,
                                mainSkinBase,
                                mainSkinValid,
@@ -17159,6 +17160,33 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     if (sceneRasterActive &&
                         m_gpuSceneRasterOwnership.OwnsGpu(m_gpuSceneSync.SourceForNode(item.node)))
                         return;
+                    // CPU frustum cull (the direct leg has no GPU cull when U
+                    // toggles the raster off): conservative LOD-union sphere
+                    // test against the live main view, matching the prepass and
+                    // motion dynamic-cull convention.
+                    if (smvk::StaticMesh* cullBase = m_world->GetMesh(item.mesh)) {
+                        const glm::mat4& cullModel = m_world->scene.globalTransform[item.node];
+                        glm::vec3 c{0.0f};
+                        float r = 0.0f;
+                        smvk::MeshBoundsToWorld(cullModel,
+                                                cullBase->geometry.aabbMin,
+                                                cullBase->geometry.aabbMax,
+                                                c,
+                                                r);
+                        bool visible = smvk::RenderViewIntersectsSphere(liveMainCullView, c, r);
+                        const uint32_t cullLod = LodIndexForNode(item.node, item.mesh);
+                        if (smvk::StaticMesh* cullSel = m_world->GetLodMesh(item.mesh, cullLod);
+                            !visible && cullSel && cullSel != cullBase) {
+                            smvk::MeshBoundsToWorld(cullModel,
+                                                    cullSel->geometry.aabbMin,
+                                                    cullSel->geometry.aabbMax,
+                                                    c,
+                                                    r);
+                            visible = smvk::RenderViewIntersectsSphere(liveMainCullView, c, r);
+                        }
+                        if (!visible)
+                            return;
+                    }
 #if 0 // TMP-DIAG scanlands hunt (disabled): TOURMALINE_SHOWGROUP="n"
       // shows ONLY LOD group n (mirrors the FilterMainView hack).
       // Remove later.
