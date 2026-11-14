@@ -743,7 +743,9 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& pathIn, const std::string& 
         // with no demand and no hysteresis (one Update() decays all).
         streamCfg.minResidentMips = (m_texMode == TexMode::Coarse) ? 1 : 2;
         streamCfg.initialResidentDimCap = 512; // cheapest tail first
-        streamCfg.maxUpgradesPerFrame = 4;
+        // Editor retargets can synchronously decode/transcode KTX sources. Limit
+        // the work burst when the camera moves through geometry.
+        streamCfg.maxUpgradesPerFrame = 1;
         streamCfg.maxDowngradesPerFrame = 8;
         streamCfg.evictCooldownFrames = (m_texMode == TexMode::Coarse) ? 0 : 60;
         streamCfg.mipBias = 0.0f;
@@ -1580,7 +1582,12 @@ void EditorApp::UpdateTextureStreaming(smvk::Extent2D renderExtent) {
                 if (!mat)
                     return;
                 const glm::mat4& model = m_world->scene.globalTransform[item.node];
-                const float dist = glm::distance(eye, glm::vec3(model[3]));
+                // The node origin can coincide with the camera while clipping.
+                // Avoid turning a near-zero heuristic distance into a mip-0
+                // request for every texture on the intersected object.
+                constexpr float kMinStreamingDistance = 1.0f;
+                const float dist = std::max(kMinStreamingDistance,
+                                            glm::distance(eye, glm::vec3(model[3])));
                 note(mat->values.textures.x, dist);
                 note(mat->values.textures.y, dist);
                 note(mat->values.textures.z, dist);
