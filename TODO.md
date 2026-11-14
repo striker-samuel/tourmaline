@@ -128,6 +128,14 @@
 
 ### P2 — hardware validation and deferred quality
 
+- [ ] **Nice to have / long-term — masked layered materials.** Keep layered
+  materials **opaque-only** for the current GPU-scene migration. In a future
+  feature pass, consider masked (and optionally A2C) layered materials with a
+  shared per-layer alpha/coverage evaluation across Main, depth, G-buffer,
+  shadow casters and temporal passes. Preserve vertex-color RGBA as blend
+  weights rather than treating its alpha as ordinary vertex opacity. Require
+  visual parity and coverage/shadow regression tests before enabling; not a
+  blocker for opaque layered GPU-scene support.
 - [ ] Validate real tablet pen input (#177), VRR on supported monitor (#194),
   TLAS/BLAS inspector on Vulkan (#145), editor solar/day-night lifecycle (#139),
   HDR distortion/heat shimmer (#136), thin-surface rear lighting (#140),
