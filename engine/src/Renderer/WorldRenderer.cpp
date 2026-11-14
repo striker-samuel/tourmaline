@@ -12923,7 +12923,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 tour::gpu_scene::CandidateValidator::MeshletCompactPlan meshletPlan{};
                 bool meshletCompactReady = false;
                 if (!taskReady && s_gpuSceneMeshlets && gpuSceneRasterMode && workReady &&
-                    rasterReady && m_gfxFilterAvailable &&
+                    rasterReady && m_gfxRenderer.State().indexedRangesResident &&
                     m_gpuSceneMeshletPrograms[0].shaderCount == 1 &&
                     m_gpuSceneMeshletPrograms[1].shaderCount == 1 &&
                     m_gpuSceneMeshletPrograms[2].shaderCount == 1 &&
@@ -14480,12 +14480,13 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                          s_gpuSceneTemporal ? 1 : 0,
                          m_gpuSceneRasterDrawActive ? 1 : 0,
                          temporalProgramsReady ? 1 : 0,
-                         m_gfxFilterAvailable ? 1 : 0,
+                         !m_gpuScenePhysicalIndexedRanges.empty() ? 1 : 0,
                          temporalCommands,
                          temporalSlots);
     }
     if (s_gpuSceneTemporal && !m_gpuSceneMeshletCompactActive && !m_gpuSceneTaskMeshActive &&
-        m_gpuSceneRasterDrawActive && temporalProgramsReady && m_gfxFilterAvailable &&
+        m_gpuSceneRasterDrawActive && temporalProgramsReady &&
+        !m_gpuScenePhysicalIndexedRanges.empty() &&
         temporalCommands != 0 && temporalSlots != 0 && temporalCommands <= 4u * 1048576u &&
         temporalSlots <= 4194304u) {
         const uint32_t previousFlight = m_gpuSceneRasterLastHistoryFlight;
