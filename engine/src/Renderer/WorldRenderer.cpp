@@ -10515,6 +10515,57 @@ void WorldRenderer::MountContentVfs(smvk::OverlayVfs& vfs) const {
     std::cerr << "[VFS] loose mounts: content/ (0)"
               << (m_projectRoot.empty() ? "" : " + project root (-10)") << "\n";
 }
+// GPU-scene indexed raster reads the World-owned physical index/vertex
+// allocations, not a second cluster-ordered GfxFilter index copy. Rebuild
+// only after an asset/LOD registration revision; the per-flight publisher
+// snapshots these ranges before any indirect command can consume them.
+void WorldRenderer::RefreshGpuScenePhysicalIndexedRanges() {
+    const auto& gfx = m_gfxRenderer.State();
+    m_gpuScenePhysicalIndexedRanges.assign(gfx.meshes.size(), {});
+    if (!m_world)
+        return;
+    const uint64_t indexWords =
+        smvk::staticVertexFmtHeap.m_staticIndexBlock.Capacity() / sizeof(uint32_t);
+    const uint64_t vertexLimit =
+        smvk::staticVertexFmtHeap.m_staticVertexBlock.Capacity();
+    std::vector<uint8_t> conflicting(gfx.meshes.size(), uint8_t(0));
+    for (uint32_t worldMesh = 0; worldMesh < m_world->lodChains.size(); ++worldMesh) {
+        const auto& levels = m_world->lodChains[worldMesh].levels;
+        for (uint32_t lod = 0; lod < levels.size(); ++lod) {
+            const uint32_t id = m_gfxRenderer.GfxMeshForLod(worldMesh, lod);
+            if (id == UINT32_MAX || id >= m_gpuScenePhysicalIndexedRanges.size() ||
+                conflicting[id])
+                continue;
+            const auto& level = levels[lod];
+            if (!level.resident || !level.mesh.cluster || !level.mesh.handle.valid())
+                continue;
+            const auto* mesh = level.mesh.cluster->staticMeshes.get(level.mesh.handle);
+            if (!mesh || mesh->geometry.topology != smvk::PrimitiveTopology::TriangleList ||
+                mesh->geometry.surfaces.size() != 1u)
+                continue;
+            const auto& src = mesh->geometry.surfaces.front();
+            if (src.indexCount == 0u || (src.indexCount % 3u) != 0u ||
+                uint64_t(src.firstIndex) + src.indexCount > indexWords ||
+                src.baseVertex < 0 ||
+                uint64_t(src.baseVertex) + mesh->geometry.vertexCount > vertexLimit)
+                continue;
+            const tour::gfx::IndexedRange physical{
+                src.firstIndex, src.indexCount, src.baseVertex};
+            auto& current = m_gpuScenePhysicalIndexedRanges[id];
+            if (current.indexCount != 0u &&
+                (current.firstIndex != physical.firstIndex ||
+                 current.indexCount != physical.indexCount ||
+                 current.vertexOffset != physical.vertexOffset)) {
+                // One ID must never alias two incompatible physical ranges.
+                current = {};
+                conflicting[id] = 1u;
+            } else {
+                current = physical;
+            }
+        }
+    }
+}
+
 // Narrow GfxFilter's static geometry state into the pointer+count view the
 // GPU-scene indexed-geometry publisher consumes. The narrowing lives HERE, in
 // engine implementation code, so the public header carries no RHI/gfx::State
