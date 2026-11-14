@@ -1,0 +1,21 @@
+# Tourmaline material asset v1
+guid=c15a44e858d2eedc75301809adebcdab
+name=LMBR_00001a5_Paris_Ceiling_Lamp
+baseColor=1 1 1 1
+metallic=0
+roughness=0.3
+emissive=10 10 7
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=objects/props/bistro/paris_ceiling_lamp_01/paris_ceiling_lamp_01_diff.ktx2 srgb
+tex.normal=objects/props/bistro/paris_ceiling_lamp_01/paris_ceiling_lamp_01_ddna.ktx2
+tex.emissive=objects/props/bistro/paris_ceiling_lamp_01/paris_ceiling_lamp_01_emi.ktx2 srgb

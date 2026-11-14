@@ -1,0 +1,19 @@
+# Tourmaline material asset v1
+guid=6ec749b5e99bad3293202c4e44805260
+name=LMBR_0000038_room_interior
+baseColor=1 1 1 1
+metallic=0
+roughness=0.960784
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=objects/structures/buildings/paris_building_09/room_interior_diff.ktx2 srgb

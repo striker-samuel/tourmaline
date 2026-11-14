@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=cebc1c9cea17c37f3b2aec999d436f0f
+name=LMBR_00000ad_Trunk
+baseColor=1 1 1 1
+metallic=0
+roughness=0.67
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=objects/props/natural/linden/linden_bark_a_diff.ktx2 srgb
+tex.normal=objects/props/natural/linden/linden_bark_a_ddna.ktx2

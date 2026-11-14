@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=60703e9e7689d62227525d37aae33301
+name=LMBR_000006d_concrete_a
+baseColor=1 1 1 1
+metallic=0
+roughness=0.6
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=objects/structures/standard/doors/bistro_main_door_concrete_01a/bistro_main_door_concrete_01a_diff.ktx2 srgb
+tex.normal=objects/structures/standard/doors/bistro_main_door_concrete_01a/bistro_main_door_concrete_01a_ddna.ktx2

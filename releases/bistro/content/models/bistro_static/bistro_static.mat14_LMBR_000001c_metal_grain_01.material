@@ -1,0 +1,19 @@
+# Tourmaline material asset v1
+guid=96aa78a4c9b499f69495b21bb09bb2df
+name=LMBR_000001c_metal_grain_01
+baseColor=1 1 1 1
+metallic=1
+roughness=0.4
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.normal=textures/shared/tiling/grain_metal_01/grain_metal_01_ddna.ktx2

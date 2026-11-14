@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=15d048c04ccab540900c2c9675265e8b
+name=LMBR_0000073_Side_Letters
+baseColor=1 1 1 1
+metallic=0
+roughness=0.1
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=mask
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=masked
+tex.baseColor=objects/props/street/paris_bistrofrontbanner_01/paris_bistrosidebanner_diff.ktx2 srgb
+tex.normal=textures/shared/tiling/wood_painted_02/wood_painted_02_ddna.ktx2

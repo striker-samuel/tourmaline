@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=b243c3a42a2b21cc8cd30ce37057a9e4
+name=LMBR_000013b_Mesh
+baseColor=1 1 1 1
+metallic=0
+roughness=0.5
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=objects/props/bistro/paris_radiator_01/paris_radiator_01_diff.ktx2 srgb
+tex.normal=objects/props/bistro/paris_radiator_01/paris_radiator_01_ddna.ktx2

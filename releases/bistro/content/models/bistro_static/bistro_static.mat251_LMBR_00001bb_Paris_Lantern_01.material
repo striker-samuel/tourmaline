@@ -1,0 +1,21 @@
+# Tourmaline material asset v1
+guid=de78928e946b4e0219a89caf3cf2f740
+name=LMBR_00001bb_Paris_Lantern_01
+baseColor=1 1 1 1
+metallic=0
+roughness=0.6
+emissive=8 6.7 3
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=objects/props/street/paris_lantern_01/paris_lantern_01a_diff.ktx2 srgb
+tex.normal=objects/props/street/paris_lantern_01/paris_lantern_01a_ddna.ktx2
+tex.emissive=objects/props/street/paris_lantern_01/paris_lantern_01a_emi.ktx2 srgb

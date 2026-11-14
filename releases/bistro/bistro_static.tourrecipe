@@ -1,0 +1,24 @@
+# Tourmaline Project Recipe v1
+#
+# The Bistro demo project's DEMO-RELEASE pak set (the demo-content
+# GitHub release asset set: bistro_static.tapp + bistro_static-<hash>.pak).
+# The Bistro exterior (Amazon Lumberyard Bistro, Open Research Content
+# Archive — CC BY 4.0) cooks STATIC (setStatic root) with LODs ON so the
+# scene is GPU-scene-raster eligible; the scene authors no GI volumes and
+# no cubemap captures, so the recipe-level bakes stay OFF (the GiBaker
+# and Cook stages exit clean with nothing to bake).
+#
+# See BISTRO-CREDITS.md before distributing the cooked pak.
+
+recipe 1
+project Bistro
+entry content/scenes/bistro_static.tour
+
+import lods on
+
+bake gi off
+bake cubemaps off
+
+[pak bistro_static]
+output bistro_static.pak
+scene content/scenes/bistro_static.tour

@@ -1,0 +1,19 @@
+# Tourmaline material asset v1
+guid=80f75fa7bae76d3a33168767b964a0a1
+name=LMBR_0000060_Decal_Bottomdirt
+baseColor=1 1 1 1
+metallic=0
+roughness=0.960784
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=blend
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=textures/decals/bottomdirt_01/bottomdirt_01_diff.ktx2 srgb

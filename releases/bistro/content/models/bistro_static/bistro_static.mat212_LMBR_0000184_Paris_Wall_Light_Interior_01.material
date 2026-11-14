@@ -1,0 +1,21 @@
+# Tourmaline material asset v1
+guid=b34199e1f4546089a9454f66ea13c21f
+name=LMBR_0000184_Paris_Wall_Light_Interior_01
+baseColor=1 1 1 1
+metallic=0
+roughness=0.35
+emissive=1 0.625 0.3
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=objects/props/bistro/paris_wall_light_interior_01/paris_wall_light_interior_diff.ktx2 srgb
+tex.normal=objects/props/bistro/paris_wall_light_interior_01/paris_wall_light_interior_ddna.ktx2
+tex.emissive=objects/props/bistro/paris_wall_light_interior_01/paris_wall_light_interior_emi.ktx2 srgb

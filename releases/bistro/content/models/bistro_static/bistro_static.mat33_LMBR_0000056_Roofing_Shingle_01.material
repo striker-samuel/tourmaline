@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=27c0a5f5b5cdfc1a3278017c77010ea5
+name=LMBR_0000056_Roofing_Shingle_01
+baseColor=1 1 1 1
+metallic=0
+roughness=0.5
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=textures/shared/tiling/roofing_shingle_01/roofing_shingle_01_diff.ktx2 srgb
+tex.normal=textures/shared/tiling/roofing_shingle_01/roofing_shingle_01_ddna.ktx2

@@ -1,0 +1,21 @@
+# Tourmaline material asset v1
+guid=27e39826b973292e5a3737c0ea29a9f7
+name=LMBR_00001a8_Main
+baseColor=1 1 1 1
+metallic=0
+roughness=0.2
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=objects/props/street/paris_bistrofrontbanner_01/paris_bistrofrontbanner_01_diff.ktx2 srgb
+tex.normal=objects/props/street/paris_bistrofrontbanner_01/paris_bistrofrontbanner_01_ddna.ktx2
+tex.emissive=objects/props/street/paris_bistrofrontbanner_01/paris_bistrofrontbanner_01_emt.ktx2 srgb

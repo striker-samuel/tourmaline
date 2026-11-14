@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=7c1e3f873fa108da5da4c29e02a5fc2b
+name=LMBR_00001b7_Paris_courtain_01a
+baseColor=1 1 1 1
+metallic=0
+roughness=0.235294
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=objects/props/bistro/paris_curtain_01/paris_curtain_01a_diff.ktx2 srgb
+tex.normal=objects/props/bistro/paris_curtain_01/paris_curtain_01a_ddna.ktx2

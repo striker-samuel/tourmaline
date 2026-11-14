@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=71d3a6a523ef097870ed89dbc3795e9d
+name=LMBR_00001b9_Grid
+baseColor=1 1 1 1
+metallic=0
+roughness=0.67451
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=textures/shared/colors/grey_128.ktx2 srgb
+tex.normal=textures/shared/tiling/metal_hexagonal_grid_01/metal_hexagonal_grid_01_ddna.ktx2

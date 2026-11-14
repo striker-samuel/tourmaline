@@ -1,0 +1,19 @@
+# Tourmaline material asset v1
+guid=81a3e048766f0dfa3b49617a522c9a26
+name=LMBR_0000003_noname
+baseColor=1 1 1 1
+metallic=0
+roughness=0.960784
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=textures/lumberyard_splash_2560x2560.ktx2 srgb

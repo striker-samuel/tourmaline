@@ -1,0 +1,19 @@
+# Tourmaline material asset v1
+guid=85864dcba68d82d3794528a6145c2f35
+name=LMBR_00000af_Orange_Leaves
+baseColor=1 1 1 1
+metallic=0
+roughness=0.858824
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=mask
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=masked
+tex.baseColor=objects/props/natural/linden/leaves_b_diff.ktx2 srgb

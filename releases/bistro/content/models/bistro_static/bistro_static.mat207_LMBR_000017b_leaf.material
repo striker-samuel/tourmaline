@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=57a2fb77fcef617e90adc0073b1f6c51
+name=LMBR_000017b_leaf
+baseColor=1 1 1 1
+metallic=0
+roughness=0.64
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=mask
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=masked
+tex.baseColor=objects/natural/bushes/buxus/buxus_diff.ktx2 srgb
+tex.normal=objects/natural/bushes/buxus/buxus_ddna.ktx2

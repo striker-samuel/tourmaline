@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=0edc512a540b9f369aeeb32db2434f1a
+name=LMBR_00000e9_mesh
+baseColor=1 1 1 1
+metallic=0
+roughness=0.48
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=objects/props/street/paris_trashcan_01/paris_trashcan_01_diff.ktx2 srgb
+tex.normal=objects/props/street/paris_trashcan_01/paris_trashcan_01_ddna.ktx2

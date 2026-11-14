@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=9ae77e07c0fae3e908c85d269c96780b
+name=LMBR_0000125_Metal_Worn_01
+baseColor=1 1 1 1
+metallic=0
+roughness=0.234
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=textures/shared/tiling/metal_clean_01/metal_clean_01_diff.ktx2 srgb
+tex.normal=textures/shared/tiling/metal_clean_01/metal_clean_01_ddna.ktx2

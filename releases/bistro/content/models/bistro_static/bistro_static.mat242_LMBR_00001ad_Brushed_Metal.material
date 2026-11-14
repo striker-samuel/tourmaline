@@ -1,0 +1,19 @@
+# Tourmaline material asset v1
+guid=534aad0689d027dd8ad15bc49cabe104
+name=LMBR_00001ad_Brushed_Metal
+baseColor=1 1 1 1
+metallic=0
+roughness=0.3
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=textures/shared/tiling/brushed_metal_01/paris_brushed_metal_diff.ktx2 srgb

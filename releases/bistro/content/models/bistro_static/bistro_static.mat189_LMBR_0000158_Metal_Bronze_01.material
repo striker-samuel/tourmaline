@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=aa4c7590171efbf2e5f0702fc961f98b
+name=LMBR_0000158_Metal_Bronze_01
+baseColor=1 1 1 1
+metallic=0
+roughness=0.2
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=textures/shared/tiling/bronze_01/bronze_01_diff.ktx2 srgb
+tex.normal=textures/shared/tiling/bronze_01/bronze_01_ddna.ktx2

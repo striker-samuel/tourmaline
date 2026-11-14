@@ -19,6 +19,25 @@ Numbered variants (`sponza_1.pak`, `sponza_2.pak`, ...) in the build
 tree are incremental re-cooks of the SAME project — not separate demos;
 they are not carried here.
 
+## Bistro (recreate-from-source, not a shipped pak)
+
+The Amazon Lumberyard Bistro exterior (CC BY 4.0 ORCA, see
+`BISTRO-CREDITS.md`) cooks to a **~1.4 GB** pak and its source textures
+are **~700 MB**, so neither is carried here. Instead the small *definition*
+— recipe + scene + glTF + identity ledger + 254 material assets (~2 MB) —
+is committed at [`releases/bistro/`](bistro/README.md). To recreate:
+
+1. Download the ORCA
+   [Amazon Lumberyard Bistro](https://developer.nvidia.com/orca/amazon-lumberyard-bistro)
+   (FBX + textures).
+2. Convert the FBX to glTF and the textures to KTX2, matching the committed
+   `bistro_static.gltf` URI layout.
+3. Run `tools/recreate_bistro.ps1` (Windows) / `tools/recreate_bistro.sh`
+   (Linux), or the `Project.exe build --recipe bistro_static.tourrecipe`
+   command in [`bistro/README.md`](bistro/README.md).
+
+See [`bistro/README.md`](bistro/README.md) for the full flow.
+
 ## Refreshing the paks
 
 ```powershell
@@ -33,6 +52,8 @@ they are not carried here.
 # then copy the build into the release folder (pak + manifest together)
 Copy-Item F:\projects\game\build\sponza.* releases\paks\
 ```
+
+Bistro is NOT carried as a shipped pak — see "Bistro (recreate-from-source)" above; `tools/recreate_bistro.ps1` / `.sh` drive its cook from the ORCA source.
 
 The legacy one-liner (`tools\cook\cook_sponza.bat`) still works — it
 drives the same stages through the legacy `BuildProject` path.

@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=8b2d05593c4b1f302676ae7d3022db88
+name=LMBR_0000154_plants
+baseColor=1 1 1 1
+metallic=0
+roughness=0.2
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=mask
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=masked
+tex.baseColor=objects/props/bistro/paris_flower_pot_01/paris_interior_plants_01_diff.ktx2 srgb
+tex.normal=objects/props/bistro/paris_flower_pot_01/paris_interior_plants_01_ddna.ktx2

@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=cba4a3bff50c71c1886f0863f7ac2b22
+name=LMBR_000006c_bistro_main_door
+baseColor=1 1 1 1
+metallic=0
+roughness=0.35
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=objects/structures/standard/doors/bistro_main_door/bistro_main_door_diff.ktx2 srgb
+tex.normal=objects/structures/standard/doors/bistro_main_door/bistro_main_door_ddna.ktx2

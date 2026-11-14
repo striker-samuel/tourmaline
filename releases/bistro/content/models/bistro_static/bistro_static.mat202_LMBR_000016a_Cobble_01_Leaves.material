@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=d39d8bef107a756802f56b74115d98c6
+name=LMBR_000016a_Cobble_01_Leaves
+baseColor=1 1 1 1
+metallic=0
+roughness=0.5
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=textures/shared/tiling/pavement_cobblestone_01/pavement_cobblestone_01_b_diff.ktx2 srgb
+tex.normal=textures/shared/tiling/pavement_cobblestone_01/pavement_cobblestone_01_b_ddna.ktx2

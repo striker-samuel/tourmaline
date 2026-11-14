@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=d7ab951db900cb92d83ed70735822ba0
+name=LMBR_000003f_concrete_white
+baseColor=1 1 1 1
+metallic=0
+roughness=0.5
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=textures/shared/tiling/plaster_01/plaster_01a_diff.ktx2 srgb
+tex.normal=textures/shared/tiling/plaster_01/plaster_01a_ddna.ktx2

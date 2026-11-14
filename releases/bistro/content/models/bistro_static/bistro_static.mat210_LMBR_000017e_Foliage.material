@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=cd60880302895e912c1d86abe01f05f9
+name=LMBR_000017e_Foliage
+baseColor=1 1 1 1
+metallic=0
+roughness=0.05
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=mask
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=masked
+tex.baseColor=objects/props/natural/paris_flowers_01a/paris_foliage_01a_diff.ktx2 srgb
+tex.normal=objects/props/natural/paris_flowers_01a/paris_foliage_01a_ddna.ktx2

@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=44844327885c488d7c943a309a5f9934
+name=LMBR_000016d_Pavement_Cobblestone_03
+baseColor=1 1 1 1
+metallic=0
+roughness=0.198
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=textures/shared/tiling/pavement_cobblestone_03/pavement_cobblestone_03_diff.ktx2 srgb
+tex.normal=textures/shared/tiling/pavement_cobblestone_03/pavement_cobblestone_03_ddna.ktx2

@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=62b9dc1cbedd770a1a3acaedeb9ff50b
+name=LMBR_00001a9_letters
+baseColor=1 1 1 1
+metallic=0
+roughness=1
+emissive=0.358514 0.66129 0.319979
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=textures/shared/colors/grey_128.ktx2 srgb
+tex.emissive=objects/props/street/paris_bistrofrontbanner_01/bistro_frontbannerletters_emt.ktx2 srgb

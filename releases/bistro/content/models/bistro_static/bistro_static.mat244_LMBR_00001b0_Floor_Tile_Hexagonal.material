@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=fcb61fca12dbad57fb65458bc36329db
+name=LMBR_00001b0_Floor_Tile_Hexagonal
+baseColor=1 1 1 1
+metallic=0
+roughness=0.307
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=textures/shared/tiling/tile_hexagonal_01/tile_hexagonal_01_diff.ktx2 srgb
+tex.normal=textures/shared/tiling/tile_hexagonal_01/tile_hexagonal_01_ddna.ktx2

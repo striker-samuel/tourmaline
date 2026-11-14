@@ -1,0 +1,18 @@
+# Tourmaline material asset v1
+guid=09f512626e12b8cbd8880df4f3e2b442
+name=LMBR_0000185_Paris_Wall_Bulb_Light
+baseColor=1 1 1 1
+metallic=0
+roughness=1
+emissive=30 30 30
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit

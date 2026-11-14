@@ -1,0 +1,19 @@
+# Tourmaline material asset v1
+guid=27e3323645037d1a214a115a4e7c81f3
+name=LMBR_00000c3_headlight
+baseColor=1 1 1 0.05
+metallic=0
+roughness=0
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=blend
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=1
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.normal=objects/props/street/paris_vespascooter_01/paris_vespascooter_01_ddna.ktx2
