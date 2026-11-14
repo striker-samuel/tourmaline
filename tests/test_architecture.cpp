@@ -1106,6 +1106,50 @@ int main() {
                          "MainLitProgramFor - the active GI variant would be dropped\n";
     }
 
+    // Debug-FS material ABI regression guard (the "cross-mesh alpha" bug):
+    // every shading debug fragment shader reads the GPU-scene flat material
+    // varying (IN.meshMaterial, location 7), never the per-range push
+    // constant (pc.materialId). A debug FS that falls back to pc.materialId
+    // reads the wrong draw's material on the task/mesh + indexed-raster
+    // paths and produces alpha cutouts from another mesh. The raster/direct
+    // VS both emit location 7, and the lit body's GFX_MATERIAL_ID macro is
+    // the mesh-twin override of the same contract.
+    {
+        const fs::path shaderDir = fs::path(TOURMALINE_SOURCE_ROOT) / "engine" / "shaders";
+        static const char* kDebugFs[] = {
+            "default_unlit.frag.hlsl",
+            "default_pbr_debug.frag.hlsl",
+            "default_cascade_debug.frag.hlsl",
+            "default_baked_debug.frag.hlsl",
+            "default_ssrmask_debug.frag.hlsl",
+            "default_contact_debug.frag.hlsl",
+            "default_normals_debug.frag.hlsl",
+            "default_normals_mapped_debug.frag.hlsl",
+            "default_vertexcolor_debug.frag.hlsl",
+            "default_uv_debug.hlsli",
+            "uvflat0.frag.hlsl",
+            "default_hair_debug.frag.hlsl",
+            "default_sss_debug.frag.hlsl",
+            "default_water_debug.frag.hlsl",
+            "default_pom.frag.hlsl",
+        };
+        std::vector<std::string> offenders;
+        for (const char* name : kDebugFs) {
+            const std::string text = ReadText(shaderDir / name);
+            if (text.empty()) {
+                offenders.push_back(std::string(name) + " (missing)");
+                continue;
+            }
+            if (text.find("mats[IN.meshMaterial]") == std::string::npos ||
+                text.find("mats[pc.materialId]") != std::string::npos)
+                offenders.push_back(name);
+        }
+        Check(offenders.empty(),
+              "arch.debug-fs-material-abi (debug FS read IN.meshMaterial, never pc.materialId)");
+        for (const std::string& o : offenders)
+            std::cout << "  debug-FS ABI offender: " << o << "\n";
+    }
+
     std::cout << "architecture_tests: " << (g_checks - g_failures) << "/" << g_checks
               << " checks passed\n";
     return g_failures == 0 ? 0 : 1;
