@@ -21,6 +21,19 @@
 
 namespace tour::gpu_scene {
 
+// The shared GPU-scene lit fragment body already evaluates 2-4 layered
+// materials using COLOR0 as blend weights. Its opaque depth/G-buffer paths
+// are safe, but masked/transparent layering needs matching coverage in every
+// depth, shadow and temporal consumer before it can own GPU raster draws.
+// Keep this material-only gate separate from topology/residency admission.
+[[nodiscard]] inline bool OpaqueLayeredRasterEligible(const smvk::Material& material) noexcept {
+    const int mode = material.values.layerMaterials.w;
+    if (mode <= 1)
+        return true; // ordinary material, including existing MASK/BLEND paths
+    return mode <= 4 && material.alphaMode == smvk::AlphaMode::Opaque &&
+           material.shadingModel != smvk::ShadingModel::Masked;
+}
+
 // GPU-scene work selection already chooses the finest registered resident
 // LOD. Admit multi-LOD static meshes only when ALL cooked levels have known
 // bounds: the instance/leaf sphere is their union, so frustum rejection

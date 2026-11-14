@@ -34,6 +34,35 @@ int g_failures = 0;
 using namespace tour::gpu_scene;
 
 int main() {
+    // GPU-scene's full lit FS uses vertex RGBA as normalized weights for
+    // two-to-four layer materials. Only opaque layered materials are admitted:
+    // masked/transparent variants require consistent layered coverage in
+    // depth, shadow, G-buffer and temporal passes first.
+    {
+        smvk::Material material{};
+        CHECK(OpaqueLayeredRasterEligible(material)); // plain opaque
+        material.alphaMode = smvk::AlphaMode::Mask;
+        CHECK(OpaqueLayeredRasterEligible(material)); // plain MASK remains supported
+        material.alphaMode = smvk::AlphaMode::Blend;
+        CHECK(OpaqueLayeredRasterEligible(material)); // plain BLEND unchanged
+        material.values.layerMaterials.w = 2;
+        CHECK(!OpaqueLayeredRasterEligible(material)); // layered BLEND
+        material.alphaMode = smvk::AlphaMode::Mask;
+        CHECK(!OpaqueLayeredRasterEligible(material)); // layered MASK
+        material.alphaMode = smvk::AlphaMode::Opaque;
+        CHECK(OpaqueLayeredRasterEligible(material));
+        material.values.layerMaterials.w = 3;
+        CHECK(OpaqueLayeredRasterEligible(material));
+        material.values.layerMaterials.w = 4;
+        CHECK(OpaqueLayeredRasterEligible(material));
+        material.values.layerMaterials.w = 5;
+        CHECK(!OpaqueLayeredRasterEligible(material)); // outside shader contract
+        material.values.layerMaterials.w = 2;
+        material.shadingModel = smvk::ShadingModel::Masked;
+        CHECK(!OpaqueLayeredRasterEligible(material)); // cutout even if alpha mode opaque
+        material.shadingModel = smvk::ShadingModel::DefaultLit;
+        CHECK(OpaqueLayeredRasterEligible(material));
+    }
     // Dither-enabled GPUScene instances must choose masked depth and
     // forward the independent location-8 fade flag to the lit shader.
     // Unflagged and already-masked instances retain their classifications.
