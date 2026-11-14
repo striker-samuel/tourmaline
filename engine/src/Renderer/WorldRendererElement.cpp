@@ -109,19 +109,27 @@ void WorldRendererElement::onUpdate(float dt) {
     // This is advisory telemetry only: no eviction or quality changes.
     if (m_renderer.m_context) {
         const auto now = std::chrono::steady_clock::now();
-        const double seconds =
-            std::chrono::duration<double>(now - m_lastGpuMemoryPoll).count();
+        const double seconds = std::chrono::duration<double>(now - m_lastGpuMemoryPoll).count();
         if (seconds >= 1.0) {
             m_lastGpuMemoryPoll = now;
             const auto warning = m_renderer.m_context->PollGpuMemoryWarning(seconds);
             if (warning.changed) {
                 const char* state = "unavailable";
                 switch (warning.state) {
-                case smvk::GpuMemoryWarning::Healthy: state = "healthy"; break;
-                case smvk::GpuMemoryWarning::Pressure: state = "pressure"; break;
-                case smvk::GpuMemoryWarning::Critical: state = "critical"; break;
-                case smvk::GpuMemoryWarning::SpillSuspected: state = "spill-suspected"; break;
-                case smvk::GpuMemoryWarning::Unavailable: break;
+                case smvk::GpuMemoryWarning::Healthy:
+                    state = "healthy";
+                    break;
+                case smvk::GpuMemoryWarning::Pressure:
+                    state = "pressure";
+                    break;
+                case smvk::GpuMemoryWarning::Critical:
+                    state = "critical";
+                    break;
+                case smvk::GpuMemoryWarning::SpillSuspected:
+                    state = "spill-suspected";
+                    break;
+                case smvk::GpuMemoryWarning::Unavailable:
+                    break;
                 }
                 // Re-query on state transitions only; quiet frames do not
                 // generate logs or extra memory diagnostics.
@@ -133,12 +141,15 @@ void WorldRendererElement::onUpdate(float dt) {
                     }
                 }
                 constexpr double MiB = 1024.0 * 1024.0;
-                std::fprintf(stderr,
-                             "[GpuMemory] %s local=%.1f/%.1f MiB (%.1f%%)"
-                             " nonlocal-growth=%.1f MiB (suspected spill is not confirmed eviction)\n",
-                             state, double(localUsage) / MiB, double(localBudget) / MiB,
-                             warning.localRatio * 100.0,
-                             double(warning.nonlocalGrowthBytes) / MiB);
+                std::fprintf(
+                    stderr,
+                    "[GpuMemory] %s local=%.1f/%.1f MiB (%.1f%%)"
+                    " nonlocal-growth=%.1f MiB (suspected spill is not confirmed eviction)\n",
+                    state,
+                    double(localUsage) / MiB,
+                    double(localBudget) / MiB,
+                    warning.localRatio * 100.0,
+                    double(warning.nonlocalGrowthBytes) / MiB);
             }
         }
     }
@@ -238,6 +249,12 @@ void WorldRendererElement::HandleShortcuts() {
     }
     if (m_input.isKeyPressed(keybind::LOD_TOGGLE)) {
         m_renderer.m_lodEnabled = !m_renderer.m_lodEnabled;
+    }
+    // U flips the whole GPU-scene cutover (m_gpuSceneRasterEnabled): the
+    // GPU-driven culling + seed-history chain on/off, for live A/B against
+    // the legacy direct path.
+    if (m_input.isKeyPressed(keybind::GPU_SCENE_TOGGLE)) {
+        m_renderer.m_gpuSceneRasterEnabled = !m_renderer.m_gpuSceneRasterEnabled;
     }
     // F toggles the GPU particle system (visibility only; the pool
     // keeps its state so re-enabling resumes mid-flight).

@@ -2607,6 +2607,11 @@ class WorldRenderer : public IRenderer {
     bool m_gpuSceneRasterEligible = false;
     bool m_gpuSceneRasterDrawActive = false;
     bool m_gpuSceneRasterPreviouslyActive = false;
+    // Live A/B toggle for the GPU-scene cutover (the old static env-only
+    // TOURMALINE_GPU_SCENE_RASTER): initialized from the env pin, toggled at
+    // runtime by keybind::GPU_SCENE_TOGGLE so a scene can flip GPU-scene vs
+    // legacy direct without a relaunch.
+    bool m_gpuSceneRasterEnabled = true;
     smvk::BufferHandle m_gpuSceneRasterIndirect{};
     uint64_t m_gpuSceneRasterWorkBda = 0;
     uint32_t m_gpuSceneRasterDrawCapacity = 0;

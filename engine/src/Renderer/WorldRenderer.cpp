@@ -11280,13 +11280,19 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // masked) retain the proven legacy raster path through canonical
     // source ownership. Explicit =0 disables the GPU cutover for A/B
     // diagnosis. Validation remains separate from production raster.
-    static const bool s_gpuSceneRaster = [] {
+    // The GPU-scene cutover is a LIVE member (m_gpuSceneRasterEnabled),
+    // initialized ONCE from the env pin; keybind::GPU_SCENE_TOGGLE flips it
+    // at runtime so a scene can A/B GPU-scene vs legacy direct without a
+    // relaunch.
+    static const bool s_gpuRasterEnvOnce = [&] {
         const char* e = std::getenv("TOURMALINE_GPU_SCENE_RASTER");
-        return !e || std::strcmp(e, "0") != 0;
+        if (e && std::strcmp(e, "0") == 0)
+            m_gpuSceneRasterEnabled = false;
+        return true;
     }();
-    if (s_gpuSceneRaster && (m_gpuSceneRasterProgram.shaderCount != 2 ||
-                             m_gpuSceneRasterMaskedDepthProgram.shaderCount != 2 ||
-                             m_gpuSceneRasterMaskedGbufferProgram.shaderCount != 2)) {
+    if (m_gpuSceneRasterEnabled && (m_gpuSceneRasterProgram.shaderCount != 2 ||
+                                    m_gpuSceneRasterMaskedDepthProgram.shaderCount != 2 ||
+                                    m_gpuSceneRasterMaskedGbufferProgram.shaderCount != 2)) {
         try {
             if (m_gpuSceneRasterVsModule.empty())
                 m_gpuSceneRasterVsModule = m_context->CreateShaderModule(
@@ -11370,7 +11376,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // Batched GPU-scene motion vectors: one motion VS + FS program over the
     // same indexed raster work/instance/indirect streams. Absent = the
     // direct motion path stays authoritative (silent fallback).
-    if (s_gpuSceneRaster && m_passes.motionVectors && m_gpuSceneMotionProgram.shaderCount != 2) {
+    if (m_gpuSceneRasterEnabled && m_passes.motionVectors &&
+        m_gpuSceneMotionProgram.shaderCount != 2) {
         try {
             if (m_gpuSceneMotionVsModule.empty())
                 m_gpuSceneMotionVsModule = m_context->CreateShaderModule(
@@ -11556,7 +11563,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             }
         }
     }
-    if (s_gpuSceneValidate || s_gpuSceneRaster)
+    if (s_gpuSceneValidate || m_gpuSceneRasterEnabled)
         m_gpuSceneValidator.BeginFlight(*m_context, fb.frameIndex);
     m_gpuSceneDatabaseReady = false;
     // GPUIR scene mirror: topology reconciliation or dirty transforms,
@@ -11603,7 +11610,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // GPU skinning already runs in the legacy renderer: those draw items
     // remain legacy-owned until GPU-scene raster consumes deformed geometry.
     m_gpuSceneRasterOwnership.BeginFrame();
-    if (s_gpuSceneRaster && m_world && m_gpuSceneDatabaseReady) {
+    if (m_gpuSceneRasterEnabled && m_world && m_gpuSceneDatabaseReady) {
         if (m_gpuSceneRasterEligibilityWorld != m_world ||
             m_gpuSceneRasterEligibilityTopologyRevision != m_world->gpuSceneTopologyRevision ||
             m_gpuSceneRasterEligibilityGeometryRevision != m_gpuSceneGeometryRevision) {
@@ -12005,7 +12012,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // Compile/load only the active variant, and NEVER admit GPU ownership
     // with the GI-free shader if its required GI module is unavailable.
     const uint32_t gpuSceneGiVariant = static_cast<uint32_t>(GetActiveGIVariant());
-    if (s_gpuSceneRaster && (gpuSceneGiVariant == 2u || gpuSceneGiVariant == 3u)) {
+    if (m_gpuSceneRasterEnabled && (gpuSceneGiVariant == 2u || gpuSceneGiVariant == 3u)) {
         const uint32_t gi = gpuSceneGiVariant;
         try {
             if (m_gpuSceneGiFsModules[gi].empty()) {
@@ -12079,7 +12086,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // RenderView, GfxDraw/HZB and indirect chain are NEVER modified.
     // Sampling once per 120 frames bounds the debug CPU oracle/readback.
     const bool gpuSceneRasterMode =
-        s_gpuSceneRaster && !s_gpuSceneValidate && m_gpuSceneRasterEligible &&
+        m_gpuSceneRasterEnabled && !s_gpuSceneValidate && m_gpuSceneRasterEligible &&
         m_gpuSceneRasterProgram.shaderCount == 2 &&
         ((m_gpuSceneRasterMaskedBackCount + m_gpuSceneRasterMaskedDoubleSidedCount) == 0 ||
          (m_gpuSceneRasterMaskedDepthProgram.shaderCount == 2 &&
@@ -12098,7 +12105,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             std::fprintf(stderr,
                          "[KD] raster mode: env=%d validate=%d eligible=%d(%u/%u) "
                          "program=%d shaderLod=%d wire=%d view=%d gi=%d\n",
-                         s_gpuSceneRaster ? 1 : 0,
+                         m_gpuSceneRasterEnabled ? 1 : 0,
                          s_gpuSceneValidate ? 1 : 0,
                          m_gpuSceneRasterEligible ? 1 : 0,
                          m_gpuSceneRasterCompatibleCount,
@@ -12767,7 +12774,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 // owner-mask and fallback lanes see a consistent frame.
                 // TOURMALINE_GPU_SCENE_MESHLETS=0 forces the four-bin path
                 // (the A/B lever; same getenv-until-migration pattern as
-                // s_gpuSceneRaster/s_gpuSceneTemporal in this function).
+                // m_gpuSceneRasterEnabled/s_gpuSceneTemporal in this function).
                 static const bool s_gpuSceneMeshlets = [] {
                     const char* e = std::getenv("TOURMALINE_GPU_SCENE_MESHLETS");
                     return !e || std::strcmp(e, "0") != 0;
@@ -13342,7 +13349,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             }
         }
     }
-    if (s_gpuSceneRaster && m_gpuSceneRasterDrawActive != m_gpuSceneRasterPreviouslyActive) {
+    if (m_gpuSceneRasterEnabled && m_gpuSceneRasterDrawActive != m_gpuSceneRasterPreviouslyActive) {
         std::fprintf(stderr,
                      "[GpuSceneRaster] %s admittedStatic=%u transparent=%u legacySources=%u"
                      " candidates/maxCommands=%u (opt-in indexed Main)\n",

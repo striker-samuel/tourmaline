@@ -42,6 +42,10 @@ constexpr int BLOOM_TOGGLE = TOUR_KEY_B;
 constexpr int AUTO_EXPOSURE_TOGGLE = TOUR_KEY_X;
 constexpr int MOTION_DEBUG_TOGGLE = TOUR_KEY_V;
 constexpr int LOD_TOGGLE = TOUR_KEY_L;
+// GPU-scene cutover A/B (m_gpuSceneRasterEnabled): flips the whole GPU-driven
+// culling + seed-history chain on/off so a scene can be compared against the
+// legacy direct path live. U was free.
+constexpr int GPU_SCENE_TOGGLE = TOUR_KEY_U;
 constexpr int PARTICLES_TOGGLE = TOUR_KEY_F; // GPU particle system on/off
 constexpr int DEFERRED_SHADOWS_TOGGLE = TOUR_KEY_H;
 // G was free (the old filtered-view A/B toggle died with the legacy
