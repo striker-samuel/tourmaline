@@ -1086,6 +1086,27 @@ set_target_properties(PakHostTests PROPERTIES
 
 add_test(NAME pak_host_tests COMMAND PakHostTests)
 
+# The Bistro demo-content release regression gate (CPU-only, skip-if-absent):
+# opens the fetched bistro_static pak and proves its material -> texture
+# references stay self-consistent (the bakery/wicker-basket cross-wiring
+# regression). Requires the `demo_content` target to have populated
+# content/paks; skips (passes) when the pak is absent, so offline/hosted CI
+# stays green.
+add_executable(BistroReleaseTests test_bistro_release.cpp)
+
+target_link_libraries(BistroReleaseTests
+	PRIVATE
+		engine
+)
+
+set_target_properties(BistroReleaseTests PROPERTIES
+	RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME bistro_release_tests COMMAND BistroReleaseTests)
+
+tourmaline_stage_sdl3(BistroReleaseTests)
+
 # The canonical PROJECT IMPORT pipeline (project_pipeline): copy-in +
 # derive + validate + publish, the import fingerprint (settings/
 # revision invalidation), idempotent + source-change reimport, failure
