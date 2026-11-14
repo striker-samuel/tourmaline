@@ -107,6 +107,14 @@ static double s_benchUpdates = 0.0, s_benchPasses = 0.0, s_benchReadbacks = 0.0,
 // ---------------------------------------------------------------------------
 namespace engine {
 
+// The Vulkan 1.3 indexed path must not allocate/register a second cooked
+// cluster index stream. Build those optional resources only if task/mesh is
+// supported and has not been explicitly disabled by the user.
+static bool GpuSceneCookedMeshletsWanted() {
+    const char* env = std::getenv("TOURMALINE_GPU_SCENE_TASK_MESH");
+    return smvk::SupportsMeshShaders() && (!env || std::strcmp(env, "0") != 0);
+}
+
 smvk::ShaderProgram& WorldRenderer::SpecProgramFor(const smvk::ShaderProgram& base,
                                                    uint32_t specId,
                                                    uint32_t specId2,
@@ -2693,7 +2701,7 @@ bool WorldRenderer::onAttach() {
         }
         // Static geometry is GPU-scene raster's physical publisher, even
         // when the retired filter has no valid program or initial clusters.
-        const bool cookedMeshletBackend = smvk::SupportsMeshShaders();
+        const bool cookedMeshletBackend = GpuSceneCookedMeshletsWanted();
         if (cookedMeshletBackend) {
             // Only optional task/mesh needs the duplicate cooked cluster
             // index/meshlet streams. Vulkan 1.3 indexed raster resolves
@@ -6163,7 +6171,7 @@ void WorldRenderer::UpdateGeometryStreaming() {
         // The core Vulkan 1.3 indexed backend owns raw World ranges.
         // Re-cook the additional cluster index/meshlet allocation only on
         // devices that actually expose the optional mesh/task backend.
-        const bool cookedMeshletBackend = smvk::SupportsMeshShaders();
+        const bool cookedMeshletBackend = GpuSceneCookedMeshletsWanted();
         if (cookedMeshletBackend) {
             SMVK_PROFILE_STREAM("GeoStreaming_RegisterMeshes");
             smvk::gfx::ResetStaticRegistrations(m_gfxRenderer.State());
