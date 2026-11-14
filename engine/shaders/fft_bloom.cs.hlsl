@@ -77,12 +77,12 @@ void TransformAxis(uint lane, bool vertical, bool inverse)
         for (uint j = 0; j < 2u; ++j)
         {
             uint butterfly = lane + j * 256u; // 512 butterfly pairs
-            uint line = butterfly >> 4u;
+            uint row = butterfly >> 4u;
             uint k = butterfly & 15u;
             uint start = (k / halfSpan) * span + (k % halfSpan);
             uint other = start + halfSpan;
-            uint a = vertical ? (start * 32u + line) : (line * 32u + start);
-            uint b = vertical ? (other * 32u + line) : (line * 32u + other);
+            uint a = vertical ? (start * 32u + row) : (row * 32u + start);
+            uint b = vertical ? (other * 32u + row) : (row * 32u + other);
             float angle = (inverse ? 2.0f : -2.0f) * FFT_PI *
                           float(k % halfSpan) / float(span);
             float sn, cs;
