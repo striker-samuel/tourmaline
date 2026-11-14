@@ -1,9 +1,11 @@
 # FFT bloom quality mode (experimental)
 
 Tourmaline's default bloom remains the SPD five-level Karis pyramid and
-additive tent-upsample reconstruction. Set `TOURMALINE_BLOOM_FFT=1` to enable
-a **second, opt-in FFT convolution pass** over the reconstructed mip 0.
-Set it to `0` or unset it to use the original algorithm.
+additive tent-upsample reconstruction. Enable a **second, opt-in FFT
+convolution pass** over the reconstructed mip 0 with the render-settings
+"FFT bloom (quality)" checkbox (or the `TOURMALINE_BLOOM_FFT=1` env pin for
+headless capture runs). Set it to `0` or unset it to use the original
+algorithm.
 
 ## Implementation
 
@@ -29,7 +31,8 @@ replacement for truly screen-spanning diffraction spikes.
 
 ## Validation checklist
 
-This PR has not been compiled or GPU-validated in the authoring environment.
+The shader now compiles (a reserved `line` keyword was renamed); GPU/visual
+validation is still outstanding.
 
 1. Build the shader pack and verify `fft_bloom.cs.hlsl.spv` is generated.
 2. Capture the bloom result with `TOURMALINE_BLOOM_FFT=0` and `=1`.

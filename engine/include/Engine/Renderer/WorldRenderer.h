@@ -4863,6 +4863,11 @@ class WorldRenderer : public IRenderer {
     float m_bloomThreshold =
         800.0f; // pre-exposure HDR at the manual-exposure reference (== BLOOM_THRESHOLD; knee
                 // tracks at 0.25x; exposure-aware scaling inverts to 1/exposure)
+    // Opt-in tiled FFT convolution bloom quality mode (the #349 quality
+    // pass). Toggled by the ImGui checkbox + TOURMALINE_BLOOM_FFT pin;
+    // standard SPD/raster bloom is the default. The bloom chain re-creates
+    // (Ensure sees the useFft drift) when it flips.
+    bool m_bloomUseFft = false;
     // ---- Tonemap operator (see Engine/Rendergraph/tonemap.h + tonemap.frag.hlsl) ----
     // 0=Reinhard, 1=ACES (default), 2=Uncharted2, 3=GT7. ImGui combo in the
     // Exposure section; applied per-frame onto the tonemapDesc push.

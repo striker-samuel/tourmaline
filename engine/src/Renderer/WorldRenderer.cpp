@@ -814,6 +814,8 @@ void WorldRenderer::ApplyHeadlessPostfxOverrides() {
         m_bloomThreshold = *pins.bloomThreshold;
     if (pins.bloomIntensity.has_value())
         m_bloomIntensity = *pins.bloomIntensity;
+    if (pins.bloomFft.has_value())
+        m_bloomUseFft = (*pins.bloomFft == OnOffPin::On);
     // AO mode override for headless A/B runs (off | ssao | sao) - the
     // O key is interactive-only, so captures/benches pin the mode
     // through here. The ImGui combo + O key stay live after.
@@ -2941,8 +2943,10 @@ bool WorldRenderer::onAttach() {
                 std::cerr << "[WorldRenderer] MSAA target unavailable - falling back to 1x\n";
             }
         }
+        smvk::BloomDesc frameBloomDesc = MakeBloomDesc();
+        frameBloomDesc.useFft = m_bloomUseFft;
         if (!m_viewportResources.bloom.Ensure(
-                *m_context, *m_rendergraph, renderExtent, MakeBloomDesc())) {
+                *m_context, *m_rendergraph, renderExtent, frameBloomDesc)) {
             std::cerr << "[WorldRenderer] Bloom chain unavailable (HDR " << renderExtent.width
                       << "x" << renderExtent.height << ")\n";
         }
@@ -9259,7 +9263,9 @@ void WorldRenderer::RebuildSwapViews() {
         rebuildMsaaDesc.depthFormat = m_swapchain->GetDepthFormat();
         m_viewportResources.msaa.Ensure(*m_context, *m_rendergraph, renderExtent, rebuildMsaaDesc);
     }
-    m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, renderExtent, MakeBloomDesc());
+    smvk::BloomDesc frameBloomDesc = MakeBloomDesc();
+    frameBloomDesc.useFft = m_bloomUseFft;
+    m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, renderExtent, frameBloomDesc);
     {
         smvk::DofDesc rebuildDofDesc = MakeDofDesc();
         rebuildDofDesc.hqBokeh = m_dofHqBokeh;
@@ -10708,7 +10714,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         m_viewportResources.motionBlur.Ensure(
             *m_context, *m_rendergraph, renderExtent, MakeMotionBlurDesc());
         m_viewportResources.ssgi.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSsgiDesc());
-        m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, renderExtent, MakeBloomDesc());
+        smvk::BloomDesc frameBloomDesc = MakeBloomDesc();
+        frameBloomDesc.useFft = m_bloomUseFft;
+        m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, renderExtent, frameBloomDesc);
         {
             smvk::DofDesc frameDofDesc = MakeDofDesc();
             frameDofDesc.hqBokeh = m_dofHqBokeh;

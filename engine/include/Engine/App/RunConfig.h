@@ -74,6 +74,10 @@ struct RunConfig {
     std::optional<float> bloomThreshold;
     // bloomIntensity: 0..4 tonemap add scale (unset = authored wins)
     std::optional<float> bloomIntensity;
+    // bloomFft: 1|on|0|off — opt-in tiled FFT convolution bloom quality
+    // mode (unset = standard SPD/raster bloom wins). The ImGui checkbox
+    // stays live after.
+    std::optional<OnOffPin> bloomFft;
     // ao: 0|off|none|ssao|sao (unset = authored aoMode wins)
     std::optional<AoPin> ao;
     // autoExposure: 0 = manual, else auto (unset = authored/host pin wins).

@@ -125,6 +125,7 @@ int main() {
     SetVar("TOURMALINE_VOLUMETRIC", "1");
     SetVar("TOURMALINE_VOLUMETRIC_STEPS", "64");
     SetVar("TOURMALINE_BLOOM_THRESHOLD", "400");
+    SetVar("TOURMALINE_BLOOM_FFT", "1");
     SetVar("TOURMALINE_AUTO_EXPOSURE", "0");
     SetVar("TOURMALINE_CUBEMAP", "0");
     SetVar("TOURMALINE_CONTACT_SHADOWS", "0");
@@ -146,6 +147,8 @@ int main() {
               "runconfig.parse-vol-steps");
         Check(c.bloomThreshold.has_value() && *c.bloomThreshold == 400.0f,
               "runconfig.parse-bloom-thr");
+        Check(c.bloomFft.has_value() && *c.bloomFft == engine::OnOffPin::On,
+              "runconfig.parse-bloom-fft");
         Check(c.autoExposure.has_value() && !*c.autoExposure, "runconfig.parse-autoexp-pin");
         Check(c.cubemap.has_value() && !*c.cubemap, "runconfig.parse-cubemap-kill");
         Check(c.contactShadows.has_value() && *c.contactShadows == engine::OnOffPin::Off,

@@ -234,6 +234,13 @@ RunConfig RunConfig::Parse() {
                          "(0..4): %s\n",
                          v);
     }
+    if ((v = Get("TOURMALINE_BLOOM_FFT")) != nullptr) {
+        bool on = true;
+        if (IsOnOff(Trimmed(v), on))
+            c.bloomFft = on ? OnOffPin::On : OnOffPin::Off;
+        else
+            std::fprintf(stderr, "[RunConfig] bad TOURMALINE_BLOOM_FFT (want 1|on|0|off): %s\n", v);
+    }
     if ((v = Get("TOURMALINE_AO")) != nullptr) {
         const std::string ao = Trimmed(v);
         if (ao == "0" || StrCaseCmp(ao.c_str(), "off") == 0 || StrCaseCmp(ao.c_str(), "none") == 0)
@@ -808,6 +815,7 @@ void RunConfig::WarnUnknown() {
         "TOURMALINE_SSGI",
         "TOURMALINE_BLOOM_THRESHOLD",
         "TOURMALINE_BLOOM_INTENSITY",
+        "TOURMALINE_BLOOM_FFT",
         "TOURMALINE_AO",
         "TOURMALINE_AUTO_EXPOSURE",
         "TOURMALINE_CUBEMAP",

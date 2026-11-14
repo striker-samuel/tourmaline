@@ -495,6 +495,10 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                         if (ImGui::IsItemHovered())
                             ImGui::SetTooltip("Pre-exposure HDR (sun-lit diffuse spans ~0-1600);\n"
                                               "knee tracks at 0.25x. Lower until highlights glow.");
+                        ImGui::Checkbox("FFT bloom (quality)", &m_bloomUseFft);
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip("Opt-in tiled FFT convolution bloom (experimental).\n"
+                                              "Standard SPD/raster bloom is the default.");
                     }
                     ImGui::Checkbox("Motion blur (M)", &m_motionBlurEnabled);
                     if (m_motionBlurEnabled) {
