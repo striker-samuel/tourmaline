@@ -29,9 +29,9 @@
 #include <project_pipeline/build_plan.h>
 #include <project_pipeline/import_pipeline.h>
 #include <project_pipeline/project.h>
-#include <project_pipeline/project_resource_path.h>
 #include <project_pipeline/project_catalog.h>
 #include <project_pipeline/project_recipe.h>
+#include <project_pipeline/project_resource_path.h>
 #include <project_pipeline/recipe_resolver.h>
 
 #include <artifact_cache/artifact_cache.h>
@@ -1071,6 +1071,43 @@ void TestMaterialPackingPolicies() {
         RecipeDiagnostic diag;
         Check(!ParseProjectRecipeText(text, recipe, diag) && !diag.message.empty() && diag.line > 0,
               "material-packing.invalid-recipe-rejected");
+    }
+
+    // Case-insensitive tolerance: the parser canonicalizes target, source
+    // slot, group, format and channel tokens to the grammar's exact
+    // spelling (camelCase base names, lowercase channels), so case drift in
+    // an authored recipe never silently diverges from the shader contract.
+    {
+        const char* mixed = "recipe 1\nentry content/scenes/a.tour\n"
+                            "materialChannel AO OCCLUSION R\n"
+                            "materialChannel ROUGHNESS METALLICROUGHNESS G\n"
+                            "materialChannel METALLIC METALLICROUGHNESS B\n"
+                            "materialEncoding SCALAR BC7\n"
+                            "[pak world]\noutput world.pak\nscene content/scenes/a.tour\n";
+        ProjectRecipe recipe;
+        RecipeDiagnostic d;
+        const bool parsed = ParseProjectRecipeText(mixed, recipe, d);
+        Check(parsed, "material-packing.case-insensitive-parses");
+        if (parsed) {
+            const auto& ch = recipe.materialPacking.channels;
+            Check(ch.size() == 3 && ch[0].target == "ao" && ch[0].source == "occlusion" &&
+                      ch[0].channel == 'r' && ch[1].target == "roughness" &&
+                      ch[1].source == "metallicRoughness" && ch[1].channel == 'g' &&
+                      ch[2].target == "metallic" && ch[2].source == "metallicRoughness" &&
+                      ch[2].channel == 'b' && recipe.materialPacking.encodings[3] == "bc7",
+                  "material-packing.case-insensitive-canonicalized");
+        }
+    }
+    {
+        const char* mixed = "recipe 1\nentry content/scenes/a.tour\n"
+                            "materialPacking METALLICROUGHNESS R A G B\n"
+                            "[pak world]\noutput world.pak\nscene content/scenes/a.tour\n";
+        ProjectRecipe recipe;
+        RecipeDiagnostic d;
+        const bool parsed = ParseProjectRecipeText(mixed, recipe, d);
+        Check(parsed && recipe.materialPacking.source == "metallicRoughness" &&
+                  recipe.materialPacking.PackedWord() == (0 | (3 << 2) | (1 << 4) | (2 << 6)),
+              "material-packing.case-insensitive-legacy");
     }
 }
 
@@ -4606,8 +4643,7 @@ void TestProjectResourcePaths() {
     smvk::project::ResolvedProjectResource resolved;
     std::string err;
     const auto resolve = [&](const std::string& input) {
-        return smvk::project::ResolveProjectResource(
-            root.generic_string(), input, resolved, err);
+        return smvk::project::ResolveProjectResource(root.generic_string(), input, resolved, err);
     };
     Check(resolve("models/bistro/bistro.geometry") &&
               resolved.contentRelative == "models/bistro/bistro.geometry" &&
@@ -4624,8 +4660,7 @@ void TestProjectResourcePaths() {
     Check(!resolve("content/content/models/bistro/bistro.geometry") &&
               err.find("duplicate") != std::string::npos,
           "resourcepath.duplicate-content-prefix-refused");
-    Check(!resolve("../outside.geometry") &&
-              err.find("traversal") != std::string::npos,
+    Check(!resolve("../outside.geometry") && err.find("traversal") != std::string::npos,
           "resourcepath.traversal-refused");
     Check(!resolve((root.parent_path() / "outside.geometry").generic_string()) &&
               err.find("escapes") != std::string::npos,

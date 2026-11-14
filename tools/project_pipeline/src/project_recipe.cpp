@@ -34,6 +34,26 @@ std::string Trim(const std::string& s) {
     return s.substr(b, e - b);
 }
 
+// ASCII lowercase (channel/target/source tokens are ASCII identifiers).
+std::string LowerAscii(const std::string& s) {
+    std::string out = s;
+    for (char& c : out)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return out;
+}
+
+// Case-insensitive canonicalization against a set of allowed spellings:
+// returns the canonical member (preserving the grammar's camelCase form)
+// or nullptr when no member matches. The parser is tolerant of case drift
+// but always STORES the exact form the importer/shaders expect.
+const std::string* Canonicalize(const std::string& token, const std::set<std::string>& forms) {
+    const std::string lower = LowerAscii(token);
+    for (const std::string& form : forms)
+        if (LowerAscii(form) == lower)
+            return &form;
+    return nullptr;
+}
+
 // The comment start: '#' OUTSIDE a quoted value (a '#' inside quotes is
 // a legitimate filename character).
 size_t CommentStart(const std::string& s) {
@@ -451,32 +471,29 @@ bool ParseText(const std::string& text, ProjectRecipe& out, RecipeDiagnostic& er
             // with the default chain.
             if (inPak)
                 return Fail(lineNo,
-                             "import",
-                             "'import' is recipe-level only (the derivation"
-                             " settings belong to the geometry family, not"
-                             " to a pak)",
-                             err);
+                            "import",
+                            "'import' is recipe-level only (the derivation"
+                            " settings belong to the geometry family, not"
+                            " to a pak)",
+                            err);
             const std::vector<std::string> toks = SplitTokens(rest);
             if (toks.size() != 2)
                 return Fail(lineNo,
-                             "import",
-                             "'import lods <on|off>' | 'import lod-ratios"
-                             " <r,r,...>' | 'import lod-error <f>' take two"
-                             " words",
-                             err);
+                            "import",
+                            "'import lods <on|off>' | 'import lod-ratios"
+                            " <r,r,...>' | 'import lod-error <f>' take two"
+                            " words",
+                            err);
             if (!importSeen.insert(toks[0]).second)
-                return Fail(lineNo,
-                             "import",
-                             "duplicate import line for '" + toks[0] + "'",
-                             err);
+                return Fail(lineNo, "import", "duplicate import line for '" + toks[0] + "'", err);
             if (toks[0] == "lods") {
                 if (toks[1] != "on" && toks[1] != "off")
                     return Fail(lineNo,
-                                 "import",
-                                 "'import lods' takes 'on' or 'off' (a"
-                                 " non-zero level pin is not a derivation"
-                                 " setting; strip the chain with 'off')",
-                                 err);
+                                "import",
+                                "'import lods' takes 'on' or 'off' (a"
+                                " non-zero level pin is not a derivation"
+                                " setting; strip the chain with 'off')",
+                                err);
                 out.importLods = toks[1] == "on";
             } else if (toks[0] == "lod-ratios") {
                 // Coarse-last ratios vs LOD0 (DeriveConfig::lodRatios):
@@ -486,14 +503,12 @@ bool ParseText(const std::string& text, ProjectRecipe& out, RecipeDiagnostic& er
                 bool bad = toks[1].empty();
                 while (!bad) {
                     const size_t comma = toks[1].find(',', pos);
-                    const std::string tok =
-                        toks[1].substr(pos, comma == std::string::npos
-                                                ? std::string::npos
-                                                : comma - pos);
+                    const std::string tok = toks[1].substr(
+                        pos, comma == std::string::npos ? std::string::npos : comma - pos);
                     char* end = nullptr;
                     const float r = std::strtof(tok.c_str(), &end);
-                    if (tok.empty() || end == tok.c_str() ||
-                        (end && *end != '\0') || !(r > 0.0f && r <= 1.0f))
+                    if (tok.empty() || end == tok.c_str() || (end && *end != '\0') ||
+                        !(r > 0.0f && r <= 1.0f))
                         bad = true;
                     else
                         ratios.push_back(r);
@@ -503,31 +518,32 @@ bool ParseText(const std::string& text, ProjectRecipe& out, RecipeDiagnostic& er
                 }
                 if (bad || ratios.empty() || ratios.size() > 15)
                     return Fail(lineNo,
-                                 "import",
-                                 "'import lod-ratios' takes 1..15 comma"
-                                 " separated ratios in (0, 1] (found '" +
-                                     toks[1] + "')",
-                                 err);
+                                "import",
+                                "'import lod-ratios' takes 1..15 comma"
+                                " separated ratios in (0, 1] (found '" +
+                                    toks[1] + "')",
+                                err);
                 out.importLodRatios = std::move(ratios);
             } else if (toks[0] == "lod-error") {
                 // Relative meshopt_simplify budget (fraction of extents).
                 char* end = nullptr;
                 const float e = std::strtof(toks[1].c_str(), &end);
-                if (toks[1].empty() || end == toks[1].c_str() ||
-                    (end && *end != '\0') || !(e > 0.0f && e <= 1.0f))
+                if (toks[1].empty() || end == toks[1].c_str() || (end && *end != '\0') ||
+                    !(e > 0.0f && e <= 1.0f))
                     return Fail(lineNo,
-                                 "import",
-                                 "'import lod-error' takes a float in"
-                                 " (0, 1] (found '" + toks[1] + "')",
-                                 err);
+                                "import",
+                                "'import lod-error' takes a float in"
+                                " (0, 1] (found '" +
+                                    toks[1] + "')",
+                                err);
                 out.importLodError = e;
             } else {
                 return Fail(lineNo,
-                             "import",
-                             "unknown import setting '" + toks[0] +
-                                 "' (only lods, lod-ratios and lod-error"
-                                 " exist)",
-                             err);
+                            "import",
+                            "unknown import setting '" + toks[0] +
+                                "' (only lods, lod-ratios and lod-error"
+                                " exist)",
+                            err);
             }
         } else if (directive == "materialChannel") {
             if (inPak || !out.materialPacking.source.empty())
@@ -564,15 +580,21 @@ bool ParseText(const std::string& text, ProjectRecipe& out, RecipeDiagnostic& er
                                                           "cavity",
                                                           "one",
                                                           "zero"};
-            if (!targets.count(toks[0]) || !sources.count(toks[1]) || toks[2].size() != 1 ||
-                std::string("rgba").find(toks[2][0]) == std::string::npos)
+            const std::string* target = Canonicalize(toks[0], targets);
+            const std::string* source = Canonicalize(toks[1], sources);
+            const char channel =
+                toks[2].size() == 1
+                    ? static_cast<char>(std::tolower(static_cast<unsigned char>(toks[2][0])))
+                    : '\0';
+            if (!target || !source || channel == '\0' ||
+                std::string("rgba").find(channel) == std::string::npos)
                 return Fail(
                     lineNo, directive, "unknown material target, source slot or RGBA channel", err);
             for (const auto& c : out.materialPacking.channels)
-                if (c.target == toks[0])
+                if (c.target == *target)
                     return Fail(
-                        lineNo, directive, "duplicate materialChannel target: " + toks[0], err);
-            out.materialPacking.channels.push_back({toks[0], toks[1], toks[2][0]});
+                        lineNo, directive, "duplicate materialChannel target: " + *target, err);
+            out.materialPacking.channels.push_back({*target, *source, channel});
         } else if (directive == "materialEncoding") {
             if (inPak || !out.materialPacking.source.empty())
                 return Fail(lineNo,
@@ -588,12 +610,15 @@ bool ParseText(const std::string& text, ProjectRecipe& out, RecipeDiagnostic& er
                             "<rgba8|bc1|bc3|bc4|bc5|bc7>",
                             err);
             const std::array<std::string, 4> groups = {"baseColor", "normal", "emissive", "scalar"};
-            const auto it = std::find(groups.begin(), groups.end(), toks[0]);
+            const auto it = std::find_if(groups.begin(), groups.end(), [&](const std::string& g) {
+                return LowerAscii(g) == LowerAscii(toks[0]);
+            });
             if (it == groups.end())
                 return Fail(lineNo, directive, "unknown material encoding group: " + toks[0], err);
             const size_t index = size_t(it - groups.begin());
-            const bool valid = toks[1] == "rgba8" || toks[1] == "bc3" || toks[1] == "bc7" ||
-                               (index == 1 && toks[1] == "bc5") || (index == 2 && toks[1] == "bc1");
+            const std::string format = LowerAscii(toks[1]);
+            const bool valid = format == "rgba8" || format == "bc3" || format == "bc7" ||
+                               (index == 1 && format == "bc5") || (index == 2 && format == "bc1");
             if (!valid)
                 return Fail(lineNo,
                             directive,
@@ -602,7 +627,7 @@ bool ParseText(const std::string& text, ProjectRecipe& out, RecipeDiagnostic& er
                             err);
             if (!out.materialPacking.encodings[index].empty())
                 return Fail(lineNo, directive, "duplicate materialEncoding group: " + toks[0], err);
-            out.materialPacking.encodings[index] = toks[1];
+            out.materialPacking.encodings[index] = format;
         } else if (directive == "materialPacking") {
             if (inPak || !out.materialPacking.source.empty() ||
                 !out.materialPacking.channels.empty() ||
@@ -615,20 +640,24 @@ bool ParseText(const std::string& text, ProjectRecipe& out, RecipeDiagnostic& er
                             "with materialChannel",
                             err);
             const auto words = SplitTokens(rest);
-            if (words.size() != 5 || (words[0] != "metallicRoughness" && words[0] != "occlusion"))
+            static const std::set<std::string> sources = {"metallicRoughness", "occlusion"};
+            const std::string* source =
+                words.size() == 5 ? Canonicalize(words[0], sources) : nullptr;
+            if (words.size() != 5 || !source)
                 return Fail(lineNo,
                             directive,
                             "expected materialPacking <metallicRoughness|occlusion> <ao> <cavity> "
                             "<roughness> <metallic>",
                             err);
             auto ch = [](const std::string& c) {
-                return c == "r" ? 0 : c == "g" ? 1 : c == "b" ? 2 : c == "a" ? 3 : -1;
+                const std::string l = LowerAscii(c);
+                return l == "r" ? 0 : l == "g" ? 1 : l == "b" ? 2 : l == "a" ? 3 : -1;
             };
             const int ao = ch(words[1]), cavity = ch(words[2]);
             const int rough = ch(words[3]), metal = ch(words[4]);
             if (ao < 0 || cavity < 0 || rough < 0 || metal < 0)
-                return Fail(lineNo, directive, "channels must be lowercase r, g, b or a", err);
-            out.materialPacking.source = words[0];
+                return Fail(lineNo, directive, "channels must be r, g, b or a", err);
+            out.materialPacking.source = *source;
             out.materialPacking.ao = ao;
             out.materialPacking.cavity = cavity;
             out.materialPacking.roughness = rough;
