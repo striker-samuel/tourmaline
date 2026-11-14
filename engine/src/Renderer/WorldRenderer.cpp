@@ -2636,7 +2636,9 @@ bool WorldRenderer::onAttach() {
     // and its legacy direct-draws off path are gone. The availability
     // latch below only drops the leg when the filter cannot run at
     // all (Ensure failure / empty cluster heap).
-    if (m_passes.gfxFilter) {
+    // GPU-scene indexed raster needs static geometry even when the optional
+    // legacy-filter pass is disabled in the pass configuration.
+    if (m_passes.gfxFilter || m_gpuSceneRasterEnabled) {
         // The shader-module feed (ConfigureFrag/Sg/Gi/Std/A2C/Project*)
         // lives in FeedGfxRendererShaderModules — the onAttach path and
         // the hot-reload swap share it, so a swap re-feeds the fresh
