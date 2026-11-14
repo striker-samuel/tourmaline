@@ -2547,6 +2547,20 @@ void World::ConsumeLodDrawn(std::vector<std::pair<uint32_t, uint32_t>>& out) {
     lodDrawnSet_.clear();
 }
 
+void World::RecordGpuLodFeedback(uint32_t worldMesh, uint32_t drawnLod, uint32_t desiredLod) {
+    if (!lodTouchTracking_)
+        return;
+    // The GPU selector drew this resident level - keep it idle-clock fresh.
+    lodDrawnSet_.insert((uint64_t(worldMesh) << 32) | drawnLod);
+    // Demand the desired (finer) level when it is not the drawn one: the
+    // streamer promotes it, matching the CPU LodIndexForNode demand lane.
+    if (desiredLod < drawnLod) {
+        auto it = lodDemand_.find(worldMesh);
+        if (it == lodDemand_.end() || desiredLod < it->second)
+            lodDemand_[worldMesh] = desiredLod;
+    }
+}
+
 bool World::HasDeferredLods() const {
     for (const auto& clusterPtr : clusters) {
         if (clusterPtr && clusterPtr->DeferredLodCount() > 0)

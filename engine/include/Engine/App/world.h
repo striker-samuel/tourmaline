@@ -958,6 +958,13 @@ struct World {
             out.emplace_back(uint32_t(k >> 32), uint32_t(k & 0xFFFFFFFFu));
         lodDrawnSet_.clear();
     }
+    // GPU-scene LOD demand feedback (the work selector's readback): record
+    // the GPU-selected drawn level as a touch and, when a finer non-resident
+    // level is desired, that level as a demand. Mirrors the CPU LodIndexForNode
+    // bookkeeping (the GPU selector draws only resident levels, so this is its
+    // demand source). No-op when touch tracking is unarmed.
+    void RecordGpuLodFeedback(uint32_t worldMesh, uint32_t drawnLod, uint32_t desiredLod);
+
     // Promote one deferred sibling to resident: locate its deferred
     // record on the owning cluster and replay the upload +
     // registration (Cluster::PromoteDeferredMeshLod). Returns the

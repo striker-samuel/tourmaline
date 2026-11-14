@@ -5140,11 +5140,19 @@ class WorldRenderer : public IRenderer {
     bool m_pendingReadbackHasDs = false;
     bool m_pendingReadbackHasGfxDemand = false;
     bool m_pendingReadbackHasGfxKept = false;
+    bool m_pendingReadbackHasGpuSceneDemand = false;
     std::array<uint32_t, smvk::kExposureBinCount> m_pendingExposureBins{};
     std::array<uint32_t, smvk::kDsCounterCount> m_pendingDsCounters{};
     // Gfx draw-level demand download destination (sized to the live slot
     // count at submit time; kDemandNoReport entries are skipped at poll).
     tour::mem::ArenaFlatArray<uint32_t> m_pendingGfxDemand;
+    // GPU-scene LOD demand feedback (the work selector's DemandEntry stream):
+    // the GPU-selected drawn/desired LODs, read back with the same async
+    // no-stall ticket discipline and consumed into World::lodDemand_ /
+    // lodDrawnSet_ in UpdateGeometryStreaming. Sized to the submitted count.
+    std::vector<tour::gpu_scene::SceneDemandEntry> m_gpuSceneDemandReadback;
+    uint64_t m_gpuSceneDemandTicket = 0;
+    uint32_t m_gpuSceneDemandCount = 0;
     // GPU-cull kept-count readback (the "0/797 culled" fix): the CPU stats
     // cannot see the GPU-mode cull (clustersCulled only counts the CPU-mode
     // path), so the filter's atomic filtered-offset counter word (zeroed by

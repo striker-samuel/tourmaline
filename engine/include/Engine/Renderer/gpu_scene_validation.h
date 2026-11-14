@@ -177,10 +177,18 @@ struct alignas(16) SceneSubmeshWork {
     glm::uvec4 detail{InvalidIndex, InvalidIndex, InvalidIndex, 0u};
 };
 static_assert(sizeof(SceneSubmeshWork) == 32);
+// GPU work-selector streaming-demand feedback (mirrors gpu_scene_work_select's
+// DemandEntry): mesh (GS_INVALID = empty) + (drawnLod << 8) | desiredLod.
+struct SceneDemandEntry {
+    uint32_t mesh = 0xffffffffu;
+    uint32_t lods = 0u;
+};
+static_assert(sizeof(SceneDemandEntry) == 8);
 struct WorkSelectPush {
     uint64_t compact = 0, compactOffsets = 0;
     uint64_t instances = 0, meshes = 0, lods = 0, submeshes = 0;
     uint64_t choices = 0, counts = 0;
+    uint64_t demand = 0; // streaming-demand readback (mesh | drawn/desired LOD)
     alignas(16) glm::uvec4 limits{0u};
     glm::uvec4 limits2{0u};
     glm::vec4 lodEyeBudget{0.0f};
@@ -194,9 +202,10 @@ struct WorkScatterPush {
     uint64_t choices = 0, offsets = 0, submeshes = 0, output = 0;
     alignas(16) glm::uvec4 limits{0u};
 };
-static_assert(sizeof(WorkSelectPush) == 128);
-static_assert(offsetof(WorkSelectPush, limits) == 64);
-static_assert(offsetof(WorkSelectPush, lodEyeBudget) == 96);
+static_assert(sizeof(WorkSelectPush) == 144);
+static_assert(offsetof(WorkSelectPush, demand) == 64);
+static_assert(offsetof(WorkSelectPush, limits) == 80);
+static_assert(offsetof(WorkSelectPush, lodEyeBudget) == 112);
 static_assert(sizeof(WorkPrefixPush) == 24);
 static_assert(sizeof(WorkScatterPush) == 48);
 static_assert(offsetof(WorkScatterPush, limits) == 32);
@@ -219,7 +228,6 @@ static_assert(sizeof(ParallelWorkBlockPush) == 32);
 static_assert(sizeof(ParallelWorkGroupPush) == 24);
 static_assert(sizeof(ParallelWorkAddPush) == 32);
 
-
 // GPU work expansion reference with optional projected-error selection.
 // The default disabled policy retains the legacy finest-resident tests.
 struct GpuLodView {
@@ -233,25 +241,19 @@ struct GpuLodView {
 [[nodiscard]] inline float GpuLodPixelScale(const Instance& instance,
                                             const GpuLodView& view) noexcept {
     const glm::vec3 bx(instance.basisX), by(instance.basisY), bz(instance.basisZ);
-    const float scale = std::max(glm::length(bx),
-                                 std::max(glm::length(by), glm::length(bz)));
-    const glm::vec3 center =
-        glm::vec3(instance.worldPosition.high) - view.eye +
-        glm::vec3(instance.worldPosition.low) +
-        bx * instance.localSphere.x + by * instance.localSphere.y +
-        bz * instance.localSphere.z;
-    const float radius = instance.localSphere.w *
-                         std::sqrt(std::max(glm::dot(bx, bx) +
-                                                glm::dot(by, by) + glm::dot(bz, bz), 0.0f));
+    const float scale = std::max(glm::length(bx), std::max(glm::length(by), glm::length(bz)));
+    const glm::vec3 center = glm::vec3(instance.worldPosition.high) - view.eye +
+                             glm::vec3(instance.worldPosition.low) + bx * instance.localSphere.x +
+                             by * instance.localSphere.y + bz * instance.localSphere.z;
+    const float radius =
+        instance.localSphere.w *
+        std::sqrt(std::max(glm::dot(bx, bx) + glm::dot(by, by) + glm::dot(bz, bz), 0.0f));
     const float distance = std::max(glm::length(center) - radius, 0.0f);
-    if (!view.enabled || !(view.pixelBudget >= 0.0f) ||
-        !std::isfinite(view.pixelBudget) || !(view.viewportHeight > 0.0f) ||
-        !(view.fovY > 0.0f && view.fovY < 3.14159f) ||
-        !(distance > 0.0f) || !std::isfinite(distance) ||
-        !(scale > 0.0f) || !std::isfinite(scale))
+    if (!view.enabled || !(view.pixelBudget >= 0.0f) || !std::isfinite(view.pixelBudget) ||
+        !(view.viewportHeight > 0.0f) || !(view.fovY > 0.0f && view.fovY < 3.14159f) ||
+        !(distance > 0.0f) || !std::isfinite(distance) || !(scale > 0.0f) || !std::isfinite(scale))
         return -1.0f;
-    return scale * view.viewportHeight /
-           (2.0f * std::tan(view.fovY * 0.5f) * distance);
+    return scale * view.viewportHeight / (2.0f * std::tan(view.fovY * 0.5f) * distance);
 }
 
 [[nodiscard]] inline std::vector<SceneSubmeshWork> ReferenceExpandWork(
@@ -298,17 +300,18 @@ struct GpuLodView {
                                            subRow.value.geometryId,
                                            subRow.value.materialId);
                 work.detail =
-                    glm::uvec4(level, slot,
+                    glm::uvec4(level,
+                               slot,
                                ((inst->refs.w & InstanceFlagDoubleSided) != 0u ? 1u : 0u) |
-                                ((inst->refs.w & InstanceFlagMasked) != 0u ? 2u : 0u),
+                                   ((inst->refs.w & InstanceFlagMasked) != 0u ? 2u : 0u),
                                subRow.value.passMask);
                 candidate.push_back(work);
             }
             if (candidate.empty())
                 continue;
             if (found && (pixelScale < 0.0f || !std::isfinite(pixelScale) ||
-                !std::isfinite(lod.simplifyError) || lod.simplifyError < 0.0f ||
-                lod.simplifyError * pixelScale > view.pixelBudget))
+                          !std::isfinite(lod.simplifyError) || lod.simplifyError < 0.0f ||
+                          lod.simplifyError * pixelScale > view.pixelBudget))
                 continue;
             selected = std::move(candidate);
             found = true;
@@ -345,8 +348,7 @@ static_assert(sizeof(SceneIndirectVerifyPush) == 32);
 // candidates (slot=InvalidIndex). An all-zero tuple therefore indicates an
 // unwritten/incorrectly addressed output, not an ordinary invisible object.
 [[nodiscard]] inline bool IsUnwrittenCullVerdict(const InstanceCullVerdict& value) noexcept {
-    return value.value.x == 0u && value.value.y == 0u &&
-           value.value.z == 0u && value.value.w == 0u;
+    return value.value.x == 0u && value.value.y == 0u && value.value.z == 0u && value.value.w == 0u;
 }
 
 class CandidateValidator {
@@ -380,15 +382,16 @@ class CandidateValidator {
         // Zero is not a legal verdict from the shader: even invalid
         // candidates initialize slot=InvalidIndex. Distinguish an unwritten
         // output from an ordinary visibility mismatch.
-        const size_t zeroVerdicts = std::count_if(
-            readback.begin(), readback.end(), [](const InstanceCullVerdict& v) {
+        const size_t zeroVerdicts =
+            std::count_if(readback.begin(), readback.end(), [](const InstanceCullVerdict& v) {
                 return IsUnwrittenCullVerdict(v);
             });
         if (zeroVerdicts != 0)
             std::fprintf(stderr,
                          "[GpuSceneValidate] unwritten/zero verdicts=%zu/%zu; "
                          "check compute dispatch, BDA, and graph write dependencies\n",
-                         zeroVerdicts, readback.size());
+                         zeroVerdicts,
+                         readback.size());
         uint64_t wrong = 0;
         for (size_t i = 0; i < readback.size(); ++i) {
             const auto& a = readback[i].value;
@@ -608,8 +611,7 @@ class CandidateValidator {
             expected.reserve(selected.candidateCount);
             for (const auto& range : selected.ranges) {
                 const Leaf* leaf = db.leaves.Get({range.leaf.x, range.leaf.y});
-                if (!leaf || leaf->range.x != range.members.x ||
-                    leaf->range.y != range.members.y)
+                if (!leaf || leaf->range.x != range.members.x || leaf->range.y != range.members.y)
                     return false;
                 for (uint32_t i = 0; i < range.members.y; ++i)
                     expected.push_back(ReferenceCandidate(db, range.members.x + i, view));
@@ -724,7 +726,12 @@ class CandidateValidator {
                     f.workOutput,
                     f.workOutputSize,
                     maxWork * sizeof(SceneSubmeshWork),
-                    "scene submesh work"))
+                    "scene submesh work") ||
+            !Ensure(ctx,
+                    f.workDemand,
+                    f.workDemandSize,
+                    size_t(candidateCount) * sizeof(SceneDemandEntry),
+                    "scene work demand"))
             return false;
         const uint64_t compact = ctx.GetBufferDeviceAddress(f.compact);
         const uint64_t compactOffsets = ctx.GetBufferDeviceAddress(f.offsets);
@@ -732,7 +739,8 @@ class CandidateValidator {
         const uint64_t counts = ctx.GetBufferDeviceAddress(f.workCounts);
         const uint64_t offsets = ctx.GetBufferDeviceAddress(f.workOffsets);
         const uint64_t output = ctx.GetBufferDeviceAddress(f.workOutput);
-        if (!compact || !compactOffsets || !choices || !counts || !offsets || !output)
+        const uint64_t demand = ctx.GetBufferDeviceAddress(f.workDemand);
+        if (!compact || !compactOffsets || !choices || !counts || !offsets || !output || !demand)
             return false;
 
         if (f.validate) {
@@ -753,6 +761,7 @@ class CandidateValidator {
         select.submeshes = addresses.submeshes;
         select.choices = choices;
         select.counts = counts;
+        select.demand = demand;
         select.limits =
             glm::uvec4(candidateCount, f.groupCount, db.instances.Size(), db.meshes.Size());
         select.limits2 = glm::uvec4(db.lods.Size(), db.submeshes.Size(), 0u, 0u);
@@ -768,12 +777,11 @@ class CandidateValidator {
         return true;
     }
 
-    [[nodiscard]] bool PrepareParallelWorkPrefix(
-        smvk::ResourceManager& ctx,
-        uint32_t flight,
-        ParallelWorkBlockPush& block,
-        ParallelWorkGroupPush& groups,
-        ParallelWorkAddPush& add) {
+    [[nodiscard]] bool PrepareParallelWorkPrefix(smvk::ResourceManager& ctx,
+                                                 uint32_t flight,
+                                                 ParallelWorkBlockPush& block,
+                                                 ParallelWorkGroupPush& groups,
+                                                 ParallelWorkAddPush& add) {
         if (flight >= Flights)
             return false;
         auto& f = flight_[flight];
@@ -781,10 +789,16 @@ class CandidateValidator {
             return false;
         const uint32_t blockCount = (f.workCandidates + 255u) / 256u;
         if (blockCount == 0 || blockCount > 4096u ||
-            !Ensure(ctx, f.workBlockSums, f.workBlockSumsSize,
-                    size_t(blockCount) * sizeof(uint32_t), "scene work block sums") ||
-            !Ensure(ctx, f.workBlockBases, f.workBlockBasesSize,
-                    size_t(blockCount) * sizeof(uint32_t), "scene work block bases"))
+            !Ensure(ctx,
+                    f.workBlockSums,
+                    f.workBlockSumsSize,
+                    size_t(blockCount) * sizeof(uint32_t),
+                    "scene work block sums") ||
+            !Ensure(ctx,
+                    f.workBlockBases,
+                    f.workBlockBasesSize,
+                    size_t(blockCount) * sizeof(uint32_t),
+                    "scene work block bases"))
             return false;
         const uint64_t counts = ctx.GetBufferDeviceAddress(f.workCounts);
         const uint64_t offsets = ctx.GetBufferDeviceAddress(f.workOffsets);
@@ -854,22 +868,23 @@ class CandidateValidator {
                                              RasterWorkDrawBuildPush& push,
                                              smvk::BufferHandle& commands) {
         if (flight >= Flights || !geometryAddress || geometryCount == 0 ||
-            geometryCount > kMaxRasterDrawGroups || !aliasAddress ||
-            aliasCount == 0 || aliasCount > kMaxRasterDrawGroups)
+            geometryCount > kMaxRasterDrawGroups || !aliasAddress || aliasCount == 0 ||
+            aliasCount > kMaxRasterDrawGroups)
             return false;
         auto& f = flight_[flight];
         if (!f.workPrepared || f.workCandidates == 0 ||
             f.workCandidates > (f.validate ? 32768u : 1048576u))
             return false;
-        const uint64_t workCapacity =
-            uint64_t(f.workCandidates) * (f.validate ? 16u : 1u);
+        const uint64_t workCapacity = uint64_t(f.workCandidates) * (f.validate ? 16u : 1u);
         // Four fixed pipeline-class ranges (opaque/masked x back/two-sided).
         // Each class preserves work[i] as firstInstance so temporal
         // history/Hi-Z consumers retain persistent instance identity.
         const uint64_t maxCommands = uint64_t(kRasterPipelineClassCount) * workCapacity;
         if (workCapacity > 1048576u || maxCommands > UINT32_MAX)
             return false;
-        if (!Ensure(ctx, f.rasterCommands, f.rasterSize,
+        if (!Ensure(ctx,
+                    f.rasterCommands,
+                    f.rasterSize,
                     size_t(maxCommands) * sizeof(RasterIndirectCommand),
                     "GPU scene raster indirect commands"))
             return false;
@@ -878,15 +893,23 @@ class CandidateValidator {
         const uint64_t output = ctx.GetBufferDeviceAddress(f.rasterCommands);
         if (!work || !offsets || !output)
             return false;
-        push = {work, offsets, geometryAddress, output, f.workCandidates,
-                geometryCount, uint32_t(maxCommands), uint32_t(workCapacity),
-                aliasAddress, aliasCount, 0u};
+        push = {work,
+                offsets,
+                geometryAddress,
+                output,
+                f.workCandidates,
+                geometryCount,
+                uint32_t(maxCommands),
+                uint32_t(workCapacity),
+                aliasAddress,
+                aliasCount,
+                0u};
         commands = f.rasterCommands;
         return true;
     }
 
     [[nodiscard]] uint64_t RasterWorkAddress(const smvk::ResourceManager& ctx,
-                                            uint32_t flight) const {
+                                             uint32_t flight) const {
         return flight < Flights && !flight_[flight].workOutput.empty()
                    ? ctx.GetBufferDeviceAddress(flight_[flight].workOutput)
                    : 0;
@@ -945,9 +968,9 @@ class CandidateValidator {
                                              uint64_t viewAddress,
                                              uint32_t coneEnabled,
                                              MeshletCompactPlan& plan) {
-        if (flight >= Flights || worstMeshlets == 0 || worstMeshlets > 1024u ||
-            !meshesAddress || !clustersAddress || !geometryAddress || !aliasAddress ||
-            !instancesAddress || !viewAddress || clusterIndexBase == 0xffffffffu)
+        if (flight >= Flights || worstMeshlets == 0 || worstMeshlets > 1024u || !meshesAddress ||
+            !clustersAddress || !geometryAddress || !aliasAddress || !instancesAddress ||
+            !viewAddress || clusterIndexBase == 0xffffffffu)
             return false;
         auto& f = flight_[flight];
         // The validate fixtures reserve 16 work rows per candidate and are
@@ -978,24 +1001,49 @@ class CandidateValidator {
         const uint32_t psoBlocks = (candidateCapacity + 255u) / 256u;
         if (scanBlocks == 0 || scanBlocks > 4096u || psoBlocks == 0 || psoBlocks > 4096u)
             return false;
-        if (!Ensure(ctx, f.meshletCounts, f.meshletCountsSize,
-                    size_t(extent) * sizeof(uint32_t), "scene meshlet counts") ||
-            !Ensure(ctx, f.meshletOffsets, f.meshletOffsetsSize,
-                    size_t(extent + 1u) * sizeof(uint32_t), "scene meshlet offsets") ||
-            !Ensure(ctx, f.meshletBlockSums, f.meshletBlockSumsSize,
-                    size_t(scanBlocks) * sizeof(uint32_t), "scene meshlet block sums") ||
-            !Ensure(ctx, f.meshletBlockBases, f.meshletBlockBasesSize,
-                    size_t(scanBlocks) * sizeof(uint32_t), "scene meshlet block bases") ||
-            !Ensure(ctx, f.meshletCandidates, f.meshletCandidatesSize,
+        if (!Ensure(ctx,
+                    f.meshletCounts,
+                    f.meshletCountsSize,
+                    size_t(extent) * sizeof(uint32_t),
+                    "scene meshlet counts") ||
+            !Ensure(ctx,
+                    f.meshletOffsets,
+                    f.meshletOffsetsSize,
+                    size_t(extent + 1u) * sizeof(uint32_t),
+                    "scene meshlet offsets") ||
+            !Ensure(ctx,
+                    f.meshletBlockSums,
+                    f.meshletBlockSumsSize,
+                    size_t(scanBlocks) * sizeof(uint32_t),
+                    "scene meshlet block sums") ||
+            !Ensure(ctx,
+                    f.meshletBlockBases,
+                    f.meshletBlockBasesSize,
+                    size_t(scanBlocks) * sizeof(uint32_t),
+                    "scene meshlet block bases") ||
+            !Ensure(ctx,
+                    f.meshletCandidates,
+                    f.meshletCandidatesSize,
                     size_t(candidateCapacity) * sizeof(CompactMeshletCandidate),
                     "scene meshlet candidates") ||
-            !Ensure(ctx, f.meshletPsoBlocks, f.meshletPsoBlocksSize,
-                    size_t(psoBlocks) * 4u * sizeof(uint32_t), "scene meshlet PSO blocks") ||
-            !Ensure(ctx, f.meshletPsoBases, f.meshletPsoBasesSize,
-                    size_t(psoBlocks) * 4u * sizeof(uint32_t), "scene meshlet PSO bases") ||
-            !Ensure(ctx, f.meshletClassCounts, f.meshletClassCountsSize,
-                    8u * sizeof(uint32_t), "scene meshlet PSO class counts") ||
-            !Ensure(ctx, f.meshletCommands, f.meshletCommandsSize,
+            !Ensure(ctx,
+                    f.meshletPsoBlocks,
+                    f.meshletPsoBlocksSize,
+                    size_t(psoBlocks) * 4u * sizeof(uint32_t),
+                    "scene meshlet PSO blocks") ||
+            !Ensure(ctx,
+                    f.meshletPsoBases,
+                    f.meshletPsoBasesSize,
+                    size_t(psoBlocks) * 4u * sizeof(uint32_t),
+                    "scene meshlet PSO bases") ||
+            !Ensure(ctx,
+                    f.meshletClassCounts,
+                    f.meshletClassCountsSize,
+                    8u * sizeof(uint32_t),
+                    "scene meshlet PSO class counts") ||
+            !Ensure(ctx,
+                    f.meshletCommands,
+                    f.meshletCommandsSize,
                     size_t(commandCapacity) * sizeof(RasterIndirectCommand),
                     "scene meshlet compact commands"))
             return false;
@@ -1010,8 +1058,8 @@ class CandidateValidator {
         const uint64_t psoBasesBda = ctx.GetBufferDeviceAddress(f.meshletPsoBases);
         const uint64_t classCounts = ctx.GetBufferDeviceAddress(f.meshletClassCounts);
         const uint64_t commands = ctx.GetBufferDeviceAddress(f.meshletCommands);
-        if (!work || !sceneOffsets || !counts || !offsets || !sums || !bases ||
-            !candidates || !psoBlocksBda || !psoBasesBda || !classCounts || !commands)
+        if (!work || !sceneOffsets || !counts || !offsets || !sums || !bases || !candidates ||
+            !psoBlocksBda || !psoBasesBda || !classCounts || !commands)
             return false;
         f.meshletCandidateCapacity = candidateCapacity;
         f.meshletCommandCapacity = commandCapacity;
@@ -1053,8 +1101,8 @@ class CandidateValidator {
         plan.scatter.indexBase = clusterIndexBase;
         plan.scatter.viewValid = 1u;
         plan.scatter.coneEnabled = coneEnabled;
-        plan.psoCount = {candidates, offsets, psoBlocksBda, extent, candidateCapacity,
-                         psoBlocks, 0u};
+        plan.psoCount = {
+            candidates, offsets, psoBlocksBda, extent, candidateCapacity, psoBlocks, 0u};
         // The #301 scan, unchanged: workOffsets = the meshlet offsets (the
         // total lives at index candidateCount = the work extent), and
         // workCapacity = the candidate capacity that total is checked
@@ -1106,6 +1154,14 @@ class CandidateValidator {
                                 : smvk::BufferHandle{};
     }
 
+    // Streaming-demand feedback buffer (the LOD work selector's DemandEntry
+    // stream): read back by the CPU so GeometryStreamer sees GPU-selected
+    // drawn/desired LODs. Empty when the flight never prepared work.
+    [[nodiscard]] smvk::BufferHandle WorkDemandBuffer(uint32_t flight) const {
+        return flight < Flights ? smvk::BufferHandle(flight_[flight].workDemand)
+                                : smvk::BufferHandle{};
+    }
+
     void MarkDispatched(uint32_t flight) {
         if (flight >= Flights)
             return;
@@ -1141,9 +1197,11 @@ class CandidateValidator {
         std::vector<InstanceCullVerdict> expectedCompact{};
         bool compactPrepared = false;
         smvk::Holder<smvk::BufferHandle> workChoices{}, workCounts{}, workOffsets{}, workOutput{};
+        smvk::Holder<smvk::BufferHandle> workDemand{};
         smvk::Holder<smvk::BufferHandle> workBlockSums{}, workBlockBases{};
         size_t workBlockSumsSize = 0, workBlockBasesSize = 0;
         size_t workChoicesSize = 0, workCountsSize = 0, workOffsetsSize = 0, workOutputSize = 0;
+        size_t workDemandSize = 0;
         std::vector<SceneSubmeshWork> expectedWork{};
         uint32_t workCandidates = 0;
         bool workPrepared = false;

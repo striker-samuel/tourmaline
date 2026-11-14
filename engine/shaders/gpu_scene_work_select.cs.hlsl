@@ -23,6 +23,13 @@ struct WorkChoice { uint4 identity; uint4 range; };
 // range: original submesh count, valid work count, reserved, reserved.
 struct Choices { WorkChoice rows[GS_MAX_CANDIDATES]; };
 struct Counts { uint values[GS_MAX_CANDIDATES]; };
+// Streaming-demand feedback: one entry per visible candidate, read back by
+// the CPU each frame so the GeometryStreamer sees the GPU-selected drawn LOD
+// (touch) and a finer non-resident desired LOD (demand). `mesh` is the world
+// mesh index; `lods` packs (drawnLod << 8) | desiredLod, with desiredLod set
+// to 0xFF when no finer level is desired. An empty slot writes mesh = GS_INVALID.
+struct DemandEntry { uint mesh; uint lods; };
+struct DemandBuffer { DemandEntry rows[GS_MAX_CANDIDATES]; };
 struct Push {
     GPU_PTR_READ(VerdictBuffer) compact;
     GPU_PTR_READ(OffsetBuffer) compactOffsets;
@@ -32,6 +39,7 @@ struct Push {
     GPU_PTR_READ(Submeshes) submeshes;
     GPU_PTR_WRITE(Choices) choices;
     GPU_PTR_WRITE(Counts) counts;
+    GPU_PTR_WRITE(DemandBuffer) demand;
     uint4 limits; // candidates, groups, instance slots, mesh slots
     uint4 limits2; // lod slots, submesh slots, reserved, reserved
     float4 lodEyeBudget; // absolute float camera xyz, pixel budget w
@@ -48,6 +56,10 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     choice.range = uint4(0u,0u,0u,0u);
     pcW.choices.Get().rows[i] = choice;
     pcW.counts.Get().values[i] = 0u;
+    DemandEntry demand;
+    demand.mesh = GS_INVALID;
+    demand.lods = 0u;
+    pcW.demand.Get().rows[i] = demand;
     if (pcW.limits.y > GS_MAX_GROUPS) return;
     const uint visible = pcW.compactOffsets.Get().values[pcW.limits.y];
     if (i >= visible) return;
@@ -128,8 +140,29 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
         selectedWork = workCount;
         found = true;
     }
+    // Desired LOD (ignoring residency): the finest level whose authored
+    // error still fits the pixel budget. When it is finer than the drawn
+    // (resident) level, a non-resident level is wanted and the streamer
+    // must promote it - the GPU selector cannot draw it itself.
+    uint desiredLod = GS_INVALID;
+    if (useError) {
+        for (uint lodIndex = 0u; lodIndex < mesh.value.lodCount; ++lodIndex) {
+            const GpuSceneLodRow lod =
+                pcW.lods.Get().rows[mesh.value.firstLod + lodIndex];
+            if (lod.identity.y != 1u || !isfinite(lod.value.simplifyError) ||
+                lod.value.simplifyError < 0.0f ||
+                lod.value.simplifyError * scale * pixelsPerWorldUnit > pcW.lodEyeBudget.w)
+                continue;
+            desiredLod = lodIndex;
+            break; // finest in-budget
+        }
+    }
     if (found) {
         pcW.choices.Get().rows[i] = selected;
         pcW.counts.Get().values[i] = selectedWork;
+        demand.mesh = meshIndex;
+        demand.lods = (selected.identity.z << 8) |
+                      (desiredLod < selected.identity.z ? desiredLod : 0xFFu);
     }
+    pcW.demand.Get().rows[i] = demand;
 }

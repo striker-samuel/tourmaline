@@ -16,8 +16,8 @@
 #include <Engine/Renderer/gpu_scene.h>
 #include <Engine/Renderer/gpu_scene_raster.h>
 #include <Engine/Renderer/gpu_scene_static.h>
-#include <Engine/Renderer/mesh.h> // StaticMesh/Surface physical indexed source
 #include <Engine/Renderer/gpu_scene_upload.h> // RenderDatabase (Database<MaxFramesInFlight>) for Synchronize
+#include <Engine/Renderer/mesh.h>             // StaticMesh/Surface physical indexed source
 
 #include <algorithm>
 #include <array>
@@ -36,11 +36,10 @@ namespace tour::gpu_scene {
 // direct drawing. Meshlet GPU streams remain optional acceleration data;
 // their cluster-ordered index copy is not an indexed draw source.
 // The caller proves the selected LOD is physically resident before entry.
-[[nodiscard]] inline bool ResolveWorldSurfaceIndexedRange(
-    const tour::StaticMesh& mesh,
-    uint64_t indexWordCapacity,
-    uint64_t vertexCapacity,
-    tour::gfx::IndexedRange& out) noexcept {
+[[nodiscard]] inline bool ResolveWorldSurfaceIndexedRange(const tour::StaticMesh& mesh,
+                                                          uint64_t indexWordCapacity,
+                                                          uint64_t vertexCapacity,
+                                                          tour::gfx::IndexedRange& out) noexcept {
     out = {};
     if (mesh.geometry.topology != smvk::PrimitiveTopology::TriangleList ||
         mesh.geometry.surfaces.size() != 1u)
@@ -59,12 +58,11 @@ namespace tour::gpu_scene {
 // IDs in its prefix, but allow a native-only suffix for valid World LODs
 // with no cooked meshlet registration. A collision tombstones the slot so
 // no later indirect work can address ambiguous physical allocations.
-[[nodiscard]] inline uint32_t RegisterNativeIndexedRange(
-    std::vector<tour::gfx::IndexedRange>& rows,
-    std::span<uint8_t> conflicting,
-    const tour::gfx::IndexedRange& physical,
-    uint32_t gfxId,
-    bool& taskIdsCompatible) {
+[[nodiscard]] inline uint32_t RegisterNativeIndexedRange(std::vector<tour::gfx::IndexedRange>& rows,
+                                                         std::span<uint8_t> conflicting,
+                                                         const tour::gfx::IndexedRange& physical,
+                                                         uint32_t gfxId,
+                                                         bool& taskIdsCompatible) {
     if (!physical.indexCount)
         return InvalidIndex;
     if (gfxId < conflicting.size()) {
@@ -72,8 +70,7 @@ namespace tour::gpu_scene {
             return InvalidIndex;
         auto& prior = rows[gfxId];
         if (prior.indexCount != 0u &&
-            (prior.firstIndex != physical.firstIndex ||
-             prior.indexCount != physical.indexCount ||
+            (prior.firstIndex != physical.firstIndex || prior.indexCount != physical.indexCount ||
              prior.vertexOffset != physical.vertexOffset)) {
             prior = {};
             conflicting[gfxId] = 1u;
@@ -224,12 +221,30 @@ class PersistentGeometryRegistry {
                    (source.clusterCount && !source.clusters)) {
             return false;
         }
+        ++frame_;
         auto nextKeys = ids_;
         auto nextRows = rows_;
         // Retire all previous descriptors unless a live DB mesh/LOD
         // explicitly republishes them in this revision.
         std::fill(nextRows.begin(), nextRows.end(), IndexedGeometry{});
         std::vector<uint32_t> nextAliases(source.meshCount, InvalidIndex);
+        auto nextFreeSlots = freeSlots_;
+        auto nextTombstoneFrame = tombstoneFrame_;
+        // Recycle flight-fenced tombstones: a key tombstoned at least
+        // MaxFramesInFlight calls ago frees its slot for reuse (the tombstone
+        // zeroed row already covered every in-flight frame that read it).
+        for (auto tit = nextTombstoneFrame.begin(); tit != nextTombstoneFrame.end();) {
+            if (frame_ - tit->second >= smvk::limits::MaxFramesInFlight) {
+                auto kit = nextKeys.find(tit->first);
+                if (kit != nextKeys.end()) {
+                    nextFreeSlots.push_back(kit->second);
+                    nextKeys.erase(kit);
+                }
+                tit = nextTombstoneFrame.erase(tit);
+            } else {
+                ++tit;
+            }
+        }
         const auto& meshes = db.meshes.Rows();
         const auto& lods = db.lods.Rows();
         const auto& submeshes = db.submeshes.Rows();
@@ -257,11 +272,16 @@ class PersistentGeometryRegistry {
                 auto it = nextKeys.find(key);
                 uint32_t id = InvalidIndex;
                 if (it == nextKeys.end()) {
-                    if (nextRows.size() >= kMaxRasterDrawGroups)
-                        return false;
-                    id = static_cast<uint32_t>(nextRows.size());
+                    if (!nextFreeSlots.empty()) {
+                        id = nextFreeSlots.back();
+                        nextFreeSlots.pop_back();
+                    } else {
+                        if (nextRows.size() >= kMaxRasterDrawGroups)
+                            return false;
+                        id = static_cast<uint32_t>(nextRows.size());
+                        nextRows.emplace_back();
+                    }
                     nextKeys.emplace(key, id);
-                    nextRows.emplace_back();
                 } else {
                     id = it->second;
                 }
@@ -276,6 +296,18 @@ class PersistentGeometryRegistry {
                          nextRows[alias].firstIndex != descriptor.firstIndex ||
                          nextRows[alias].vertexOffset != descriptor.vertexOffset)
                     return false;
+            }
+        }
+        // Tombstone tracking: a key that did not republish this revision is
+        // tombstoned (its row stays zeroed). Preserve the ORIGINAL tombstone
+        // frame so the flight-fence delay is measured from the first miss,
+        // not reset every revision.
+        nextTombstoneFrame.clear();
+        for (auto kit = nextKeys.begin(); kit != nextKeys.end(); ++kit) {
+            if (nextRows[kit->second].indexCount == 0u) {
+                auto old = tombstoneFrame_.find(kit->first);
+                nextTombstoneFrame.emplace(kit->first,
+                                           old != tombstoneFrame_.end() ? old->second : frame_);
             }
         }
         if (nextAliases != transientAliases_)
@@ -296,6 +328,8 @@ class PersistentGeometryRegistry {
         ids_.swap(nextKeys);
         rows_.swap(nextRows);
         transientAliases_.swap(nextAliases);
+        freeSlots_.swap(nextFreeSlots);
+        tombstoneFrame_.swap(nextTombstoneFrame);
         return true;
     }
 
@@ -323,6 +357,12 @@ class PersistentGeometryRegistry {
     std::unordered_map<PersistentGeometryKey, uint32_t, PersistentGeometryKeyHash> ids_;
     std::vector<IndexedGeometry> rows_;
     std::vector<uint32_t> transientAliases_;
+    // Freed descriptor slots, reusable by new keys (flight-fenced: a slot is
+    // only freed once every in-flight frame that could read its tombstone has
+    // retired — the tombstone stays a zeroed row for MaxFramesInFlight calls).
+    std::vector<uint32_t> freeSlots_;
+    std::unordered_map<PersistentGeometryKey, uint64_t, PersistentGeometryKeyHash> tombstoneFrame_;
+    uint64_t frame_ = 0;
     uint64_t revision_ = 1;
     uint64_t aliasRevision_ = 1;
 };
