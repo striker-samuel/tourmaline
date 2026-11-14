@@ -2668,6 +2668,10 @@ class WorldRenderer : public IRenderer {
     // the current registration ID. These are the indexed raster authority;
     // GfxRenderer's cluster index heap is only an optional meshlet source.
     std::vector<tour::gfx::IndexedRange> m_gpuScenePhysicalIndexedRanges;
+    // Revision-local IDs for World base mesh + selected resident LOD; the
+    // native-only suffix supports meshes with no cooked meshlet registration.
+    std::vector<std::vector<uint32_t>> m_gpuScenePhysicalLodIds;
+    bool m_gpuSceneTaskGeometryIdsCompatible = false;
     void RefreshGpuScenePhysicalIndexedRanges();
     smvk::mem::LinearPtr<smvk::World> m_worldOwned; // the source-moved form
     smvk::World* m_borrowedWorld = nullptr;         // the embedded-host form
