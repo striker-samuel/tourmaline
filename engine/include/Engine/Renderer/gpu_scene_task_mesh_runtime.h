@@ -214,7 +214,7 @@ class TaskMeshRuntime {
             !in.indexWordCapacity || !in.vertexCapacity || in.workCapacity > 1048576u ||
             in.sceneCandidateCount > 1048576u || in.meshCount > 65535u || in.aliasCount > 65535u ||
             in.geometryCount > 65535u || in.clusterCount > 4194304u ||
-            in.instanceCount > 4194304u || in.indexWordCapacity > 65536u * 128u * 3u ||
+            in.instanceCount > 4194304u || in.indexWordCapacity > 512u * 1024u * 1024u / 4u ||
             in.vertexCapacity > 44739242u)
             return false;
         if (in.historyCapacity != 0u &&

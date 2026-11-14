@@ -12476,7 +12476,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                 m_gpuSceneTaskComputePrograms.end(),
                                 [](const smvk::ShaderProgram& p) { return p.shaderCount == 1; })) {
                     const auto& gfx = m_gfxRenderer.State();
-                    constexpr uint32_t kTaskIndexWords = 65536u * 128u * 3u;
+                    // The task/mesh index bound mirrors the 512 MiB static index
+                    // monoblock (2^27 uint32 words); the old 65536*128*3 cap
+                    // rejected large scenes (bistro ~26.6M words) that the heap
+                    // actually holds. Mirrors GS_MAX_INDEX_WORDS in
+                    // gpu_scene_task_mesh.hlsli.
+                    constexpr uint32_t kTaskIndexWords = 512u * 1024u * 1024u / 4u;
                     constexpr uint32_t kTaskVertexLimit = 44739242u;
                     const uint64_t vertexCap64 =
                         smvk::staticVertexFmtHeap.m_staticVertexBlock.Capacity();
