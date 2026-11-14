@@ -13253,21 +13253,12 @@ bool smvk::RenderGraph::CompileTransientHeap(const std::vector<PassUsage>& usage
             const VkDeviceSize need =
                 (reqs.size + reqs.alignment - 1) / reqs.alignment * reqs.alignment;
             packedUnionBytes += need;
-            // Join a free slot? TOURMALINE_NO_TRANSIENT_ALIASING=1 forces
-            // every range to a DISJOINT slot (the no-aliasing footprint,
-            // always sound) — the A/B lever for isolating an aliasing/barrier
-            // bug from a render-target packing interaction.
-            static const bool s_noTransientAliasing = [] {
-                const char* e = std::getenv("TOURMALINE_NO_TRANSIENT_ALIASING");
-                return e != nullptr && std::atoi(e) != 0;
-            }();
+            // Join a free slot?
             int64_t join = -1;
-            if (!s_noTransientAliasing) {
-                for (size_t s = 0; s < slots.size(); ++s) {
-                    if (slots[s].lastUse < ci.firstUse) {
-                        join = static_cast<int64_t>(s);
-                        break;
-                    }
+            for (size_t s = 0; s < slots.size(); ++s) {
+                if (slots[s].lastUse < ci.firstUse) {
+                    join = static_cast<int64_t>(s);
+                    break;
                 }
             }
             uint32_t block = ~0u;
