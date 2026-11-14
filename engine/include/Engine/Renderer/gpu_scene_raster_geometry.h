@@ -46,6 +46,8 @@ struct IndexedGeometryTables {
     // use these instead of reconstructing ranges from GfxFilter clusters.
     const tour::gfx::IndexedRange* nativeRanges = nullptr;
     uint32_t nativeRangeCount = 0;
+    // Physical index words in this upload's region, not total heap size.
+    uint32_t nativeIndexWordCount = 0;
     bool nativeResident = false;
 };
 
@@ -81,10 +83,11 @@ struct IndexedGeometryTables {
             return false;
         const auto& range = tables.nativeRanges[meshIndex];
         const uint64_t absolute = uint64_t(tables.indexBase) + range.firstIndex;
-        // The whole [absolute, absolute + indexCount) span must fit the
-        // uint32 index domain: reject a range whose END overflows even when
-        // its start is in bounds.
-        if (range.indexCount == 0u || absolute > std::numeric_limits<uint32_t>::max() ||
+        // Streaming may re-register a smaller payload at the same IDs.
+        // Check both the current region extent and absolute Vulkan indices.
+        const uint64_t end = uint64_t(range.firstIndex) + range.indexCount;
+        if (range.indexCount == 0u || end > tables.nativeIndexWordCount ||
+            absolute > std::numeric_limits<uint32_t>::max() ||
             absolute + range.indexCount > uint64_t(std::numeric_limits<uint32_t>::max()) + 1u)
             return false;
         out.indexCount = range.indexCount;
