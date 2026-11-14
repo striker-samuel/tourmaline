@@ -393,6 +393,17 @@ int main() {
         CHECK(sync.Find(key1) && sync.Find(key2));
         const auto steady = sync.Synchronize(world, snapshot);
         CHECK(!steady.topologyReconciled && steady.created == 0);
+        // Streaming can temporarily present an invalid LOD chain after
+        // an asset reload. Do not accept an old resident mask or consume
+        // this geometry revision; retry once metadata is repaired.
+        auto savedChains = std::move(world.lodChains);
+        const auto rejected = sync.Synchronize(world, snapshot, 1u);
+        CHECK(rejected.geometryRefreshed && !rejected.leafPublicationOk);
+        world.lodChains = std::move(savedChains);
+        const auto recovered = sync.Synchronize(world, snapshot, 1u);
+        CHECK(recovered.geometryRefreshed && recovered.leafPublicationOk);
+        const auto stable = sync.Synchronize(world, snapshot, 1u);
+        CHECK(!stable.geometryRefreshed && stable.leafPublicationOk);
         CHECK(world.RemoveNode(first));
         const auto removed = sync.Synchronize(world, snapshot);
         CHECK(removed.retired == 1 && removed.meshesRetired == 0);
