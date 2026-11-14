@@ -27,6 +27,7 @@ struct PSIn
     [[vk::location(3)]] float3 normal : TEXCOORD2;
     [[vk::location(4)]] float4 tangent : TANGENT;
     [[vk::location(7)]] nointerpolation uint meshMaterial : TEXCOORD5;
+    [[vk::location(8)]] nointerpolation uint ditherCloseup : TEXCOORD7;
     bool isFrontFace : SV_IsFrontFace;
 };
 
@@ -38,6 +39,16 @@ struct PSOut
 PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 {
     PSOut OUT;
+    // Dither-on-closeup (matches lit/unlit): a flagged subtree screen-doors
+    // away with the same keep-test so this view's silhouette agrees with
+    // lit while the dissolve runs.
+    if (IN.ditherCloseup != 0u)
+    {
+        FrameUniforms frameEarly = pc.frameUniforms.Get();
+        FramePSHot hotEarly = frameEarly.frameHot.Get();
+        if (!CloseupDitherKeep(IN.worldPos, hotEarly.cameraPos, clipPos.xy))
+            discard;
+    }
 
     MaterialValues mat = pc.bMats.Get().mats[IN.meshMaterial];
 
