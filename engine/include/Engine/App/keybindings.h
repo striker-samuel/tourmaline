@@ -101,8 +101,8 @@ constexpr int DEBUG_VIEW_CUBEMAP = TOUR_KEY_F10; // reused from the lightmap-UV 
 constexpr int DEBUG_VIEW_POM = TOUR_KEY_F11;
 
 // ---- Diagnostics ----
-constexpr int FRAME_HISTOGRAM_TOGGLE =
-    TOUR_KEY_F12;                        // live frame-time strip (keep; do not add more F12 uses)
+// (F12 is intentionally UNBOUND - a debugger breakpoint hotkey; the frame-time
+// histogram toggle moved to the editor's View menu only, no App shortcut.)
 constexpr int DS_VIZ_CYCLE = TOUR_KEY_Y; // deferred-shadow visualizers (DS_DEBUG_VIZ builds)
 // Text-only stats HUD (top-left overlay): Ctrl held + T pressed. T alone
 // does nothing (no bare binding); Ctrl alone stays camera-descend (the

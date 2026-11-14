@@ -1932,7 +1932,7 @@ void EditorApp::DrawFrame() {
     SMVK_PROFILE_FUNCTION();
     // Frame-arena + dt live in the HOST loop (App::MainLoop resets the
     // arena + advances the clock every frame — see app.cpp).
-    // Frame-time histogram hook (View menu / F12; zero cost while
+    // Frame-time histogram hook (View menu only; zero cost while
     // disabled): the single record per editor frame.
     smvk::profiler::RecordFrameTime(real_delta_time_s * 1000.0);
     {

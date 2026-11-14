@@ -112,8 +112,9 @@ bool GpuEnabled();
 // ---------------------------------------------------------------------------
 // Frame-time histogram (live distribution over the last frames)
 // ---------------------------------------------------------------------------
-// Opt-in live frame-time distribution for the App (the F12 shortcut) and
-// the editor (View menu / the same F12). DISABLED =
+// Opt-in live frame-time distribution, toggled from the editor's View
+// menu or programmatically (no keyboard shortcut — F12 stays unbound, a
+// debugger breakpoint hotkey). DISABLED =
 // RecordFrameTime() is a single compare-and-return — zero cost; ENABLED
 // costs a few ns/frame on fixed storage (no allocation, no locks; the main
 // thread is the only writer/reader). While an Optick capture runs, frame

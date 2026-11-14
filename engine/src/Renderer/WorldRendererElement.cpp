@@ -400,15 +400,6 @@ void WorldRendererElement::HandleShortcuts() {
         m_renderer.m_showHud = !m_renderer.m_showHud;
         std::fprintf(stderr, "[ui] stats HUD %s\n", m_renderer.m_showHud ? "on" : "off");
     }
-    // F12: live frame-time histogram — a separate bottom strip UI
-    // (profiler::DrawFrameHistogramUi; the editor's View menu toggles
-    // the same state). Zero cost while disabled: RecordFrameTime is a
-    // single compare-and-return (see profiler::RecordFrameTime).
-    if (m_input.isKeyPressed(keybind::FRAME_HISTOGRAM_TOGGLE)) {
-        const bool on = !smvk::profiler::FrameHistogramEnabled();
-        smvk::profiler::SetFrameHistogramEnabled(on);
-        std::fprintf(stderr, "[profiler] frame-time histogram %s\n", on ? "on" : "off");
-    }
 #if defined(DS_DEBUG_VIZ)
     // Deferred-shadow visualizer cycle (Y): Off -> counts -> diff ->
     // light-scoped modes. Needs the pipeline on (H); see the panel's

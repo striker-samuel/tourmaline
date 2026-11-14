@@ -3011,9 +3011,10 @@ void WorldRenderer::DrawAppDebugUi(const DebugUiFrame& frame) {
     // its color coding while a debug visualization is on.
     DrawDebugViewHint();
 
-    // Frame-time histogram (F12): SEPARATE UI from the debug panel -
-    // a full-width bottom strip (see profiler::DrawFrameHistogramUi).
-    // Zero cost while disabled: one flag check.
+    // Frame-time histogram (View-menu / programmatic toggle): SEPARATE UI
+    // from the debug panel - a full-width bottom strip (see
+    // profiler::DrawFrameHistogramUi). Zero cost while disabled: one flag
+    // check.
     if (smvk::profiler::FrameHistogramEnabled())
         smvk::profiler::DrawFrameHistogramUi();
     // Texture inspector (aux-texture debug view): SEPARATE floating

@@ -391,7 +391,7 @@ void DrawFrameHistogramUi() {
         return;
     }
     if (d.count == 0) {
-        ImGui::TextDisabled("frame histogram (F12): recording - no frames yet");
+        ImGui::TextDisabled("frame histogram: recording - no frames yet");
         ImGui::End();
         return;
     }
@@ -456,8 +456,7 @@ void DrawFrameHistogramUi() {
         d.p99Ms,
         d.maxMs,
         d.count);
-    ImGui::TextDisabled(
-        "0.5 ms buckets left-to-right (last >= 16 ms), last 1024 frames - F12 toggles");
+    ImGui::TextDisabled("0.5 ms buckets left-to-right (last >= 16 ms), last 1024 frames");
     ImGui::End();
 }
 

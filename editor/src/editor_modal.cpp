@@ -302,16 +302,9 @@ void EditorApp::UpdateModalInput() {
         {TOUR_KEY_F9, 0, kScopeGlobal, &EditorApp::ModalViewUv0, "view: UV0", "F9"},
         {TOUR_KEY_F10, 0, kScopeGlobal, &EditorApp::ModalViewLmUv, "view: UV1 (lightmap)", "F10"},
         {TOUR_KEY_F11, 0, kScopeGlobal, &EditorApp::ModalViewPom, "view: parallax (POM)", "F11"},
-        // F12 (App parity): the live frame-time histogram toggle — the
-        // same state the standalone App's F12 flips, the View menu item
-        // calls the same handler (ModalFrameHistogramToggle), and the
-        // strip draws at the end of DrawUI (profiler::DrawFrameHistogramUi).
-        {TOUR_KEY_F12,
-         0,
-         kScopeGlobal,
-         &EditorApp::ModalFrameHistogramToggle,
-         "view: frame-time histogram",
-         "F12"},
+        // F12 is intentionally UNBOUND (a debugger breakpoint hotkey). The
+        // frame-time histogram stays reachable via the View menu only
+        // (ModalFrameHistogramToggle).
         {TOUR_KEY_P,
          0,
          kScopeGlobal,
@@ -446,13 +439,11 @@ void EditorApp::ModalViewUnlit() {
 }
 
 void EditorApp::ModalFrameHistogramToggle() {
-    // F12 / View menu — one handler, one binding (see kModalBindings).
-    // Toggles the shared profiler state (the standalone App's F12 flips
-    // the same flag); the bottom strip draws at the end of DrawUI.
+    // View menu only (F12 stays unbound). Toggles the shared profiler
+    // state; the bottom strip draws at the end of DrawUI.
     const bool on = !smvk::profiler::FrameHistogramEnabled();
     smvk::profiler::SetFrameHistogramEnabled(on);
-    Log(on ? "Frame-time histogram: on (bottom strip; F12 or View menu)."
-           : "Frame-time histogram: off.");
+    Log(on ? "Frame-time histogram: on (bottom strip)." : "Frame-time histogram: off.");
 }
 
 void EditorApp::ModalVpLayoutToggle() {

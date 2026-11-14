@@ -814,9 +814,8 @@ class EditorApp : public tour::App {
     void ModalModeProfile();
     void ModalViewLit();
     void ModalViewUnlit();
-    // F12 (App parity): toggle the live frame-time histogram — the
-    // shared profiler state + bottom strip (the View menu item calls the
-    // same handler, so key + menu stay one binding; see
+    // Toggle the live frame-time histogram (View menu only; F12 stays
+    // unbound) — the shared profiler state + bottom strip (see
     // profiler::SetFrameHistogramEnabled).
     void ModalFrameHistogramToggle();
     void ModalVpLayoutToggle();
@@ -3359,10 +3358,10 @@ class EditorApp : public tour::App {
     // a scrolling detail log. Background-capable tasks can hide the popup
     // while their worker continues; project export must remain modal.
     struct ModalTaskWindow {
-        bool wantOpen = false;     // a task owns the popup (armed/running/done)
-        bool inBackground = false; // user sent it behind; worker continues
+        bool wantOpen = false;       // a task owns the popup (armed/running/done)
+        bool inBackground = false;   // user sent it behind; worker continues
         bool allowBackground = true; // false for non-cancellable project builds
-        bool opened = false;       // OpenPopup consumed (re-armed on reopen)
+        bool opened = false;         // OpenPopup consumed (re-armed on reopen)
         std::string popupId = "TaskProgress";
         std::string title;              // header, e.g. "Bake GI"
         std::string stage;              // current stage line
@@ -3380,7 +3379,8 @@ class EditorApp : public tour::App {
     bool TaskWindowBlocking() const {
         return m_taskWindow.wantOpen && !m_taskWindow.inBackground;
     }
-    void TaskWindowBegin(const std::string& title, const std::string& stage,
+    void TaskWindowBegin(const std::string& title,
+                         const std::string& stage,
                          bool allowBackground = true);
     void TaskWindowPush(const std::string& line); // detail log (capped)
     void TaskWindowStage(const std::string& stage, float progress = -1.0f);

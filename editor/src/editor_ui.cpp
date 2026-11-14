@@ -839,7 +839,7 @@ void EditorApp::DrawUI(smvk::Extent2D targetExtent) {
         m_stateGraph.Draw();
         m_imguiFocusInPlacementGraph |= m_stateGraph.Focused();
     }
-    // Frame-time histogram (View menu / F12): a SEPARATE bottom strip —
+    // Frame-time histogram (View menu only): a SEPARATE bottom strip —
     // full-width horizontal bucket graph pinned to the bottom of the
     // screen, drawn last so it sits on top of the panels/docks. Zero cost
     // while disabled: one flag check.
@@ -1416,7 +1416,7 @@ void EditorApp::DrawMenuBar() {
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("View")) {
-        ImGui::TextDisabled("Debug views: F1..F6, F8..F12. P parents"
+        ImGui::TextDisabled("Debug views: F1..F6, F8..F11. P parents"
                             " the selection; Z toggles wireframe in Layout.");
         // Shading: the GI tri-view (the bake workflow's three looks),
         // ONE block — the old F1/F2 pair ("Unlit"/"Lit") duplicated
@@ -1516,12 +1516,12 @@ void EditorApp::DrawMenuBar() {
         ImGui::SetItemTooltip("Line polygon mode over the Fill depth"
                               "prepass — lines never draw over the objects in front.");
         ImGui::Separator();
-        // Frame-time histogram (F12 — the kModalBindings GLOBAL row; this
-        // menu item calls the SAME handler, so key + menu stay one
-        // binding): the shared profiler state + a separate full-width
-        // bottom strip drawn at the end of DrawUI. Zero cost while
-        // disabled.
-        if (ImGui::MenuItem("Frame-time histogram", "F12", smvk::profiler::FrameHistogramEnabled()))
+        // Frame-time histogram (View menu only; F12 stays unbound — a
+        // debugger breakpoint hotkey): the shared profiler state + a
+        // separate full-width bottom strip drawn at the end of DrawUI.
+        // Zero cost while disabled.
+        if (ImGui::MenuItem(
+                "Frame-time histogram", nullptr, smvk::profiler::FrameHistogramEnabled()))
             ModalFrameHistogramToggle();
         ImGui::SetItemTooltip("Live frame-time distribution (last 1024"
                               " frames): a full-width horizontal bucket graph pinned to the"
