@@ -13,6 +13,8 @@ LFS move) happens later, on purpose — see "Publishing" below.
 |---|---|---|---|
 | `paks/sponza.pak` | the Sponza demo (the canonical project: `Project.exe init/build` → Cook → GiBaker → Pak — sun + LOD + meshlets + 131k-probe GI + 8 cubemap captures at spp 32) | the current `master` (see the commit line at the bottom of this file) | `cd out/build/x64-Release && App.exe --pak releases/paks/sponza.pak` (or copy next to App.exe and `--pak content/paks/sponza.pak`) |
 | `paks/sponza.tapp` | the SAME sponza build's appmanifest (the recipe-build form: `Project.exe build --project <dir> --recipe sponza.tourrecipe` → verified pak + the generated `.tapp`, publish-last) | the current `master` (same drop as the pak) | `App.exe --project releases/paks/sponza.tapp` (put the `.tapp` + `.pak` side by side — the manifest resolves paks relative to itself; `--no-vfs` proves self-containment) |
+| `paks/bistro_static.pak` | the Amazon Lumberyard Bistro exterior demo (static root + LOD + meshlets, no GI/cubemaps — the CC BY 4.0 ORCA scene, see `BISTRO-CREDITS.md`) | the current `master` (see the commit line at the bottom of this file) | `cd out/build/x64-Release && App.exe --pak releases/paks/bistro_static.pak` |
+| `paks/bistro_static.tapp` | the SAME bistro build's appmanifest (`Project.exe build --recipe bistro_static.tourrecipe` → verified pak + the generated `.tapp`) | the current `master` (same drop as the pak) | `App.exe --project releases/paks/bistro_static.tapp` (put the `.tapp` + `.pak` side by side) |
 | `paks/_probe.pak` | the GI probe-ball diagnostic scene (cubemap + SG probe validation view) | an earlier session's cook | `App.exe --pak releases/paks/_probe.pak` |
 
 Numbered variants (`sponza_1.pak`, `sponza_2.pak`, ...) in the build
@@ -32,6 +34,14 @@ they are not carried here.
   --publish F:/projects/game/build --manifest-name sponza
 # then copy the build into the release folder (pak + manifest together)
 Copy-Item F:\projects\game\build\sponza.* releases\paks\
+
+# The bistro demo cooks the same way (static root + LOD; the scene
+# authors no GI volumes/cubemaps so its bakes are off):
+& .\out\build\x64-Release\Project.exe build `
+  --project F:/projects/game `
+  --recipe F:/projects/game/bistro_static.tourrecipe `
+  --publish F:/projects/game/build --manifest-name bistro_static
+Copy-Item F:\projects\game\build\bistro_static.* releases\paks\
 ```
 
 The legacy one-liner (`tools\cook\cook_sponza.bat`) still works — it

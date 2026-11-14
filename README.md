@@ -235,18 +235,19 @@ If you already have a suitable KTX 4.4.2 installation, omit its clone/build step
 
 #### Demo content: Sponza
 
-**Source and third-party license:** The demo is derived from [Khronos's Sponza glTF](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/Sponza). The maintainer performed the KTX texture conversion. The upstream model is marked **CRYENGINE Limited License Agreement**, and its redistribution rights are under [unresolved discussion](https://github.com/KhronosGroup/glTF-Sample-Assets/issues/172). **Attribution does not establish redistribution permission**. Read [SPONZA-CREDITS.md](SPONZA-CREDITS.md) before redistributing or recooking the demo.
+**Source and third-party license:** The Sponza demo is derived from [Khronos's Sponza glTF](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/Sponza). The maintainer performed the KTX texture conversion. The upstream model is marked **CRYENGINE Limited License Agreement**, and its redistribution rights are under [unresolved discussion](https://github.com/KhronosGroup/glTF-Sample-Assets/issues/172). **Attribution does not establish redistribution permission**. Read [SPONZA-CREDITS.md](SPONZA-CREDITS.md) before redistributing or recooking the demo. The Bistro demo is the [Amazon Lumberyard Bistro](https://developer.nvidia.com/orca/amazon-lumberyard-bistro) exterior (Amazon Lumberyard, 2017) from NVIDIA's Open Research Content Archive, under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); see [BISTRO-CREDITS.md](BISTRO-CREDITS.md).
 
-The [rolling `demo-content` release](https://github.com/striker-samuel/tourmaline/releases/tag/demo-content) contains `sponza_10.tapp`, its content-addressed `sponza_10-*.pak` (approximately 100 MB), and `SHA256SUMS.txt`. The pak filename changes when the demo is recooked; **do not hardcode the pak name**. Use the stable manifest path:
+The [rolling `demo-content` release](https://github.com/striker-samuel/tourmaline/releases/tag/demo-content) contains `sponza_10.tapp` + its content-addressed `sponza_10-*.pak`, `bistro_static.tapp` + its content-addressed `bistro_static-*.pak` (each approximately 100 MB), and `SHA256SUMS.txt`. The pak filename changes when a demo is recooked; **do not hardcode the pak name**. Use the stable manifest path:
 
 ```text
 # From inside your configured build directory, after building App:
 # Windows: cmake --build out/build/x64-Release --target demo_content  (from repo root)
 # Linux:   cmake --build out/build/linux-Release --target demo_content (from repo root)
 App --project content/paks/sponza_10.tapp
+App --project content/paks/bistro_static.tapp
 ```
 
-The `demo_content` target invokes `tools/fetch_demo_content.ps1` (Windows) or `tools/fetch_demo_content.sh` (Linux), which downloads the release files, checks their SHA-256 hashes, and removes stale **demo** paks without removing project paks. `DeployCheck` also validates the content-addressed pak when the viewer starts. You can download the three assets manually into `<build-dir>/content/paks/` if the target cannot access GitHub.
+The `demo_content` target invokes `tools/fetch_demo_content.ps1` (Windows) or `tools/fetch_demo_content.sh` (Linux), which downloads the release files, checks their SHA-256 hashes, and removes stale **demo** paks without removing project paks. `DeployCheck` also validates the content-addressed pak when the viewer starts. You can download the assets manually into `<build-dir>/content/paks/` if the target cannot access GitHub.
 
 ### Other entry points (after the platform setup above)
 
