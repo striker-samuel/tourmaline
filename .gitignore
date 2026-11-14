@@ -28,6 +28,7 @@ x86/
 [Aa][Rr][Mm]64/
 bld/
 [Oo]bj/
+exports/
 
 # --- Fetched third-party trees (install_dependencies.ps1 / .sh) -----------
 # The vendored trees moved OUT of git: install_dependencies.(ps1|sh) fetches
