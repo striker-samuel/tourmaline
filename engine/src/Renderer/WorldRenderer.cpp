@@ -2688,10 +2688,13 @@ bool WorldRenderer::onAttach() {
         if (!m_gfxRenderer.Ensure(*m_context, *m_rendergraph)) {
             std::cerr << "[WorldRenderer] GfxFilter unavailable - direct draws\n";
             m_gfxFilterAvailable = false;
-        } else {
-            m_gfxRenderer.RegisterWorldMeshes(*m_world);
-            ++m_gpuSceneGeometryRevision;
-            m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
+        }
+        // Static geometry is GPU-scene raster's physical publisher, even
+        // when the retired filter has no valid program or initial clusters.
+        m_gfxRenderer.RegisterWorldMeshes(*m_world);
+        ++m_gpuSceneGeometryRevision;
+        m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
+        {
             // Geometry LOD streaming census: the cluster loads
             // deferred their middle LOD siblings (the serializer's
             // stderr line carries the per-cluster numbers); arm the
@@ -6148,20 +6151,17 @@ void WorldRenderer::UpdateGeometryStreaming() {
             ++m_gpuSceneGeometryRevision;
             m_world->RebuildLightmapChartTable();
         }
-        if (m_gfxFilterAvailable) {
-            {
-                // The from-scratch gfx mesh re-registration (the
-                // full rebuild IS the per-mesh removal mechanism).
-                SMVK_PROFILE_STREAM("GeoStreaming_RegisterMeshes");
-                smvk::gfx::ResetStaticRegistrations(m_gfxRenderer.State());
-                m_gfxRenderer.RegisterWorldMeshes(*m_world);
-                ++m_gpuSceneGeometryRevision;
-            }
-            {
-                // Static vertex/index table upload staging.
-                SMVK_PROFILE_STREAM("GeoStreaming_UploadStaticData");
-                m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
-            }
+        // Geometry registration must refresh even if the retired filter
+        // is unavailable; promotions can fill an initially empty scene.
+        {
+            SMVK_PROFILE_STREAM("GeoStreaming_RegisterMeshes");
+            smvk::gfx::ResetStaticRegistrations(m_gfxRenderer.State());
+            m_gfxRenderer.RegisterWorldMeshes(*m_world);
+            ++m_gpuSceneGeometryRevision;
+        }
+        {
+            SMVK_PROFILE_STREAM("GeoStreaming_UploadStaticData");
+            m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
         }
         {
             SMVK_PROFILE_STREAM("GeoStreaming_FlushUploads");
@@ -11588,7 +11588,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                        m_gpuSceneDatabase,
                                        m_gpuSceneGeometryRevision,
                                        [this](uint32_t worldMesh, uint32_t lod) {
-                                           return m_gfxFilterAvailable
+                                           return m_gfxRenderer.State().indexedRangesResident
                                                       ? m_gfxRenderer.GfxMeshForLod(worldMesh, lod)
                                                       : tour::gpu_scene::InvalidIndex;
                                        });
@@ -11602,13 +11602,17 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // registration numbering. This bridge still resolves physical index
         // ranges from its compatibility heap until GeometryStreamer exports
         // the native indexed descriptor metadata.
-        if (m_gpuSceneDatabaseReady && m_gfxFilterAvailable) {
+        if (m_gpuSceneDatabaseReady && m_gfxRenderer.State().indexedRangesResident) {
             const auto tables = GpuSceneIndexedTables(m_gfxRenderer.State());
             m_gpuSceneDatabaseReady =
                 m_gpuScenePersistentRegistry.Synchronize(m_gpuSceneDatabase, tables) &&
                 m_gpuScenePersistentGeometry.Publish(
                     *m_context, m_gpuScenePersistentRegistry, fb.frameIndex);
         }
+        // Never submit stale aliases from a previous physical registration:
+        // an incomplete streaming upload forces direct rendering this frame.
+        m_gpuSceneDatabaseReady = m_gpuSceneDatabaseReady &&
+                                  m_gfxRenderer.State().indexedRangesResident;
         if (m_gpuSceneDatabaseReady)
             m_gpuSceneDatabaseReady =
                 m_gpuSceneRasterView.Publish(*m_context,
@@ -12500,7 +12504,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 bool temporalTaskPrepared = false;
                 bool taskReady = false;
                 if (s_gpuSceneTaskMesh && gpuSceneRasterMode && workReady && rasterReady &&
-                    m_gfxFilterAvailable && smvk::SupportsMeshShaders() &&
+                    m_gfxRenderer.State().indexedRangesResident && smvk::SupportsMeshShaders() &&
                     m_gpuSceneTaskMainProgram.shaderCount == 3 &&
                     (gpuSceneGiVariant == 0u ||
                      m_gpuSceneTaskGiPrograms[gpuSceneGiVariant].shaderCount == 3) &&
