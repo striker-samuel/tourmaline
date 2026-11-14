@@ -1154,6 +1154,14 @@ class CandidateValidator {
                                 : smvk::BufferHandle{};
     }
 
+    // Streaming-demand feedback buffer (the LOD work selector's DemandEntry
+    // stream): read back by the CPU so GeometryStreamer sees GPU-selected
+    // drawn/desired LODs. Empty when the flight never prepared work.
+    [[nodiscard]] smvk::BufferHandle WorkDemandBuffer(uint32_t flight) const {
+        return flight < Flights ? smvk::BufferHandle(flight_[flight].workDemand)
+                                : smvk::BufferHandle{};
+    }
+
     void MarkDispatched(uint32_t flight) {
         if (flight >= Flights)
             return;
