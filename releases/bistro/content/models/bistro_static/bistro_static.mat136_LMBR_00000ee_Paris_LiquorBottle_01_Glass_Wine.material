@@ -1,0 +1,19 @@
+# Tourmaline material asset v1
+guid=0d443f7738b410bdf8f9d02816110ab3
+name=LMBR_00000ee_Paris_LiquorBottle_01_Glass_Wine
+baseColor=1 1 1 1
+metallic=0
+roughness=0.05
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=textures/shared/colors/Grey_30.ktx2 srgb

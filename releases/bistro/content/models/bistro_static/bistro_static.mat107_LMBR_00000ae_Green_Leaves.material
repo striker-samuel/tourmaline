@@ -1,0 +1,19 @@
+# Tourmaline material asset v1
+guid=84e0347a7552ac179bc4f3d0fe5dfde0
+name=LMBR_00000ae_Green_Leaves
+baseColor=1 1 1 1
+metallic=0
+roughness=0.69
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=mask
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=masked
+tex.baseColor=objects/props/natural/linden/leaves_a_diff.ktx2 srgb

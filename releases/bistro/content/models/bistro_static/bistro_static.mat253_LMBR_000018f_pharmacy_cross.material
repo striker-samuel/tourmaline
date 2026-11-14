@@ -1,0 +1,21 @@
+# Tourmaline material asset v1
+guid=156ecaf9ec966feda9d9c42ed656aed8
+name=LMBR_000018f_pharmacy_cross
+baseColor=1 1 1 1
+metallic=0
+roughness=0.05
+emissive=0.5 1 0.5
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=objects/props/street/paris_shopsign_01/paris_shopsign_pharmacy_diff.ktx2 srgb
+tex.normal=objects/props/street/paris_shopsign_01/paris_shopsign_pharmacy_ddna.ktx2
+tex.emissive=objects/props/street/paris_shopsign_01/paris_shopsign_pharmacy_emt.ktx2 srgb

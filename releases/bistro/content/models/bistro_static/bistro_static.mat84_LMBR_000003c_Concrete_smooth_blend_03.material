@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=90a3bc0a878b3c31404f571575951f05
+name=LMBR_000003c_Concrete_smooth_blend_03
+baseColor=1 1 1 1
+metallic=0
+roughness=0.39
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=textures/shared/tiling/concrete_smooth_01/concrete_smooth_01_diff.ktx2 srgb
+tex.normal=textures/shared/tiling/concrete_smooth_01/concrete_smooth_01_ddna.ktx2

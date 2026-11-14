@@ -1,0 +1,19 @@
+# Tourmaline material asset v1
+guid=43c4fe2c38cbd52ad23630c13c3f4f1e
+name=LMBR_0000198_Paris_StringLights_01_Blue_Color
+baseColor=1 1 1 1
+metallic=0
+roughness=0.4
+emissive=0 4 9
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=textures/shared/colors/white.ktx2 srgb

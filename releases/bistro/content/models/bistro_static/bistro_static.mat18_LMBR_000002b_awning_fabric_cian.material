@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=572a346811b1ce919dc4aa7cdcd1b3b5
+name=LMBR_000002b_awning_fabric_cian
+baseColor=1 1 1 1
+metallic=0
+roughness=0.4
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=objects/props/street/paris_bistroawning_01/paris_bistroawning_fabric_greyscale_01a_diff.ktx2 srgb
+tex.normal=objects/props/street/paris_bistroawning_01/paris_bistroawning_fabric_01a_ddna.ktx2

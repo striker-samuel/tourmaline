@@ -1,0 +1,21 @@
+# Tourmaline material asset v1
+guid=1813b193000871ee299eedd82ad57b89
+name=LMBR_0000192_bakery
+baseColor=1 1 1 1
+metallic=0
+roughness=0.25
+emissive=0.08 0.08 0.08
+emissiveStrength=1
+alphaMode=mask
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=masked
+tex.baseColor=objects/props/street/paris_shopsign_01/paris_shopsign_bakery_diff.ktx2 srgb
+tex.normal=objects/props/street/paris_shopsign_01/paris_shopsign_bakery_ddna.ktx2
+tex.emissive=objects/props/street/paris_shopsign_01/paris_shopsign_bakery_diff.ktx2 srgb

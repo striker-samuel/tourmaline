@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=d9e23abf7a97b86a0aa32b8829321678
+name=LMBR_0000036_frosted_glass
+baseColor=1 1 1 1
+metallic=0
+roughness=0.05
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=objects/structures/buildings/paris_building_10/frosted_glass_diff.ktx2 srgb
+tex.normal=objects/structures/buildings/paris_building_10/frosted_glass_ddna.ktx2

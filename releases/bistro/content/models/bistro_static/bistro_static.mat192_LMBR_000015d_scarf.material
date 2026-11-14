@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=28df36cad6385a51130d84c5b4f8afdd
+name=LMBR_000015d_scarf
+baseColor=1 1 1 1
+metallic=0
+roughness=0.76
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=objects/props/bistro/paris_cloths_01/paris_cloths_01_diff.ktx2 srgb
+tex.normal=objects/props/bistro/paris_cloths_01/paris_cloths_01_ddna.ktx2

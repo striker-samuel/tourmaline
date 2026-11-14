@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=db981f517b8ef57b633019a6c7c6419b
+name=LMBR_0000167_Manhole_Cover
+baseColor=1 1 1 1
+metallic=0
+roughness=0.2
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=mask
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=masked
+tex.baseColor=objects/props/street/paris_manholecover_01/paris_manholecover_01b/paris_manholecover_01b_diff.ktx2 srgb
+tex.normal=objects/props/street/paris_manholecover_01/paris_manholecover_01b/paris_manholecover_01b_ddna.ktx2

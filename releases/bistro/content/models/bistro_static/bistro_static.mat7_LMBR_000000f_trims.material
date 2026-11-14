@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=2d3b8948b045924b7d959160f1f88ed2
+name=LMBR_000000f_trims
+baseColor=1 1 1 1
+metallic=0
+roughness=0.51
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=objects/props/street/paris_mainbalcony_01/paris_mainbalcony_02a_diff.ktx2 srgb
+tex.normal=objects/props/street/paris_mainbalcony_01/paris_mainbalcony_02a_ddna.ktx2

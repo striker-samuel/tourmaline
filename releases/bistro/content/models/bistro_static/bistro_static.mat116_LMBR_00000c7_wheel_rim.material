@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=25f9d0fb4c5a2b4dfba1032db7fe7128
+name=LMBR_00000c7_wheel_rim
+baseColor=1 1 1 1
+metallic=0
+roughness=0.13
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=objects/props/street/paris_vespascooter_01/paris_vespascooter_01_diff.ktx2 srgb
+tex.normal=objects/props/street/paris_vespascooter_01/paris_vespascooter_01_ddna.ktx2

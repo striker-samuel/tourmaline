@@ -1,0 +1,19 @@
+# Tourmaline material asset v1
+guid=025ac9e2af68e8e6c872a614ee965fb9
+name=LMBR_0000035_books_covers
+baseColor=1 1 1 1
+metallic=0
+roughness=0.3
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=textures/shared/tiling/books_covers/books_covers_diff.ktx2 srgb

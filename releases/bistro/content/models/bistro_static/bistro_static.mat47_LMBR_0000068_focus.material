@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=cc2434943c07d3521e93014e8744c033
+name=LMBR_0000068_focus
+baseColor=1 1 1 1
+metallic=0
+roughness=0.15
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=objects/props/street/paris_bistroexteriorspotlight_01/paris_bistroexteriorspotlight_01_diff.ktx2 srgb
+tex.normal=objects/props/street/paris_bistroexteriorspotlight_01/paris_bistroexteriorspotlight_01_ddna.ktx2

@@ -1,0 +1,19 @@
+# Tourmaline material asset v1
+guid=7122fb15e6110e82416ba1ae0c4e7e4c
+name=LMBR_00001b8_White_Plastic
+baseColor=1 1 1 1
+metallic=0
+roughness=0.305882
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=textures/shared/colors/white.ktx2 srgb

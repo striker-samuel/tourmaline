@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=6c6a4f5ea4f888b73dad0922e2c46c4d
+name=LMBR_0000162_Paris_Curbstones_01
+baseColor=1 1 1 1
+metallic=0
+roughness=0.8
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=objects/structures/street/paris_curbstones_01_diff.ktx2 srgb
+tex.normal=objects/structures/street/paris_curbstones_01_ddna.ktx2

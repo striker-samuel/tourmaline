@@ -1,0 +1,19 @@
+# Tourmaline material asset v1
+guid=ddfc902c8be3fb4e81358644b5995973
+name=LMBR_0000180_leaf
+baseColor=1 1 1 1
+metallic=0
+roughness=0.882353
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=mask
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=masked
+tex.baseColor=objects/natural/ground/forest_ground/forest_ground_diff.ktx2 srgb

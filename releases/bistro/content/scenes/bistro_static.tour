@@ -1,0 +1,7 @@
+//Name: bistro_static.tour
+//Last modified: Sat, Nov 14, 2026 09:22:43 PM
+reference -root -n 0 -source "content/models/bistro_static/bistro_static.geometry" -name "BistroStatic";
+fileInfo -k "application" -v "tourmaline-tour;;;;;;;;;;;;;;;;;;;;";
+fileInfo -k "product" -v "Tourmaline;;;;;;;;;;;;;;;;;;;;";
+fileInfo -k "version" -v "1;;;;;;;;;;;;;;;;;;;;";
+setStatic -n 0 -type "bool" -v 1;

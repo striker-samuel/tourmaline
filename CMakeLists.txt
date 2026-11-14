@@ -607,15 +607,14 @@ if(TOURMALINE_IS_TOP_LEVEL)
   add_subdirectory(tools/tourinit)
   add_subdirectory(tools/reference_scene) # CPU Embree reference scene renderer for Material Lab
   # Demo content fetch: downloads the rolling 'demo-content' GitHub
-  # release (the cooked sponza_10 and bistro_static projects - each
-  # .tapp manifest + its content-addressed pak, SHA-256 verified, stale
-  # paks cleaned up) into THIS build's content/paks so the viewer can
-  # launch the demo scenes right after a fresh checkout + build:
+  # release (the cooked sponza_10 project - .tapp manifest + its
+  # content-addressed pak, SHA-256 verified, stale paks cleaned up)
+  # into THIS build's content/paks so the viewer can launch the demo
+  # scene right after a fresh checkout + build:
   #   cmake --build <build-dir> --target demo_content
-  #   App --project content/paks/sponza_10.tapp      (from the build dir)
-  #   App --project content/paks/bistro_static.tapp  (from the build dir)
-  # The ~100 MB cooked paks live in the release, not the git tree (their
-  # content-addressed names change on every recook anyway - see
+  #   App --project content/paks/sponza_10.tapp   (from the build dir)
+  # The ~100 MB cooked pak lives in the release, not the git tree (its
+  # content-addressed name changes on every recook anyway - see
   # tools/fetch_demo_content.ps1 / .sh for the download + verify logic).
   if(WIN32)
     add_custom_target(demo_content

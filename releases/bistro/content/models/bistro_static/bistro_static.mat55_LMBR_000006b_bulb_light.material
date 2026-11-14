@@ -1,0 +1,19 @@
+# Tourmaline material asset v1
+guid=be60569d08425e64d3450b2c74f80f09
+name=LMBR_000006b_bulb_light
+baseColor=1 1 1 1
+metallic=0
+roughness=0.05
+emissive=40 40 40
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=objects/props/street/paris_bistroexteriorspotlight_01/paris_bistroexteriorspotlight_01_diff.ktx2 srgb

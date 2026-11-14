@@ -1,0 +1,19 @@
+# Tourmaline material asset v1
+guid=63d0a292b1394cadfab496479d22c08a
+name=LMBR_00000cb_glass_ornament
+baseColor=1 1 1 1
+metallic=0
+roughness=0.666667
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=mask
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=masked
+tex.baseColor=objects/props/bistro/paris_bistro_glass_decal_ornament/paris_bistro_glass_decal_ornament_diff.ktx2 srgb

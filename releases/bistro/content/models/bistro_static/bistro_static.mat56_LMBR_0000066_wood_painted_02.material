@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=58a9abc7080ffafb5e6e50024f529d16
+name=LMBR_0000066_wood_painted_02
+baseColor=1 1 1 1
+metallic=0
+roughness=0.458824
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=textures/shared/tiling/wood_painted_02/wood_painted_02_diff.ktx2 srgb
+tex.normal=textures/shared/tiling/wood_painted_02/wood_painted_02_ddna.ktx2

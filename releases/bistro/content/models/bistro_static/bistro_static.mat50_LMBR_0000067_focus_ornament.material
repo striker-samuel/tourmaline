@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=2c0ec09872bb8c317236ac2dd1cbd6a6
+name=LMBR_0000067_focus_ornament
+baseColor=1 1 1 1
+metallic=0
+roughness=0.26
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=objects/structures/standard/walls/bistro_woodpanel_01/bistro_woodpanelornament_01_diff.ktx2 srgb
+tex.normal=objects/structures/standard/walls/bistro_woodpanel_01/bistro_woodpanelornament_01_ddna.ktx2

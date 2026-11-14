@@ -1,0 +1,19 @@
+# Tourmaline material asset v1
+guid=d5b636d3c4a175573410751a14bcae10
+name=LMBR_000012b_Paris_Glass_Detailed_01
+baseColor=0.9 0.9 1 0.1
+metallic=0
+roughness=0
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=blend
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=1
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.normal=objects/props/bistro/paris_glass_detailed_01/paris_glass_detailed_01_nogloss_ddna.ktx2

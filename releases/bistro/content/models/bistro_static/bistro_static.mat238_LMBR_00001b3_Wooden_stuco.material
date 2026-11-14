@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=7507a20faab9a8bda6ba533f21608912
+name=LMBR_00001b3_Wooden_stuco
+baseColor=1 1 1 1
+metallic=0
+roughness=0.49
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=textures/shared/tiling/wood_planks_01/wood_planks_01_diff.ktx2 srgb
+tex.normal=textures/shared/tiling/wood_planks_01/wood_planks_01_ddna.ktx2

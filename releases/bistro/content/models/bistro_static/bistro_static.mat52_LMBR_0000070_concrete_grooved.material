@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=bd79e1e77b5c70f735be93505bf880e9
+name=LMBR_0000070_concrete_grooved
+baseColor=1 1 1 1
+metallic=0
+roughness=0.5
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=textures/shared/tiling/concrete_grooved_02/Concrete_Grooved_02_Diff.ktx2 srgb
+tex.normal=textures/shared/tiling/concrete_grooved_02/Concrete_Grooved_02_ddna.ktx2

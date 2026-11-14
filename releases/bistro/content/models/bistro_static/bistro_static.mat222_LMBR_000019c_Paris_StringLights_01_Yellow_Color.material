@@ -1,0 +1,19 @@
+# Tourmaline material asset v1
+guid=e31531c1806ede7acee96e01df868e62
+name=LMBR_000019c_Paris_StringLights_01_Yellow_Color
+baseColor=1 1 1 1
+metallic=0
+roughness=0.4
+emissive=9.4 10 0.04
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=textures/shared/colors/white.ktx2 srgb

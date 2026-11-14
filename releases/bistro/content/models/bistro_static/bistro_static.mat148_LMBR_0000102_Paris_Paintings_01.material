@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=598244447d968e77367ce3fddaee1c0a
+name=LMBR_0000102_Paris_Paintings_01
+baseColor=1 1 1 1
+metallic=0
+roughness=0.27
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=objects/props/bistro/paris_painting_01/paris_paintings_01_diff.ktx2 srgb
+tex.normal=objects/props/bistro/paris_painting_01/paris_paintings_01_ddna.ktx2

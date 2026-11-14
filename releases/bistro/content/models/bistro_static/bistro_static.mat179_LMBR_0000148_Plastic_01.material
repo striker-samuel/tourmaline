@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=c3d2cfd9304ce88791e403a27d5294ec
+name=LMBR_0000148_Plastic_01
+baseColor=1 1 1 1
+metallic=0
+roughness=0.588235
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=textures/shared/tiling/plastic_01/plastic_01_diff.ktx2 srgb
+tex.normal=textures/shared/tiling/plastic_01/plastic_01_ddna.ktx2

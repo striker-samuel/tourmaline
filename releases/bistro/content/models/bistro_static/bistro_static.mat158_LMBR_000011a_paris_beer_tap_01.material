@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=435cd078fbebf29b9ea55c6c610c3472
+name=LMBR_000011a_paris_beer_tap_01
+baseColor=1 1 1 1
+metallic=0
+roughness=0.266
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=objects/props/bistro/paris_beertap_01/paris_beertap_01_diff.ktx2 srgb
+tex.normal=objects/props/bistro/paris_beertap_01/paris_beertap_01_ddna.ktx2

@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=4491848a72c2694968fb808b41eb644f
+name=LMBR_000016e_bricks_red_small
+baseColor=1 1 1 1
+metallic=0
+roughness=0.666
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=textures/shared/tiling/brick_small_03/brick_small_03_diff.ktx2 srgb
+tex.normal=textures/shared/tiling/brick_small_03/brick_small_03_ddna.ktx2

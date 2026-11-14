@@ -1,0 +1,18 @@
+# Tourmaline material asset v1
+guid=408a862333afd6bf7b9b007728944e87
+name=LMBR_00000fd_Toffee
+baseColor=0.019382 0.019382 0.019382 1
+metallic=0
+roughness=0.145098
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit

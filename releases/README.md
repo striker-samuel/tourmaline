@@ -13,13 +13,30 @@ LFS move) happens later, on purpose — see "Publishing" below.
 |---|---|---|---|
 | `paks/sponza.pak` | the Sponza demo (the canonical project: `Project.exe init/build` → Cook → GiBaker → Pak — sun + LOD + meshlets + 131k-probe GI + 8 cubemap captures at spp 32) | the current `master` (see the commit line at the bottom of this file) | `cd out/build/x64-Release && App.exe --pak releases/paks/sponza.pak` (or copy next to App.exe and `--pak content/paks/sponza.pak`) |
 | `paks/sponza.tapp` | the SAME sponza build's appmanifest (the recipe-build form: `Project.exe build --project <dir> --recipe sponza.tourrecipe` → verified pak + the generated `.tapp`, publish-last) | the current `master` (same drop as the pak) | `App.exe --project releases/paks/sponza.tapp` (put the `.tapp` + `.pak` side by side — the manifest resolves paks relative to itself; `--no-vfs` proves self-containment) |
-| `paks/bistro_static.pak` | the Amazon Lumberyard Bistro exterior demo (static root + LOD + meshlets, no GI/cubemaps — the CC BY 4.0 ORCA scene, see `BISTRO-CREDITS.md`) | the current `master` (see the commit line at the bottom of this file) | `cd out/build/x64-Release && App.exe --pak releases/paks/bistro_static.pak` |
-| `paks/bistro_static.tapp` | the SAME bistro build's appmanifest (`Project.exe build --recipe bistro_static.tourrecipe` → verified pak + the generated `.tapp`) | the current `master` (same drop as the pak) | `App.exe --project releases/paks/bistro_static.tapp` (put the `.tapp` + `.pak` side by side) |
 | `paks/_probe.pak` | the GI probe-ball diagnostic scene (cubemap + SG probe validation view) | an earlier session's cook | `App.exe --pak releases/paks/_probe.pak` |
 
 Numbered variants (`sponza_1.pak`, `sponza_2.pak`, ...) in the build
 tree are incremental re-cooks of the SAME project — not separate demos;
 they are not carried here.
+
+## Bistro (recreate-from-source, not a shipped pak)
+
+The Amazon Lumberyard Bistro exterior (CC BY 4.0 ORCA, see
+`BISTRO-CREDITS.md`) cooks to a **~1.4 GB** pak and its source textures
+are **~700 MB**, so neither is carried here. Instead the small *definition*
+— recipe + scene + glTF + identity ledger + 254 material assets (~2 MB) —
+is committed at [`releases/bistro/`](bistro/README.md). To recreate:
+
+1. Download the ORCA
+   [Amazon Lumberyard Bistro](https://developer.nvidia.com/orca/amazon-lumberyard-bistro)
+   (FBX + textures).
+2. Convert the FBX to glTF and the textures to KTX2, matching the committed
+   `bistro_static.gltf` URI layout.
+3. Run `tools/recreate_bistro.ps1` (Windows) / `tools/recreate_bistro.sh`
+   (Linux), or the `Project.exe build --recipe bistro_static.tourrecipe`
+   command in [`bistro/README.md`](bistro/README.md).
+
+See [`bistro/README.md`](bistro/README.md) for the full flow.
 
 ## Refreshing the paks
 
@@ -34,15 +51,9 @@ they are not carried here.
   --publish F:/projects/game/build --manifest-name sponza
 # then copy the build into the release folder (pak + manifest together)
 Copy-Item F:\projects\game\build\sponza.* releases\paks\
-
-# The bistro demo cooks the same way (static root + LOD; the scene
-# authors no GI volumes/cubemaps so its bakes are off):
-& .\out\build\x64-Release\Project.exe build `
-  --project F:/projects/game `
-  --recipe F:/projects/game/bistro_static.tourrecipe `
-  --publish F:/projects/game/build --manifest-name bistro_static
-Copy-Item F:\projects\game\build\bistro_static.* releases\paks\
 ```
+
+Bistro is NOT carried as a shipped pak — see "Bistro (recreate-from-source)" above; `tools/recreate_bistro.ps1` / `.sh` drive its cook from the ORCA source.
 
 The legacy one-liner (`tools\cook\cook_sponza.bat`) still works — it
 drives the same stages through the legacy `BuildProject` path.

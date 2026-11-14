@@ -1,0 +1,18 @@
+# Tourmaline material asset v1
+guid=b35446197b31cd71e1aec1e5c8faf7d8
+name=LMBR_00000fb_Glass
+baseColor=1 1 1 0.1
+metallic=0
+roughness=0
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=blend
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=1
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit

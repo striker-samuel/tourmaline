@@ -1,0 +1,19 @@
+# Tourmaline material asset v1
+guid=511feec94227bce73eca70505a2701a6
+name=LMBR_000005f_Decals
+baseColor=1 1 1 1
+metallic=0
+roughness=1
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=blend
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=textures/shared/decals/wall_decals/wall_decals.ktx2 srgb

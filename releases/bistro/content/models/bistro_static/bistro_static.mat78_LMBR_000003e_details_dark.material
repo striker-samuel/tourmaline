@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=5b7bb04407834c04126a4904505a3ebb
+name=LMBR_000003e_details_dark
+baseColor=1 1 1 1
+metallic=0
+roughness=0.5
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=objects/structures/buildings/paris_building_09/paris_building_09_details_diff.ktx2 srgb
+tex.normal=objects/structures/buildings/paris_building_09/paris_building_09_details_ddna.ktx2

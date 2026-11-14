@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=c29512031b8b804e0ac678a8c1822570
+name=LMBR_0000024_brick_large_beige_01
+baseColor=1 1 1 1
+metallic=0
+roughness=0.49
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=textures/shared/tiling/brick_large_03/brick_large_03_diff.ktx2 srgb
+tex.normal=textures/shared/tiling/brick_large_03/brick_large_03_ddna.ktx2

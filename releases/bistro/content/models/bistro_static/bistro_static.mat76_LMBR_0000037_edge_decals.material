@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=5430a9cc1c43605448db6529ae6d51a7
+name=LMBR_0000037_edge_decals
+baseColor=1 1 1 1
+metallic=0
+roughness=0.960784
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=textures/shared/tiling/edge_decals_01/edge_decals_01_diff.ktx2 srgb
+tex.normal=textures/shared/tiling/edge_decals_01/edge_decals_01_ddna.ktx2

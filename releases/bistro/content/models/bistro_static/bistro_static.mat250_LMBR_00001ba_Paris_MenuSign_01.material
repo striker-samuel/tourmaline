@@ -1,0 +1,20 @@
+# Tourmaline material asset v1
+guid=3261a0cf11f3262d06af6f1fc1c33a42
+name=LMBR_00001ba_Paris_MenuSign_01
+baseColor=1 1 1 1
+metallic=0
+roughness=0.27
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=0
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit
+tex.baseColor=objects/props/street/paris_menusign_01/paris_menusign_01b_diff.ktx2 srgb
+tex.normal=objects/props/street/paris_menusign_01/paris_menusign_01b_ddna.ktx2
