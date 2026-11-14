@@ -594,11 +594,14 @@ class WorldSynchronizer {
         // Geometry revisions must not force another O(instances) scan.
         for (size_t meshIdx = 0; meshIdx < meshSourceCount_; ++meshIdx) {
             const auto& [source, worldIndex] = meshSources_[meshIdx];
+            // A live source with a missing/malformed LOD chain is not a
+            // successful geometry refresh. Silently skipping it would keep
+            // its previous resident mask and draw descriptors in the DB.
             if (worldIndex >= world.lodChains.size())
-                continue;
+                return false;
             const auto& chain = world.lodChains[worldIndex].levels;
             if (chain.empty() || chain.size() > 16)
-                continue;
+                return false;
             // LOD chains are capped at 16; keep this scratch on the stack.
             std::array<LevelSource, 16> levels{};
             bool complete = true;
