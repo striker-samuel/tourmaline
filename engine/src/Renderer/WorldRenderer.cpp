@@ -2693,10 +2693,16 @@ bool WorldRenderer::onAttach() {
         }
         // Static geometry is GPU-scene raster's physical publisher, even
         // when the retired filter has no valid program or initial clusters.
-        m_gfxRenderer.RegisterWorldMeshes(*m_world);
+        const bool cookedMeshletBackend = smvk::SupportsMeshShaders();
+        if (cookedMeshletBackend) {
+            // Only optional task/mesh needs the duplicate cooked cluster
+            // index/meshlet streams. Vulkan 1.3 indexed raster resolves
+            // physical World surfaces without registering them in Gfx.
+            m_gfxRenderer.RegisterWorldMeshes(*m_world);
+            m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
+        }
         ++m_gpuSceneGeometryRevision;
-        m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
-        RefreshGpuScenePhysicalIndexedRanges();
+        RefreshGpuScenePhysicalIndexedRanges(/*nativeOnly=*/!cookedMeshletBackend);
         {
             // Geometry LOD streaming census: the cluster loads
             // deferred their middle LOD siblings (the serializer's
@@ -6154,19 +6160,19 @@ void WorldRenderer::UpdateGeometryStreaming() {
             ++m_gpuSceneGeometryRevision;
             m_world->RebuildLightmapChartTable();
         }
-        // Geometry registration must refresh even if the retired filter
-        // is unavailable; promotions can fill an initially empty scene.
-        {
+        // The core Vulkan 1.3 indexed backend owns raw World ranges.
+        // Re-cook the additional cluster index/meshlet allocation only on
+        // devices that actually expose the optional mesh/task backend.
+        const bool cookedMeshletBackend = smvk::SupportsMeshShaders();
+        if (cookedMeshletBackend) {
             SMVK_PROFILE_STREAM("GeoStreaming_RegisterMeshes");
             smvk::gfx::ResetStaticRegistrations(m_gfxRenderer.State());
             m_gfxRenderer.RegisterWorldMeshes(*m_world);
-            ++m_gpuSceneGeometryRevision;
-        }
-        {
             SMVK_PROFILE_STREAM("GeoStreaming_UploadStaticData");
             m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
         }
-        RefreshGpuScenePhysicalIndexedRanges();
+        ++m_gpuSceneGeometryRevision;
+        RefreshGpuScenePhysicalIndexedRanges(/*nativeOnly=*/!cookedMeshletBackend);
         {
             SMVK_PROFILE_STREAM("GeoStreaming_FlushUploads");
             m_context->FlushUploads();
