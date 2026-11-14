@@ -41,7 +41,7 @@
   sources (the direct-path spill; the one-shot
   `[GpuScene] ... spill to the legacy direct path` log reports the count):
   - GPU-skinned meshes (no GPU-scene deformed-geometry fetch yet),
-  - layered materials (`MaterialLayered`),
+  - masked/blended layered materials (opaque 2–4-layer materials now GPU-scene eligible; per-layer coverage remains a deferred nice-to-have),
   - ProjectLit-family materials (`MaterialProjectFamily`),
   - material instances (`materialInstance != 0`) and per-material userData
     (userData partial: the fragment varying already exists; remaining =
@@ -54,7 +54,7 @@
   - unregistered / nonresident geometry (streaming gaps, incomplete LOD
     bounds — `RasterIndexedInstanceReady`).
   Closing any of these first needs a matching GPU-scene variant (skinning
-  deformed-geometry consumption, layered/ProjectLit material support,
+  deformed-geometry consumption, masked-layered coverage/ProjectLit support,
   multi-surface/lightmap admission, residency guarantees).
 - [ ] **Production Map and World asset pipeline (PARTIAL; #231/#232/#272).**
   Authored Map identity, SMP8 packaging, scene tile providers, world-owned direct
