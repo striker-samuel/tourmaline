@@ -74,8 +74,7 @@ int main() {
         static_assert((faded & InstanceFlagDitherCloseup) != 0u);
         CHECK(WithCloseupDitherRasterFlags(plain, false) == plain);
         CHECK(WithCloseupDitherRasterFlags(masked, false) == masked);
-        CHECK(WithCloseupDitherRasterFlags(masked, true) ==
-              (masked | InstanceFlagDitherCloseup));
+        CHECK(WithCloseupDitherRasterFlags(masked, true) == (masked | InstanceFlagDitherCloseup));
         CHECK(WithCloseupDitherRasterFlags(InstanceFlagDoubleSided, true) ==
               (InstanceFlagDoubleSided | faded));
     }
@@ -106,17 +105,12 @@ int main() {
     // metadata update expands an AABB beyond the cached instance sphere.
     {
         const glm::vec4 sphere(0.0f, 0.0f, 0.0f, 2.0f);
-        CHECK(RasterSphereContainsLodBounds(
-            sphere, glm::vec3(-1.0f), glm::vec3(1.0f)));
+        CHECK(RasterSphereContainsLodBounds(sphere, glm::vec3(-1.0f), glm::vec3(1.0f)));
+        CHECK(!RasterSphereContainsLodBounds(sphere, glm::vec3(-2.0f), glm::vec3(2.0f)));
+        CHECK(!RasterSphereContainsLodBounds(sphere, glm::vec3(2.0f), glm::vec3(3.0f)));
+        CHECK(!RasterSphereContainsLodBounds(sphere, glm::vec3(1.0f), glm::vec3(-1.0f)));
         CHECK(!RasterSphereContainsLodBounds(
-            sphere, glm::vec3(-2.0f), glm::vec3(2.0f)));
-        CHECK(!RasterSphereContainsLodBounds(
-            sphere, glm::vec3(2.0f), glm::vec3(3.0f)));
-        CHECK(!RasterSphereContainsLodBounds(
-            sphere, glm::vec3(1.0f), glm::vec3(-1.0f)));
-        CHECK(!RasterSphereContainsLodBounds(
-            glm::vec4(0.0f, 0.0f, 0.0f, -1.0f),
-            glm::vec3(-1.0f), glm::vec3(1.0f)));
+            glm::vec4(0.0f, 0.0f, 0.0f, -1.0f), glm::vec3(-1.0f), glm::vec3(1.0f)));
     }
     // Every compute invocation writes a verdict header, even when it
     // rejects an invalid leaf/member. Zero-filled readback is not a valid
@@ -140,9 +134,8 @@ int main() {
         const IndexedGeometry geo{231, 400, -12, 0};
         const RasterGroup group{4, 12345, 17, 0};
         const auto cmd = MakeRasterCommand(geo, group);
-        CHECK(cmd.indexCount == 231 && cmd.firstIndex == 400 &&
-              cmd.vertexOffset == -12 && cmd.instanceCount == 17 &&
-              cmd.firstInstance == 12345);
+        CHECK(cmd.indexCount == 231 && cmd.firstIndex == 400 && cmd.vertexOffset == -12 &&
+              cmd.instanceCount == 17 && cmd.firstInstance == 12345);
         const RasterGroup empty{4, 0, 0, 0};
         CHECK(MakeRasterCommand(geo, empty).instanceCount == 0);
     }
@@ -170,8 +163,7 @@ int main() {
         tables.indexBase = 16; // absolute firstIndex = base + cluster offset
         IndexedGeometry indexed{};
         CHECK(ResolveIndexedGeometry(tables, 0, indexed));
-        CHECK(indexed.indexCount == 15 && indexed.firstIndex == 16 &&
-              indexed.vertexOffset == 0);
+        CHECK(indexed.indexCount == 15 && indexed.firstIndex == 16 && indexed.vertexOffset == 0);
         CHECK(!ResolveIndexedGeometry(tables, 1, indexed));
         clusters[1].indexOffset = 7; // not a contiguous index interval
         CHECK(!ResolveIndexedGeometry(tables, 0, indexed));
@@ -221,8 +213,7 @@ int main() {
         source.nativeResident = true;
         IndexedGeometry indexed{};
         CHECK(ResolveIndexedGeometry(source, 0u, indexed));
-        CHECK(indexed.indexCount == 9u && indexed.firstIndex == 40u &&
-              indexed.vertexOffset == 64);
+        CHECK(indexed.indexCount == 9u && indexed.firstIndex == 40u && indexed.vertexOffset == 64);
         CHECK(!ResolveWorldSurfaceIndexedRange(mesh, 48u, 128u, physical));
         CHECK(!ResolveWorldSurfaceIndexedRange(mesh, 128u, 90u, physical));
         mesh.geometry.surfaces.front().baseVertex = -1;
@@ -243,41 +234,36 @@ int main() {
         bool taskCompatible = true;
         const tour::gfx::IndexedRange first{40u, 9u, 64};
         const tour::gfx::IndexedRange different{80u, 6u, 96};
-        CHECK(RegisterNativeIndexedRange(
-            native, conflicts, first, 0u, taskCompatible) == 0u);
-        CHECK(RegisterNativeIndexedRange(
-            native, conflicts, first, 0u, taskCompatible) == 0u);
+        CHECK(RegisterNativeIndexedRange(native, conflicts, first, 0u, taskCompatible) == 0u);
+        CHECK(RegisterNativeIndexedRange(native, conflicts, first, 0u, taskCompatible) == 0u);
         CHECK(taskCompatible);
-        CHECK(RegisterNativeIndexedRange(
-            native, conflicts, different, 0u, taskCompatible) == InvalidIndex);
+        CHECK(RegisterNativeIndexedRange(native, conflicts, different, 0u, taskCompatible) ==
+              InvalidIndex);
         CHECK(native[0].indexCount == 0u && conflicts[0] != 0u);
-        CHECK(RegisterNativeIndexedRange(
-            native, conflicts, first, 0u, taskCompatible) == InvalidIndex);
-        const uint32_t nativeOnly = RegisterNativeIndexedRange(
-            native, conflicts, first, InvalidIndex, taskCompatible);
+        CHECK(RegisterNativeIndexedRange(native, conflicts, first, 0u, taskCompatible) ==
+              InvalidIndex);
+        const uint32_t nativeOnly =
+            RegisterNativeIndexedRange(native, conflicts, first, InvalidIndex, taskCompatible);
         CHECK(nativeOnly == 2u && native.size() == 3u && !taskCompatible);
         CHECK(native[nativeOnly].vertexOffset == 64);
         CHECK(RegisterNativeIndexedRange(
-            native, conflicts, tour::gfx::IndexedRange{}, InvalidIndex,
-            taskCompatible) == InvalidIndex);
+                  native, conflicts, tour::gfx::IndexedRange{}, InvalidIndex, taskCompatible) ==
+              InvalidIndex);
         native.resize(kMaxRasterDrawGroups);
-        CHECK(RegisterNativeIndexedRange(
-            native, conflicts, first, InvalidIndex, taskCompatible) == InvalidIndex);
+        CHECK(RegisterNativeIndexedRange(native, conflicts, first, InvalidIndex, taskCompatible) ==
+              InvalidIndex);
     }
     // Indexed geometry is keyed by persistent mesh slot + generation + LOD,
     // not by a transient filter mesh number. Re-registration must not
     // renumber the descriptor, and retirement must tombstone its draw range.
     {
         RenderDatabase db{};
-        const auto sub = db.submeshes.Insert(
-            Submesh{0u, InvalidIndex, InvalidIndex, 0u});
-        const auto lod = db.lods.Insert(
-            Lod{sub.slot, 1u, 0.0f, LodFlagResident | LodFlagFilterable});
-        const auto mesh = db.meshes.Insert(
-            Mesh{lod.slot, 1u, 1u, MeshFlagCompleteBounds});
+        const auto sub = db.submeshes.Insert(Submesh{0u, InvalidIndex, InvalidIndex, 0u});
+        const auto lod =
+            db.lods.Insert(Lod{sub.slot, 1u, 0.0f, LodFlagResident | LodFlagFilterable});
+        const auto mesh = db.meshes.Insert(Mesh{lod.slot, 1u, 1u, MeshFlagCompleteBounds});
         CHECK(bool(sub) && bool(lod) && bool(mesh));
-        std::array<tour::gfx::Mesh, 2> gfxMeshes{
-            tour::gfx::Mesh{0, 1}, tour::gfx::Mesh{1, 1}};
+        std::array<tour::gfx::Mesh, 2> gfxMeshes{tour::gfx::Mesh{0, 1}, tour::gfx::Mesh{1, 1}};
         std::array<tour::gfx::Cluster, 2> clusters{};
         clusters[0].mesh = 0;
         clusters[0].indexOffset = 0;
@@ -285,8 +271,7 @@ int main() {
         clusters[1].mesh = 1;
         clusters[1].indexOffset = 6;
         clusters[1].triCount = 2;
-        IndexedGeometryTables tables{
-            gfxMeshes.data(), 2u, clusters.data(), 2u, 20u};
+        IndexedGeometryTables tables{gfxMeshes.data(), 2u, clusters.data(), 2u, 20u};
         PersistentGeometryRegistry registry{};
         CHECK(registry.Synchronize(db, tables));
         const PersistentGeometryKey key{mesh.slot, mesh.generation, 0u};
@@ -305,9 +290,7 @@ int main() {
 
         // Switching descriptor discovery to the native registration table
         // preserves persistent identity, alias slots and upload revisions.
-        const std::array<tour::gfx::IndexedRange, 2> registered{{
-            {0u, 6u}, {6u, 6u}
-        }};
+        const std::array<tour::gfx::IndexedRange, 2> registered{{{0u, 6u}, {6u, 6u}}};
         IndexedGeometryTables nativeTables = tables;
         nativeTables.nativeRanges = registered.data();
         nativeTables.nativeRangeCount = uint32_t(registered.size());
@@ -323,8 +306,7 @@ int main() {
 
         // GfxFilter re-registers this same logical LOD under a new
         // transient ID. The persistent key and descriptor slot survive.
-        CHECK(db.submeshes.Update(sub,
-            Submesh{1u, InvalidIndex, InvalidIndex, 0u}));
+        CHECK(db.submeshes.Update(sub, Submesh{1u, InvalidIndex, InvalidIndex, 0u}));
         CHECK(registry.Synchronize(db, tables));
         CHECK(registry.Find(key) == stable);
         CHECK(registry.FromTransient(1u) == stable);
@@ -343,19 +325,16 @@ int main() {
 
         // Re-residency reuses the same identity, but a retired mesh
         // generation must NEVER inherit that descriptor slot.
-        CHECK(db.lods.Update(lod, Lod{sub.slot, 1u, 0.0f,
-                                        LodFlagResident | LodFlagFilterable}));
+        CHECK(db.lods.Update(lod, Lod{sub.slot, 1u, 0.0f, LodFlagResident | LodFlagFilterable}));
         CHECK(registry.Synchronize(db, tables));
         CHECK(registry.Find(key) == stable);
         CHECK(registry.Descriptors()[stable].indexCount == 6u);
         CHECK(db.meshes.Erase(mesh));
-        const auto recycled = db.meshes.Insert(
-            Mesh{lod.slot, 1u, 1u, MeshFlagCompleteBounds});
+        const auto recycled = db.meshes.Insert(Mesh{lod.slot, 1u, 1u, MeshFlagCompleteBounds});
         CHECK(recycled.slot == mesh.slot && recycled.generation != mesh.generation);
         CHECK(registry.Synchronize(db, tables));
         CHECK(registry.Descriptors()[stable].indexCount == 0u);
-        const auto newer = registry.Find(
-            {recycled.slot, recycled.generation, 0u});
+        const auto newer = registry.Find({recycled.slot, recycled.generation, 0u});
         CHECK(newer != InvalidIndex && newer != stable);
         CHECK(registry.Descriptors()[newer].indexCount == 6u);
 
@@ -366,6 +345,19 @@ int main() {
         CHECK(!registry.Synchronize(db, tables));
         CHECK(registry.Revision() == beforeFailure);
         CHECK(registry.Descriptors()[newer].indexCount == 6u);
+
+        // Flight-fenced slot recycling: once the tombstoned `stable` slot
+        // ages past MaxFramesInFlight, a third generation reclaims it instead
+        // of growing the descriptor array without bound.
+        CHECK(db.meshes.Update(recycled, Mesh{lod.slot, 1u, 1u, MeshFlagCompleteBounds}));
+        for (uint32_t f = 0; f < smvk::limits::MaxFramesInFlight; ++f)
+            CHECK(registry.Synchronize(db, tables));
+        CHECK(db.meshes.Erase(recycled));
+        const auto third = db.meshes.Insert(Mesh{lod.slot, 1u, 1u, MeshFlagCompleteBounds});
+        CHECK(registry.Synchronize(db, tables));
+        const auto thirdId = registry.Find({third.slot, third.generation, 0u});
+        CHECK(thirdId == stable);
+        CHECK(registry.Descriptors().size() <= 2u);
     }
     // A streamed metadata update must not report success when its registered
     // DB submesh or LOD slot has been retired behind the bridge's back.
@@ -386,8 +378,7 @@ int main() {
         CHECK(published && published->residentMask == 1u);
         const uint32_t firstLod = published ? published->firstLod : InvalidIndex;
         CHECK(firstLod < db.lods.Rows().size());
-        const auto* lodRow = firstLod < db.lods.Rows().size()
-                                 ? &db.lods.Rows()[firstLod] : nullptr;
+        const auto* lodRow = firstLod < db.lods.Rows().size() ? &db.lods.Rows()[firstLod] : nullptr;
         const uint32_t firstSub = lodRow ? lodRow->value.firstSubmesh : InvalidIndex;
         CHECK(firstSub < db.submeshes.Rows().size());
         // An invalidated DB row makes the in-place streamed update fail
@@ -415,8 +406,8 @@ int main() {
         CHECK(!unchanged.topologyReconciled && !unchanged.geometryRefreshed);
         const auto geometryOnly = sync.Synchronize(world, snapshot, 2);
         CHECK(!geometryOnly.topologyReconciled && geometryOnly.geometryRefreshed);
-        CHECK(geometryOnly.created == 0 && geometryOnly.updated == 0 &&
-              geometryOnly.retired == 0 && geometryOnly.geometryMeshesVisited == 0);
+        CHECK(geometryOnly.created == 0 && geometryOnly.updated == 0 && geometryOnly.retired == 0 &&
+              geometryOnly.geometryMeshesVisited == 0);
         ++world.gpuSceneTopologyRevision;
         const auto topology = sync.Synchronize(world, snapshot, 2);
         CHECK(topology.topologyReconciled);
@@ -493,10 +484,8 @@ int main() {
         CHECK(!RasterTemporalSeedMember(previous, {UINT32_MAX, 31u}));
         // Work reordering may change indirect firstInstance, but never
         // the identity used for seed/remainder membership.
-        std::array<InstanceReference, 3> ordered{{
-            {2u, 22u}, {1u, 10u}, {4u, 31u}}};
-        std::array<InstanceReference, 3> shuffled{{
-            ordered[2], ordered[0], ordered[1]}};
+        std::array<InstanceReference, 3> ordered{{{2u, 22u}, {1u, 10u}, {4u, 31u}}};
+        std::array<InstanceReference, 3> shuffled{{ordered[2], ordered[0], ordered[1]}};
         for (const auto& id : shuffled)
             CHECK(RasterTemporalSeedMember(previous, id));
         // No previous frame: bootstrap with a full remainder, no seed.
@@ -522,9 +511,12 @@ int main() {
         // draw-order. Only compatible rows carry their exact generation.
         std::array<uint32_t, 9> mask{};
         const auto find = [](SourceKey key) -> Handle<Instance> {
-            if (key == SourceKey{11, 2, 1}) return {7, 19};
-            if (key == SourceKey{11, 8, 1}) return {2, 31};
-            if (key == SourceKey{22, 5, 1}) return {4, 9};
+            if (key == SourceKey{11, 2, 1})
+                return {7, 19};
+            if (key == SourceKey{11, 8, 1})
+                return {2, 31};
+            if (key == SourceKey{22, 5, 1})
+                return {4, 9};
             return {};
         };
         CHECK(owners.BuildGenerationMask(mask, find));
@@ -532,15 +524,14 @@ int main() {
         CHECK(mask[4] == 0 && mask[0] == 0);
         mask[7] = 100;
         CHECK(owners.BuildGenerationMask(mask, find) && mask[7] == 19);
-        CHECK(!owners.BuildGenerationMask(
-            std::span<uint32_t>(mask.data(), 3), find));
-        CHECK(std::all_of(mask.begin(), mask.begin() + 3,
-                          [](uint32_t generation) { return generation == 0; }));
+        CHECK(!owners.BuildGenerationMask(std::span<uint32_t>(mask.data(), 3), find));
+        CHECK(std::all_of(
+            mask.begin(), mask.begin() + 3, [](uint32_t generation) { return generation == 0; }));
         // The caller must refuse publication after a failed build.
 
         CHECK(owners.OwnsLegacy({11, 2, 2})); // generation changed
         CHECK(owners.OwnsLegacy({99, 2, 1})); // unknown registration
-        owners.BeginFrame(); // publication / pipeline failed on next flight
+        owners.BeginFrame();                  // publication / pipeline failed on next flight
         CHECK(!owners.GpuActive() && owners.OwnsLegacy({11, 2, 1}));
         owners.CommitGpuPrepared();
         CHECK(owners.OwnsGpu({11, 2, 1}));
@@ -556,14 +547,15 @@ int main() {
         CHECK(owners.OwnsLegacy({11, 2, 1}));
         CHECK(owners.OwnsLegacy({22, 5, 1}));
         RasterOwnershipEntry duplicates[] = {
-            {{33, 1, 1}, true}, {{33, 1, 1}, false},
+            {{33, 1, 1}, true},
+            {{33, 1, 1}, false},
         };
         CHECK(!owners.Publish(duplicates));
         owners.CommitGpuPrepared();
         CHECK(!owners.GpuActive() && owners.OwnsLegacy({33, 1, 1}));
         CHECK(!owners.BuildGenerationMask(mask, find));
-        CHECK(std::all_of(mask.begin(), mask.end(),
-                          [](uint32_t generation) { return generation == 0; }));
+        CHECK(std::all_of(
+            mask.begin(), mask.end(), [](uint32_t generation) { return generation == 0; }));
         RasterOwnershipEntry invalid[] = {{{0, 1, 1}, true}};
         CHECK(!owners.Publish(invalid));
         CHECK(owners.OwnsLegacy({0, 1, 1}));

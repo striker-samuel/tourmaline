@@ -26,10 +26,10 @@
   on Vulkan 1.3 indexed-only devices. Still eliminate transient work IDs only
   after all consumers use stable geometry identities end to end; add GPU-driven
   LOD promotion demand/touch feedback and device-tested safe retirement.
-  Implement generation-aware
-  slot reuse with flight-fenced retirement (current cap: 65,535 non-recyclable
-  geometry slots, fail-closed). Validate eviction, re-registration, multiple
-  flights, and streaming on Vulkan. See
+  Generation-aware descriptor-slot recycling **LANDED**: retired keys tombstone
+  (zeroed row) for `MaxFramesInFlight`, then their slots are reused, so the
+  `rows_` array no longer grows to the 65,535 cap. Validate eviction,
+  re-registration, multiple flights, and streaming on Vulkan. See
   `docs/gpu_scene_persistent_geometry.md`.
 - [ ] **GPU-scene raster/culling parity (PARTIAL; #280, #282–#293, #299).**
   Eligible static GPU-scene raster is default ON (#280); dynamic GfxFilter
