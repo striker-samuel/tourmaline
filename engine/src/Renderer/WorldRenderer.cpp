@@ -10571,29 +10571,9 @@ void WorldRenderer::RefreshGpuScenePhysicalIndexedRanges(bool nativeOnly) {
                 continue;
             const uint32_t gfxId = nativeOnly ? UINT32_MAX
                                               : m_gfxRenderer.GfxMeshForLod(worldMesh, lod);
-            if (gfxId >= gfx.meshes.size()) {
-                if (m_gpuScenePhysicalIndexedRanges.size() >=
-                    tour::gpu_scene::kMaxRasterDrawGroups)
-                    continue; // safe direct spill at capacity
-                m_gpuSceneTaskGeometryIdsCompatible = false;
-                lodIds[lod] = uint32_t(m_gpuScenePhysicalIndexedRanges.size());
-                m_gpuScenePhysicalIndexedRanges.push_back(physical);
-                continue;
-            }
-            if (conflicting[gfxId])
-                continue;
-            auto& current = m_gpuScenePhysicalIndexedRanges[gfxId];
-            if (current.indexCount != 0u &&
-                (current.firstIndex != physical.firstIndex ||
-                 current.indexCount != physical.indexCount ||
-                 current.vertexOffset != physical.vertexOffset)) {
-                // Any previously emitted ID becomes a tombstone as well.
-                current = {};
-                conflicting[gfxId] = 1u;
-                continue;
-            }
-            current = physical;
-            lodIds[lod] = gfxId;
+            lodIds[lod] = tour::gpu_scene::RegisterNativeIndexedRange(
+                m_gpuScenePhysicalIndexedRanges, conflicting, physical, gfxId,
+                m_gpuSceneTaskGeometryIdsCompatible);
         }
     }
 }
