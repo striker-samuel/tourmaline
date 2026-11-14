@@ -10542,17 +10542,12 @@ void WorldRenderer::RefreshGpuScenePhysicalIndexedRanges() {
             if (!level.resident || !level.mesh.cluster || !level.mesh.handle.valid())
                 continue;
             const auto* mesh = level.mesh.cluster->staticMeshes.get(level.mesh.handle);
-            if (!mesh || mesh->geometry.topology != smvk::PrimitiveTopology::TriangleList ||
-                mesh->geometry.surfaces.size() != 1u)
+            if (!mesh)
                 continue;
-            const auto& src = mesh->geometry.surfaces.front();
-            if (src.indexCount == 0u || (src.indexCount % 3u) != 0u ||
-                uint64_t(src.firstIndex) + src.indexCount > indexWords ||
-                src.baseVertex < 0 ||
-                uint64_t(src.baseVertex) + mesh->geometry.vertexCount > vertexLimit)
+            tour::gfx::IndexedRange physical{};
+            if (!tour::gpu_scene::ResolveWorldSurfaceIndexedRange(
+                    *mesh, indexWords, vertexLimit, physical))
                 continue;
-            const tour::gfx::IndexedRange physical{
-                src.firstIndex, src.indexCount, src.baseVertex};
             auto& current = m_gpuScenePhysicalIndexedRanges[id];
             if (current.indexCount != 0u &&
                 (current.firstIndex != physical.firstIndex ||
