@@ -299,6 +299,42 @@ int main() {
         CHECK(registry.Revision() == beforeFailure);
         CHECK(registry.Descriptors()[newer].indexCount == 6u);
     }
+    // A streamed metadata update must not report success when its registered
+    // DB submesh or LOD slot has been retired behind the bridge's back.
+    // Otherwise an evicted LOD can retain a previously resident descriptor.
+    {
+        RenderDatabase db{};
+        SceneRegistry registry{};
+        SourceRecord source{};
+        source.instance = {712u, 1u, 1u};
+        source.mesh = {712u, 2u, 1u};
+        const auto stats = registry.Reconcile(std::span<const SourceRecord>(&source, 1), db);
+        CHECK(stats.created == 1u);
+        const auto meshId = registry.FindMesh(source.mesh);
+        const auto* mesh = db.meshes.Get(meshId);
+        CHECK(mesh != nullptr);
+        const auto lodSlot = mesh ? mesh->firstLod : InvalidIndex;
+        // A provisional registration starts with no LOD rows. Publish one.
+        const LevelSource resident{0.0f, 5u, true, true};
+        CHECK(registry.PublishMesh(source.mesh, std::span(&resident, 1), true, db));
+        const auto* published = db.meshes.Get(meshId);
+        CHECK(published && published->residentMask == 1u);
+        const uint32_t firstLod = published ? published->firstLod : InvalidIndex;
+        CHECK(firstLod < db.lods.Rows().size());
+        const auto* lodRow = firstLod < db.lods.Rows().size()
+                                 ? &db.lods.Rows()[firstLod] : nullptr;
+        const uint32_t firstSub = lodRow ? lodRow->value.firstSubmesh : InvalidIndex;
+        CHECK(firstSub < db.submeshes.Rows().size());
+        // An invalidated DB row makes the in-place streamed update fail
+        // closed, rather than silently accepting stale resident metadata.
+        if (firstSub < db.submeshes.Rows().size()) {
+            const auto generation = db.submeshes.Rows()[firstSub].identity.x;
+            CHECK(db.submeshes.Erase({firstSub, generation}));
+            const LevelSource evicted{0.0f, InvalidIndex, false, true};
+            CHECK(!registry.PublishMesh(source.mesh, std::span(&evicted, 1), true, db));
+        }
+        (void)lodSlot;
+    }
     // Geometry-only revisions must not revisit CPU drawItems or reconcile
     // the complete instance registry. The empty World tests the control
     // path without requiring Vulkan or a cooked cluster.
