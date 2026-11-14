@@ -10524,20 +10524,24 @@ void WorldRenderer::MountContentVfs(smvk::OverlayVfs& vfs) const {
 void WorldRenderer::RefreshGpuScenePhysicalIndexedRanges() {
     const auto& gfx = m_gfxRenderer.State();
     m_gpuScenePhysicalIndexedRanges.assign(gfx.meshes.size(), {});
+    m_gpuScenePhysicalLodIds.clear();
+    m_gpuSceneTaskGeometryIdsCompatible = true;
     if (!m_world)
         return;
+    m_gpuScenePhysicalLodIds.resize(m_world->lodChains.size());
     const uint64_t indexWords =
         smvk::staticVertexFmtHeap.m_staticIndexBlock.Capacity() / sizeof(uint32_t);
     const uint64_t vertexLimit =
         smvk::staticVertexFmtHeap.m_staticVertexBlock.Capacity();
+    // The optional task/mesh backend uses Gfx mesh IDs. Keep those IDs in
+    // the prefix, but give non-meshlet static surfaces native suffix IDs so
+    // Vulkan 1.3 indexed raster never requires cooked/retained meshlets.
     std::vector<uint8_t> conflicting(gfx.meshes.size(), uint8_t(0));
     for (uint32_t worldMesh = 0; worldMesh < m_world->lodChains.size(); ++worldMesh) {
         const auto& levels = m_world->lodChains[worldMesh].levels;
+        auto& lodIds = m_gpuScenePhysicalLodIds[worldMesh];
+        lodIds.assign(levels.size(), tour::gpu_scene::InvalidIndex);
         for (uint32_t lod = 0; lod < levels.size(); ++lod) {
-            const uint32_t id = m_gfxRenderer.GfxMeshForLod(worldMesh, lod);
-            if (id == UINT32_MAX || id >= m_gpuScenePhysicalIndexedRanges.size() ||
-                conflicting[id])
-                continue;
             const auto& level = levels[lod];
             if (!level.resident || !level.mesh.cluster || !level.mesh.handle.valid())
                 continue;
@@ -10548,17 +10552,30 @@ void WorldRenderer::RefreshGpuScenePhysicalIndexedRanges() {
             if (!tour::gpu_scene::ResolveWorldSurfaceIndexedRange(
                     *mesh, indexWords, vertexLimit, physical))
                 continue;
-            auto& current = m_gpuScenePhysicalIndexedRanges[id];
+            const uint32_t gfxId = m_gfxRenderer.GfxMeshForLod(worldMesh, lod);
+            if (gfxId >= gfx.meshes.size()) {
+                if (m_gpuScenePhysicalIndexedRanges.size() >=
+                    tour::gpu_scene::kMaxRasterDrawGroups)
+                    continue; // safe direct spill at capacity
+                m_gpuSceneTaskGeometryIdsCompatible = false;
+                lodIds[lod] = uint32_t(m_gpuScenePhysicalIndexedRanges.size());
+                m_gpuScenePhysicalIndexedRanges.push_back(physical);
+                continue;
+            }
+            if (conflicting[gfxId])
+                continue;
+            auto& current = m_gpuScenePhysicalIndexedRanges[gfxId];
             if (current.indexCount != 0u &&
                 (current.firstIndex != physical.firstIndex ||
                  current.indexCount != physical.indexCount ||
                  current.vertexOffset != physical.vertexOffset)) {
-                // One ID must never alias two incompatible physical ranges.
+                // Any previously emitted ID becomes a tombstone as well.
                 current = {};
-                conflicting[id] = 1u;
-            } else {
-                current = physical;
+                conflicting[gfxId] = 1u;
+                continue;
             }
+            current = physical;
+            lodIds[lod] = gfxId;
         }
     }
 }
