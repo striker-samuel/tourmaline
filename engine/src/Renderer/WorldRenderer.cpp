@@ -11691,14 +11691,16 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 // alpha-mode bit is checked separately below so one mesh can
                 // admit opaque + masked + blend instances through the SAME
                 // authoritative source — no double bookkeeping.
+                const smvk::Material* itemMaterial = m_world->GetMaterial(item.material);
+                const bool materialRasterEligible =
+                    itemMaterial && tour::gpu_scene::OpaqueLayeredRasterEligible(*itemMaterial);
                 const bool commonEligible =
                     key.registration != 0 && bool(instance) &&
                     tour::gpu_scene::RasterIndexedInstanceReady(m_gpuSceneDatabase, instance) &&
                     item.material != smvk::World::kInvalidIndex &&
-                    m_world->GetMaterial(item.material) != nullptr && item.materialInstance == 0 &&
+                    materialRasterEligible && item.materialInstance == 0 &&
                     m_world->MaterialUserData(item.material) == 0 &&
                     !m_gfxRenderer.MaterialProjectFamily(item.material) &&
-                    !m_gfxRenderer.MaterialLayered(item.material) &&
                     item.node < m_world->scene.globalTransform.size() &&
                     // Closeup dither is inherited from ancestors and
                     // changes with camera distance; never GPU-own it
@@ -11784,9 +11786,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 // indirect builder emits the work in exactly one fixed PSO
                 // class. Count only admitted sources, never legacy ones.
                 if (compatible) {
-                    const smvk::Material* m = m_world->GetMaterial(item.material);
                     const bool masked = (item.flags & smvk::IteratorFlagBit_Masked) != 0;
-                    const bool twoSided = m && m->doubleSided;
+                    const bool twoSided = itemMaterial && itemMaterial->doubleSided;
                     doubleSidedCount += !masked && twoSided ? 1u : 0u;
                     maskedBackCount += masked && !twoSided ? 1u : 0u;
                     maskedDoubleSidedCount += masked && twoSided ? 1u : 0u;
@@ -11803,11 +11804,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     const bool flagsOk = (item.flags & requiredFlags) == requiredFlags &&
                                          (item.flags & forbiddenFlags) == 0;
                     const bool c = b && flagsOk;
-                    const bool d = c && item.material != smvk::World::kInvalidIndex &&
+                    const bool d = c && materialRasterEligible &&
                                    item.materialInstance == 0 &&
                                    m_world->MaterialUserData(item.material) == 0 &&
-                                   !m_gfxRenderer.MaterialProjectFamily(item.material) &&
-                                   !m_gfxRenderer.MaterialLayered(item.material);
+                                   !m_gfxRenderer.MaterialProjectFamily(item.material);
                     const bool e5a = d && item.node < m_world->scene.globalTransform.size() &&
                                      !IsDitherCloseupNode(m_world->scene, int(item.node)) && mesh &&
                                      !mesh->skinned;
@@ -11853,7 +11853,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             if (m_gpuSceneRasterLegacyCount != 0)
                 std::fprintf(stderr,
                              "[GpuScene] %u/%zu draw items spill to the legacy direct path "
-                             "(skinned/layered/ProjectLit/material-instance/multi-surface/"
+                             "(skinned/masked-layered/ProjectLit/material-instance/multi-surface/"
                              "lightmap/dither/nonresident)\n",
                              m_gpuSceneRasterLegacyCount,
                              total);
