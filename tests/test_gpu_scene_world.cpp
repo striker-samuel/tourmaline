@@ -202,6 +202,38 @@ int main() {
         native.nativeRangeCount = 0u;
         CHECK(!ResolveIndexedGeometry(native, 0u, indexed));
     }
+    // Native indexed raster must agree with direct DrawIndexed on the
+    // actual physical World surface, including its signed base vertex.
+    {
+        tour::StaticMesh mesh{};
+        mesh.geometry.vertexCount = 32u;
+        mesh.geometry.indexCount = 9u;
+        mesh.geometry.surfaces.push_back(tour::Surface{40u, 9u, 64});
+        tour::gfx::IndexedRange physical{};
+        CHECK(ResolveWorldSurfaceIndexedRange(mesh, 128u, 128u, physical));
+        CHECK(physical.firstIndex == 40u && physical.indexCount == 9u &&
+              physical.vertexOffset == 64);
+        IndexedGeometryTables source{};
+        source.meshCount = 1u;
+        source.nativeRanges = &physical;
+        source.nativeRangeCount = 1u;
+        source.nativeIndexWordCount = 128u;
+        source.nativeResident = true;
+        IndexedGeometry indexed{};
+        CHECK(ResolveIndexedGeometry(source, 0u, indexed));
+        CHECK(indexed.indexCount == 9u && indexed.firstIndex == 40u &&
+              indexed.vertexOffset == 64);
+        CHECK(!ResolveWorldSurfaceIndexedRange(mesh, 48u, 128u, physical));
+        CHECK(!ResolveWorldSurfaceIndexedRange(mesh, 128u, 90u, physical));
+        mesh.geometry.surfaces.front().baseVertex = -1;
+        CHECK(!ResolveWorldSurfaceIndexedRange(mesh, 128u, 128u, physical));
+        mesh.geometry.surfaces.front().baseVertex = 64;
+        mesh.geometry.surfaces.front().indexCount = 8u;
+        CHECK(!ResolveWorldSurfaceIndexedRange(mesh, 128u, 128u, physical));
+        mesh.geometry.surfaces.front().indexCount = 9u;
+        mesh.geometry.surfaces.push_back(tour::Surface{49u, 3u, 64});
+        CHECK(!ResolveWorldSurfaceIndexedRange(mesh, 128u, 128u, physical));
+    }
     // Indexed geometry is keyed by persistent mesh slot + generation + LOD,
     // not by a transient filter mesh number. Re-registration must not
     // renumber the descriptor, and retirement must tombstone its draw range.
