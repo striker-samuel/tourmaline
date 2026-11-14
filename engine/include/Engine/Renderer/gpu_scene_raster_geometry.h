@@ -92,6 +92,7 @@ struct IndexedGeometryTables {
             return false;
         out.indexCount = range.indexCount;
         out.firstIndex = uint32_t(absolute);
+        out.vertexOffset = range.vertexOffset;
         return true;
     }
     if (meshIndex >= tables.meshCount || !tables.meshes || !tables.clusters)
