@@ -11847,6 +11847,16 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             m_gpuSceneRasterLegacyCount = uint32_t(total) - m_gpuSceneRasterCompatibleCount -
                                           m_gpuSceneTransparentCompatibleCount;
             m_gpuSceneRasterEligible = snapshotValid && compatibleCount > 0;
+            // One-shot per-revision report: any source that fails GPU-scene
+            // admission keeps drawing through the legacy direct path. Loud so
+            // the remaining admission gaps are visible without TOURMALINE_KD.
+            if (m_gpuSceneRasterLegacyCount != 0)
+                std::fprintf(stderr,
+                             "[GpuScene] %u/%zu draw items spill to the legacy direct path "
+                             "(skinned/layered/ProjectLit/material-instance/multi-surface/"
+                             "lightmap/dither/nonresident)\n",
+                             m_gpuSceneRasterLegacyCount,
+                             total);
             if (s_kdElig)
                 std::fprintf(stderr,
                              "[KD] eligibility: total=%zu compatible=%u | first-reject "

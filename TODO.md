@@ -37,7 +37,25 @@
   motion stability, material revisions, and mixed legacy/GPU ownership.
   #299 reports 117/117 ctests and pinned static-camera capture parity; that
   does not close the wider device/scene matrix. Keep GfxFilter/legacy fallback
-  for unsupported and failed-admission sources.
+  for unsupported and failed-admission sources. Remaining legacy-admission
+  sources (the direct-path spill; the one-shot
+  `[GpuScene] ... spill to the legacy direct path` log reports the count):
+  - GPU-skinned meshes (no GPU-scene deformed-geometry fetch yet),
+  - layered materials (`MaterialLayered`),
+  - ProjectLit-family materials (`MaterialProjectFamily`),
+  - material instances (`materialInstance != 0`) and per-material userData
+    (userData partial: the fragment varying already exists; remaining =
+    GPU-visible material data, live updates, shader fetch, admission),
+  - multi-surface meshes (`surfaces.size() != 1`),
+  - packed-vertex lightmapped meshes (chart-xform/lightmap stream),
+  - closeup-dither nodes (`IsDitherCloseupNode`) — partial: the instance
+    flag + vertex varying already exist; remaining = mask/depth pipeline
+    parity, admission, regression tests,
+  - unregistered / nonresident geometry (streaming gaps, incomplete LOD
+    bounds — `RasterIndexedInstanceReady`).
+  Closing any of these first needs a matching GPU-scene variant (skinning
+  deformed-geometry consumption, layered/ProjectLit material support,
+  multi-surface/lightmap admission, residency guarantees).
 - [ ] **Production Map and World asset pipeline (PARTIAL; #231/#232/#272).**
   Authored Map identity, SMP8 packaging, scene tile providers, world-owned direct
   scene instances, leases, and the **default direct** `MapSceneStreaming`
