@@ -10589,7 +10589,7 @@ static tour::gpu_scene::IndexedGeometryTables GpuSceneIndexedTables(
     std::span<const tour::gfx::IndexedRange> physical) {
     tour::gpu_scene::IndexedGeometryTables tables;
     tables.meshes = gfx.meshes.data();
-    tables.meshCount = uint32_t(gfx.meshes.size());
+    tables.meshCount = uint32_t(physical.size());
     tables.clusters = gfx.clusters.data();
     tables.clusterCount = uint32_t(gfx.clusters.size());
     // Direct World::Surface firstIndex is already an absolute position in
@@ -11660,7 +11660,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                        m_gpuSceneDatabase,
                                        m_gpuSceneGeometryRevision,
                                        [this](uint32_t worldMesh, uint32_t lod) {
-                                           const uint32_t id = m_gfxRenderer.GfxMeshForLod(worldMesh, lod);
+                                           if (worldMesh >= m_gpuScenePhysicalLodIds.size() ||
+                                               lod >= m_gpuScenePhysicalLodIds[worldMesh].size())
+                                               return tour::gpu_scene::InvalidIndex;
+                                           const uint32_t id = m_gpuScenePhysicalLodIds[worldMesh][lod];
                                            return id < m_gpuScenePhysicalIndexedRanges.size() &&
                                                           m_gpuScenePhysicalIndexedRanges[id].indexCount != 0u
                                                       ? id
@@ -12578,7 +12581,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 bool temporalTaskPrepared = false;
                 bool taskReady = false;
                 if (s_gpuSceneTaskMesh && gpuSceneRasterMode && workReady && rasterReady &&
-                    m_gfxRenderer.State().indexedRangesResident && smvk::SupportsMeshShaders() &&
+                    m_gpuSceneTaskGeometryIdsCompatible &&
+                    m_gfxRenderer.State().indexedRangesResident &&
+                    smvk::SupportsMeshShaders() &&
                     m_gpuSceneTaskMainProgram.shaderCount == 3 &&
                     (gpuSceneGiVariant == 0u ||
                      m_gpuSceneTaskGiPrograms[gpuSceneGiVariant].shaderCount == 3) &&
