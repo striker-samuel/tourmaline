@@ -455,7 +455,7 @@ bool MeshArtifactStale(const std::filesystem::path& gltfPath,
 // simplification rules, meshlet building, attribute stamping, format
 // layout). Every recorded import fingerprint flips, so all artifacts
 // re-derive once, deliberately.
-inline constexpr uint32_t kImportPipelineRevision = 1;
+inline constexpr uint32_t kImportPipelineRevision = 2;
 
 // The import fingerprint: the settings + implementation-identity half of
 // staleness (the CONTENT half is SourceContentDigest — identity and

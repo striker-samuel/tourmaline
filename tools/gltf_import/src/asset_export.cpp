@@ -21,6 +21,7 @@
 #include <cstdio>
 #include <cstring>
 #include <fstream>
+#include <functional>
 #include <iomanip>
 #include <iostream>
 #include <map>
@@ -1769,9 +1770,9 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
                             bool charted = false;
                             for (size_t v = 0; v < up->vertices.size(); ++v) {
                                 smvk::PackMeshVertex(up->vertices[v],
-                                                       s.geo.positions[v],
-                                                       s.geo.shading[v],
-                                                       s.geo.lightmap[v]);
+                                                     s.geo.positions[v],
+                                                     s.geo.shading[v],
+                                                     s.geo.lightmap[v]);
                                 if (up->vertices[v].chartId != 0xFFFFFFFFu)
                                     charted = true;
                             }
@@ -1882,6 +1883,114 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
         // the manifest like materials always did.
         (void)guidFor(AssetKind::Anim, ai, clip.name);
         double lastT = 0.0;
+        // ---- World->local translation fix (the Unreal hip-flap convention).
+        // Some exporters bake a child bone's PARENT-CHAIN world translation
+        // into its `translation` channel (keeping `rotation` local). The
+        // runtime applies translate as a LOCAL offset, so a world-accumulating
+        // translation cancels the parent's walk and the bone freezes in place
+        // ("armor left behind"). A channel whose raw world stays frozen while
+        // its parent chain moves is corrected to its rigid local offset:
+        // local = parent_world_bind^-1 * parent_world(t) * raw. This runs on
+        // the RAW glTF values, before the coordFix conjugation below, so both
+        // share the same (raw, cm) frame.
+        std::vector<int> parentOf(model.nodes.size(), -1);
+        for (size_t n = 0; n < model.nodes.size(); ++n)
+            for (int c : model.nodes[n].children)
+                if (c >= 0 && c < int(parentOf.size()) && parentOf[size_t(c)] < 0)
+                    parentOf[size_t(c)] = int(n);
+        std::map<int, std::map<int, std::vector<smvk::touranim::Key>>> rawByNode;
+        for (const tinygltf::AnimationChannel& rch : ga.channels) {
+            if (rch.sampler < 0 || rch.sampler >= int(ga.samplers.size()) || rch.target_node < 0 ||
+                rch.target_node >= int(model.nodes.size()))
+                continue;
+            const tinygltf::AnimationSampler& rs = ga.samplers[size_t(rch.sampler)];
+            if (rs.output < 0 || rs.output >= int(model.accessors.size()))
+                continue;
+            const tinygltf::Accessor& ro = model.accessors[size_t(rs.output)];
+            const tinygltf::Accessor& ri = (rs.input >= 0 && rs.input < int(model.accessors.size()))
+                                               ? model.accessors[size_t(rs.input)]
+                                               : tinygltf::Accessor{};
+            const size_t kc = std::min(size_t(ro.count), size_t(ri.count));
+            const int chan = (rch.target_path == "rotation") ? 1
+                             : (rch.target_path == "scale")  ? 2
+                                                             : 0;
+            auto& dst = rawByNode[rch.target_node][chan];
+            for (size_t k = 0; k < kc; ++k) {
+                double t = 0.0;
+                double val[4] = {};
+                if (!AnimReadValue(model, ri, k, &t, 1))
+                    break;
+                const int comp = (chan == 1) ? 4 : 3;
+                if (!AnimReadValue(model, ro, k, val, comp))
+                    break;
+                smvk::touranim::Key key{};
+                key.t = t;
+                key.v = glm::vec4(float(val[0]),
+                                  float(val[1]),
+                                  float(val[2]),
+                                  (comp == 4) ? float(val[3]) : 1.0f);
+                dst.push_back(key);
+            }
+        }
+        auto rawTrackAt = [](const std::vector<smvk::touranim::Key>& ks, double t) -> glm::vec4 {
+            if (ks.empty())
+                return glm::vec4(0.0f);
+            if (ks.size() == 1u || t <= ks.front().t)
+                return ks.front().v;
+            if (t >= ks.back().t)
+                return ks.back().v;
+            for (size_t i = 1; i < ks.size(); ++i)
+                if (t <= ks[i].t) {
+                    const double d = ks[i].t - ks[i - 1].t;
+                    const double a = d > 1e-12 ? (t - ks[i - 1].t) / d : 0.0;
+                    return glm::mix(ks[i - 1].v, ks[i].v, float(a));
+                }
+            return ks.back().v;
+        };
+        auto rawLocal = [&](int g, double t) -> glm::mat4 {
+            const glm::mat4 base = GetNodeLocalTransform(model.nodes[size_t(g)]);
+            const glm::vec3 T0(base[3]);
+            const glm::mat3 R3(base);
+            const glm::vec3 S0(glm::length(glm::vec3(R3[0])),
+                               glm::length(glm::vec3(R3[1])),
+                               glm::length(glm::vec3(R3[2])));
+            glm::quat q0(1.0f, 0.0f, 0.0f, 0.0f);
+            {
+                glm::mat3 Rn(1.0f);
+                for (int c = 0; c < 3; ++c)
+                    if (S0[c] > 1e-8f)
+                        Rn[c] = R3[c] / S0[c];
+                q0 = glm::quat_cast(Rn);
+            }
+            glm::vec3 T = T0, S = S0;
+            glm::quat q = q0;
+            if (auto it = rawByNode.find(g); it != rawByNode.end()) {
+                if (auto jt = it->second.find(0); jt != it->second.end())
+                    T = glm::vec3(rawTrackAt(jt->second, t));
+                if (auto jt = it->second.find(1); jt != it->second.end()) {
+                    const glm::vec4 v = rawTrackAt(jt->second, t);
+                    q = glm::quat(v.w, v.x, v.y, v.z);
+                }
+                if (auto jt = it->second.find(2); jt != it->second.end())
+                    S = glm::vec3(rawTrackAt(jt->second, t));
+            }
+            return glm::translate(glm::mat4(1.0f), T) * glm::mat4_cast(q) *
+                   glm::scale(glm::mat4(1.0f), S);
+        };
+        std::function<glm::mat4(int, double)> rawWorld = [&](int g, double t) -> glm::mat4 {
+            glm::mat4 w = rawLocal(g, t);
+            if (parentOf[size_t(g)] >= 0)
+                w = rawWorld(parentOf[size_t(g)], t) * w;
+            return w;
+        };
+        auto rawBindWorld = [&](auto&& self, int g) -> glm::mat4 {
+            glm::mat4 w = GetNodeLocalTransform(model.nodes[size_t(g)]);
+            if (parentOf[size_t(g)] >= 0)
+                w = self(self, parentOf[size_t(g)]) * w;
+            return w;
+        };
+        // The raw keys and the world sampler both live in the raw glTF frame
+        // (cm; the root's cm->m scale cancels in the bind^-1 * world product).
         for (const tinygltf::AnimationChannel& ch : ga.channels) {
             if (ch.sampler < 0 || ch.sampler >= int(ga.samplers.size()))
                 continue;
@@ -1960,6 +2069,32 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
             t.spline = (s.interpolation == "STEP")          ? smvk::touranim::Spline::Step
                        : (s.interpolation == "CUBICSPLINE") ? smvk::touranim::Spline::CatmullRom
                                                             : smvk::touranim::Spline::Linear;
+            // World-space translation detection: a bone whose raw local
+            // translation keeps its WORLD frozen (barely moves) while its
+            // parent chain moves significantly was authored in WORLD space
+            // (the Unreal hip-flap convention). Only those channels get the
+            // world->local correction below; a correctly-authored local
+            // translation (e.g. the hipSwinger) follows its parent and is
+            // left untouched.
+            bool worldSpaceTranslation = false;
+            if (t.channel == smvk::touranim::Channel::Translate && target >= 0 &&
+                target < int(parentOf.size()) && parentOf[size_t(target)] >= 0) {
+                if (auto rit = rawByNode.find(target); rit != rawByNode.end()) {
+                    if (auto jt = rit->second.find(0);
+                        jt != rit->second.end() && jt->second.size() >= 2u) {
+                        const int p = parentOf[size_t(target)];
+                        const double t0 = jt->second.front().t;
+                        const double t1 = jt->second.back().t;
+                        const glm::vec3 parentDrift =
+                            glm::vec3(rawWorld(p, t1)[3]) - glm::vec3(rawWorld(p, t0)[3]);
+                        const glm::vec3 boneDrift =
+                            glm::vec3(rawWorld(target, t1)[3]) - glm::vec3(rawWorld(target, t0)[3]);
+                        worldSpaceTranslation =
+                            glm::length(parentDrift) > 1e-3f &&
+                            glm::length(boneDrift) < glm::length(parentDrift) * 0.5f;
+                    }
+                }
+            }
             for (size_t k = 0; k < keys; ++k) {
                 smvk::touranim::Key key{};
                 // Component-type-aware reads (AnimReadValue): the raw
@@ -2003,6 +2138,21 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
                     if (!AnimReadValue(model, out, k, v3, 3))
                         break;
                     glm::vec3 val{float(v3[0]), float(v3[1]), float(v3[2])};
+                    // World->local translation: subtract the parent chain's
+                    // world-translation delta so a rigid child keeps its
+                    // constant local offset (see the fix block above).
+                    if (t.channel == smvk::touranim::Channel::Translate && worldSpaceTranslation) {
+                        const int p = parentOf[size_t(target)];
+                        // Recover the rigid local offset: the DCC baked
+                        // frozen_world = parentWorld(t) * raw_T(t). Undo the
+                        // parent's world change so the child keeps its bind
+                        // offset and follows the parent instead of freezing.
+                        const glm::mat4 M =
+                            glm::inverse(rawBindWorld(rawBindWorld, p)) * rawWorld(p, key.t);
+                        // M is unit-scale (the cm->m root scale cancels); its
+                        // translation is in cm, matching the raw key units.
+                        val = glm::vec3(M * glm::vec4(val, 1.0f));
+                    }
                     if (!identityBasis) {
                         if (t.channel == smvk::touranim::Channel::Translate)
                             // C * T * R * S keeps the translation column

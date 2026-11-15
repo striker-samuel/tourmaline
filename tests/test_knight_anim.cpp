@@ -295,6 +295,31 @@ int main() {
         // Attached: the world offset pelvis<->hipSwinger stays within the
         // bind offset + the pelvis' own rotation sway (a generous 3x).
         Check(distHip < bindDist * 3.0f + 0.5f, "knight.hip.follows-pelvis");
+
+        // THE VERTEX-LEVEL follow check: a representative single-joint
+        // hip-flap vertex's CPU-skinned position must MOVE with the pelvis.
+        // A world-space translation bake (the Unreal hip-flap convention)
+        // froze the flap at its bind spot while the pelvis walked — the
+        // import fix (asset_export.cpp) recovers the rigid local offset, so
+        // the flap vertex travels with the pelvis instead of lagging behind.
+        {
+            int sampleV = -1;
+            for (size_t v = 0; v < asset.geometry[0].skin.size(); ++v)
+                if ((asset.geometry[0].skin[v].joints & 0xFFu) == 72u) {
+                    sampleV = int(v);
+                    break;
+                }
+            if (sampleV >= 0) {
+                const uint32_t j0 = asset.geometry[0].skin[size_t(sampleV)].joints & 0xFFu;
+                const glm::vec3 bp = asset.geometry[0].positions[size_t(sampleV)].pos;
+                const glm::vec3 v2 = glm::vec3(palA[j0] * glm::vec4(bp, 1.0f));
+                const glm::vec3 v8 = glm::vec3(palB[j0] * glm::vec4(bp, 1.0f));
+                const float flapMoved = glm::distance(v2, v8);
+                std::cout << "[knight] flap vertex moved " << flapMoved << " (pelvis "
+                          << pelvisMoved << ")\n";
+                Check(flapMoved > pelvisMoved * 0.3f, "knight.hip.flap-vertex-follows-pelvis");
+            }
+        }
     }
 
     // ---- 4) The skin stream: joint usage histogram over the Body mesh --
