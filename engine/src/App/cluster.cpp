@@ -358,7 +358,11 @@ bool smvk::Cluster::EnsureSkinnedGpuData(ResourceManager& ctx) {
     skinnedRanges_.reserve(skinStreams_.size());
     std::vector<smvk::PackedSkinInfluences> streamData;
     uint32_t minBase = UINT32_MAX;
-    uint32_t maxEnd = 0;
+    // uint64: heapVertexBase + vertexCount is an unsigned 32-bit add that can
+    // wrap for a large (or mis-sized) static heap. Track the end in 64-bit and
+    // reject an oversized span below rather than size a truncated deformed
+    // buffer and let the compute shader write past it.
+    uint64_t maxEnd = 0;
     for (auto& [poolIdx, stream] : skinStreams_) {
         auto it = meshAllocations_.find(poolIdx);
         if (it == meshAllocations_.end() || !it->second) {
@@ -393,7 +397,7 @@ bool smvk::Cluster::EnsureSkinnedGpuData(ResourceManager& ctx) {
         streamData.insert(streamData.end(), stream.begin(), stream.begin() + r.vertexCount);
         skinnedRanges_.push_back(r);
         minBase = std::min(minBase, r.heapVertexBase);
-        maxEnd = std::max(maxEnd, r.heapVertexBase + r.vertexCount);
+        maxEnd = std::max<uint64_t>(maxEnd, uint64_t(r.heapVertexBase) + r.vertexCount);
     }
     if (skinnedRanges_.empty())
         return false;
@@ -431,8 +435,13 @@ bool smvk::Cluster::EnsureSkinnedGpuData(ResourceManager& ctx) {
     // the heap id space (a non-skinned interleave wastes 20B/id - the
     // demo's clusters are all-skinned, and the offset math stays one
     // subtract for every fetch).
+    // Reject a span that escaped the uint32 heap-id space (the deferred
+    // base + every draw's (vi - base) math are 32-bit) instead of sizing a
+    // truncated buffer and letting the skinning compute write past it.
+    if (maxEnd > UINT32_MAX)
+        return false;
     skinnedDeformedBase_ = minBase;
-    const uint32_t span = maxEnd - minBase;
+    const uint32_t span = uint32_t(maxEnd) - minBase;
 
     // 5 words per vertex: pos (3 uint words, reinterpreted floats) +
     // normal and tangent (the packed oct words). The skinning pass writes

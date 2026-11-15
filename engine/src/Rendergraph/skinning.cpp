@@ -70,8 +70,15 @@ bool SkinVisual::AppendPass(ResourceManager& ctx,
                             uint32_t frameIndex,
                             const SkinPush& push,
                             std::span<const glm::mat4> palette) {
-    if (!valid || push.paletteCount == 0 || push.rangeCount == 0 || push.skin == 0 ||
-        push.deformed == 0 || palette.size() < push.paletteCount)
+    // Fail closed on oversized palettes/ranges: the palette buffer is sized
+    // kSkinPaletteMax mat4s and the shader's ranges table is SKIN_RANGES_MAX
+    // rows, so a caller-provided count above either cap would overrun the
+    // destination upload / the declared BDA bounds. The caller already clamps
+    // paletteCount, but this seam is the one audited gate (never rely on the
+    // caller for the allocation bound).
+    if (!valid || push.paletteCount == 0 || push.paletteCount > kSkinPaletteMax ||
+        push.rangeCount == 0 || push.rangeCount > kSkinRangesMax || push.skin == 0 ||
+        push.ranges == 0 || push.deformed == 0 || palette.size() < push.paletteCount)
         return false;
 
     // This flight's palette buffer (lazily created).

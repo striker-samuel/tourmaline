@@ -31,6 +31,8 @@ inline constexpr const char* kSkinningCsPath = "content/shaders/gfxskinning.cs.h
 
 // The joint-table cap (mesh.h: the RGBA8 palette indexing).
 inline constexpr uint32_t kSkinPaletteMax = 256;
+// Mirrors gfxskinning.cs.hlsl's SKIN_RANGES_MAX (the ranges-table row cap).
+inline constexpr uint32_t kSkinRangesMax = 4096;
 
 // Mirrors gfxskinning.cs.hlsl's SkinningPush exactly (layout-pinned:
 // the shader's comment carries the offsets).
