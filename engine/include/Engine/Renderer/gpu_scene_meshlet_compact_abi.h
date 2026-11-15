@@ -6,6 +6,7 @@
 // all are <= Vulkan's guaranteed 128-byte minimum push-constant range.
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <type_traits>
 
 #include <Engine/Core/double_float.h>
@@ -22,6 +23,14 @@ struct alignas(16) CompactMeshletCandidate {
     uint32_t flags = 0;
     uint32_t reserved = 0;
 };
+// This predicate must stay identical in meshlet_pso_count and
+// meshlet_pso_scatter. An INVALID class or empty index range never
+// contributes to the GPU draw-count buffer.
+[[nodiscard]] inline uint32_t CompactMeshletSurvivorClass(
+    const CompactMeshletCandidate& candidate) noexcept {
+    return candidate.indexCount != 0u && candidate.rasterClass < 4u
+        ? candidate.rasterClass : std::numeric_limits<uint32_t>::max();
+}
 struct MeshletCandidateCountPush {
     uint64_t work = 0, workOffsets = 0, meshes = 0;
     uint64_t geometry = 0, aliases = 0, counts = 0;

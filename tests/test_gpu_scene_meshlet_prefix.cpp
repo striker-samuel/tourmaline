@@ -32,6 +32,32 @@ int main() {
     for (auto c : plan.candidates) candidateClasses.push_back(c.rasterClass);
     CHECK(PsoPrefixPlan::Build(candidateClasses, {{3,1,1,2}}, compact));
     CHECK((compact.counts == PsoPrefixPlan::Counts{3,1,1,2}));
+    // Count and scatter must reject exactly the same records. A zero-index
+    // candidate in a valid raster class previously inflated the GPU class
+    // count without emitting a command, leaving an unwritten indirect slot.
+    std::array<CompactMeshletCandidate, 7> emitted{};
+    for (uint32_t i = 0; i < emitted.size(); ++i) {
+        emitted[i].rasterClass = candidateClasses[i];
+        emitted[i].indexCount = 3u;
+    }
+    emitted[1].indexCount = 0u; // classified, but no raster command
+    emitted[4].rasterClass = 0xffffffffu; // culled/invalid
+    emitted[5].rasterClass = 4u; // unsupported class
+    std::vector<uint32_t> survivors;
+    for (const auto& candidate : emitted)
+        survivors.push_back(CompactMeshletSurvivorClass(candidate));
+    CHECK(PsoPrefixPlan::Build(survivors, {{3,1,1,2}}, compact));
+    CHECK((compact.counts == PsoPrefixPlan::Counts{2,1,1,0}));
+    CHECK(compact.destinations[1] == kPsoPrefixInvalid);
+    CHECK(compact.destinations[4] == kPsoPrefixInvalid);
+    CHECK(compact.destinations[5] == kPsoPrefixInvalid);
+    // The shader uses four nonoverlapping worst-case bins. Its command
+    // address space must accommodate bin 3 at the maximum candidate bound.
+    constexpr uint64_t maxCommands = 4ull * kMeshletCandidateLimit;
+    constexpr uint64_t lastBinDestination = 3ull * kMeshletCandidateLimit +
+                                             (kMeshletCandidateLimit - 1u);
+    static_assert(lastBinDestination < maxCommands);
+    static_assert(lastBinDestination >= kMeshletCandidateLimit);
     auto old = plan.candidates;
     CHECK(!MeshletPrefixPlan::Build(ranges, classes, 6u, plan));
     CHECK(plan.candidates.size() == old.size());
