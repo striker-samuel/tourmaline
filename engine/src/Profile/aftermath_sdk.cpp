@@ -49,6 +49,7 @@ void tour::aftermath::Initialize() {
                                             &OnCrashDump,
                                             &OnShaderDebug,
                                             nullptr,
+                                            nullptr,
                                             nullptr);
     enabled.store(result == GFSDK_Aftermath_Result_Success);
     if (!enabled.load())

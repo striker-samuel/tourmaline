@@ -40,6 +40,12 @@ struct Push {
     GPU_PTR_WRITE(Choices) choices;
     GPU_PTR_WRITE(Counts) counts;
     GPU_PTR_WRITE(DemandBuffer) demand;
+    // 8 bytes of padding: the C++ WorkSelectPush declares `alignas(16)
+    // glm::uvec4 limits` after the uint64 `demand`, so `limits` sits at
+    // offset 80 — but DXC packs `uint4` at the next 4-byte boundary (72).
+    // Explicitly pad so limits/limits2/lodEyeBudget/lodProjection offsets
+    // match the C++ 16-byte-aligned layout.
+    uint2 _pad;
     uint4 limits; // candidates, groups, instance slots, mesh slots
     uint4 limits2; // lod slots, submesh slots, reserved, reserved
     float4 lodEyeBudget; // absolute float camera xyz, pixel budget w
