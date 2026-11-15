@@ -11804,18 +11804,18 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             uint32_t projectLitCount = 0;
             const auto gfxTables =
                 GpuSceneIndexedTables(m_gfxRenderer.State(), m_gpuScenePhysicalIndexedRanges);
-            constexpr uint32_t requiredFlags =
-                smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
-                smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_Static;
+            constexpr uint32_t requiredFlags = smvk::IteratorFlagBit_Renderable |
+                                               smvk::IteratorFlagBit_Opaque |
+                                               smvk::IteratorFlagBit_StaticVertexFmt;
             constexpr uint32_t forbiddenFlags = smvk::IteratorFlagBit_Transparent;
             // Transparent (AlphaMode::Blend + dithered) admission: same static/
             // single-surface/material/LOD gates as opaque, but keyed on the
             // Transparent bit instead of Opaque. Routes through the dedicated
             // sorted BLEND backend once transparentReady is set (single
             // ownership — no legacy transparent leg for these instances).
-            constexpr uint32_t requiredTransparentFlags =
-                smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Transparent |
-                smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_Static;
+            constexpr uint32_t requiredTransparentFlags = smvk::IteratorFlagBit_Renderable |
+                                                          smvk::IteratorFlagBit_Transparent |
+                                                          smvk::IteratorFlagBit_StaticVertexFmt;
             // KD tally (parallel to the chain below, never replacing it):
             // count the FIRST rejecting gate group per item - 1 sync,
             // 2 db-ready, 3 flags, 4 material, 5 node/mesh, 6 lod/geometry,
@@ -11867,7 +11867,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     // changes with camera distance; never GPU-own it
                     // without the matching masked/depth shader variants.
                     !IsDitherCloseupNode(m_world->scene, int(item.node)) && mesh &&
-                    !mesh->skinned &&
                     // Packed vertex lightmaps use a different shader path;
                     // leave those objects with the legacy filtered/direct
                     // raster until the GPU-scene lit variant is implemented.
@@ -11981,8 +11980,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         c && materialRasterEligible &&
                         (!m_gfxRenderer.MaterialProjectFamily(item.material) || projectLitReady);
                     const bool e5a = d && item.node < m_world->scene.globalTransform.size() &&
-                                     !IsDitherCloseupNode(m_world->scene, int(item.node)) && mesh &&
-                                     !mesh->skinned;
+                                     !IsDitherCloseupNode(m_world->scene, int(item.node)) && mesh;
                     const bool e =
                         e5a && (mesh->lmChartXforms.empty() ||
                                 (mesh->lmChunk == UINT32_MAX && mesh->lightmapBase == UINT32_MAX));
@@ -14008,6 +14006,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         fc.skinDeformedBda = gfx.skinDeformedBda;
         fc.skinDeformedBase = gfx.skinDeformedBase;
         fc.skinDeformedValid = (gfx.skinDeformedBda != 0 && gfx.skinDeformedBase != UINT32_MAX);
+        // The task/mesh push is baked BEFORE the skinning pass (its params
+        // buffer cannot carry the parity-flipped deformed BDA), so stamp the
+        // skin tail onto the push value NOW — every later dispatch (prepass +
+        // main) copies this field and forwards the ANIMATED pose.
+        m_gpuSceneTaskMeshPlan.graphics.skinDeformed =
+            fc.skinDeformedValid ? fc.skinDeformedBda : 0;
+        m_gpuSceneTaskMeshPlan.graphics.skinDeformedBase =
+            fc.skinDeformedValid ? fc.skinDeformedBase : 0u;
+        m_gpuSceneTaskMeshPlan.graphics.skinValid = fc.skinDeformedValid ? 1u : 0u;
     }
 
     // ---- Cascaded shadow map passes - one per cascade tile (builder owns offsets/extents/load
@@ -16458,7 +16465,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         m_gpuSceneUploader.DeviceAddresses(*m_context, fb.frameIndex).instances,
         m_gpuSceneRasterView.DeviceAddress(*m_context, fb.frameIndex),
         m_gpuSceneDatabase.instances.Size(),
-        m_gpuSceneRasterDrawCapacity};
+        m_gpuSceneRasterDrawCapacity,
+        mainSkinValid ? mainSkinBda : 0,
+        mainSkinValid ? mainSkinBase : 0u,
+        mainSkinValid ? 1u : 0u};
 
     mainPass.SetRecordingFunc([this,
                                pc,

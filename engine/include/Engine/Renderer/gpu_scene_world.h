@@ -512,6 +512,11 @@ class WorldSynchronizer {
                 // without a per-instance material-table fetch.
                 if (world.ShaderFamilyOf(item.material) == tour::MaterialShaderFamily::ProjectLit)
                     record.flags |= InstanceFlagProjectLit;
+                // Skinned meshes are GPU-admitted now: mark the instance so
+                // the raster/mesh legs fetch the deformed heap and the cull
+                // stages treat its bind-pose bounds as unsafe.
+                if (const StaticMesh* base = world.GetMesh(item.mesh); base && base->skinned)
+                    record.flags |= InstanceFlagSkinned;
                 // Union the bounds of EVERY cooked LOD, including payloads
                 // that are currently deferred. Bounds must not shrink on
                 // eviction or the GPU would cull geometry after promotion.

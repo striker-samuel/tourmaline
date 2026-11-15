@@ -114,9 +114,18 @@ struct RasterVsPush {
     uint64_t view = 0;
     uint32_t instanceSlots = 0;
     uint32_t workSlots = 0;
+    // Skinned-instance tail (mirrors gpu_scene_raster.vert.hlsl): the frame's
+    // deformed heap (5 words/vertex) + the skinned span's global base. A
+    // skinned instance fetches (vertexID - skinDeformedBase) * 5 instead of
+    // the bind-pose POSITION. skinValid = 1 only when the frame ran the
+    // skinning pass (a null BDA/unknown base must fall back to bind pose,
+    // never fault).
+    uint64_t skinDeformed = 0;
+    uint32_t skinDeformedBase = 0;
+    uint32_t skinValid = 0;
 };
 static_assert(sizeof(RasterViewData) == 96);
-static_assert(sizeof(RasterVsPush) == 32);
+static_assert(sizeof(RasterVsPush) == 48);
 
 // Previous-frame instance transform for the batched motion-vector VS.
 // Indexed by PERSISTENT instance slot; generation matches the instance

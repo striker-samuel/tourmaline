@@ -365,7 +365,8 @@ class TaskMeshRuntime {
             const char* e = std::getenv("TOURMALINE_FAST_VERTEX");
             return (e && std::atoi(e) != 0) ? 1u : 0u;
         }();
-        next.graphics = {params, 0u, groupCapacity, 0u, TaskGridX, 0u, s_vertexOptFlags};
+        next.graphics = {
+            params, 0u, groupCapacity, 0u, TaskGridX, 0u, s_vertexOptFlags, 0u, 0u, 0u};
         next.workCapacity = in.workCapacity;
         next.taskGroupCapacity = groupCapacity;
         next.scanBlocks = blocks;

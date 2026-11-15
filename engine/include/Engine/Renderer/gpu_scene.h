@@ -74,6 +74,11 @@ inline constexpr uint32_t InstanceFlagDitherCloseup = 1u << 13;
 // fragment shader and its material payload change. This bit extends the four
 // coverage/culling raster classes to eight (bit 2 = family).
 inline constexpr uint32_t InstanceFlagProjectLit = 1u << 14;
+// Skinned instances fetch their positions from the frame's DEFORMED heap
+// (the Northlight compute path) instead of the bind-pose vertex stream, and
+// skip bind-pose sphere/cone/HZB culling (the animated pose can leave the
+// cooked bounds). Mirrored as GPU_SCENE_INSTANCE_SKINNED in gpu_scene.hlsli.
+inline constexpr uint32_t InstanceFlagSkinned = 1u << 15;
 
 [[nodiscard]] constexpr uint32_t WithCloseupDitherRasterFlags(uint32_t flags,
                                                               bool ditherCloseup) noexcept {

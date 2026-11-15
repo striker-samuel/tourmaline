@@ -129,7 +129,12 @@ void mainAS(uint3 groupId : SV_GroupID,
     if (valid && lane<group.clusterCount) {
         clusterId=group.firstCluster+lane;
         keep=true;
-        if (p.viewValid!=0u) {
+        // Skinned instances: the cluster's bind-pose sphere/cone/bounds are
+        // unsafe for an animated pose, so keep every meshlet (conservative —
+        // the pre-GPU-scene "skip cone+HZB for skinned" rule). The deformed-
+        // bounds cull is the documented follow-up.
+        const bool skinned=(inst.refs.w & GPU_SCENE_INSTANCE_SKINNED)!=0u;
+        if (!skinned && p.viewValid!=0u) {
             const GsView view=p.cullView.Get();
             const GsCluster c=p.clusters.Get().rows[clusterId];
             keep=SphereVisible(c.b,inst,view);

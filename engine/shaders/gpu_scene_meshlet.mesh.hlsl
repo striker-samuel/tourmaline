@@ -44,6 +44,7 @@ struct GsInstanceFrame {
     float3 originLow;           // view.origin.low.xyz
     uint meshMaterial;          // inst.refs.z
     uint ditherCloseup;         // inst.refs.w, subtree-inherited fade
+    uint skinned;               // inst.refs.w GPU_SCENE_INSTANCE_SKINNED
 };
 
 GsInstanceFrame MakeInstanceFrame(GpuSceneInstance inst, GsRasterView view) {
@@ -61,6 +62,7 @@ GsInstanceFrame MakeInstanceFrame(GpuSceneInstance inst, GsRasterView view) {
     f.originLow = view.origin.low.xyz;
     f.meshMaterial = inst.refs.z;
     f.ditherCloseup = (inst.refs.w & GPU_SCENE_INSTANCE_DITHER_CLOSEUP) != 0u ? 1u : 0u;
+    f.skinned = (inst.refs.w & GPU_SCENE_INSTANCE_SKINNED) != 0u ? 1u : 0u;
     return f;
 }
 
@@ -70,14 +72,29 @@ GsMeshVertex FetchVertex(uint vertexId,
                          bool fastNormal) {
     GsMeshVertex v=(GsMeshVertex)0;
     const uint pb=vertexId*3u, sb=vertexId*4u;
-    const float3 local=float3(
+    float3 local=float3(
         asfloat(p.positions.Get().word[pb]),
         asfloat(p.positions.Get().word[pb+1u]),
         asfloat(p.positions.Get().word[pb+2u]));
+    uint nword=p.shading.Get().word[sb+2u];
+    uint tword=p.shading.Get().word[sb+3u];
+    // Skinned fetch: swap the bind-pose position/normal/tangent for the
+    // frame's DEFORMED words (5/vertex at (vertexId - base) * 5). The
+    // instance flag proves the mesh is skinned; skinValid proves the frame
+    // actually ran the skinning pass (bind pose otherwise, never a fault).
+    // The skin tail rides the PUSH CONSTANT (set at dispatch, after the
+    // skinning pass) — not the params buffer, which is baked before skinning.
+    if (f.skinned != 0u && pc.skinValid != 0u) {
+        const uint d=(vertexId - pc.skinDeformedBase)*5u;
+        local=float3(
+            asfloat(pc.skinDeformed.Get().word[d+0u]),
+            asfloat(pc.skinDeformed.Get().word[d+1u]),
+            asfloat(pc.skinDeformed.Get().word[d+2u]));
+        nword=pc.skinDeformed.Get().word[d+3u];
+        tword=pc.skinDeformed.Get().word[d+4u];
+    }
     const uint color=p.shading.Get().word[sb];
     const uint uv=p.shading.Get().word[sb+1u];
-    const uint nword=p.shading.Get().word[sb+2u];
-    const uint tword=p.shading.Get().word[sb+3u];
 
     const float3 relative=f.originRelative
         +f.a*local.x+f.b*local.y+f.c*local.z;

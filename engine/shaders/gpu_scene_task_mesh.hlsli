@@ -55,6 +55,9 @@ struct GsShading { uint word[GS_MAX_VERTICES * 4u]; };
 // as the position/indices heaps (the unique window is a subset of each).
 struct GsMeshletVerts { uint id[GS_MAX_VERTICES]; };
 struct GsMeshletTris { uint tri[GS_MAX_INDEX_WORDS / 3u]; };
+// Deformed heap (5 words/vertex: pos3, normalW, tangentW) — a local mirror of
+// GfxSkinDeformedHeap so the task/mesh stages stay free of gfxfilter.hlsli.
+struct GsSkinDeformedHeap { uint word[GS_MAX_VERTICES * 5u]; };
 
 // Exact meshlet history key: persistent instance slot + generation + global cluster id.
 // The hash table is a cache, not an authority for topology or residency.
@@ -121,6 +124,12 @@ struct GsTaskMeshPush {
     uint taskGridX; // x dimension of indirect task dispatch (for 2D flattening)
     uint temporalPhase; // 0 normal, 1 seed, 2 remainder, 3 Main
     uint vertexOptFlags; // bit 0 = rigid-transform normalize elision (TOURMALINE_FAST_VERTEX)
+    // Skinned tail (mirrors C++ TaskMeshGpuPush): the frame's deformed heap
+    // + the skinned span's global base. Pushed AT DISPATCH (after the skinning
+    // pass). skinValid = 1 only when the frame ran the skinning pass.
+    GPU_PTR_READ(GsSkinDeformedHeap) skinDeformed;
+    uint skinDeformedBase;
+    uint skinValid;
 };
 
 // Workgroup-local payload. Each mesh workgroup reads its own compact slot.

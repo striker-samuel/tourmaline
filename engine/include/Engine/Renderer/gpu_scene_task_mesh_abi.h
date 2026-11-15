@@ -37,6 +37,15 @@ struct TaskMeshGpuPush {
     uint32_t taskGridX;
     uint32_t temporalPhase;  // 0 normal, 1 seed, 2 remainder, 3 Main
     uint32_t vertexOptFlags; // bit 0 = rigid-transform normalize elision
+    // Skinned tail (mirrors GsTaskMeshPush): the frame's deformed heap
+    // (5 words/vertex) + the skinned span's global base. Pushed AT DISPATCH
+    // (after the skinning pass — the parity-flipped BDA is only known then),
+    // never baked into the params buffer. A skinned instance's mesh shader
+    // fetches (vertexId - skinDeformedBase) * 5. skinValid = 1 only when the
+    // frame ran the skinning pass.
+    uint64_t skinDeformed = 0;
+    uint32_t skinDeformedBase = 0;
+    uint32_t skinValid = 0;
 };
 struct TaskMeshIndirectCommand {
     uint32_t groupCountX;
@@ -52,7 +61,7 @@ static_assert(offsetof(TaskMeshGpuParams, hizValid) == 164);
 static_assert(offsetof(TaskMeshGpuParams, meshletVertices) == 168);
 static_assert(offsetof(TaskMeshGpuParams, historyPrevious) == 184);
 static_assert(offsetof(TaskMeshGpuParams, historyCapacity) == 200);
-static_assert(sizeof(TaskMeshGpuPush) == 32);
+static_assert(sizeof(TaskMeshGpuPush) == 48);
 static_assert(sizeof(TaskMeshIndirectCommand) == 12);
 static_assert(std::is_trivially_copyable_v<TaskMeshGpuParams>);
 } // namespace tour::gpu_scene

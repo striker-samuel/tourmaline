@@ -16,6 +16,10 @@
 #define GPU_SCENE_RASTER_MAX_WORK 1048576u
 #define GPU_SCENE_RASTER_MAX_INSTANCES 4194304u
 
+// Deformed heap (5 words/vertex: pos3, normalW, tangentW) — a local mirror of
+// GfxSkinDeformedHeap so this VS stays free of gfxfilter.hlsli's includes.
+struct RasterSkinDeformedHeap { uint word[64 * 1024 * 1024]; };
+
 struct RasterWorkRow { uint4 identity; uint4 detail; };
 struct RasterWorkBuffer { RasterWorkRow rows[GPU_SCENE_RASTER_MAX_WORK]; };
 struct RasterInstanceBuffer { GpuSceneInstanceRow rows[GPU_SCENE_RASTER_MAX_INSTANCES]; };
@@ -33,6 +37,12 @@ struct RasterVsPush {
     GPU_PTR_READ(RasterViewData) view;
     uint instanceSlots;
     uint workSlots;
+    // Skinned tail (mirrors C++ RasterVsPush): the frame's deformed heap +
+    // the skinned span's global base. skinValid = 1 only when the frame ran
+    // the skinning pass.
+    GPU_PTR_READ(RasterSkinDeformedHeap) skinDeformed;
+    uint skinDeformedBase;
+    uint skinValid;
 };
 GPU_PUSH(RasterVsPush, pcRV);
 
@@ -43,6 +53,7 @@ struct VSIn {
     [[vk::location(3)]] uint normalPacked : NORMAL;
     [[vk::location(4)]] uint tangentPacked : TANGENT;
     uint instanceID : SV_InstanceID;
+    uint vertexID : SV_VertexID;
 };
 struct VSOut {
     float4 pos : SV_Position;
@@ -83,9 +94,26 @@ VSOut mainVS(VSIn IN) {
     const float3 a = inst.basisX.xyz;
     const float3 b = inst.basisY.xyz;
     const float3 c = inst.basisZ.xyz;
+    // Skinned fetch: swap the bind-pose position/normal/tangent for the
+    // frame's DEFORMED words (5/vertex at (vertexID - base) * 5). The
+    // instance flag proves the mesh is skinned; a null BDA proves the
+    // frame ran no skinning pass and the bind pose is the honest answer.
+    const bool skinned = (inst.refs.w & GPU_SCENE_INSTANCE_SKINNED) != 0u;
+    float3 position = IN.position;
+    uint normalPacked = IN.normalPacked;
+    uint tangentPacked = IN.tangentPacked;
+    if (skinned && pcRV.skinValid != 0u) {
+        const uint d = (IN.vertexID - pcRV.skinDeformedBase) * 5u;
+        position = float3(
+            asfloat(pcRV.skinDeformed.Get().word[d + 0u]),
+            asfloat(pcRV.skinDeformed.Get().word[d + 1u]),
+            asfloat(pcRV.skinDeformed.Get().word[d + 2u]));
+        normalPacked = pcRV.skinDeformed.Get().word[d + 3u];
+        tangentPacked = pcRV.skinDeformed.Get().word[d + 4u];
+    }
     const float3 relative = DoubleFloatRelative(
         inst.worldPosition, pcRV.view.Get().origin) +
-        a * IN.position.x + b * IN.position.y + c * IN.position.z;
+        a * position.x + b * position.y + c * position.z;
 
     OUT.pos = mul(pcRV.view.Get().relativeViewProjection, float4(relative, 1.0f));
     const DoubleFloat3 origin = pcRV.view.Get().origin;
@@ -100,8 +128,8 @@ VSOut mainVS(VSIn IN) {
     OUT.userData = inst.userData;
     OUT.lightLayerMask = 0xffffffffu;
 
-    const float3 normal = OctDecodeNormal(IN.normalPacked);
-    const float4 tangent = OctDecodeTangent(IN.tangentPacked);
+    const float3 normal = OctDecodeNormal(normalPacked);
+    const float4 tangent = OctDecodeTangent(tangentPacked);
     const float3 coX = cross(b, c);
     const float3 coY = cross(c, a);
     const float3 coZ = cross(a, b);
