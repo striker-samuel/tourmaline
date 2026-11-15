@@ -499,12 +499,23 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // geometry solid. The A2C variant expresses the fade through the
     // output coverage instead (no OpKill — see the remap at the output).
 #if !defined(ALPHA_TO_COVERAGE)
+#ifdef GPU_SCENE_DITHER_RELATIVE
+    if (IN.ditherCloseup != 0u
+        && !CloseupDitherKeepCameraRelative(IN.cameraRelativePos, clipPos.xy))
+        discard;
+#else
     if (IN.ditherCloseup != 0u
         && !CloseupDitherKeep(IN.worldPos, hot.cameraPos, clipPos.xy))
         discard;
+#endif
+#else
+#ifdef GPU_SCENE_DITHER_RELATIVE
+    const float closeupKeepA2C = (IN.ditherCloseup != 0u)
+        ? CloseupDitherFactorCameraRelative(IN.cameraRelativePos) : 1.0f;
 #else
     const float closeupKeepA2C = (IN.ditherCloseup != 0u)
         ? CloseupDitherFactor(IN.worldPos, hot.cameraPos) : 1.0f;
+#endif
 #endif
 
     MaterialValues mat = pc.bMats.Get().mats[GFX_MATERIAL_ID];
