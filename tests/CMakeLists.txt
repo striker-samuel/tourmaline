@@ -1,3 +1,12 @@
+# Pak-time draw precount and per-flight linear PSO bin packing (CPU-only).
+add_executable(PakLinearPsoBinsTests test_pak_linear_pso_bins.cpp)
+target_include_directories(PakLinearPsoBinsTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/include
+    ${CMAKE_SOURCE_DIR}/external/glm)
+set_target_properties(PakLinearPsoBinsTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME pak_linear_pso_bins_tests COMMAND PakLinearPsoBinsTests)
+
 # Copyright (c) 2026 Samuel Martin
 
 # SPDX-License-Identifier: MIT
