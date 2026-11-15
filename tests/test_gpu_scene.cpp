@@ -4,6 +4,7 @@
 // Device-free GPU-scene database update model: stable identities,
 // coalesced dirty-row ranges, tombstones, and all-flight propagation.
 #include <Engine/Renderer/gpu_scene.h>
+#include <Engine/Renderer/gpu_scene_skinning.h>
 #include <Engine/Renderer/gpu_scene_upload.h>
 
 #include <array>
@@ -164,6 +165,56 @@ void CheckDatabase() {
     CHECK(db.leaves.PendingRows(0) == 1);
 }
 
+
+void CheckPackedSkinWork() {
+    PackedSkinWork output{};
+    const std::array<SkinWorkSource, 3> sources{{
+        {7u, 2u, 0u, 85u, 100u, 4u, 400u, 4u},
+        {8u, 3u, 85u, 85u, 300u, 6u, 1200u, 6u},
+        {9u, 1u, 0u, 20u, 900u, 3u, 3000u, 3u},
+    }};
+    CHECK(PackSkinWork(sources, 13u, output));
+    CHECK(output.rows.size() == 3);
+    CHECK(output.vertexCount == 13u);
+    CHECK(output.DeformedBytes() == 13u * 5u * 4u);
+    CHECK(output.rows[0].vertices[1] == 0u);
+    CHECK(output.rows[1].vertices[1] == 4u);
+    CHECK(output.rows[2].vertices[1] == 10u);
+    CHECK(output.rows[1].identity[0] == 8u);
+    CHECK(output.rows[1].identity[1] == 3u);
+    CHECK(output.rows[1].palette[0] == 85u);
+    CHECK(output.rows[1].palette[2] == 300u);
+    CHECK(output.rows[1].vertices[0] == 1200u);
+
+    // Invalid submissions MUST leave the previously valid work unchanged,
+    // so admission can remain on the safe legacy path.
+    auto bad = sources;
+    bad[1].skinStreamCount = 5u;
+    CHECK(!PackSkinWork(bad, 13u, output));
+    CHECK(output.rows.size() == 3 && output.vertexCount == 13u);
+    bad = sources;
+    bad[1].instanceSlot = bad[0].instanceSlot;
+    CHECK(!PackSkinWork(bad, 13u, output));
+    bad = sources;
+    bad[1].instanceGeneration = 0u;
+    CHECK(!PackSkinWork(bad, 13u, output));
+    bad = sources;
+    bad[1].paletteCount = 257u;
+    CHECK(!PackSkinWork(bad, 13u, output));
+    bad = sources;
+    bad[1].bindVertexBase = UINT32_MAX;
+    CHECK(!PackSkinWork(bad, 13u, output));
+    bad = sources;
+    bad[1].skinStreamOffset = UINT32_MAX;
+    CHECK(!PackSkinWork(bad, 13u, output));
+    CHECK(!PackSkinWork(sources, 12u, output));
+    CHECK(output.vertexCount == 13u);
+
+    // Empty frame is valid and reclaims all compact work.
+    CHECK(PackSkinWork(std::span<const SkinWorkSource>{}, 0u, output));
+    CHECK(output.rows.empty() && output.vertexCount == 0u);
+}
+
 void CheckLargeScene() {
     Table<Instance, Flights> table;
     FakeGpu<Instance> gpu;
@@ -191,6 +242,7 @@ void CheckLargeScene() {
 
 int main() {
     CheckDatabase();
+    CheckPackedSkinWork();
     CheckLargeScene();
     std::printf("checks=%d failures=%d\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
