@@ -2504,6 +2504,12 @@ class WorldRenderer : public IRenderer {
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterVsModule{};
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterFsModule{};
     smvk::ShaderProgram m_gpuSceneRasterProgram{};
+    // ProjectLit family twin: the SAME indexed raster VS with the
+    // project-authored lit FS (gfxmesh_project_lit). Admitted ProjectLit
+    // materials bin into classes 4-7 and bind this program for Main shading;
+    // depth/G-buffer/motion keep the shared family-agnostic programs.
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterProjectLitFsModule{};
+    smvk::ShaderProgram m_gpuSceneRasterProjectLitProgram{};
     // GI-specific lit FS twins for the SAME indexed/task GPU Scene work.
     // The base mesh-lit FS does not sample the scene's baked convex volumes.
     // Index = GIVariant (0 none, 2 regular probes, 3 convex volumes).
@@ -2598,6 +2604,10 @@ class WorldRenderer : public IRenderer {
     uint32_t m_gpuSceneRasterDoubleSidedCount = 0;
     uint32_t m_gpuSceneRasterMaskedBackCount = 0;
     uint32_t m_gpuSceneRasterMaskedDoubleSidedCount = 0;
+    // Admitted ProjectLit-family instances (raster classes 4-7). Nonzero when
+    // the project lit Main program is bound for those bins AND task/mesh is
+    // disabled (the meshlet backend has no ProjectLit twins yet).
+    uint32_t m_gpuSceneRasterProjectLitCount = 0;
     uint32_t m_gpuSceneRasterLegacyCount = 0;
     // Prototype production cutover: only all-supported static/opaque scenes
     // may substitute their Main draws. Unsupported content uses GfxFilter.

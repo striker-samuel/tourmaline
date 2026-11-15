@@ -20,13 +20,19 @@
 namespace tour::gpu_scene {
 
 inline constexpr uint32_t kMaxRasterDrawGroups = 65535;
-// Four fixed PSO classes: bit 0 = double-sided, bit 1 = alpha-mask.
-// Each class occupies one contiguous indirect range; each work record
-// selects exactly one class, preserving its original firstInstance slot.
-inline constexpr uint32_t kRasterPipelineClassCount = 4;
+// Eight fixed PSO classes: bit 0 = double-sided, bit 1 = alpha-mask,
+// bit 2 = material shader family (ProjectLit). Classes 0-3 are StandardLit,
+// classes 4-7 are the same coverage/culling matrix with the ProjectLit
+// fragment shader. Each class occupies one contiguous indirect range; each
+// work record selects exactly one class, preserving its original
+// firstInstance slot. Depth/G-buffer/motion need no family distinction
+// (ProjectLit hooks are color-only), so those passes draw the family bit as
+// an extra bin with the SAME program.
+inline constexpr uint32_t kRasterPipelineClassCount = 8;
 inline constexpr uint32_t kRasterPipelineDoubleSided = 1;
 inline constexpr uint32_t kRasterPipelineMasked = 2;
 inline constexpr uint32_t kRasterPipelineMaskedDoubleSided = 3;
+inline constexpr uint32_t kRasterPipelineProjectLit = 4;
 
 // Immutable, GPU-addressable indexed-geometry descriptor. One per compatible
 // raster geometry registration; managed separately from per-frame visibility.
@@ -82,14 +88,13 @@ struct RasterWorkDrawBuildPush {
 // CPU oracle for GPU Scene's camera-relative dither input. Subtract the
 // real double-precision eye before rounding to shader float: a float32
 // absolute-world position cannot express the 0.5m..3m dissolve at 1e12.
-[[nodiscard]] inline float GpuSceneCloseupDitherCoverage(
-    const glm::dvec3& worldPosition,
-    const glm::dvec3& cameraWorld) {
+[[nodiscard]] inline float GpuSceneCloseupDitherCoverage(const glm::dvec3& worldPosition,
+                                                         const glm::dvec3& cameraWorld) {
     constexpr float hideM = 0.5f;
     constexpr float solidM = 3.0f;
     const glm::vec3 relative(worldPosition - cameraWorld);
     const float distance = glm::length(relative);
-    return std::clamp((distance-hideM)/(solidM-hideM), 0.0f, 1.0f);
+    return std::clamp((distance - hideM) / (solidM - hideM), 0.0f, 1.0f);
 }
 
 // Static-opaque raster VS input: world position is rebased against this
@@ -240,7 +245,7 @@ static_assert(std::is_trivially_copyable_v<RasterIndirectCommand>);
     return command;
 }
 
-// CPU oracle for the fixed four-bin GPU indirect builder. A command slot
+// CPU oracle for the fixed eight-bin GPU indirect builder. A command slot
 // belongs to exactly one bin; firstInstance always denotes the ORIGINAL
 // work index, not the PSO-sorted command index.
 [[nodiscard]] inline RasterIndirectCommand MakeRasterBinnedCommand(const IndexedGeometry& geometry,

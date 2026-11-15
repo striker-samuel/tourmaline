@@ -460,7 +460,8 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(smvk::FrameContext& base,
                                                 smvk::ShaderProgram maskedDepth,
                                                 smvk::ShaderProgram maskedGbuffer,
                                                 bool hasMasked,
-                                                bool hasMaskedDoubleSided) {
+                                                bool hasMaskedDoubleSided,
+                                                bool hasProjectLit) {
     AppFrameContext& fc = static_cast<AppFrameContext&>(base);
     if (!fp || (rasterDepth.shaderCount != 1 && rasterDepth.shaderCount != 2))
         return false;
@@ -518,7 +519,8 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(smvk::FrameContext& base,
                            vertexPush,
                            hasDoubleSided,
                            hasMasked,
-                           hasMaskedDoubleSided](smvk::CommandBuffer& cmd) mutable {
+                           hasMaskedDoubleSided,
+                           hasProjectLit](smvk::CommandBuffer& cmd) mutable {
         if (!commandCount)
             return; // the pass still clears depth for empty views
         cmd.BindStaticVertexFmt();
@@ -553,6 +555,8 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(smvk::FrameContext& base,
             }
         };
         drawBin(0u);
+        if (hasProjectLit)
+            drawBin(4u);
         if (hasDoubleSided) {
             cmd.BindRenderPipeline(rasterDepth,
                                    ::tour::vertex_layouts::Static,
@@ -564,6 +568,8 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(smvk::FrameContext& base,
                                    smvk::MSAASettings{},
                                    smvk::RasterSettings{.cullMode = smvk::CullMode::None});
             drawBin(1u);
+            if (hasProjectLit)
+                drawBin(5u);
         }
         // Masked bins use the same alpha factor/texture/cutoff as
         // legacy shadow_rev/gbuffer_masked and Main gfxmesh_lit.
@@ -580,6 +586,8 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(smvk::FrameContext& base,
                                    smvk::MSAASettings{},
                                    smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
             drawBin(2u);
+            if (hasProjectLit)
+                drawBin(6u);
         }
         if (hasMaskedDoubleSided) {
             cmd.BindRenderPipeline(maskedProgram,
@@ -592,6 +600,8 @@ bool ForwardPlusRenderer::AppendGpuScenePrepass(smvk::FrameContext& base,
                                    smvk::MSAASettings{},
                                    smvk::RasterSettings{.cullMode = smvk::CullMode::None});
             drawBin(3u);
+            if (hasProjectLit)
+                drawBin(7u);
         }
     });
     return true;

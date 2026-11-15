@@ -500,6 +500,12 @@ class WorldSynchronizer {
                 if (const auto* material = world.GetMaterial(item.material);
                     material && material->doubleSided)
                     record.flags |= InstanceFlagDoubleSided;
+                // Material shader family is a BASE-MATERIAL property; bake
+                // it into the instance flags so the GPU work selector can
+                // bin ProjectLit draws into their own pipeline classes
+                // without a per-instance material-table fetch.
+                if (world.ShaderFamilyOf(item.material) == tour::MaterialShaderFamily::ProjectLit)
+                    record.flags |= InstanceFlagProjectLit;
                 // Union the bounds of EVERY cooked LOD, including payloads
                 // that are currently deferred. Bounds must not shrink on
                 // eviction or the GPU would cull geometry after promotion.

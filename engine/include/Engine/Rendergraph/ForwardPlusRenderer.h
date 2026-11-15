@@ -104,7 +104,8 @@ struct ForwardPlusRenderer : public smvk::IFrameRenderer {
                                              smvk::ShaderProgram maskedDepth,
                                              smvk::ShaderProgram maskedGbuffer,
                                              bool hasMasked,
-                                             bool hasMaskedDoubleSided);
+                                             bool hasMaskedDoubleSided,
+                                             bool hasProjectLit);
     // Compact-meshlet twin: four bins at binOffsets, each drawn with the
     // EXACT GPU survivor count read by the device (DrawIndexedIndirectCount
     // against classCounts[bin]) — the reserved tail beyond the count is

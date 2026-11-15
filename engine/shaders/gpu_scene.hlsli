@@ -38,6 +38,7 @@ struct GpuSceneSubmesh {
 #define GPU_SCENE_INSTANCE_DOUBLE_SIDED (1u << 12)
 #define GPU_SCENE_INSTANCE_MASKED (1u << 10)
 #define GPU_SCENE_INSTANCE_DITHER_CLOSEUP (1u << 13)
+#define GPU_SCENE_INSTANCE_PROJECT_LIT (1u << 14)
 // GPU_STRUCT_NAME(GpuSceneInstance)
 struct GpuSceneInstance {
     DoubleFloat3 worldPosition;

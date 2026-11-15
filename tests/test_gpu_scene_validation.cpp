@@ -1,8 +1,8 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 // Headless GPU Scene validation: view-space parity and struct ABI.
-#include <Engine/Renderer/gpu_scene_validation.h>
 #include <Engine/Renderer/gpu_scene_raster.h>
+#include <Engine/Renderer/gpu_scene_validation.h>
 
 #include <cmath>
 #include <cstdio>
@@ -33,16 +33,13 @@ void CheckGpuSceneCloseupDither() {
     // The legacy float32 subtraction collapses all of these to zero
     // around this origin. GPU Scene's relative varying must not.
     CHECK(GpuSceneCloseupDitherCoverage(camera, camera) == 0.0f);
-    CHECK(GpuSceneCloseupDitherCoverage(
-        camera + glm::dvec3(0.5, 0.0, 0.0), camera) == 0.0f);
-    CHECK(std::abs(GpuSceneCloseupDitherCoverage(
-        camera + glm::dvec3(1.75, 0.0, 0.0), camera) - 0.5f) < 1e-6f);
-    CHECK(GpuSceneCloseupDitherCoverage(
-        camera + glm::dvec3(3.0, 0.0, 0.0), camera) == 1.0f);
-    CHECK(GpuSceneCloseupDitherCoverage(
-        camera + glm::dvec3(100.0, 0.0, 0.0), camera) == 1.0f);
-    CHECK(std::abs(GpuSceneCloseupDitherCoverage(
-        camera + glm::dvec3(0.0, -1.75, 0.0), camera) - 0.5f) < 1e-6f);
+    CHECK(GpuSceneCloseupDitherCoverage(camera + glm::dvec3(0.5, 0.0, 0.0), camera) == 0.0f);
+    CHECK(std::abs(GpuSceneCloseupDitherCoverage(camera + glm::dvec3(1.75, 0.0, 0.0), camera) -
+                   0.5f) < 1e-6f);
+    CHECK(GpuSceneCloseupDitherCoverage(camera + glm::dvec3(3.0, 0.0, 0.0), camera) == 1.0f);
+    CHECK(GpuSceneCloseupDitherCoverage(camera + glm::dvec3(100.0, 0.0, 0.0), camera) == 1.0f);
+    CHECK(std::abs(GpuSceneCloseupDitherCoverage(camera + glm::dvec3(0.0, -1.75, 0.0), camera) -
+                   0.5f) < 1e-6f);
 }
 
 void CheckDoubleView() {
@@ -280,13 +277,15 @@ void CheckSubmeshWorkExpansion() {
 }
 
 void CheckRasterPsoBins() {
-    static_assert(kRasterPipelineClassCount == 4u);
+    static_assert(kRasterPipelineClassCount == 8u);
     static_assert(kRasterPipelineDoubleSided == 1u);
     static_assert(kRasterPipelineMasked == 2u);
     static_assert(kRasterPipelineMaskedDoubleSided == 3u);
+    static_assert(kRasterPipelineProjectLit == 4u);
     const IndexedGeometry geometry{36u, 72u, -5, 0u};
-    const uint32_t slots[] = {7u, 8u, 9u, 10u};
-    // Each work slot produces exactly one valid command across four bins.
+    const uint32_t slots[] = {7u, 8u, 9u, 10u, 11u, 12u, 13u, 14u};
+    // Each work slot produces exactly one valid command across eight bins
+    // (four coverage/culling classes x two material shader families).
     // The command's firstInstance is ALWAYS the original work slot and
     // cannot be interpreted as its command-buffer offset after binning.
     for (uint32_t cls = 0; cls < kRasterPipelineClassCount; ++cls) {
@@ -303,7 +302,8 @@ void CheckRasterPsoBins() {
         }
         CHECK(admitted == 1u);
     }
-    CHECK(MakeRasterBinnedCommand(geometry, 11u, 4u, 0u).instanceCount == 0u);
+    // An out-of-range raster class (>= 8) yields an empty command.
+    CHECK(MakeRasterBinnedCommand(geometry, 15u, 8u, 0u).instanceCount == 0u);
     CHECK(MakeRasterBinnedCommand(IndexedGeometry{}, 12u, 2u, 2u).instanceCount == 0u);
 }
 
