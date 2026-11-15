@@ -1308,6 +1308,8 @@ bool DeriveGltfAssets(const tinygltf::Model& model,
         if (config.meshlets) {
             smvk::MeshletConfig mlc{};
             mlc.enabled = true;
+            mlc.splitFactor = config.meshletSplitFactor;
+            mlc.minTriangles = config.meshletMinTris;
             importer.setMeshletConfig(mlc);
         }
         // Far-shading derivation (default off; see DeriveConfig::shaderLods).
@@ -2443,7 +2445,8 @@ std::string ImportFingerprintFor(const DeriveConfig& config) {
     std::ostringstream s;
     s << "meshlets=" << (config.meshlets ? 1 : 0) << ";lods=" << (config.lods ? 1 : 0)
       << ";shaderLods=" << (config.shaderLods ? 1 : 0) << ";lodError=" << std::fixed
-      << std::setprecision(4) << config.lodTargetError << ";lodRatios=";
+      << std::setprecision(4) << config.lodTargetError << ";meshletSplit=" << std::setprecision(3)
+      << config.meshletSplitFactor << ";meshletMinTris=" << config.meshletMinTris << ";lodRatios=";
     for (size_t i = 0; i < config.lodRatios.size(); ++i)
         s << (i ? "," : "") << std::setprecision(4) << config.lodRatios[i];
     // Implementation identity: the pipeline revision + the fixed meshlet

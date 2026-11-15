@@ -63,6 +63,7 @@ bool ParseOnOff(const std::string& v) {
 
 void Usage() {
     std::cout << "import.exe <input> [--meshlets on|off] [--lods on|off]\n"
+              << "    [--meshlet-split-factor 2.0] [--meshlet-min-tris 24]\n"
               << "    [--shader-lods on|off] [--force]\n"
               << "  (the raw-source -> engine-format converter:\n"
               << "   .glb/.gltf/.obj derives the .geometry + .material/.anim\n"
@@ -111,6 +112,16 @@ int main(int argc, char** argv) {
             if (!need(v))
                 return 1;
             config.meshlets = ParseOnOff(v);
+        } else if (a == "--meshlet-split-factor") {
+            std::string v;
+            if (!need(v))
+                return 1;
+            config.meshletSplitFactor = std::stof(v);
+        } else if (a == "--meshlet-min-tris") {
+            std::string v;
+            if (!need(v))
+                return 1;
+            config.meshletMinTris = (uint32_t)std::stoul(v);
         } else if (a == "--lods") {
             std::string v;
             if (!need(v))

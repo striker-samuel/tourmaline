@@ -52,6 +52,18 @@ struct MeshletConfig {
     // and the kd-tree fallback ignores facing entirely; the knight stayed
     // ~97% degenerate at 0 / 0.5 / 1.0).
     float coneWeight = 0.0f;
+    // SPATIAL LOCALITY (meshopt_buildMeshletsFlex): the classic builder
+    // fills every meshlet to its triangle cap even when that means merging
+    // DISCONNECTED regions — a meshlet straddling two body parts carries a
+    // huge non-containing bound, which is exactly what blows the sphere/cone
+    // cull and reads as holes/stretched triangles. A positive splitFactor
+    // switches to the flex builder, which stops growing a meshlet when the
+    // radius would have to grow too far for the extra triangles (splitFactor
+    // 2.0 is meshopt's recommended value). minTriangles is the lower tri
+    // budget the flex builder may stop at (0 = auto maxTriangles/4). The
+    // worst-case meshlet bound uses minTriangles, not maxTriangles.
+    uint32_t minTriangles = 0;
+    float splitFactor = 0.0f;
 };
 
 struct MeshletStats {

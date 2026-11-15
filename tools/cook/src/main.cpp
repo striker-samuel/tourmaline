@@ -157,10 +157,15 @@ struct Args {
     std::string lodRatios = "0.75,0.5,0.3,0.15";
     float lodError = 0.01f; // relative error budget per simplify call
     // Meshlet cook path (SETUP-TIME on/off only): the engine canon is
-    // fixed at 64 verts / 64 tris per meshlet (kMeshletMaxVertices /
+    // fixed at 64 verts / 96 tris per meshlet (kMeshletMaxVertices /
     // kMeshletMaxTriangles - one mesh-shader workgroup covers a whole
-    // meshlet, Northlight-style); there are no tuning flags.
+    // meshlet, Northlight-style). Spatial locality is opt-in via
+    // --meshlet-split-factor (meshopt_buildMeshletsFlex, see meshlet.h):
+    // a positive split factor prefers spatially-local meshlets over
+    // fully-packed ones so a meshlet never straddles disconnected regions.
     bool meshlets = false;
+    float meshletSplitFactor = 0.0f;
+    uint32_t meshletMinTris = 0;
     // KTX auto-convert (on by default): non-KTX sources transcode
     // in-process (stb decode + libktx write, `.ktx2` sidecar cached next
     // to the source). Off restores warn-and-skip for non-KTX payloads.
@@ -798,6 +803,18 @@ bool ParseArgs(int argc, char** argv, Args& out) {
                 return false;
             out.meshlets = (v == "on" || v == "1" || v == "true");
             out.explicitSet.insert("meshlets");
+        } else if (a == "--meshlet-split-factor") {
+            std::string v;
+            if (!need(v))
+                return false;
+            out.meshletSplitFactor = std::stof(v);
+            out.explicitSet.insert("meshletSplitFactor");
+        } else if (a == "--meshlet-min-tris") {
+            std::string v;
+            if (!need(v))
+                return false;
+            out.meshletMinTris = (uint32_t)std::stoul(v);
+            out.explicitSet.insert("meshletMinTris");
         } else if (a == "--collapse-static") {
             std::string v;
             if (!need(v))
@@ -1174,7 +1191,9 @@ void Usage() {
                 << "          carry the scenes; the pak cooks ALL of them.)\n"
                 << "          [--tour <scene.tour>] [--overdraw 1.05]\n"
                 << "          [--lods on|off] [--lod-ratios 0.75,0.5,0.3,0.15] [--lod-error 0.01]\n"
-                << "          [--meshlets on|off] (setup-time; fixed 64v/64t canon)\n"
+                << "          [--meshlets on|off] (setup-time; fixed 64v/96t canon)\n"
+                << "          [--meshlet-split-factor 2.0] [--meshlet-min-tris 24]\n"
+                << "              (spatial-locality flex builder; 0 = classic packed)\n"
                 << "          [--auto-ktx on|off]\n"
                 << "          [--collapse-static on|off]\n"
                 << "          [--lightmap on|off --lm-meters-per-texel 0.25 --lm-lobes 12\n"
@@ -4310,7 +4329,9 @@ int Run(const CookArgs& c) {
 
     smvk::MeshletConfig meshletCfg;
     meshletCfg.enabled = args.meshlets;
-    // (canon sizes + cone pressure ride the MeshletConfig defaults: 64v/64t, coneWeight 0)
+    meshletCfg.splitFactor = args.meshletSplitFactor;
+    meshletCfg.minTriangles = args.meshletMinTris;
+    // (canon sizes + cone pressure ride the MeshletConfig defaults: 64v/96t, coneWeight 0)
     // Meshlet DECOUPLING (--lightmap on): the lightmap stage below
     // re-parameterizes meshes (chart-uv + chart-id stamping + seam vertex
     // duplication + index remap), so meshlets must NOT be built before
@@ -4494,7 +4515,9 @@ int Run(const CookArgs& c) {
         opt.lodRatios = ParseLodRatios(args.lodRatios);
         opt.lodTargetError = std::clamp(args.lodError, 0.0f, 1.0f);
         meshletCfg.enabled = args.meshlets;
-        // (canon sizes + cone pressure ride the MeshletConfig defaults: 64v/64t, coneWeight 0)
+        meshletCfg.splitFactor = args.meshletSplitFactor;
+        meshletCfg.minTriangles = args.meshletMinTris;
+        // (canon sizes + cone pressure ride the MeshletConfig defaults: 64v/96t, coneWeight 0)
         importMeshletCfg = meshletCfg;
         if (args.lightmap)
             importMeshletCfg.enabled = false;

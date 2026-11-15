@@ -302,6 +302,11 @@ struct DeriveConfig {
     bool meshlets = true;    // TOURMALINE_EDITOR_MESHLETS parity
     bool lods = true;        // TOURMALINE_EDITOR_LODS parity
     bool shaderLods = false; // TOURMALINE_EDITOR_SHADERLODS parity (opt-in)
+    // Spatial-locality meshlet builder (meshopt_buildMeshletsFlex, see
+    // MeshletConfig): a positive splitFactor prefers spatially-local
+    // meshlets over fully-packed ones (0 = classic packed builder).
+    float meshletSplitFactor = 0.0f;
+    uint32_t meshletMinTris = 0;
     // The LOD chain settings (MeshOptConfig::lodRatios/lodTargetError —
     // the cook's historical --lod-ratios/--lod-error defaults; now owned
     // by the import). Coarsest-last ratios vs LOD0; the error is the

@@ -156,7 +156,19 @@ bool BuildMeshletsForUpload(const MeshData& upload,
 
     const float* positions = vcount > 0 ? &upload.vertices[0].pos.x : nullptr;
 
-    const size_t bound = meshopt_buildMeshletsBound(icount, maxVerts, maxTris);
+    // Spatial-locality mode (splitFactor > 0): the FLEX builder prefers
+    // spatially-local triangles over fully-packed meshlets, so a meshlet
+    // never straddles disconnected regions (whose union bound defeats the
+    // sphere/cone cull). minTriangles is the lower tri budget; the worst-case
+    // meshlet count is computed with minTriangles (NOT maxTris) per the
+    // meshoptimizer contract.
+    const bool localityMode = config.splitFactor > 0.0f;
+    const uint32_t minTris = localityMode
+                                 ? (config.minTriangles > 0 ? std::min(config.minTriangles, maxTris)
+                                                            : std::max(1u, maxTris / 4u))
+                                 : maxTris;
+
+    const size_t bound = meshopt_buildMeshletsBound(icount, maxVerts, minTris);
     if (bound == 0)
         return fail("meshopt_buildMeshletsBound returned 0");
 
@@ -164,17 +176,30 @@ bool BuildMeshletsForUpload(const MeshData& upload,
     std::vector<unsigned int> rawVerts(bound * maxVerts);
     std::vector<unsigned char> rawTris(bound * maxTris * 3);
 
-    const size_t count = meshopt_buildMeshlets(raw.data(),
-                                               rawVerts.data(),
-                                               rawTris.data(),
-                                               upload.indices.data(),
-                                               icount,
-                                               positions,
-                                               vcount,
-                                               sizeof(MeshVertex),
-                                               maxVerts,
-                                               maxTris,
-                                               config.coneWeight);
+    const size_t count = localityMode ? meshopt_buildMeshletsFlex(raw.data(),
+                                                                  rawVerts.data(),
+                                                                  rawTris.data(),
+                                                                  upload.indices.data(),
+                                                                  icount,
+                                                                  positions,
+                                                                  vcount,
+                                                                  sizeof(MeshVertex),
+                                                                  maxVerts,
+                                                                  minTris,
+                                                                  maxTris,
+                                                                  config.coneWeight,
+                                                                  config.splitFactor)
+                                      : meshopt_buildMeshlets(raw.data(),
+                                                              rawVerts.data(),
+                                                              rawTris.data(),
+                                                              upload.indices.data(),
+                                                              icount,
+                                                              positions,
+                                                              vcount,
+                                                              sizeof(MeshVertex),
+                                                              maxVerts,
+                                                              maxTris,
+                                                              config.coneWeight);
     if (count == 0)
         return fail("meshopt_buildMeshlets returned 0");
 
