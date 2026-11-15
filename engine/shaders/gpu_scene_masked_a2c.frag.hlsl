@@ -5,6 +5,7 @@
 // but output alpha controls hardware coverage, matching default_lit_a2c.
 #define ALPHA_TO_COVERAGE 1
 #define GFXMESH_FS_PASS 1
+#define GPU_SCENE_DITHER_RELATIVE 1
 #include "lit_dependencies.hlsli"
 #include "gfxmesh_lit_decl.hlsli"
 #include "lit_hooks_default.hlsli"

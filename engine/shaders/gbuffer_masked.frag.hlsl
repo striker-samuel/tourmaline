@@ -24,6 +24,9 @@ struct PSIn
     // value exactly like they keep background depth.
     [[vk::location(2)]] float3 worldPos : TEXCOORD1;
     [[vk::location(8)]] nointerpolation uint ditherCloseup : TEXCOORD7;
+#ifdef GPU_SCENE_GBUFFER
+    [[vk::location(11)]] float3 cameraRelativePos : TEXCOORD10;
+#endif
     // The lit family's double-sided flip (default_lit_body.hlsli): this
     // masked phase binds material-following cull (None for cutout cloth),
     // so back-facing fragments reach here carrying away-pointing
@@ -65,9 +68,16 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
     // the lit fade. First: discarded fragments skip the material fetch.
     if (IN.ditherCloseup != 0u)
     {
+#ifdef GPU_SCENE_GBUFFER
+        // The GPU-scene raster origin is the camera. Do not subtract
+        // float32 absolute positions at trillion-unit offsets.
+        if (!CloseupDitherKeepCameraRelative(IN.cameraRelativePos, pos.xy))
+            discard;
+#else
         FrameUniforms frameD = pc.frameUniforms.Get();
         if (!CloseupDitherKeep(IN.worldPos, frameD.cameraPos, pos.xy))
             discard;
+#endif
     }
 
 #ifdef GPU_SCENE_GBUFFER

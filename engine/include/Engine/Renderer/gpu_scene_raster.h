@@ -11,6 +11,7 @@
 
 #include <glm/glm.hpp>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <span>
@@ -77,6 +78,19 @@ struct RasterWorkDrawBuildPush {
     uint32_t aliasCount = 0;
     uint32_t padding = 0;
 };
+
+// CPU oracle for GPU Scene's camera-relative dither input. Subtract the
+// real double-precision eye before rounding to shader float: a float32
+// absolute-world position cannot express the 0.5m..3m dissolve at 1e12.
+[[nodiscard]] inline float GpuSceneCloseupDitherCoverage(
+    const glm::dvec3& worldPosition,
+    const glm::dvec3& cameraWorld) {
+    constexpr float hideM = 0.5f;
+    constexpr float solidM = 3.0f;
+    const glm::vec3 relative(worldPosition - cameraWorld);
+    const float distance = glm::length(relative);
+    return std::clamp((distance-hideM)/(solidM-hideM), 0.0f, 1.0f);
+}
 
 // Static-opaque raster VS input: world position is rebased against this
 // double-float origin before the relative VP is evaluated. The lit fragment

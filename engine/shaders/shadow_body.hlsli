@@ -43,6 +43,9 @@ struct ShadowPSIn
     // this one land on 5/6 depending on the stripped members).
     [[vk::location(8)]] nointerpolation uint ditherCloseup : TEXCOORD7;
 #ifdef GPU_SCENE_MASKED_DEPTH
+    [[vk::location(11)]] float3 cameraRelativePos : TEXCOORD10;
+#endif
+#ifdef GPU_SCENE_MASKED_DEPTH
     [[vk::location(7)]] nointerpolation uint meshMaterial : TEXCOORD5;
 #endif
 };
@@ -73,9 +76,14 @@ ShadowPSOut mainPS(float4 clipPos : SV_Position, ShadowPSIn IN)
     // fragments skip the material fetch entirely.
     if (IN.ditherCloseup != 0u)
     {
+#ifdef GPU_SCENE_MASKED_DEPTH
+        if (!CloseupDitherKeepCameraRelative(IN.cameraRelativePos, clipPos.xy))
+            discard;
+#else
         FrameUniforms frameD = pc.frameUniforms.Get();
         if (!CloseupDitherKeep(IN.worldPos, frameD.cameraPos, clipPos.xy))
             discard;
+#endif
     }
     // Window-depth guard: SV_Position.z can leave [0,1] (or go NaN) when
     // the VS z-squash clamp (shadow.vert: clip.z = max(z, 0) so casters

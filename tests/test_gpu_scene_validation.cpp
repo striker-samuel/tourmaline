@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 // Headless GPU Scene validation: view-space parity and struct ABI.
 #include <Engine/Renderer/gpu_scene_validation.h>
+#include <Engine/Renderer/gpu_scene_raster.h>
 
 #include <cmath>
 #include <cstdio>
@@ -27,6 +28,23 @@ int g_failures = 0;
 using namespace tour::gpu_scene;
 
 namespace {
+void CheckGpuSceneCloseupDither() {
+    const glm::dvec3 camera(1.0e12, -1.0e12, 1.0e12);
+    // The legacy float32 subtraction collapses all of these to zero
+    // around this origin. GPU Scene's relative varying must not.
+    CHECK(GpuSceneCloseupDitherCoverage(camera, camera) == 0.0f);
+    CHECK(GpuSceneCloseupDitherCoverage(
+        camera + glm::dvec3(0.5, 0.0, 0.0), camera) == 0.0f);
+    CHECK(std::abs(GpuSceneCloseupDitherCoverage(
+        camera + glm::dvec3(1.75, 0.0, 0.0), camera) - 0.5f) < 1e-6f);
+    CHECK(GpuSceneCloseupDitherCoverage(
+        camera + glm::dvec3(3.0, 0.0, 0.0), camera) == 1.0f);
+    CHECK(GpuSceneCloseupDitherCoverage(
+        camera + glm::dvec3(100.0, 0.0, 0.0), camera) == 1.0f);
+    CHECK(std::abs(GpuSceneCloseupDitherCoverage(
+        camera + glm::dvec3(0.0, -1.75, 0.0), camera) - 0.5f) < 1e-6f);
+}
+
 void CheckDoubleView() {
     const glm::dvec3 eye(1.0e12, -1.0e12, 0.0);
     // This double world->clip puts the eye at clip origin, including
@@ -389,6 +407,7 @@ void CheckLegacyRebasing() {
 } // namespace
 int main() {
     CheckDoubleView();
+    CheckGpuSceneCloseupDither();
     CheckMalformedDoubleFrusta();
     CheckStableCompaction();
     CheckIndirectAndAuthoritativeView();

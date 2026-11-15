@@ -57,6 +57,7 @@ struct VSOut {
     [[vk::location(8)]] nointerpolation uint ditherCloseup : TEXCOORD7;
     [[vk::location(9)]] nointerpolation uint userData : TEXCOORD8;
     [[vk::location(10)]] nointerpolation uint lightLayerMask : TEXCOORD9;
+    [[vk::location(11)]] float3 cameraRelativePos : TEXCOORD10;
 };
 VSOut mainVS(VSIn IN) {
     VSOut OUT = (VSOut)0;
@@ -89,6 +90,7 @@ VSOut mainVS(VSIn IN) {
     OUT.pos = mul(pcRV.view.Get().relativeViewProjection, float4(relative, 1.0f));
     const DoubleFloat3 origin = pcRV.view.Get().origin;
     OUT.worldPos = relative + origin.high.xyz + origin.low.xyz;
+    OUT.cameraRelativePos = relative;
     OUT.color = IN.color;
     OUT.uv = IN.uv;
     OUT.meshMaterial = inst.refs.z;
