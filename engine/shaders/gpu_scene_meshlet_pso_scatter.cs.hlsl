@@ -2,19 +2,23 @@
 // SPDX-License-Identifier: MIT
 // PSO-compacted meshlet indexed indirect draws: #301 block bases + wave ranks.
 // FirstInstance remains ORIGINAL GPU Scene submesh work slot, never the
-// compacted command ordinal. The CPU must reject flagged overflow before
-// admitting compact ownership. This kernel is staged, not yet dispatched.
+// compacted command ordinal. Host admission proves all four fixed bin
+// capacities before drawing; the indirect-count consumer reads exact counts.
 #include "gpu_platform.hlsli"
 #define MAX_CANDIDATES 1048576u
 #define MAX_BLOCKS 4096u
 #define CLASSES 4u
+#define MAX_COMMANDS (CLASSES*MAX_CANDIDATES)
 struct Candidate { uint4 draw; uint4 meta; };
 struct Candidates { Candidate rows[MAX_CANDIDATES]; };
 struct Offsets { uint values[MAX_CANDIDATES+1u]; };
 struct BlockTotals { uint values[MAX_BLOCKS*CLASSES]; };
 struct ClassCounts { uint counts[4]; uint overflow[4]; };
 struct Cmd { uint indexCount; uint instanceCount; uint firstIndex; int vertexOffset; uint firstInstance; };
-struct Commands { Cmd rows[MAX_CANDIDATES]; };
+// The command allocation holds FOUR per-class ranges of candidateCapacity.
+// A legal bin-3 destination can therefore be as large as 4M-1, even though
+// the source candidate stream is capped at 1M.
+struct Commands { Cmd rows[MAX_COMMANDS]; };
 struct Push {
     GPU_PTR_READ(Candidates) candidates;
     GPU_PTR_READ(Offsets) meshletOffsets;
@@ -62,7 +66,7 @@ void mainCS(uint3 gid: SV_GroupID,uint3 lane: SV_GroupThreadID) {
     const uint offset=pc.binOffsets[cls],capacity=pc.binCapacities[cls];
     if(offset>pc.commandCapacity || capacity>pc.commandCapacity-offset ||
        base>=capacity || localRank>=capacity-base ||
-       offset+base+localRank>=MAX_CANDIDATES) {
+       offset+base+localRank>=MAX_COMMANDS) {
         InterlockedOr(pc.classCounts.Get().overflow[cls],2u);
         return;
     }
