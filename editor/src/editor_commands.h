@@ -240,8 +240,10 @@ struct EditCmd {
     // parent in node2):
     uint32_t giVolumePriority = 0;    // higher = composited later = wins
     float giVolumeSpacing = 0.5f;     // dense probe grid spacing (m)
-    float giVolumeInsideFade = 0.1f;  // blend width inside each face (m)
-    float giVolumeOutsideFade = 0.1f; // blend width outside each face (m)
+    // Kept solely to parse historical .tour commands / editor undo data.
+    // Newly authored GI hulls ignore these fade values.
+    float giVolumeInsideFade = 0.0f;
+    float giVolumeOutsideFade = 0.0f;
     // SetGiVolumeAttr channel ("priority","spacing","inside","outside",
     // "position","rotation","size","name"). Value rides number
     // (scalars) / vec4 (triples: position, rotation-deg, size) /

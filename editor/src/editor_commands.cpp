@@ -1924,8 +1924,10 @@ void EditorApp::DraftCreateGiVolume() {
     c.svec = glm::vec3(8.0f); // 8 m authoring box
     c.giVolumePriority = 0;
     c.giVolumeSpacing = 0.5f;
-    c.giVolumeInsideFade = 0.1f;
-    c.giVolumeOutsideFade = 0.1f;
+    // Retired GI face fades: preserve the legacy command fields for
+    // replay, but newly authored regions never get artificial bleed.
+    c.giVolumeInsideFade = 0.0f;
+    c.giVolumeOutsideFade = 0.0f;
     Do(c);
 }
 
@@ -1957,8 +1959,10 @@ void EditorApp::ExecCreateGiVolume(EditCmd& c) {
     ::SceneGiVolume def{};
     def.priority = c.giVolumePriority;
     def.spacing = std::max(c.giVolumeSpacing, 1e-3f);
-    def.insideFade = std::max(c.giVolumeInsideFade, 0.0f);
-    def.outsideFade = std::max(c.giVolumeOutsideFade, 0.0f);
+    // Hard spatial membership. Legacy serialized fade values are still
+    // parsed for compatibility, but cannot alter new GI region bounds.
+    def.insideFade = 0.0f;
+    def.outsideFade = 0.0f;
     SetGiVolume(scene, uint32_t(created), def);
     if (m_replayingTour)
         m_tourCreatedGiVolumeNodes.push_back(uint32_t(created));

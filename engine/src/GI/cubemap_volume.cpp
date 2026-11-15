@@ -652,8 +652,11 @@ bool GiVolume::WriteToMemory(std::vector<uint8_t>& out, std::string& err) const 
         pf[i * 8 + 1] = p.normal.y;
         pf[i * 8 + 2] = p.normal.z;
         pf[i * 8 + 3] = p.d;
-        pf[i * 8 + 4] = p.insideFade;
-        pf[i * 8 + 5] = p.outsideFade;
+        // Face fades are legacy file slots only. Always emit zero: the
+        // hull is a hard GI ownership boundary, not an artist blend zone.
+        // Keeping the slots avoids an unnecessary GV6H format break.
+        pf[i * 8 + 4] = 0.0f;
+        pf[i * 8 + 5] = 0.0f;
         pf[i * 8 + 6] = 0.0f;
         pf[i * 8 + 7] = 0.0f;
     }
@@ -801,8 +804,11 @@ bool GiVolume::ReadFromMemory(std::span<const uint8_t> bytes, std::string& err) 
         GiVolumePlane& p = def.planes[i];
         p.normal = glm::vec3(pf[i * 8 + 0], pf[i * 8 + 1], pf[i * 8 + 2]);
         p.d = pf[i * 8 + 3];
-        p.insideFade = pf[i * 8 + 4];
-        p.outsideFade = pf[i * 8 + 5];
+        // Ignore historical per-face fade values on read. This also
+        // protects the packed shader half-space test from old asymmetric
+        // ramps whose midpoint does not match the geometric plane.
+        p.insideFade = 0.0f;
+        p.outsideFade = 0.0f;
     }
     def.priority = hdr.priority;
     def.name.clear();

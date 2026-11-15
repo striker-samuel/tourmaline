@@ -162,32 +162,9 @@ void EditorApp::DrawGiVolumeSection(uint32_t node) {
         m_pending.cmd.number = double(high);
     }
     endGiVolumeDrag("spacinghigh");
-    float inside = def.insideFade;
-    if (attr::Float("Inside fade",
-                    &inside,
-                    0.01f,
-                    0.0f,
-                    4.0f,
-                    "%.2f",
-                    "The interior weight fade band (m)")) {
-        beginGiVolumeDrag("inside");
-        WriteNodeGiVolumeAttr(node, "inside", glm::vec4(0), double(inside), {});
-        m_pending.cmd.number = double(inside);
-    }
-    endGiVolumeDrag("inside");
-    float outside = def.outsideFade;
-    if (attr::Float("Outside fade",
-                    &outside,
-                    0.01f,
-                    0.0f,
-                    4.0f,
-                    "%.2f",
-                    "The exterior falloff band beyond the volume (m)")) {
-        beginGiVolumeDrag("outside");
-        WriteNodeGiVolumeAttr(node, "outside", glm::vec4(0), double(outside), {});
-        m_pending.cmd.number = double(outside);
-    }
-    endGiVolumeDrag("outside");
+    // GI face-fade controls retired: spatial regions are hard ownership
+    // hulls. Door/window continuity comes from the lighting field, not
+    // arbitrary artist-authored bands around the volume boundary.
     // ---- Automatic grid layout: the optimizer's seeded result
     // (what the bake will build) + the inspector button.
     ImGui::SeparatorText("Grid layout");
