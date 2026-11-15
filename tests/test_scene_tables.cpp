@@ -1,4 +1,3 @@
-#include "Engine/Scene/ambient_mask_volume.h"
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
@@ -24,6 +23,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <Engine/GI/cubemap_volume.h> // the GI parity reference
+#include <Engine/Scene/ambient_mask_volume.h>
 #include <Engine/Scene/scene.h>
 #include <Engine/Scene/scene_tables.h>
 #include <Engine/Scene/spatial_volume.h>
@@ -73,13 +73,11 @@ int main() {
         Check(s.nodeNames.empty(), "offline scene omits auto and explicit names");
         Check(getNodeName(s, child).empty() && findNodeByName(s, "author-only") == -1,
               "offline name lookup fails closed");
-        s.localTransform[child] =
-            glm::translate(glm::mat4(1.0f), glm::vec3(3.0f, 2.0f, 1.0f));
+        s.localTransform[child] = glm::translate(glm::mat4(1.0f), glm::vec3(3.0f, 2.0f, 1.0f));
         markAsChanged(s, root);
         markAsChanged(s, child);
         recalculateGlobalTransforms(s);
-        Check(Near(s.globalTransform[child][3].x, 3.0f),
-              "offline transforms still finalized");
+        Check(Near(s.globalTransform[child][3].x, 3.0f), "offline transforms still finalized");
         Check(s.gpuSceneGlobalChanges.empty() && s.gpuSceneGlobalQueued.empty(),
               "offline scene omits GPU change journal");
         Scene editor;
@@ -715,30 +713,28 @@ int main() {
             sample.axis[1] = 0.75f; // local -X mostly open
         }
         AmbientMaskVolume mask;
-        mask.box = VolumeBoxFromGlobalTransform(
-            glm::scale(glm::mat4(1.0f), glm::vec3(10.0f)));
+        mask.box = VolumeBoxFromGlobalTransform(glm::scale(glm::mat4(1.0f), glm::vec3(10.0f)));
         mask.field = {2, 2, 2, data};
-        Check(Near(AmbientMaskVisibility(mask, glm::vec3(0), glm::vec3(1, 0, 0)),
-                   0.25f), "ambient mask samples local +X");
-        Check(Near(AmbientMaskVisibility(mask, glm::vec3(0), glm::vec3(-1, 0, 0)),
-                   0.75f), "ambient mask samples local -X");
-        Check(Near(AmbientMaskVisibility(mask, glm::vec3(10), glm::vec3(1, 0, 0)),
-                   1.0f), "ambient mask leaves positions outside untouched");
-        Check(Near(AmbientMaskVisibility(mask, glm::vec3(0), glm::vec3(0, 1, 0)),
-                   1.0f), "ambient mask other axes remain open");
+        Check(Near(AmbientMaskVisibility(mask, glm::vec3(0), glm::vec3(1, 0, 0)), 0.25f),
+              "ambient mask samples local +X");
+        Check(Near(AmbientMaskVisibility(mask, glm::vec3(0), glm::vec3(-1, 0, 0)), 0.75f),
+              "ambient mask samples local -X");
+        Check(Near(AmbientMaskVisibility(mask, glm::vec3(10), glm::vec3(1, 0, 0)), 1.0f),
+              "ambient mask leaves positions outside untouched");
+        Check(Near(AmbientMaskVisibility(mask, glm::vec3(0), glm::vec3(0, 1, 0)), 1.0f),
+              "ambient mask other axes remain open");
         Check(Near(AmbientMaskCombine(0.5f, 0.6f), 0.5f),
               "ambient mask overlap does not multiply darkness");
 
         const glm::mat4 rotated =
-            glm::rotate(glm::mat4(1.0f), glm::radians(90.0f),
-                        glm::vec3(0, 1, 0)) *
+            glm::rotate(glm::mat4(1.0f), glm::radians(90.0f), glm::vec3(0, 1, 0)) *
             glm::scale(glm::mat4(1.0f), glm::vec3(10.0f));
         mask.box = VolumeBoxFromGlobalTransform(rotated);
-        Check(Near(AmbientMaskVisibility(mask, glm::vec3(0), mask.box.axes[0]),
-                   0.25f), "ambient mask respects rotated local axes");
+        Check(Near(AmbientMaskVisibility(mask, glm::vec3(0), mask.box.axes[0]), 0.25f),
+              "ambient mask respects rotated local axes");
         mask.field.nx = 0;
-        Check(Near(AmbientMaskVisibility(mask, glm::vec3(0), glm::vec3(1, 0, 0)),
-                   1.0f), "invalid ambient field falls back to unoccluded");
+        Check(Near(AmbientMaskVisibility(mask, glm::vec3(0), glm::vec3(1, 0, 0)), 1.0f),
+              "invalid ambient field falls back to unoccluded");
     }
 
     if (g_failures > 0) {
