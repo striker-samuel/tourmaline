@@ -26,6 +26,7 @@ struct GsMeshVertex {
     [[vk::location(8)]] nointerpolation uint ditherCloseup : TEXCOORD7;
     [[vk::location(9)]] nointerpolation uint userData : TEXCOORD8;
     [[vk::location(10)]] nointerpolation uint lightLayerMask : TEXCOORD9;
+    [[vk::location(11)]] float3 cameraRelativePos : TEXCOORD10;
 };
 
 // Per-INSTANCE transform frame, hoisted out of the per-vertex FetchVertex
@@ -82,6 +83,7 @@ GsMeshVertex FetchVertex(uint vertexId,
         +f.a*local.x+f.b*local.y+f.c*local.z;
     v.pos=mul(f.viewProj,float4(relative,1.0f));
     v.worldPos=relative+f.originHigh+f.originLow;
+    v.cameraRelativePos = relative;
     v.color=float4(color&255u,(color>>8u)&255u,
                    (color>>16u)&255u,(color>>24u)&255u)*(1.0f/255.0f);
     v.uv=float2(f16tof32(uv&65535u),f16tof32(uv>>16u));
