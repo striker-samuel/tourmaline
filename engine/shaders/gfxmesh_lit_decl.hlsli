@@ -48,6 +48,9 @@ struct PSIn
     // ditherCloseup above.
     [[vk::location(9)]] nointerpolation uint userData : TEXCOORD8;
     [[vk::location(10)]] nointerpolation uint lightLayerMask : TEXCOORD9;
+#ifdef GPU_SCENE_DITHER_RELATIVE
+    [[vk::location(11)]] float3 cameraRelativePos : TEXCOORD10;
+#endif
     bool isFrontFace : SV_IsFrontFace;
 };
 #define GFX_MATERIAL_ID (IN.meshMaterial)
