@@ -11433,6 +11433,24 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                 .entryPoint = "mainPS",
                                 .stage = smvk::ShaderStage::Fragment};
                 m_gpuSceneRasterProgram = {.shaders = {vs, fs}, .shaderCount = 2};
+                // ProjectLit family twin: load the project lit FS (if the
+                // project compiled it) and forge the family Main program.
+                // Never substitute the stock FS when the family is requested
+                // but the module is missing — admission gates on this program.
+                if (m_gpuSceneRasterProjectLitFsModule.empty())
+                    try {
+                        m_gpuSceneRasterProjectLitFsModule = m_context->CreateShaderModule(
+                            smvk::shaders::Read(
+                                "content/shaders/gfxmesh_project_lit.frag.hlsl.spv"),
+                            "gpuSceneRasterProjectLitFS");
+                    } catch (...) {
+                    }
+                if (!m_gpuSceneRasterProjectLitFsModule.empty()) {
+                    smvk::Shader projFs{.module = m_gpuSceneRasterProjectLitFsModule,
+                                        .entryPoint = "mainPS",
+                                        .stage = smvk::ShaderStage::Fragment};
+                    m_gpuSceneRasterProjectLitProgram = {.shaders = {vs, projFs}, .shaderCount = 2};
+                }
                 m_gpuSceneRasterDepthProgram = {.shaders = {vs}, .shaderCount = 1};
                 if (m_gpuSceneRasterGbufferFsModule.empty())
                     m_gpuSceneRasterGbufferFsModule = m_context->CreateShaderModule(
@@ -11783,6 +11801,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             uint32_t doubleSidedCount = 0;
             uint32_t maskedBackCount = 0;
             uint32_t maskedDoubleSidedCount = 0;
+            uint32_t projectLitCount = 0;
             const auto gfxTables =
                 GpuSceneIndexedTables(m_gfxRenderer.State(), m_gpuScenePhysicalIndexedRanges);
             constexpr uint32_t requiredFlags =
@@ -11831,12 +11850,19 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 const smvk::Material* itemMaterial = m_world->GetMaterial(item.material);
                 const bool materialRasterEligible =
                     itemMaterial && tour::gpu_scene::OpaqueLayeredRasterEligible(*itemMaterial);
+                // ProjectLit admission: the family rides the SAME indexed
+                // work stream but bins into classes 4-7 with the project lit
+                // FS. Never render ProjectLit geometry with StandardLit
+                // merely because the family module is missing — gate on the
+                // raster family program and keep such materials on the direct
+                // path (which itself falls back loudly to StandardLit).
+                const bool projectLitReady = m_gpuSceneRasterProjectLitProgram.shaderCount == 2;
                 const bool commonEligible =
                     key.registration != 0 && bool(instance) &&
                     tour::gpu_scene::RasterIndexedInstanceReady(m_gpuSceneDatabase, instance) &&
                     item.material != smvk::World::kInvalidIndex && materialRasterEligible &&
                     item.materialInstance == 0 && m_world->MaterialUserData(item.material) == 0 &&
-                    !m_gfxRenderer.MaterialProjectFamily(item.material) &&
+                    (!m_gfxRenderer.MaterialProjectFamily(item.material) || projectLitReady) &&
                     item.node < m_world->scene.globalTransform.size() &&
                     // Closeup dither is inherited from ancestors and
                     // changes with camera distance; never GPU-own it
@@ -11938,6 +11964,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     doubleSidedCount += !masked && twoSided ? 1u : 0u;
                     maskedBackCount += masked && !twoSided ? 1u : 0u;
                     maskedDoubleSidedCount += masked && twoSided ? 1u : 0u;
+                    projectLitCount += m_gfxRenderer.MaterialProjectFamily(item.material) ? 1u : 0u;
                 }
                 // KD tally: the mirror tracks the NEW chain (double-sided
                 // is admitted + binned above, no longer a group-4 reject).
@@ -11951,9 +11978,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     const bool flagsOk = (item.flags & requiredFlags) == requiredFlags &&
                                          (item.flags & forbiddenFlags) == 0;
                     const bool c = b && flagsOk;
-                    const bool d = c && materialRasterEligible && item.materialInstance == 0 &&
-                                   m_world->MaterialUserData(item.material) == 0 &&
-                                   !m_gfxRenderer.MaterialProjectFamily(item.material);
+                    const bool d =
+                        c && materialRasterEligible && item.materialInstance == 0 &&
+                        m_world->MaterialUserData(item.material) == 0 &&
+                        (!m_gfxRenderer.MaterialProjectFamily(item.material) || projectLitReady);
                     const bool e5a = d && item.node < m_world->scene.globalTransform.size() &&
                                      !IsDitherCloseupNode(m_world->scene, int(item.node)) && mesh &&
                                      !mesh->skinned;
@@ -11986,6 +12014,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             m_gpuSceneRasterDoubleSidedCount = snapshotValid ? doubleSidedCount : 0u;
             m_gpuSceneRasterMaskedBackCount = snapshotValid ? maskedBackCount : 0u;
             m_gpuSceneRasterMaskedDoubleSidedCount = snapshotValid ? maskedDoubleSidedCount : 0u;
+            m_gpuSceneRasterProjectLitCount = snapshotValid ? projectLitCount : 0u;
             m_gpuSceneRasterLegacyCount = uint32_t(total) - m_gpuSceneRasterCompatibleCount -
                                           m_gpuSceneTransparentCompatibleCount;
             m_gpuSceneRasterEligible = snapshotValid && compatibleCount > 0;
@@ -12029,6 +12058,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         m_gpuSceneRasterDoubleSidedCount = 0;
         m_gpuSceneRasterMaskedBackCount = 0;
         m_gpuSceneRasterMaskedDoubleSidedCount = 0;
+        m_gpuSceneRasterProjectLitCount = 0;
         m_gpuSceneRasterLegacyCount = m_world ? uint32_t(m_world->drawItems.size()) : 0u;
         m_gpuSceneRasterOwnership.Reset();
         // Transient publication failures must not keep stale eligibility.
@@ -12637,6 +12667,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 bool taskReady = false;
                 if (s_gpuSceneTaskMesh && gpuSceneRasterMode && workReady && rasterReady &&
                     m_gpuSceneTaskGeometryIdsCompatible &&
+                    m_gpuSceneRasterProjectLitCount == 0 && // no meshlet ProjectLit twins yet
                     m_gfxRenderer.State().indexedRangesResident && smvk::SupportsMeshShaders() &&
                     m_gpuSceneTaskMainProgram.shaderCount == 3 &&
                     (gpuSceneGiVariant == 0u ||
@@ -15006,7 +15037,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                                    m_gpuSceneRasterMaskedDepthProgram,
                                                    m_gpuSceneRasterMaskedGbufferProgram,
                                                    m_gpuSceneRasterMaskedBackCount != 0,
-                                                   m_gpuSceneRasterMaskedDoubleSidedCount != 0);
+                                                   m_gpuSceneRasterMaskedDoubleSidedCount != 0,
+                                                   m_gpuSceneRasterProjectLitCount != 0);
             if (!seedRecorded)
                 gpuTemporalReady = false;
             // Prime MAIN depth/G-buffer with the same prev-visible seed.
@@ -15029,7 +15061,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                                        m_gpuSceneRasterMaskedDepthProgram,
                                                        m_gpuSceneRasterMaskedGbufferProgram,
                                                        m_gpuSceneRasterMaskedBackCount != 0,
-                                                       m_gpuSceneRasterMaskedDoubleSidedCount != 0);
+                                                       m_gpuSceneRasterMaskedDoubleSidedCount != 0,
+                                                       m_gpuSceneRasterProjectLitCount != 0);
                 if (!primed)
                     gpuTemporalReady = false;
                 else
@@ -15319,7 +15352,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                               m_gpuSceneRasterMaskedDepthProgram,
                               m_gpuSceneRasterMaskedGbufferProgram,
                               m_gpuSceneRasterMaskedBackCount != 0,
-                              m_gpuSceneRasterMaskedDoubleSidedCount != 0);
+                              m_gpuSceneRasterMaskedDoubleSidedCount != 0,
+                              m_gpuSceneRasterProjectLitCount != 0);
                 gpuDepthPrimed = remainderPrimed;
                 fc.gpuSceneDepthPrimed = gpuDepthPrimed;
             }
@@ -15667,8 +15701,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                      motionRasterTwoSided = m_gpuSceneRasterDoubleSidedCount != 0,
                                      motionRasterMasked = m_gpuSceneRasterMaskedBackCount != 0,
                                      motionRasterMaskedTwoSided =
-                                         m_gpuSceneRasterMaskedDoubleSidedCount !=
-                                         0](smvk::CommandBuffer& cmd) {
+                                         m_gpuSceneRasterMaskedDoubleSidedCount != 0,
+                                     motionRasterProjectLit = m_gpuSceneRasterProjectLitCount !=
+                                                              0](smvk::CommandBuffer& cmd) {
             // GPU context + pass scope come from RenderGraph::Execute.
             // 1x depth stays read-only in both phases (prepass owns it).
             const smvk::DepthSettings motionDepth{
@@ -15713,17 +15748,25 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 };
                 bindMotion(smvk::CullMode::Back);
                 drawMotionBin(0u);
+                if (motionRasterProjectLit)
+                    drawMotionBin(4u);
                 if (motionRasterTwoSided) {
                     bindMotion(smvk::CullMode::None);
                     drawMotionBin(1u);
+                    if (motionRasterProjectLit)
+                        drawMotionBin(5u);
                 }
                 if (motionRasterMasked) {
                     bindMotion(smvk::CullMode::Back);
                     drawMotionBin(2u);
+                    if (motionRasterProjectLit)
+                        drawMotionBin(6u);
                 }
                 if (motionRasterMaskedTwoSided) {
                     bindMotion(smvk::CullMode::None);
                     drawMotionBin(3u);
+                    if (motionRasterProjectLit)
+                        drawMotionBin(7u);
                 }
             }
             // Phase 2 masked pipeline: cull follows the material raster so
@@ -16409,6 +16452,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     const bool sceneRasterTwoSided = m_gpuSceneRasterDoubleSidedCount != 0;
     const bool sceneRasterMasked = m_gpuSceneRasterMaskedBackCount != 0;
     const bool sceneRasterMaskedTwoSided = m_gpuSceneRasterMaskedDoubleSidedCount != 0;
+    const bool sceneRasterProjectLit = m_gpuSceneRasterProjectLitCount != 0;
     const smvk::BufferHandle sceneRasterCommands = m_gpuSceneRasterIndirect;
     const uint32_t sceneRasterCommandCount = m_gpuSceneRasterDrawCapacity;
     const tour::gpu_scene::RasterVsPush sceneRasterVsPush{
@@ -16430,6 +16474,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                sceneRasterTwoSided,
                                sceneRasterMasked,
                                sceneRasterMaskedTwoSided,
+                               sceneRasterProjectLit,
                                sceneRasterCommands,
                                sceneRasterCommandCount,
                                sceneRasterVsPush,
@@ -17023,6 +17068,49 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                        sceneMaskedMsaa,
                                        smvk::RasterSettings{.cullMode = smvk::CullMode::None});
                 drawBin(3u);
+            }
+            // ProjectLit family (classes 4-7): the SAME coverage/culling matrix
+            // with the project-authored lit FS. Masked ProjectLit shades through
+            // the lit body alpha test (no A2C twin yet - step 4 follow-up).
+            if (sceneRasterProjectLit) {
+                cmd.BindRenderPipeline(m_gpuSceneRasterProjectLitProgram,
+                                       ::tour::vertex_layouts::Static,
+                                       opaqueDepth,
+                                       noStencil,
+                                       smvk::BlendSettings::Opaque(),
+                                       msaaSettings,
+                                       smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
+                drawBin(4u);
+                if (sceneRasterTwoSided) {
+                    cmd.BindRenderPipeline(m_gpuSceneRasterProjectLitProgram,
+                                           ::tour::vertex_layouts::Static,
+                                           opaqueDepth,
+                                           noStencil,
+                                           smvk::BlendSettings::Opaque(),
+                                           msaaSettings,
+                                           smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+                    drawBin(5u);
+                }
+                if (sceneRasterMasked) {
+                    cmd.BindRenderPipeline(m_gpuSceneRasterProjectLitProgram,
+                                           ::tour::vertex_layouts::Static,
+                                           opaqueDepth,
+                                           noStencil,
+                                           smvk::BlendSettings::Opaque(),
+                                           msaaSettings,
+                                           smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
+                    drawBin(6u);
+                }
+                if (sceneRasterMaskedTwoSided) {
+                    cmd.BindRenderPipeline(m_gpuSceneRasterProjectLitProgram,
+                                           ::tour::vertex_layouts::Static,
+                                           opaqueDepth,
+                                           noStencil,
+                                           smvk::BlendSettings::Opaque(),
+                                           msaaSettings,
+                                           smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+                    drawBin(7u);
+                }
             }
             cmd.EndPrimitiveCountRegular(0u);
             cmd.WriteStageTimestamp(smvk::kGpuStageMainDraw, false);

@@ -136,7 +136,9 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
                                ((inst.value.refs.w & GPU_SCENE_INSTANCE_DOUBLE_SIDED) != 0u
                                     ? 1u : 0u) |
                                ((inst.value.refs.w & GPU_SCENE_INSTANCE_MASKED) != 0u
-                                    ? 2u : 0u), 0u);
+                                    ? 2u : 0u) |
+                               ((inst.value.refs.w & GPU_SCENE_INSTANCE_PROJECT_LIT) != 0u
+                                    ? 4u : 0u), 0u);
         selectedWork = workCount;
         found = true;
     }

@@ -79,7 +79,7 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     // outside the reserved command range, including an overflowed prefix.
     const uint stride = pc.binStride;
     if (stride != 0u && stride <= GS_RASTER_MAX_WORK &&
-        pc.commandCapacity == 4u * stride &&
+        pc.commandCapacity == 8u * stride &&
         pc.candidateCount <= GS_RASTER_MAX_CANDIDATES) {
         const uint bin = i / stride;
         const uint workIndex = i % stride;

@@ -69,6 +69,11 @@ inline constexpr uint32_t InstanceFlagMasked = 1u << 10;
 // MASK bit: the fragment shader needs to know whether to screen-door, while
 // the depth and main passes must choose MASK pipelines even for opaque mats.
 inline constexpr uint32_t InstanceFlagDitherCloseup = 1u << 13;
+// Material shader family (World::SetMaterialShaderFamily). ProjectLit rides
+// the SAME GPU-scene culling/LOD/work stream as StandardLit; only the Main
+// fragment shader and its material payload change. This bit extends the four
+// coverage/culling raster classes to eight (bit 2 = family).
+inline constexpr uint32_t InstanceFlagProjectLit = 1u << 14;
 
 [[nodiscard]] constexpr uint32_t WithCloseupDitherRasterFlags(uint32_t flags,
                                                               bool ditherCloseup) noexcept {
