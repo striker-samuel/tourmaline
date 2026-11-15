@@ -13,6 +13,13 @@
 [![CI](https://github.com/striker-samuel/tourmaline/actions/workflows/ci.yml/badge.svg)](https://github.com/striker-samuel/tourmaline/actions/workflows/ci.yml)
 [![Tests](https://github.com/striker-samuel/tourmaline/actions/workflows/tests.yml/badge.svg)](https://github.com/striker-samuel/tourmaline/actions/workflows/tests.yml)
 
+> # ⚠️ NOT STABLE — ACTIVE DEVELOPMENT
+>
+> **Tourmaline is under heavy, ongoing development.** The renderer, APIs, asset
+> formats, and runtime behavior are changing frequently and **may be broken at
+> any moment** — including on `master`. Do not build production work on the
+> current state.
+
 **A rendering and content framework for C++20 applications, built on Vulkan 1.3.**
 
 Tourmaline provides an opinionated GPU-driven renderer, a scene and asset pipeline, and the runtime infrastructure needed to bring authored content into native applications.
