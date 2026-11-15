@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 // Device-free GPU scene geometry/LOD metadata contracts.
 #include <Engine/Renderer/gpu_scene_world.h>
+#include <Engine/Renderer/gpu_scene_cpu_lod.h>
+#include <limits>
 #include <array>
 #include <cstdint>
 #include <cstdio>
@@ -174,11 +176,45 @@ void CheckMeshResidency() {
     CHECK(db.lods.LiveCount() == 0 && db.submeshes.LiveCount() == 0);
     CHECK(db.meshes.PendingRows(0) > 0);
 }
+
+void CheckCpuShallowLodOracle() {
+    using namespace tour::gpu_scene::cpu_lod;
+    const std::array<ShallowLevel, 3> levels{{
+        {0.0f, true, true, true},
+        {0.5f, true, true, true},
+        {2.0f, true, true, true},
+    }};
+    auto selected = Select(levels, 1.0f, 1.0f);
+    CHECK(selected.desired == 1u && selected.resident == 1u);
+    selected = Select(levels, 0.1f, 1.0f);
+    CHECK(selected.desired == 2u && selected.resident == 2u);
+    selected = Select(levels, 100.0f, 1.0f);
+    CHECK(selected.desired == 0u && selected.resident == 0u);
+    auto unavailable = levels;
+    unavailable[1].resident = false;
+    selected = Select(unavailable, 1.0f, 1.0f);
+    CHECK(selected.desired == 1u && selected.resident == 0u);
+    unavailable[0].resident = false;
+    selected = Select(unavailable, 1.0f, 1.0f);
+    CHECK(selected.desired == 1u && selected.resident == 2u);
+    unavailable[2].rasterEligible = false;
+    selected = Select(unavailable, 1.0f, 1.0f);
+    CHECK(!selected.valid() && selected.desired == 1u);
+    selected = Select(levels, 0.0f, 1.0f);
+    CHECK(!selected.valid() && selected.desired == InvalidLod);
+    selected = Select(levels, std::numeric_limits<float>::infinity(), 1.0f);
+    CHECK(!selected.valid());
+    auto missingBounds = levels;
+    missingBounds[2].boundsKnown = false;
+    CHECK(!Select(missingBounds, 1.0f, 1.0f).valid());
+    CHECK(!Select(std::span<const ShallowLevel>{}, 1.0f, 1.0f).valid());
+}
 } // namespace
 int main() {
     CheckCallerSpanAllocations();
     CheckContiguousAllocations();
     CheckMeshResidency();
+    CheckCpuShallowLodOracle();
     std::printf("checks=%d failures=%d\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }
