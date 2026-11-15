@@ -17120,11 +17120,13 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         }
         // ---- Opaque + MASK cutout (alpha-tested in shader) ----
         // Debug views replace the shaded opaque leg:
-        //   - The FLAT views (Meshlets F3 / LODs F5) intentionally bypass
-        //     the GPU chain and draw EVERY instance direct — HZB-culled
-        //     clusters stay visible here to judge exactly what the filter
-        //     dropped (per-meshlet / per-LOD colors; the bind pose for
-        //     skinned meshes — they judge culling, not the animation).
+        //   - The FLAT views (Meshlets F3 / LODs F5) ride the GPU Scene
+        //     chain for the GPU-owned survivors (per-meshlet / per-LOD flat
+        //     colors) AND draw every LEGACY source direct through the same
+        //     MeshDebugProgram (per-meshlet / per-LOD flat colors; skinned
+        //     meshes pose to the deformed heap via the skin tail below, so
+        //     their meshlets show ON the animated character, not the bind
+        //     pose).
         //   - The SHADING views (Unlit F2 / Cascades F4 / VertexColors F6 /
         //     UV F9/F10 / POM F11 / SsrMask) are ONE flat FS swapped over
         //     the SAME vertex path: they ride the GPU-driven leg exactly
@@ -17230,10 +17232,14 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         };
         // Meshlets (F3) now rides the GPU Scene task/mesh chain (surviving
         // meshlets, per-meshlet flat color via the debug program). This
-        // direct "draw every instance" path is the legacy fallback and never
-        // fires while the GPU-scene debug program is loaded (the program
-        // gate above resets the view to Lit when it is missing).
-        if (meshletDbg && m_gpuSceneTaskDebugProgram.shaderCount != 3) {
+        // direct "draw every instance" path draws the LEGACY sources the GPU
+        // chain cannot own — skinned meshes (which pose to the deformed heap
+        // via the skin tail below) and every other direct-only instance. It
+        // fires when the GPU-scene debug program is missing OR any source is
+        // still legacy-owned (e.g. a skinned character whose meshlets would
+        // otherwise never appear in this view).
+        if (meshletDbg &&
+            (m_gpuSceneTaskDebugProgram.shaderCount != 3 || m_gpuSceneRasterLegacyCount != 0)) {
             cmd.BindRenderPipeline(
                 m_gfxRenderer.MeshDebugProgram(),
                 ::tour::vertex_layouts::Static,
@@ -17262,7 +17268,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 [&](const smvk::World::RenderItem& item) {
                     if (sceneRasterActive &&
                         m_gpuSceneRasterOwnership.OwnsGpu(m_gpuSceneSync.SourceForNode(item.node)))
-                        return; // GPU indexed Main owns this exact source
+                        return; // GPU task/indexed Main owns this exact source
                     if (item.material == smvk::World::kInvalidIndex)
                         return;
                     const uint32_t worldMesh = item.mesh;
@@ -17334,10 +17340,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         }
         // LOD debug view (F5): now rides the GPU Scene task/mesh chain too
         // (surviving meshlets colored by their selected LOD). This direct
-        // "draw every instance" path is the legacy fallback, never firing
-        // while the GPU-scene debug program is loaded (the gate above resets
-        // the view to Lit when it is missing).
-        if (lodDbg && m_gpuSceneTaskDebugProgram.shaderCount != 3) {
+        // "draw every instance" path draws the LEGACY sources (skinned meshes
+        // posing to the deformed heap) alongside that chain, so a skinned
+        // character still shows up here.
+        if (lodDbg &&
+            (m_gpuSceneTaskDebugProgram.shaderCount != 3 || m_gpuSceneRasterLegacyCount != 0)) {
             cmd.BindRenderPipeline(
                 m_gfxRenderer.MeshDebugProgram(),
                 ::tour::vertex_layouts::Static,
@@ -17353,6 +17360,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
                     smvk::IteratorFlagBit_StaticVertexFmt,
                 [&](const smvk::World::RenderItem& item) {
+                    if (sceneRasterActive &&
+                        m_gpuSceneRasterOwnership.OwnsGpu(m_gpuSceneSync.SourceForNode(item.node)))
+                        return; // GPU task/indexed Main owns this exact source
                     if (item.material == smvk::World::kInvalidIndex)
                         return;
                     const glm::mat4& model = m_world->scene.globalTransform[item.node];
@@ -17385,13 +17395,16 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     }
                 });
         }
-        if (!bypassFilter && (!sceneRasterActive || m_gpuSceneRasterLegacyCount != 0)) {
+        // The flat debug views (Meshlets F3 / LODs F5) skip this lit leg:
+        // every opaque source is already drawn exactly once flat — the GPU
+        // task/indexed chains drew the GPU-owned survivors and the direct
+        // meshdebug legs above drew the LEGACY (skinned) sources — so a lit
+        // redraw here would double-draw and overwrite the flat colors.
+        if (!meshletDbg && !lodDbg && !bypassFilter &&
+            (!sceneRasterActive || m_gpuSceneRasterLegacyCount != 0)) {
             // UINT32_MAX forces a bind check on the first node; an
             // identical state is deduped by the CommandBuffer's
             // current-pipeline check, so this costs nothing.
-            // (The flat debug views skip this leg: they drew
-            // everything direct above, filter bypassed so culled
-            // data stays visible.)
             // Shader LODs: the far-shading program is tracked alongside the
             // material because the same material can shade lit (near level)
             // and quality-specialized (farthest level) in one material-sorted
