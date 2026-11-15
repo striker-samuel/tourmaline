@@ -16,8 +16,8 @@
 #include <meshoptimizer.h>
 
 #include <Engine/App/cluster.h>
-#include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/mesh_preparation_policy.h>
+#include <Engine/Asset/meshlet.h>
 #include <Engine/GI/triangle_bvh.h>
 #include <Engine/Scene/scene.h>
 
@@ -199,10 +199,10 @@ void GenerateTangents(MeshData& upload) {
 }
 
 bool OptimizeMeshData(MeshData& upload,
-                              const MeshOptConfig& config,
-                              uint32_t lodGroupId,
-                              MeshOptStats* outStats,
-                              LodInfo* outLod) {
+                      const MeshOptConfig& config,
+                      uint32_t lodGroupId,
+                      MeshOptStats* outStats,
+                      LodInfo* outLod) {
     MeshOptStats stats;
     stats.lodGroupId = lodGroupId;
 
@@ -234,8 +234,7 @@ bool OptimizeMeshData(MeshData& upload,
     // MeshVertex must be bit-comparable for the weld (no padding bytes).
     // chartId rides the weld key: seam twins (identical but for chart)
     // never merge — the split the stamp created survives optimization.
-    static_assert(sizeof(MeshVertex) == 76,
-                  "MeshVertex layout changed; update weld assumptions");
+    static_assert(sizeof(MeshVertex) == 76, "MeshVertex layout changed; update weld assumptions");
     static_assert(alignof(MeshVertex) <= 4, "MeshVertex alignment changed");
 
     stats.acmrBefore = ComputeAcmr(upload.indices.data(), icount, vcount);
@@ -272,13 +271,17 @@ bool OptimizeMeshData(MeshData& upload,
                                                       vcount,
                                                       sizeof(MeshVertex));
         }
-        if (uniqueCount > 0 && uniqueCount < vcount) {
+        // The remap is ALWAYS a first-use reorder (meshopt_generateVertexRemap
+        // assigns ids in index-referral order, not just dedup), so the vertices
+        // MUST be reordered whenever uniqueCount > 0 — reordering only when
+        // uniqueCount < vcount (a dedup happened) left the vertices in place
+        // while the index remap below still rewrote the ids, which scrambled the
+        // triangle winding (a quad's two triangles facing opposite ways -> the
+        // "quad renders as a triangle" + torn skinned meshes).
+        if (uniqueCount > 0) {
             std::vector<MeshVertex> welded(uniqueCount);
-            meshopt_remapVertexBuffer(welded.data(),
-                                      upload.vertices.data(),
-                                      vcount,
-                                      sizeof(MeshVertex),
-                                      remap.data());
+            meshopt_remapVertexBuffer(
+                welded.data(), upload.vertices.data(), vcount, sizeof(MeshVertex), remap.data());
             upload.vertices = std::move(welded);
             if (hasSkin) {
                 std::vector<PackedSkinInfluences> weldedSkin(uniqueCount);
@@ -330,11 +333,8 @@ bool OptimizeMeshData(MeshData& upload,
         meshopt_optimizeVertexFetchRemap(
             remap.data(), reinterpret_cast<const unsigned int*>(indices.data()), icount, nvcount);
         std::vector<MeshVertex> reordered(nvcount);
-        meshopt_remapVertexBuffer(reordered.data(),
-                                  upload.vertices.data(),
-                                  nvcount,
-                                  sizeof(MeshVertex),
-                                  remap.data());
+        meshopt_remapVertexBuffer(
+            reordered.data(), upload.vertices.data(), nvcount, sizeof(MeshVertex), remap.data());
         const bool hasSkin = !upload.skin.empty() && upload.skin.size() == nvcount;
         std::vector<PackedSkinInfluences> reorderedSkin;
         if (hasSkin) {
@@ -941,7 +941,8 @@ bool CookLodSiblings(Cluster& cluster,
         bool largeInstance = false;
         for (const MeshRow& instance : scene.tables.meshes) {
             if (instance.mesh == meshIdx && instance.node < scene.globalTransform.size() &&
-                EligibleForSpatialDerivatives(upload->aabbMin, upload->aabbMax,
+                EligibleForSpatialDerivatives(upload->aabbMin,
+                                              upload->aabbMax,
                                               upload->indices.size(),
                                               scene.globalTransform[instance.node])) {
                 largeInstance = true;
