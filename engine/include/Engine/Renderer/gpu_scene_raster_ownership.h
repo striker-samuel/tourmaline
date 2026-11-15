@@ -62,12 +62,19 @@ namespace tour::gpu_scene {
             return false;
         if (!resident)
             continue;
-        if (!(lod.value.flags & LodFlagFilterable) || lod.value.submeshCount != 1 ||
-            lod.value.firstSubmesh >= db.submeshes.Size())
+        // All-or-nothing: every surface of a resident LOD must be filterable
+        // (a nonzero geometryId). A multi-surface LOD with one unresolvable
+        // primitive must never be GPU-owned, or that primitive would vanish.
+        if (!(lod.value.flags & LodFlagFilterable) || lod.value.submeshCount == 0u ||
+            lod.value.submeshCount > kMaxSubmeshesPerLod ||
+            lod.value.firstSubmesh >= db.submeshes.Size() ||
+            lod.value.submeshCount > db.submeshes.Size() - lod.value.firstSubmesh)
             return false;
-        const auto& submesh = db.submeshes.Rows()[lod.value.firstSubmesh];
-        if (submesh.identity.y != 1 || submesh.value.geometryId == InvalidIndex)
-            return false;
+        for (uint32_t s = 0; s < lod.value.submeshCount; ++s) {
+            const auto& submesh = db.submeshes.Rows()[lod.value.firstSubmesh + s];
+            if (submesh.identity.y != 1 || submesh.value.geometryId == InvalidIndex)
+                return false;
+        }
         hasResidentGeometry = true;
     }
     return hasResidentGeometry;

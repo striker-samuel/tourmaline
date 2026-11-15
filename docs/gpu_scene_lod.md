@@ -13,9 +13,11 @@ leaving existing CPU LOD selection and GPU meshlet rendering unchanged.
   Mesh.lodCount is the complete cooked chain, including deferred levels.
   The table's InsertContiguous allocator reuses contiguous free runs
   where possible, without relying on independent free-list Insert calls.
-- Each Lod has one **provisional** submesh record at Lod.firstSubmesh.
-  This represents an entire filterable gfx mesh in v3; it is *not yet*
-  the finished surface/material/pass breakdown from GPUIR.
+- Each Lod has one **Submesh row per authored surface** (primitive range)
+  starting at Lod.firstSubmesh, with Lod.submeshCount recording the count.
+  A multi-surface World mesh (several primitive ranges sharing the instance
+  material) expands to several submesh rows; a single-surface mesh keeps
+  submeshCount == 1. Non-filterable surfaces carry geometryId = InvalidIndex.
 - Each resident/filterable Submesh.geometryId is a snapshot of
   GfxRenderer::GfxMeshForLod(worldMesh, level), whose indices currently
   change whenever GfxFilter static registrations are reset. The

@@ -10574,30 +10574,45 @@ void WorldRenderer::RefreshGpuScenePhysicalIndexedRanges(bool nativeOnly) {
     // The optional task/mesh backend uses Gfx mesh IDs. Keep those IDs in
     // the prefix, but give non-meshlet static surfaces native suffix IDs so
     // Vulkan 1.3 indexed raster never requires cooked/retained meshlets.
+    // A multi-surface mesh needs one ID per primitive range, so its surfaces
+    // always use native suffix IDs (a single Gfx registration cannot encode
+    // several disjoint ranges).
     std::vector<uint8_t> conflicting(gfx.meshes.size(), uint8_t(0));
     for (uint32_t worldMesh = 0; worldMesh < m_world->lodChains.size(); ++worldMesh) {
         const auto& levels = m_world->lodChains[worldMesh].levels;
-        auto& lodIds = m_gpuScenePhysicalLodIds[worldMesh];
-        lodIds.assign(levels.size(), tour::gpu_scene::InvalidIndex);
+        auto& lodSurfaceIds = m_gpuScenePhysicalLodIds[worldMesh];
+        lodSurfaceIds.resize(levels.size());
         for (uint32_t lod = 0; lod < levels.size(); ++lod) {
             const auto& level = levels[lod];
+            auto& surfaceIds = lodSurfaceIds[lod];
+            surfaceIds.clear();
             if (!level.resident || !level.mesh.cluster || !level.mesh.handle.valid())
                 continue;
             const auto* mesh = level.mesh.cluster->staticMeshes.get(level.mesh.handle);
             if (!mesh)
                 continue;
-            tour::gfx::IndexedRange physical{};
-            if (!tour::gpu_scene::ResolveWorldSurfaceIndexedRange(
-                    *mesh, indexWords, vertexLimit, physical))
+            const uint32_t surfaceCount = static_cast<uint32_t>(mesh->geometry.surfaces.size());
+            if (surfaceCount == 0u || surfaceCount > tour::gpu_scene::kMaxSubmeshesPerLod)
                 continue;
-            const uint32_t gfxId =
-                nativeOnly ? UINT32_MAX : m_gfxRenderer.GfxMeshForLod(worldMesh, lod);
-            lodIds[lod] =
-                tour::gpu_scene::RegisterNativeIndexedRange(m_gpuScenePhysicalIndexedRanges,
-                                                            conflicting,
-                                                            physical,
-                                                            gfxId,
-                                                            m_gpuSceneTaskGeometryIdsCompatible);
+            std::array<tour::gfx::IndexedRange, tour::gpu_scene::kMaxSubmeshesPerLod> physical{};
+            // All-or-nothing: one unrepresentable surface drops the whole LOD
+            // back to the direct path instead of skipping a primitive.
+            if (tour::gpu_scene::ResolveWorldSurfaceIndexedRanges(
+                    *mesh, indexWords, vertexLimit, physical) != surfaceCount)
+                continue;
+            const bool multiSurface = surfaceCount > 1u;
+            const uint32_t gfxId = (nativeOnly || multiSurface)
+                                       ? UINT32_MAX
+                                       : m_gfxRenderer.GfxMeshForLod(worldMesh, lod);
+            surfaceIds.resize(surfaceCount);
+            for (uint32_t s = 0; s < surfaceCount; ++s) {
+                surfaceIds[s] = tour::gpu_scene::RegisterNativeIndexedRange(
+                    m_gpuScenePhysicalIndexedRanges,
+                    conflicting,
+                    physical[s],
+                    gfxId,
+                    m_gpuSceneTaskGeometryIdsCompatible);
+            }
         }
     }
 }
@@ -11690,15 +11705,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             *m_world,
             m_gpuSceneDatabase,
             m_gpuSceneGeometryRevision,
-            [this](uint32_t worldMesh, uint32_t lod) {
+            [this](uint32_t worldMesh, uint32_t lod) -> std::span<const uint32_t> {
                 if (worldMesh >= m_gpuScenePhysicalLodIds.size() ||
                     lod >= m_gpuScenePhysicalLodIds[worldMesh].size())
-                    return tour::gpu_scene::InvalidIndex;
-                const uint32_t id = m_gpuScenePhysicalLodIds[worldMesh][lod];
-                return id < m_gpuScenePhysicalIndexedRanges.size() &&
-                               m_gpuScenePhysicalIndexedRanges[id].indexCount != 0u
-                           ? id
-                           : tour::gpu_scene::InvalidIndex;
+                    return {};
+                return m_gpuScenePhysicalLodIds[worldMesh][lod];
             });
         if (gpuSceneSync.leafPublicationOk)
             m_gpuSceneDatabaseReady =
@@ -11793,7 +11804,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // histogram names the same short-circuit point.
             static const bool s_kdElig = std::getenv("TOURMALINE_KD") != nullptr;
             uint32_t kdTally[7] = {};
-            uint32_t kdSub[4] = {}; // 0 flagsReq 1 flagsForb 2 surfaces 3 lightmap
+            uint32_t kdSub[4] = {}; // 0 flagsReq 1 flagsForb 2 retired 3 lightmap
             static const bool s_kdSub = s_kdElig;
             for (size_t i = 0; i < total; ++i) {
                 const auto& item = m_world->drawItems[i];
@@ -11831,7 +11842,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     // changes with camera distance; never GPU-own it
                     // without the matching masked/depth shader variants.
                     !IsDitherCloseupNode(m_world->scene, int(item.node)) && mesh &&
-                    !mesh->skinned && mesh->geometry.surfaces.size() == 1 &&
+                    !mesh->skinned &&
                     // Packed vertex lightmaps use a different shader path;
                     // leave those objects with the legacy filtered/direct
                     // raster until the GPU-scene lit variant is implemented.
@@ -11877,19 +11888,30 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                 continue;
                             const auto& lod =
                                 m_gpuSceneDatabase.lods.Rows()[selectedMesh->firstLod + level];
-                            const auto& sub =
-                                m_gpuSceneDatabase.submeshes.Rows()[lod.value.firstSubmesh];
-                            tour::gpu_scene::IndexedGeometry geometry{};
-                            const uint32_t id =
-                                m_gpuScenePersistentRegistry.FromTransient(sub.value.geometryId);
-                            const auto descriptors = m_gpuScenePersistentRegistry.Descriptors();
-                            if (id == tour::gpu_scene::InvalidIndex || id >= descriptors.size() ||
-                                !tour::gpu_scene::ResolveIndexedGeometry(
-                                    gfxTables, sub.value.geometryId, geometry) ||
-                                descriptors[id].indexCount != geometry.indexCount ||
-                                descriptors[id].firstIndex != geometry.firstIndex ||
-                                descriptors[id].vertexOffset != geometry.vertexOffset)
+                            const auto& submeshes = m_gpuSceneDatabase.submeshes.Rows();
+                            if (lod.value.submeshCount == 0u ||
+                                lod.value.submeshCount > tour::gpu_scene::kMaxSubmeshesPerLod ||
+                                lod.value.firstSubmesh >= submeshes.size() ||
+                                lod.value.submeshCount > submeshes.size() - lod.value.firstSubmesh)
                                 return false;
+                            const auto descriptors = m_gpuScenePersistentRegistry.Descriptors();
+                            // All-or-nothing: every surface's range must match
+                            // its persistent descriptor, or the whole instance
+                            // stays on the direct path (no skipped primitive).
+                            for (uint32_t s = 0; s < lod.value.submeshCount; ++s) {
+                                const auto& sub = submeshes[lod.value.firstSubmesh + s];
+                                tour::gpu_scene::IndexedGeometry geometry{};
+                                const uint32_t id = m_gpuScenePersistentRegistry.FromTransient(
+                                    sub.value.geometryId);
+                                if (id == tour::gpu_scene::InvalidIndex ||
+                                    id >= descriptors.size() ||
+                                    !tour::gpu_scene::ResolveIndexedGeometry(
+                                        gfxTables, sub.value.geometryId, geometry) ||
+                                    descriptors[id].indexCount != geometry.indexCount ||
+                                    descriptors[id].firstIndex != geometry.firstIndex ||
+                                    descriptors[id].vertexOffset != geometry.vertexOffset)
+                                    return false;
+                            }
                         }
                         return true;
                     }();
@@ -11936,9 +11958,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                      !IsDitherCloseupNode(m_world->scene, int(item.node)) && mesh &&
                                      !mesh->skinned;
                     const bool e =
-                        e5a && mesh->geometry.surfaces.size() == 1 &&
-                        (mesh->lmChartXforms.empty() ||
-                         (mesh->lmChunk == UINT32_MAX && mesh->lightmapBase == UINT32_MAX));
+                        e5a && (mesh->lmChartXforms.empty() ||
+                                (mesh->lmChunk == UINT32_MAX && mesh->lightmapBase == UINT32_MAX));
                     ++kdTally[compatible ? 0
                               : a        ? (b ? (c ? (d ? (e ? 6u : 5u) : 4u) : 3u) : 2u)
                                          : 1u];
@@ -11949,10 +11970,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                             else
                                 ++kdSub[1]; // 3b forbidden bit present
                         } else if (e5a && !e) {
-                            if (mesh->geometry.surfaces.size() != 1)
-                                ++kdSub[2]; // 5b multi-surface mesh
-                            else
-                                ++kdSub[3]; // 5c lightmapped mesh
+                            ++kdSub[3]; // 5c lightmapped mesh (multi-surface is admitted)
                         }
                     }
                 }
@@ -11977,7 +11995,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             if (m_gpuSceneRasterLegacyCount != 0)
                 std::fprintf(stderr,
                              "[GpuScene] %u/%zu draw items spill to the legacy direct path "
-                             "(skinned/masked-layered/ProjectLit/material-instance/multi-surface/"
+                             "(skinned/masked-layered/ProjectLit/material-instance/"
                              "lightmap/dither/nonresident)\n",
                              m_gpuSceneRasterLegacyCount,
                              total);
@@ -11985,7 +12003,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 std::fprintf(stderr,
                              "[KD] eligibility: total=%zu compatible=%u | first-reject "
                              "sync=%u db=%u flags=%u material=%u nodeMesh=%u lodGeometry=%u "
-                             "| flagsReq=%u flagsForb=%u surfaces=%u lightmap=%u\n",
+                             "| flagsReq=%u flagsForb=%u retired=%u lightmap=%u\n",
                              total,
                              compatibleCount,
                              kdTally[1],

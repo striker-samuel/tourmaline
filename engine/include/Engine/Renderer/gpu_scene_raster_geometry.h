@@ -36,15 +36,18 @@ namespace tour::gpu_scene {
 // direct drawing. Meshlet GPU streams remain optional acceleration data;
 // their cluster-ordered index copy is not an indexed draw source.
 // The caller proves the selected LOD is physically resident before entry.
+// Resolves ONE authored surface (by index) so multi-surface meshes (one
+// StaticMesh, several primitive ranges) can publish per-surface commands.
 [[nodiscard]] inline bool ResolveWorldSurfaceIndexedRange(const tour::StaticMesh& mesh,
+                                                          uint32_t surfaceIndex,
                                                           uint64_t indexWordCapacity,
                                                           uint64_t vertexCapacity,
                                                           tour::gfx::IndexedRange& out) noexcept {
     out = {};
     if (mesh.geometry.topology != smvk::PrimitiveTopology::TriangleList ||
-        mesh.geometry.surfaces.size() != 1u)
+        surfaceIndex >= mesh.geometry.surfaces.size())
         return false;
-    const auto& surface = mesh.geometry.surfaces.front();
+    const auto& surface = mesh.geometry.surfaces[surfaceIndex];
     if (surface.indexCount == 0u || (surface.indexCount % 3u) != 0u ||
         uint64_t(surface.firstIndex) + surface.indexCount > indexWordCapacity ||
         surface.baseVertex < 0 ||
@@ -52,6 +55,27 @@ namespace tour::gpu_scene {
         return false;
     out = {surface.firstIndex, surface.indexCount, surface.baseVertex};
     return true;
+}
+
+// Resolve EVERY authored surface of a resident World mesh into per-surface
+// indexed ranges. All-or-nothing: returns 0 when any surface cannot be
+// represented (the instance must then stay on the direct path rather than
+// silently skipping a primitive). `out` is caller-owned and sized for the
+// mesh's surface count (<= kMaxSubmeshesPerLod).
+[[nodiscard]] inline uint32_t ResolveWorldSurfaceIndexedRanges(
+    const tour::StaticMesh& mesh,
+    uint64_t indexWordCapacity,
+    uint64_t vertexCapacity,
+    std::span<tour::gfx::IndexedRange> out) noexcept {
+    const uint32_t count = static_cast<uint32_t>(mesh.geometry.surfaces.size());
+    if (mesh.geometry.topology != smvk::PrimitiveTopology::TriangleList || count == 0u ||
+        count > out.size() || count > kMaxSubmeshesPerLod)
+        return 0;
+    for (uint32_t s = 0; s < count; ++s) {
+        if (!ResolveWorldSurfaceIndexedRange(mesh, s, indexWordCapacity, vertexCapacity, out[s]))
+            return 0;
+    }
+    return count;
 }
 
 // Build one revision-local indexed alias table: retain compatibility Gfx
@@ -183,19 +207,22 @@ struct IndexedGeometryTables {
 }
 
 // Permanent raster geometry identity derives from the GPU-scene mesh's
-// GENERATIONAL slot and selected LOD, not the revision-local GfxFilter ID.
-// A retired key is never assigned to another mesh: indirect buffers from
-// older flights must never alias a different geometry when reused.
+// GENERATIONAL slot, selected LOD and per-surface SUBMESH index, not the
+// revision-local GfxFilter ID. A multi-surface mesh keys one descriptor per
+// primitive range. A retired key is never assigned to another mesh: indirect
+// buffers from older flights must never alias a different geometry when reused.
 struct PersistentGeometryKey {
     uint32_t meshSlot = InvalidIndex;
     uint32_t meshGeneration = 0;
     uint32_t lod = 0;
+    uint32_t submesh = 0; // one descriptor per submesh (multi-surface meshes)
     bool operator==(const PersistentGeometryKey&) const = default;
 };
 struct PersistentGeometryKeyHash {
     size_t operator()(const PersistentGeometryKey& key) const noexcept {
         uint64_t x = uint64_t(key.meshSlot) | (uint64_t(key.meshGeneration) << 32);
         x ^= uint64_t(key.lod) * 0x9e3779b97f4a7c15ull;
+        x ^= uint64_t(key.submesh) * 0x9e3779b97f4a7c15ull;
         x ^= x >> 33;
         x *= 0xff51afd7ed558ccdull;
         return size_t(x ^ (x >> 33));
@@ -208,9 +235,10 @@ struct PersistentGeometryKeyHash {
 // the registrations cannot renumber an existing live persistent key.
 //
 // Invalid, evicted or missing geometry becomes a zero-index tombstone.
-// Rows are never recycled in this first cutover stage: this is conservative
-// for in-flight commands, and a future generational reference ABI can add
-// flight-fenced recycling. Exhaustion fails closed to legacy rendering.
+// Retired keys are recycled through a flight-fenced free-list: a tombstoned
+// slot ages MaxFramesInFlight synchronizations before reuse, so every
+// in-flight frame that could read it has retired. Exhaustion fails closed
+// to legacy rendering.
 class PersistentGeometryRegistry {
   public:
     [[nodiscard]] bool Synchronize(const RenderDatabase& db, const IndexedGeometryTables& source) {
@@ -258,44 +286,50 @@ class PersistentGeometryRegistry {
                 return false;
             for (uint32_t level = 0; level < mesh.lodCount; ++level) {
                 const auto& lodRow = lods[mesh.firstLod + level];
-                if (lodRow.identity.y != 1u || lodRow.value.submeshCount != 1u ||
-                    lodRow.value.firstSubmesh >= submeshes.size())
+                if (lodRow.identity.y != 1u || lodRow.value.firstSubmesh >= submeshes.size() ||
+                    lodRow.value.submeshCount > submeshes.size() - lodRow.value.firstSubmesh)
                     continue; // not a rasterizable LOD
-                const auto& subRow = submeshes[lodRow.value.firstSubmesh];
-                if (subRow.identity.y != 1u || (lodRow.value.flags & LodFlagResident) == 0u ||
-                    subRow.value.geometryId == InvalidIndex)
+                if ((lodRow.value.flags & LodFlagResident) == 0u)
                     continue;
-                IndexedGeometry descriptor{};
-                if (!ResolveIndexedGeometry(source, subRow.value.geometryId, descriptor))
-                    continue;
-                const PersistentGeometryKey key{meshSlot, meshRow.identity.x, level};
-                auto it = nextKeys.find(key);
-                uint32_t id = InvalidIndex;
-                if (it == nextKeys.end()) {
-                    if (!nextFreeSlots.empty()) {
-                        id = nextFreeSlots.back();
-                        nextFreeSlots.pop_back();
+                // One descriptor per submesh (a multi-surface mesh has one
+                // indexed range + material per primitive). Key by submesh so
+                // a re-registered mesh keeps every surface's stable identity.
+                for (uint32_t s = 0; s < lodRow.value.submeshCount; ++s) {
+                    const auto& subRow = submeshes[lodRow.value.firstSubmesh + s];
+                    if (subRow.identity.y != 1u || subRow.value.geometryId == InvalidIndex)
+                        continue;
+                    IndexedGeometry descriptor{};
+                    if (!ResolveIndexedGeometry(source, subRow.value.geometryId, descriptor))
+                        continue;
+                    const PersistentGeometryKey key{meshSlot, meshRow.identity.x, level, s};
+                    auto it = nextKeys.find(key);
+                    uint32_t id = InvalidIndex;
+                    if (it == nextKeys.end()) {
+                        if (!nextFreeSlots.empty()) {
+                            id = nextFreeSlots.back();
+                            nextFreeSlots.pop_back();
+                        } else {
+                            if (nextRows.size() >= kMaxRasterDrawGroups)
+                                return false;
+                            id = static_cast<uint32_t>(nextRows.size());
+                            nextRows.emplace_back();
+                        }
+                        nextKeys.emplace(key, id);
                     } else {
-                        if (nextRows.size() >= kMaxRasterDrawGroups)
-                            return false;
-                        id = static_cast<uint32_t>(nextRows.size());
-                        nextRows.emplace_back();
+                        id = it->second;
                     }
-                    nextKeys.emplace(key, id);
-                } else {
-                    id = it->second;
+                    nextRows[id] = descriptor;
+                    uint32_t& alias = nextAliases[subRow.value.geometryId];
+                    // One transient registration must not resolve to two
+                    // different draw ranges. Its alias may be shared by DB
+                    // LOD records that deliberately point at the same mesh.
+                    if (alias == InvalidIndex)
+                        alias = id;
+                    else if (nextRows[alias].indexCount != descriptor.indexCount ||
+                             nextRows[alias].firstIndex != descriptor.firstIndex ||
+                             nextRows[alias].vertexOffset != descriptor.vertexOffset)
+                        return false;
                 }
-                nextRows[id] = descriptor;
-                uint32_t& alias = nextAliases[subRow.value.geometryId];
-                // One transient registration must not resolve to two
-                // different draw ranges. Its alias may be shared by DB
-                // LOD records that deliberately point at the same mesh.
-                if (alias == InvalidIndex)
-                    alias = id;
-                else if (nextRows[alias].indexCount != descriptor.indexCount ||
-                         nextRows[alias].firstIndex != descriptor.firstIndex ||
-                         nextRows[alias].vertexOffset != descriptor.vertexOffset)
-                    return false;
             }
         }
         // Tombstone tracking: a key that did not republish this revision is

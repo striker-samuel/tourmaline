@@ -30,6 +30,13 @@ namespace tour::gpu_scene {
 
 inline constexpr uint32_t InvalidIndex = UINT32_MAX;
 
+// Maximum authored surfaces (indexed ranges) a single LOD may carry. Mirrors
+// GS_MAX_SUBMESHES in gpu_scene_work_select.cs.hlsl and the 16-LOD chain cap
+// in PublishMesh. A multi-surface mesh (one World::StaticMesh whose geometry
+// holds several primitive ranges) expands to one Submesh row per surface, all
+// sharing the instance material.
+inline constexpr uint32_t kMaxSubmeshesPerLod = 16;
+
 // Every table has persistent SLOT indices. Generation + live status travel
 // with each GPU row so future consumers can reject stale references.
 template <typename Payload> struct alignas(16) Row {
@@ -63,11 +70,9 @@ inline constexpr uint32_t InstanceFlagMasked = 1u << 10;
 // the depth and main passes must choose MASK pipelines even for opaque mats.
 inline constexpr uint32_t InstanceFlagDitherCloseup = 1u << 13;
 
-[[nodiscard]] constexpr uint32_t WithCloseupDitherRasterFlags(
-    uint32_t flags, bool ditherCloseup) noexcept {
-    return ditherCloseup
-        ? flags | InstanceFlagDitherCloseup | InstanceFlagMasked
-        : flags;
+[[nodiscard]] constexpr uint32_t WithCloseupDitherRasterFlags(uint32_t flags,
+                                                              bool ditherCloseup) noexcept {
+    return ditherCloseup ? flags | InstanceFlagDitherCloseup | InstanceFlagMasked : flags;
 }
 
 GPU_STRUCT_NAME(GpuSceneLod)
@@ -192,10 +197,8 @@ template <typename Payload, uint32_t FrameCount> class Table {
     // Allocation-free caller-facing contiguous insertion. The output span is
     // supplied by the caller (stack for <=16 mesh LODs; FrameArena for leaves).
     // The compatibility vector overload below is retained for older callers.
-    [[nodiscard]] bool InsertContiguous(std::span<const Payload> payloads,
-                                        std::span<Id> ids) {
-        if (payloads.empty() || payloads.size() > InvalidIndex ||
-            ids.size() < payloads.size())
+    [[nodiscard]] bool InsertContiguous(std::span<const Payload> payloads, std::span<Id> ids) {
+        if (payloads.empty() || payloads.size() > InvalidIndex || ids.size() < payloads.size())
             return false;
         const uint32_t count = static_cast<uint32_t>(payloads.size());
         uint32_t first = InvalidIndex;
@@ -214,7 +217,8 @@ template <typename Payload, uint32_t FrameCount> class Table {
         }
         if (first != InvalidIndex) {
             const uint64_t end = uint64_t(first) + count;
-            free_.erase(std::remove_if(free_.begin(), free_.end(),
+            free_.erase(std::remove_if(free_.begin(),
+                                       free_.end(),
                                        [&](uint32_t slot) { return slot >= first && slot < end; }),
                         free_.end());
         } else {

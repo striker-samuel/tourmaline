@@ -20,8 +20,8 @@
 #include <limits>
 #include <memory>
 #include <new>
-#include <tuple>
 #include <span>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -56,9 +56,15 @@ struct SourceRecord {
 };
 struct LevelSource {
     float simplifyError = 0.0f;
-    uint32_t gfxMesh = InvalidIndex; // transient registration for THIS revision
-    bool resident = false;           // physical payload is in GPU memory
-    bool boundsKnown = false;        // including deferred metadata
+    // Per-surface transient geometry registrations, in authored surface
+    // order. A non-resident or unregistered surface slot is InvalidIndex.
+    // surfaceCount is the AUTHORED surface count (1..kMaxSubmeshesPerLod);
+    // it stays stable across residency so Lod.firstSubmesh/submeshCount and
+    // the per-surface Submesh rows never reshuffle on streaming.
+    std::array<uint32_t, kMaxSubmeshesPerLod> geometry{};
+    uint32_t surfaceCount = 1u;
+    bool resident = false;    // physical payload is in GPU memory
+    bool boundsKnown = false; // including deferred metadata
 };
 
 struct SyncStats {
@@ -97,12 +103,19 @@ struct SyncStats {
             return false;
         if (!resident)
             continue;
-        if (!(lodRow.value.flags & LodFlagFilterable) || lodRow.value.submeshCount != 1 ||
-            lodRow.value.firstSubmesh >= db.submeshes.Size())
+        // All-or-nothing: every surface of a resident LOD must be filterable
+        // (a nonzero geometryId) for the LOD to be drawable. Never admit a
+        // multi-surface LOD that would silently skip a primitive.
+        if (!(lodRow.value.flags & LodFlagFilterable) || lodRow.value.submeshCount == 0u ||
+            lodRow.value.submeshCount > kMaxSubmeshesPerLod ||
+            lodRow.value.firstSubmesh >= db.submeshes.Size() ||
+            lodRow.value.submeshCount > db.submeshes.Size() - lodRow.value.firstSubmesh)
             return false;
-        const auto& sub = db.submeshes.Rows()[lodRow.value.firstSubmesh];
-        if (sub.identity.y != 1 || sub.value.geometryId == InvalidIndex)
-            return false;
+        for (uint32_t s = 0; s < lodRow.value.submeshCount; ++s) {
+            const auto& sub = db.submeshes.Rows()[lodRow.value.firstSubmesh + s];
+            if (sub.identity.y != 1 || sub.value.geometryId == InvalidIndex)
+                return false;
+        }
         ready = true;
     }
     return ready;
@@ -162,50 +175,87 @@ class SceneRegistry {
             return false;
         MeshState& state = it->second;
         const size_t count = levels.size();
-        if (state.count != count) {
-            // Max LOD chain is 16, so both payloads and handles fit in a
-            // fixed stack array. No heap vector or per-update allocation.
-            std::array<Submesh, 16> subValues{};
+        // Validate surface counts and compute the contiguous submesh span.
+        uint32_t totalSubmeshes = 0;
+        for (size_t i = 0; i < count; ++i) {
+            if (levels[i].surfaceCount == 0u || levels[i].surfaceCount > kMaxSubmeshesPerLod)
+                return false;
+            totalSubmeshes += levels[i].surfaceCount;
+        }
+        // Reshape the child rows when the LOD count OR any per-LOD surface
+        // count changed. Surface count is authored and stable across
+        // streaming, so the common path never reshuffles submesh identity.
+        bool reshape = state.count != count;
+        if (!reshape) {
+            for (size_t i = 0; i < count; ++i)
+                if (state.surfaceCounts[i] != levels[i].surfaceCount) {
+                    reshape = true;
+                    break;
+                }
+        }
+        if (reshape) {
+            // Max LOD chain is 16, max surfaces per LOD is 16, so the
+            // payloads and handles fit in a fixed stack array. No heap
+            // vector or per-update allocation.
+            std::array<Submesh, 16 * kMaxSubmeshesPerLod> subValues{};
             std::array<Lod, 16> lodValues{};
-            std::array<Handle<Submesh>, 16> subs{};
+            std::array<Handle<Submesh>, 16 * kMaxSubmeshesPerLod> subs{};
             std::array<Handle<Lod>, 16> lods{};
-            const auto subsIn = std::span<const Submesh>(subValues.data(), count);
-            const auto subsOut = std::span<Handle<Submesh>>(subs.data(), count);
+            const auto subsIn = std::span<const Submesh>(subValues.data(), totalSubmeshes);
+            const auto subsOut = std::span<Handle<Submesh>>(subs.data(), totalSubmeshes);
             if (!db.submeshes.InsertContiguous(subsIn, subsOut))
                 return false;
             const auto lodsIn = std::span<const Lod>(lodValues.data(), count);
             const auto lodsOut = std::span<Handle<Lod>>(lods.data(), count);
             if (!db.lods.InsertContiguous(lodsIn, lodsOut)) {
-                for (size_t i = 0; i < count; ++i)
+                for (size_t i = 0; i < totalSubmeshes; ++i)
                     (void)db.submeshes.Erase(subs[i]);
                 return false;
             }
             for (size_t i = 0; i < state.count; ++i) {
                 (void)db.lods.Erase(state.lods[i]);
-                (void)db.submeshes.Erase(state.submeshes[i]);
+                for (uint32_t s = 0; s < state.surfaceCounts[i]; ++s)
+                    (void)db.submeshes.Erase(state.submeshes[i][s]);
             }
             state.lods = lods;
-            state.submeshes = subs;
+            for (uint32_t lvl = 0, slot = 0; lvl < count; ++lvl) {
+                for (uint32_t s = 0; s < levels[lvl].surfaceCount; ++s, ++slot)
+                    state.submeshes[lvl][s] = subs[slot];
+                state.surfaceCounts[lvl] = levels[lvl].surfaceCount;
+            }
+            for (size_t i = count; i < 16; ++i)
+                state.surfaceCounts[i] = 0u;
             state.count = static_cast<uint32_t>(count);
         }
         uint32_t residentMask = 0;
         for (uint32_t level = 0; level < count; ++level) {
             const LevelSource& src = levels[level];
-            const bool filterable = src.resident && src.gfxMesh != InvalidIndex;
+            // All-or-nothing filterability: a resident LOD is only filterable
+            // when EVERY authored surface has a registered geometry.
+            bool filterable = src.resident;
+            if (filterable) {
+                for (uint32_t s = 0; s < src.surfaceCount; ++s)
+                    if (src.geometry[s] == InvalidIndex) {
+                        filterable = false;
+                        break;
+                    }
+            }
             if (src.resident)
                 residentMask |= 1u << level;
-            const Submesh sub{
-                filterable ? src.gfxMesh : InvalidIndex, InvalidIndex, InvalidIndex, 0u};
-            const Lod lod{state.submeshes[level].slot,
-                          1u,
+            for (uint32_t s = 0; s < src.surfaceCount; ++s) {
+                const Submesh sub{
+                    filterable ? src.geometry[s] : InvalidIndex, InvalidIndex, InvalidIndex, 0u};
+                const Submesh* prevSub = db.submeshes.Get(state.submeshes[level][s]);
+                if ((!prevSub || std::memcmp(prevSub, &sub, sizeof(sub)) != 0) &&
+                    !db.submeshes.Update(state.submeshes[level][s], sub))
+                    return false;
+            }
+            const Lod lod{state.submeshes[level][0].slot,
+                          src.surfaceCount,
                           src.simplifyError,
                           (src.resident ? LodFlagResident : 0u) |
                               (src.boundsKnown ? LodFlagBoundsKnown : 0u) |
                               (filterable ? LodFlagFilterable : 0u)};
-            const Submesh* prevSub = db.submeshes.Get(state.submeshes[level]);
-            if ((!prevSub || std::memcmp(prevSub, &sub, sizeof(sub)) != 0) &&
-                !db.submeshes.Update(state.submeshes[level], sub))
-                return false;
             const Lod* prevLod = db.lods.Get(state.lods[level]);
             if ((!prevLod || std::memcmp(prevLod, &lod, sizeof(lod)) != 0) &&
                 !db.lods.Update(state.lods[level], lod))
@@ -320,13 +370,15 @@ class SceneRegistry {
     struct MeshState {
         Handle<Mesh> id{};
         std::array<Handle<Lod>, 16> lods{};
-        std::array<Handle<Submesh>, 16> submeshes{};
+        std::array<std::array<Handle<Submesh>, kMaxSubmeshesPerLod>, 16> submeshes{};
+        std::array<uint32_t, 16> surfaceCounts{}; // authored surface count per LOD
         uint32_t count = 0;
     };
     static void EraseMesh(MeshState& state, RenderDatabase& db) {
         for (uint32_t i = 0; i < state.count; ++i) {
             (void)db.lods.Erase(state.lods[i]);
-            (void)db.submeshes.Erase(state.submeshes[i]);
+            for (uint32_t s = 0; s < state.surfaceCounts[i]; ++s)
+                (void)db.submeshes.Erase(state.submeshes[i][s]);
         }
         (void)db.meshes.Erase(state.id);
         state.count = 0;
@@ -342,7 +394,12 @@ class SceneRegistry {
 // consumed after global transform recalculation, not before.
 class WorldSynchronizer {
   public:
-    using GeometryLookup = std::function<uint32_t(uint32_t, uint32_t)>;
+    // Resolves the per-surface transient geometry registrations for a LOD
+    // (worldMesh, lod). Returns one ID per authored surface (1..16) in
+    // surface order; a non-resident/unregistered surface is InvalidIndex. An
+    // empty span means the LOD has no surfaces (never filterable). The span
+    // is caller-owned and only valid for the duration of the Synchronize call.
+    using GeometryLookup = std::function<std::span<const uint32_t>(uint32_t, uint32_t)>;
     SyncStats Synchronize(World& world,
                           RenderDatabase& db,
                           uint64_t geometryRevision = 0,
@@ -393,25 +450,25 @@ class WorldSynchronizer {
                     continue;
                 const uint32_t slot = NodeHandleSlot(handle);
                 if (slot < nodeKeyCount_ && !nodeKeys_[slot].registration)
-                    nodeKeys_[slot] = {world.gpuSceneGameNodeRegistration, slot,
+                    nodeKeys_[slot] = {world.gpuSceneGameNodeRegistration,
+                                       slot,
                                        NodeGenerationOf(world.scene, slot)};
             }
             // The source-record list is only consumed by Reconcile below.
             // Allocate it from the current FrameArena; no persistent heap vector.
             const size_t maxRecords = world.drawItems.size();
             auto* records = maxRecords
-                ? static_cast<SourceRecord*>(smvk::FrameArena().Allocate(
-                      maxRecords * sizeof(SourceRecord), alignof(SourceRecord)))
-                : nullptr;
-            auto* scratchMeshes = maxRecords
-                ? static_cast<MeshSourceEntry*>(smvk::FrameArena().Allocate(
-                      maxRecords * sizeof(MeshSourceEntry), alignof(MeshSourceEntry)))
-                : nullptr;
+                                ? static_cast<SourceRecord*>(smvk::FrameArena().Allocate(
+                                      maxRecords * sizeof(SourceRecord), alignof(SourceRecord)))
+                                : nullptr;
+            auto* scratchMeshes =
+                maxRecords ? static_cast<MeshSourceEntry*>(smvk::FrameArena().Allocate(
+                                 maxRecords * sizeof(MeshSourceEntry), alignof(MeshSourceEntry)))
+                           : nullptr;
             size_t recordCount = 0;
             size_t meshCount = 0;
             for (const World::RenderItem& item : world.drawItems) {
-                if (item.node >= nodeKeyCount_ ||
-                    item.node >= world.scene.globalTransform.size() ||
+                if (item.node >= nodeKeyCount_ || item.node >= world.scene.globalTransform.size() ||
                     item.mesh >= world.meshLocations.size())
                     continue;
                 const SourceKey key = nodeKeys_[item.node];
@@ -426,7 +483,8 @@ class WorldSynchronizer {
                 SourceRecord record{};
                 record.instance = key;
                 record.mesh = {owner->second, loc.handle.index(), loc.handle.gen()};
-                std::construct_at(scratchMeshes + meshCount++, MeshSourceEntry{record.mesh, item.mesh});
+                std::construct_at(scratchMeshes + meshCount++,
+                                  MeshSourceEntry{record.mesh, item.mesh});
                 record.globalModel = tour::scene::GlobalTransformDouble(world.scene, item.node);
                 record.material = item.material; // interim World index
                 // Closeup fades need a discarding MASK depth pass, even if the
@@ -470,11 +528,9 @@ class WorldSynchronizer {
                         // LOD admission spuriously fail by one ULP.
                         const glm::dvec3 c(center);
                         const glm::dvec3 lo(bmin), hi(bmax);
-                        const glm::dvec3 reach =
-                            glm::max(glm::abs(lo - c), glm::abs(hi - c));
-                        const float radius = std::nextafter(
-                            static_cast<float>(glm::length(reach)),
-                            std::numeric_limits<float>::infinity());
+                        const glm::dvec3 reach = glm::max(glm::abs(lo - c), glm::abs(hi - c));
+                        const float radius = std::nextafter(static_cast<float>(glm::length(reach)),
+                                                            std::numeric_limits<float>::infinity());
                         record.localSphere = glm::vec4(center, radius);
                     }
                 }
@@ -493,13 +549,13 @@ class WorldSynchronizer {
                 std::sort(scratchMeshes, scratchMeshes + meshCount, meshLess);
             size_t uniqueCount = 0;
             for (size_t i = 0; i < meshCount; ++i) {
-                if (uniqueCount == 0 || !(scratchMeshes[i].source == scratchMeshes[uniqueCount - 1].source))
+                if (uniqueCount == 0 ||
+                    !(scratchMeshes[i].source == scratchMeshes[uniqueCount - 1].source))
                     scratchMeshes[uniqueCount++] = scratchMeshes[i];
             }
             if (uniqueCount > meshSourceCapacity_) {
-                meshSources_ = static_cast<MeshSourceEntry*>(
-                    smvk::AppArena().Allocate(uniqueCount * sizeof(MeshSourceEntry),
-                                              alignof(MeshSourceEntry)));
+                meshSources_ = static_cast<MeshSourceEntry*>(smvk::AppArena().Allocate(
+                    uniqueCount * sizeof(MeshSourceEntry), alignof(MeshSourceEntry)));
                 std::uninitialized_value_construct_n(meshSources_, uniqueCount);
                 meshSourceCapacity_ = uniqueCount;
             }
@@ -567,8 +623,7 @@ class WorldSynchronizer {
     [[nodiscard]] std::vector<LeafTicket> LeafTickets(const RenderDatabase& db) const {
         return leafRegistry_.Tickets(db);
     }
-    [[nodiscard]] std::span<const LeafTicket> LeafTicketsFrame(
-        const RenderDatabase& db) const {
+    [[nodiscard]] std::span<const LeafTicket> LeafTicketsFrame(const RenderDatabase& db) const {
         return leafRegistry_.TicketsFrame(db);
     }
     [[nodiscard]] size_t LeafCount() const {
@@ -613,13 +668,28 @@ class WorldSynchronizer {
             for (uint32_t i = 0; i < chain.size(); ++i) {
                 const auto& l = chain[i];
                 complete &= l.boundsKnown;
-                const uint32_t gfxId =
-                    geometryLookup ? geometryLookup(worldIndex, i) : InvalidIndex;
-                levels[i] = LevelSource{l.error, gfxId, l.resident, l.boundsKnown};
+                const std::span<const uint32_t> surfaceIds =
+                    geometryLookup ? geometryLookup(worldIndex, i) : std::span<const uint32_t>{};
+                LevelSource level{};
+                level.simplifyError = l.error;
+                level.resident = l.resident;
+                level.boundsKnown = l.boundsKnown;
+                if (!surfaceIds.empty()) {
+                    level.surfaceCount =
+                        uint32_t(std::min<size_t>(surfaceIds.size(), kMaxSubmeshesPerLod));
+                    for (uint32_t s = 0; s < level.surfaceCount; ++s)
+                        level.geometry[s] = surfaceIds[s];
+                }
+                // else: keep the default surfaceCount=1 with geometry[0]=
+                // InvalidIndex — a non-filterable single-surface fallback
+                // (headless tests without a lookup, or an evicted LOD whose
+                // authored surface count is no longer resident).
+                levels[i] = level;
             }
             if (!registry_.PublishMesh(source,
                                        std::span<const LevelSource>(levels.data(), chain.size()),
-                                       complete, db))
+                                       complete,
+                                       db))
                 return false;
             ++visited;
         }
