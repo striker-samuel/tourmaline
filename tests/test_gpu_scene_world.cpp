@@ -84,16 +84,16 @@ int main() {
         static_assert(TablePageLayout<Mesh>::RowsPerPage == 2048);
         static_assert(TablePageLayout<Lod>::RowsPerPage == 2048);
         static_assert(TablePageLayout<Submesh>::RowsPerPage == 2048);
-        static_assert(TablePageLayout<Instance>::RowsPerPage == 512);
+        static_assert(TablePageLayout<Instance>::RowsPerPage == 455);
         static_assert(TablePageLayout<Leaf>::RowsPerPage == 819);
         static_assert(TablePageLayout<LeafMember>::RowsPerPage == 2048);
         size_t cap = 123, bytes = 123;
         CHECK(TablePageLayout<Instance>::Capacity(0, cap) && cap == 0);
         CHECK(TablePageLayout<Instance>::Bytes(0, bytes) && bytes == 0);
-        CHECK(TablePageLayout<Instance>::Capacity(1, cap) && cap == 512);
-        CHECK(TablePageLayout<Instance>::Bytes(1, bytes) && bytes == 65536);
-        CHECK(TablePageLayout<Instance>::Capacity(512, cap) && cap == 512);
-        CHECK(TablePageLayout<Instance>::Capacity(513, cap) && cap == 1024);
+        CHECK(TablePageLayout<Instance>::Capacity(1, cap) && cap == 455);
+        CHECK(TablePageLayout<Instance>::Bytes(1, bytes) && bytes == 65520);
+        CHECK(TablePageLayout<Instance>::Capacity(455, cap) && cap == 455);
+        CHECK(TablePageLayout<Instance>::Capacity(456, cap) && cap == 910);
         CHECK(TablePageLayout<Leaf>::Capacity(819, cap) && cap == 819);
         CHECK(TablePageLayout<Leaf>::Bytes(819, bytes) && bytes == 65520);
         CHECK(TablePageLayout<Leaf>::Capacity(820, cap) && cap == 1638);
@@ -648,6 +648,7 @@ int main() {
     a.instance = {100, 4, 1};
     a.mesh = {100, 11, 1};
     a.material = 6;
+    a.userData = 0xABCD1234u;
     SourceRecord b = a;
     b.instance = {200, 7, 2};
 
@@ -657,6 +658,10 @@ int main() {
     CHECK(db.instances.LiveCount() == 2 && db.meshes.LiveCount() == 1);
     const auto ida = bridge.Find(a.instance), idb = bridge.Find(b.instance);
     CHECK(ida && idb && ida != idb);
+    // Resolved material-instance userData is baked into the Instance row and
+    // forwarded to the lit FS location-9 input (ProjectLit hooks).
+    CHECK(db.instances.Get(ida)->userData == 0xABCD1234u);
+    CHECK(db.instances.Get(idb)->userData == 0xABCD1234u);
 
     // Material sort order and merged node enumeration are NOT identity.
     std::swap(list[0], list[1]);

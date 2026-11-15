@@ -11861,7 +11861,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     key.registration != 0 && bool(instance) &&
                     tour::gpu_scene::RasterIndexedInstanceReady(m_gpuSceneDatabase, instance) &&
                     item.material != smvk::World::kInvalidIndex && materialRasterEligible &&
-                    item.materialInstance == 0 && m_world->MaterialUserData(item.material) == 0 &&
                     (!m_gfxRenderer.MaterialProjectFamily(item.material) || projectLitReady) &&
                     item.node < m_world->scene.globalTransform.size() &&
                     // Closeup dither is inherited from ancestors and
@@ -11979,8 +11978,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                          (item.flags & forbiddenFlags) == 0;
                     const bool c = b && flagsOk;
                     const bool d =
-                        c && materialRasterEligible && item.materialInstance == 0 &&
-                        m_world->MaterialUserData(item.material) == 0 &&
+                        c && materialRasterEligible &&
                         (!m_gfxRenderer.MaterialProjectFamily(item.material) || projectLitReady);
                     const bool e5a = d && item.node < m_world->scene.globalTransform.size() &&
                                      !IsDitherCloseupNode(m_world->scene, int(item.node)) && mesh &&
