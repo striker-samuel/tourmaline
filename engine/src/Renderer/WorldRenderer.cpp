@@ -9070,6 +9070,22 @@ void WorldRenderer::RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
                           sizeof(objectPC.model),
                           objectPC.model,
                           smvk::ShaderStage::All);
+        // Direct-path skin tail (shadow.vert's 208..240 overlay): a
+        // skinned caster fetches the ANIMATED position from the frame's
+        // deformed heap instead of the bind-pose vertex input (the shadow
+        // leg needs position only, never normals/tangents). Always pushed
+        // (zeroed on static draws) so a stale tail never leaks into the
+        // next caster.
+        DepthSkinTail skinTail{};
+        if (meshDesc->skinned && m_gfxRenderer.State().skinDeformedBda != 0 &&
+            m_gfxRenderer.State().skinDeformedBase != UINT32_MAX &&
+            !std::getenv("TOURMALINE_KD_NOSKIN")) {
+            skinTail.skinned = 1u;
+            skinTail.deformedBase = m_gfxRenderer.State().skinDeformedBase;
+            skinTail.vsDeformed = m_gfxRenderer.State().skinDeformedBda;
+        }
+        cmd.PushConstants(
+            kDepthSkinTailOffset, sizeof(DepthSkinTail), &skinTail, smvk::ShaderStage::All);
         for (auto& draw_set : meshDesc->geometry.surfaces) {
             cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
         };
