@@ -30,7 +30,13 @@ void mainCS(uint3 gid: SV_GroupID, uint3 lane: SV_GroupThreadID) {
     const uint i=gid.x*256u+lane.x;
     const bool active=total<=pc.candidateCapacity && i<total &&
                       i<MAX_CANDIDATES;
-    const uint cls=active?pc.candidates.Get().rows[i].meta.x:0xffffffffu;
+    // Match the scatter predicate exactly: a classified candidate with a
+    // zero index count does not produce a command and must not contribute
+    // to the indirect-count buffer (otherwise graphics reads an unwritten slot).
+    Candidate candidate=(Candidate)0;
+    if(active) candidate=pc.candidates.Get().rows[i];
+    const uint cls=active && candidate.draw.y!=0u
+        ? candidate.meta.x : 0xffffffffu;
     const uint wave=lane.x/WaveGetLaneCount();
     [unroll] for(uint c=0u;c<PSO_CLASSES;++c) {
         uint n=WaveActiveCountBits(cls==c);
