@@ -3550,18 +3550,16 @@ smvk::VulkanResourceManager::VulkanResourceManager(VulkanCore::CoreConfiguration
             .release();
     m_globalsStartTime = std::chrono::steady_clock::now();
 
-    // Preallocate the optional chart heap before constructing immutable
-    // per-flight descriptor sets. AllocateStaticVertexFmt will reuse it.
-    // This does NOT allocate chart windows for unlightmapped meshes.
+    // Preallocate the (retired) lightmap heap before constructing immutable
+    // per-flight descriptor sets. AllocateStaticVertexFmt reuses it. The heap
+    // is 0 by default (lightmaps are no longer rendered), so bind a tiny stub
+    // buffer to keep the immutable descriptor layout valid — the shaders never
+    // read it (every draw carries lmChunk == 0xFFFFFFFF after the load no-op).
     if (!staticVertexFmtHeap.m_staticVertexLightmapBuffer.valid()) {
         const uint64_t bytes = mem::config::Runtime().staticLightmapHeap;
-        VkPhysicalDeviceProperties props{};
-        vkGetPhysicalDeviceProperties(physicalDevice_, &props);
-        if (bytes == 0 || bytes > props.limits.maxStorageBufferRange)
-            throw std::runtime_error("static lightmap heap exceeds maxStorageBufferRange "
-                                     "(TOURMALINE_MEM_STATIC_LIGHTMAP_MB)");
+        const VkDeviceSize stubBytes = bytes ? bytes : 16;
         staticVertexFmtHeap.m_staticVertexLightmapBuffer =
-            CreateBuffer(bytes, BufferType_Storage, "static vertex lightmap").release();
+            CreateBuffer(stubBytes, BufferType_Storage, "static vertex lightmap").release();
         if (!staticVertexFmtHeap.m_staticVertexLightmapBuffer.valid())
             throw std::runtime_error("failed to allocate static lightmap heap");
     }

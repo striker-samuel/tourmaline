@@ -117,10 +117,8 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadMesh(const MeshData& data) {
         const MeshVertex& src = data.vertices[i];
 
         PackMeshVertex(src, positions[i], shading[i], lightmap[i]);
-        // The optional stream carves only when chart data exists (the
-        // uncharted sentinel means "never lightmapped").
-        if (src.chartId != 0xFFFFFFFFu)
-            hasLightmap = true;
+        // Lightmaps retired: the optional stream is never carved/uploaded —
+        // the cook still produces chart data, the runtime ignores it.
     }
 
     // =========================================================================
@@ -640,26 +638,8 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadMeshes(
                 return {};
             }
         }
-        // The OPTIONAL lightmap range: carved only when any vertex is
-        // charted (independently packed — its base is not vertexBase).
-        {
-            bool charted = false;
-            for (const MeshVertex& v : data.vertices)
-                if (v.chartId != 0xFFFFFFFFu) {
-                    charted = true;
-                    break;
-                }
-            if (charted) {
-                uint64_t lmBase = 0;
-                r.alloc.lightmapAllocation =
-                    staticVertexFmtHeap.m_staticLightmapBlock.Allocate(vertexCount, 1, lmBase);
-                if (r.alloc.lightmapAllocation == 0) {
-                    failCarved(i + 1);
-                    return {};
-                }
-                r.alloc.lightmapBase = lmBase;
-            }
-        }
+        // Lightmaps retired: the optional stream is never carved/uploaded
+        // (the cook still produces chart data, the runtime ignores it).
     }
 
     // =========================================================================

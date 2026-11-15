@@ -70,7 +70,11 @@ inline constexpr size_t kTransientReserve = 1 * kGiB;
 // are deprecated — the stream is usually empty).
 inline constexpr size_t kStaticVertexHeap = 512 * kMiB;
 inline constexpr size_t kStaticIndexHeap = 512 * kMiB;
-inline constexpr size_t kStaticLightmapHeap = 64 * kMiB;
+// Lightmaps are no longer rendered (loading is a no-op — the cook keeps
+// producing chart data, the runtime never carves/upload/samples it). The
+// heap is retired to 0: the immutable descriptor layout still needs a live
+// buffer, so the RHI binds a tiny 16-byte stub in its place.
+inline constexpr size_t kStaticLightmapHeap = 0;
 
 // -- Transient target heap blocks (GPU, rendergraph design-B targets) --------
 // Graph-owned VkDeviceMemory blocks carve packed attachment ranges. A new
@@ -176,12 +180,11 @@ struct RuntimeConfig {
 
     size_t staticVertexHeap = kStaticVertexHeap;
     size_t staticIndexHeap = kStaticIndexHeap;
-    // OPTIONAL lightmap vertex stream (8 B/vertex, carved only for
-    // meshes with chart data — lightmaps deprecated, usually empty).
-    // 64 MiB = 8M lightmapped vertices; the worst case (every vertex of
-    // a maxed pos/shading heap lightmapped) would be kStaticVertexHeap/2
-    // at the 16-byte shading stride — raise via the env override when a
-    // real lightmap reactivation needs it.
+    // Retired: lightmaps are no longer rendered (loading is a no-op). 0 = no
+    // heap — the RHI binds a 16-byte stub buffer for the immutable descriptor
+    // layout. Keep the field (and the TOURMALINE_MEM_STATIC_LIGHTMAP_MB
+    // override) for the cook's future reactivation path, but the default
+    // allocates nothing.
     size_t staticLightmapHeap = kStaticLightmapHeap;
     size_t targetHeapBlock = kTargetHeapBlock;
 };

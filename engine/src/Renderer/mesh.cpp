@@ -21,8 +21,8 @@ namespace tour {
 using namespace ::smvk;
 
 MaterialPipelineState MakePipelineStateForMaterial(AlphaMode alphaMode,
-                                                    ShadingModel shadingModel,
-                                                    bool doubleSided) {
+                                                   ShadingModel shadingModel,
+                                                   bool doubleSided) {
     MaterialPipelineState out{};
 
     // Raster: back-face cull by default; DOUBLE-SIDED materials rasterize
@@ -84,7 +84,6 @@ void AllocateStaticVertexFmt(smvk::ResourceManager& ctx) {
     // vmaVirtualAllocate on a null block because it never called this).
     if (staticVertexFmtHeap.m_staticVertexBlock.Valid() &&
         staticVertexFmtHeap.m_staticIndexBlock.Valid() &&
-        staticVertexFmtHeap.m_staticLightmapBlock.Valid() &&
         staticVertexFmtHeap.m_staticVertexPosBuffer.valid() &&
         staticVertexFmtHeap.m_staticVertexShadingBuffer.valid() &&
         staticVertexFmtHeap.m_staticVertexLightmapBuffer.valid() &&

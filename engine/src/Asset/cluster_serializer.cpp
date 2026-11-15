@@ -3217,7 +3217,7 @@ std::unique_ptr<Cluster> DeserializeCluster(ResourceManager& ctx,
         directs.push_back(StaticGeometrySource{
             e->offset + posOff,
             e->offset + shadeOff,
-            e->offset + lmOff,
+            0, // lightmaps retired: lmSrc is a no-op (the stream is never uploaded)
             e->offset + idxOff,
             vertexCount,
             indexCount,
@@ -3360,8 +3360,8 @@ std::unique_ptr<Cluster> DeserializeCluster(ResourceManager& ctx,
                 d.src = directs[i];
                 d.entryOffset = meta.entryOffset;
                 d.sphere = meta.sphere;
-                d.lmChunk = meta.lmChunk;
-                d.lmXforms = std::move(meta.lmXforms);
+                d.lmChunk = 0xFFFFFFFFu; // lightmaps retired: loading is a no-op
+                // d.lmXforms deliberately dropped — the runtime never reads it
                 d.lod = meta.lod;
                 d.meshlets = std::move(meta.meshlets);
                 deferredByPakId.push_back(d.uri);
@@ -3381,8 +3381,8 @@ std::unique_ptr<Cluster> DeserializeCluster(ResourceManager& ctx,
             // fragment).
             if (StaticMesh* m = cluster->staticMeshes.get(h)) {
                 m->geometry.sphereRadius = meta.sphere;
-                m->lmChunk = meta.lmChunk;
-                m->lmChartXforms = std::move(meta.lmXforms);
+                m->lmChunk = 0xFFFFFFFFu; // lightmaps retired: loading is a no-op
+                // m->lmChartXforms deliberately dropped — never sampled
                 if (!meta.meshlets.empty())
                     m->meshlets = std::move(meta.meshlets);
                 m->skinned = !meta.skin.empty();
