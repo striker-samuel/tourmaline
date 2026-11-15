@@ -559,7 +559,13 @@ bool World::SetMaterialUserData(uint32_t materialIndex, uint32_t userData) {
         return false;
     if (materialUserData.size() < materialLocations.size())
         materialUserData.resize(materialLocations.size(), 0u);
+    if (materialUserData[materialIndex] == userData)
+        return true; // unchanged: no GPU-scene re-publication
     materialUserData[materialIndex] = userData;
+    // The GPU-scene Instance rows carry the RESOLVED userData. Re-run the
+    // topology reconciliation so every instance of this material republishes
+    // its per-instance userData (a no-op for instances that already match).
+    ++gpuSceneTopologyRevision;
     return true;
 }
 
@@ -646,8 +652,12 @@ bool World::SetMaterialInstanceUserData(MaterialInstanceHandle instance, uint32_
     if (!IsMaterialInstanceAlive(instance))
         return false;
     MaterialInstanceEntity& inst = materialInstances[instance.Index()];
+    if (inst.overridesUserData && inst.userData == userData)
+        return true; // unchanged
     inst.userData = userData;
     inst.overridesUserData = true;
+    // See SetMaterialUserData: republish resolved per-instance userData.
+    ++gpuSceneTopologyRevision;
     return true;
 }
 
@@ -655,8 +665,11 @@ bool World::ClearMaterialInstanceUserDataOverride(MaterialInstanceHandle instanc
     if (!IsMaterialInstanceAlive(instance))
         return false;
     MaterialInstanceEntity& inst = materialInstances[instance.Index()];
+    if (!inst.overridesUserData)
+        return true; // already inheriting
     inst.overridesUserData = false;
     inst.userData = 0;
+    ++gpuSceneTopologyRevision;
     return true;
 }
 

@@ -46,10 +46,15 @@
   `[GpuScene] ... spill to the legacy direct path` log reports the count):
   - GPU-skinned meshes (no GPU-scene deformed-geometry fetch yet),
   - masked/blended layered materials (opaque 2–4-layer materials now GPU-scene eligible; per-layer coverage remains a deferred nice-to-have),
-  - ProjectLit-family materials (`MaterialProjectFamily`),
-  - material instances (`materialInstance != 0`) and per-material userData
-    (userData partial: the fragment varying already exists; remaining =
-    GPU-visible material data, live updates, shader fetch, admission),
+  - ProjectLit-family materials (`MaterialProjectFamily`) — LANDED: eight
+    raster classes (bit 2 = family); ProjectLit materials bin into classes
+    4-7 with the project lit FS, admitted only when that program is loaded
+    (never rendered with StandardLit),
+  - material instances (`materialInstance != 0`) and per-material userData —
+    LANDED: the resolved userData is baked into Instance.userData (128-byte
+    row) and forwarded to the lit location-9 input; a change re-runs the
+    topology reconciliation (a dedicated material-state revision path that
+    avoids the full rebuild is the remaining optimization),
   - multi-surface meshes (`surfaces.size() != 1`) — LANDED: one Submesh row
     per primitive range, one descriptor per surface, all-or-nothing
     admission (a single unresolvable surface keeps the whole instance on the
@@ -61,8 +66,8 @@
   - unregistered / nonresident geometry (streaming gaps, incomplete LOD
     bounds — `RasterIndexedInstanceReady`).
   Closing any of these first needs a matching GPU-scene variant (skinning
-  deformed-geometry consumption, masked-layered coverage/ProjectLit support,
-  lightmap admission, residency guarantees).
+  deformed-geometry consumption, masked-layered coverage, lightmap admission,
+  residency guarantees).
 - [ ] **Production Map and World asset pipeline (PARTIAL; #231/#232/#272).**
   Authored Map identity, SMP8 packaging, scene tile providers, world-owned direct
   scene instances, leases, and the **default direct** `MapSceneStreaming`

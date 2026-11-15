@@ -97,7 +97,7 @@ VSOut mainVS(VSIn IN) {
     OUT.lightmapUv = float2(0.0f, 0.0f);
     OUT.lmChunk = 0xffffffffu;
     OUT.ditherCloseup = (inst.refs.w & GPU_SCENE_INSTANCE_DITHER_CLOSEUP) != 0u ? 1u : 0u;
-    OUT.userData = 0u;
+    OUT.userData = inst.userData;
     OUT.lightLayerMask = 0xffffffffu;
 
     const float3 normal = OctDecodeNormal(IN.normalPacked);

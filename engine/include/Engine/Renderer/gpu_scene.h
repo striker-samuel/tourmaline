@@ -104,6 +104,11 @@ struct alignas(16) Instance {
     glm::vec4 basisZ{0.0f, 0.0f, 1.0f, 0.0f};
     glm::vec4 localSphere{0.0f};   // xyz mesh-local center, w radius
     glm::uvec4 refs{InvalidIndex}; // mesh slot, mesh generation, World material, flags
+    // Resolved 32-bit material-instance userData (World::ResolvedItemUserData),
+    // forwarded to the lit fragment input at location 9. ProjectLit hooks read
+    // it for effects (wetness/damage). Zero for StandardLit no-op materials.
+    uint32_t userData = 0;
+    uint32_t reserved[3] = {};
 };
 
 // A leaf is cullable only if EVERY member has a valid, conservative
@@ -127,15 +132,16 @@ struct alignas(16) Leaf {
 };
 
 static_assert(sizeof(Mesh) == 16 && sizeof(Lod) == 16);
-static_assert(sizeof(Submesh) == 16 && sizeof(Instance) == 112);
+static_assert(sizeof(Submesh) == 16 && sizeof(Instance) == 128);
 static_assert(sizeof(Leaf) == 64 && sizeof(LeafMember) == 16);
 static_assert(sizeof(Row<Mesh>) == 32);
 static_assert(sizeof(Row<Lod>) == 32);
 static_assert(sizeof(Row<Submesh>) == 32);
-static_assert(sizeof(Row<Instance>) == 128);
+static_assert(sizeof(Row<Instance>) == 144);
 static_assert(sizeof(Row<Leaf>) == 80);
 static_assert(sizeof(Row<LeafMember>) == 32);
-static_assert(offsetof(Row<Instance>, identity) == 112);
+static_assert(offsetof(Row<Instance>, identity) == 128);
+static_assert(offsetof(Instance, userData) == 112);
 static_assert(std::is_trivially_copyable_v<Row<Instance>>);
 static_assert(std::is_standard_layout_v<Row<Instance>>);
 

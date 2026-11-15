@@ -47,6 +47,8 @@ struct GpuSceneInstance {
     float4 basisZ;
     float4 localSphere;
     uint4 refs;
+    uint userData;   // resolved material-instance userData (lit input at loc 9)
+    uint3 reserved;  // padding (mirrors C++ Instance reserved[3])
 };
 
 // Instance references are never draw IDs: generation must match the

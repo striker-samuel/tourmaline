@@ -53,6 +53,10 @@ struct SourceRecord {
     glm::vec4 localSphere{0.0f};
     uint32_t material = InvalidIndex;
     uint32_t flags = 0;
+    // Resolved material-instance userData (World::ResolvedItemUserData): the
+    // per-instance override when a material instance is bound, else the base
+    // material default. Forwarded to the lit FS location-9 input.
+    uint32_t userData = 0;
 };
 struct LevelSource {
     float simplifyError = 0.0f;
@@ -329,6 +333,7 @@ class SceneRegistry {
             data.localSphere = r.localSphere; // LOD0 sphere only
             data.refs =
                 glm::uvec4(mesh->second.id.slot, mesh->second.id.generation, r.material, r.flags);
+            data.userData = r.userData;
             auto it = instances_.find(r.instance);
             if (it == instances_.end()) {
                 auto handle = db.instances.Insert(data);
@@ -487,6 +492,7 @@ class WorldSynchronizer {
                                   MeshSourceEntry{record.mesh, item.mesh});
                 record.globalModel = tour::scene::GlobalTransformDouble(world.scene, item.node);
                 record.material = item.material; // interim World index
+                record.userData = world.ResolvedItemUserData(item);
                 // Closeup fades need a discarding MASK depth pass, even if the
                 // authored material is opaque. The FS applies the distance
                 // factor every frame, so no per-camera CPU publication is
