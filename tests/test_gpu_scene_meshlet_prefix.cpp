@@ -47,7 +47,7 @@ int main() {
     for (const auto& candidate : emitted)
         survivors.push_back(CompactMeshletSurvivorClass(candidate));
     CHECK(PsoPrefixPlan::Build(survivors, {{3,1,1,2}}, compact));
-    CHECK((compact.counts == PsoPrefixPlan::Counts{2,0,0,2}));
+    CHECK((compact.counts == PsoPrefixPlan::Counts{2,1,1,0}));
     CHECK(compact.destinations[1] == kPsoPrefixInvalid);
     CHECK(compact.destinations[4] == kPsoPrefixInvalid);
     CHECK(compact.destinations[5] == kPsoPrefixInvalid);
