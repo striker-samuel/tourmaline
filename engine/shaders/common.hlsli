@@ -260,6 +260,21 @@ bool CloseupDitherKeep(float3 worldPos, float3 eye, float2 pix)
     return DitherKeep(CloseupDitherFactor(worldPos, eye), pix);
 }
 
+// GPU Scene's raster view origin is the camera (see RasterViewPublisher).
+// Reconstructing large absolute world positions and subtracting a float
+// camera eye loses the entire 0.5..3m transition at large coordinates.
+// For GPU Scene ONLY, interpolate the camera-relative world position in a
+// separate varying. Keep the existing absolute worldPos for lighting until
+// the wider lighting coordinate-space migration is complete.
+float CloseupDitherFactorCameraRelative(float3 cameraRelativePos) {
+    const float d = length(cameraRelativePos);
+    return saturate((d - DITHER_CLOSEUP_HIDE_M)
+        / (DITHER_CLOSEUP_SOLID_M - DITHER_CLOSEUP_HIDE_M));
+}
+bool CloseupDitherKeepCameraRelative(float3 cameraRelativePos, float2 pix) {
+    return DitherKeep(CloseupDitherFactorCameraRelative(cameraRelativePos), pix);
+}
+
 // Configurable environment block (skydome IBL + fog).
 // Must match C++ smvk::EnvironmentFrameData (8 x float4, 128 bytes).
 struct EnvironmentFrameData
