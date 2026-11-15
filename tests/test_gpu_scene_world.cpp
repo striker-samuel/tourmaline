@@ -202,7 +202,7 @@ int main() {
         mesh.geometry.indexCount = 9u;
         mesh.geometry.surfaces.push_back(tour::Surface{40u, 9u, 64});
         tour::gfx::IndexedRange physical{};
-        CHECK(ResolveWorldSurfaceIndexedRange(mesh, 128u, 128u, physical));
+        CHECK(ResolveWorldSurfaceIndexedRange(mesh, 0u, 128u, 128u, physical));
         CHECK(physical.firstIndex == 40u && physical.indexCount == 9u &&
               physical.vertexOffset == 64);
         IndexedGeometryTables source{};
@@ -214,16 +214,29 @@ int main() {
         IndexedGeometry indexed{};
         CHECK(ResolveIndexedGeometry(source, 0u, indexed));
         CHECK(indexed.indexCount == 9u && indexed.firstIndex == 40u && indexed.vertexOffset == 64);
-        CHECK(!ResolveWorldSurfaceIndexedRange(mesh, 48u, 128u, physical));
-        CHECK(!ResolveWorldSurfaceIndexedRange(mesh, 128u, 90u, physical));
+        CHECK(!ResolveWorldSurfaceIndexedRange(mesh, 0u, 48u, 128u, physical));
+        CHECK(!ResolveWorldSurfaceIndexedRange(mesh, 0u, 128u, 90u, physical));
         mesh.geometry.surfaces.front().baseVertex = -1;
-        CHECK(!ResolveWorldSurfaceIndexedRange(mesh, 128u, 128u, physical));
+        CHECK(!ResolveWorldSurfaceIndexedRange(mesh, 0u, 128u, 128u, physical));
         mesh.geometry.surfaces.front().baseVertex = 64;
         mesh.geometry.surfaces.front().indexCount = 8u;
-        CHECK(!ResolveWorldSurfaceIndexedRange(mesh, 128u, 128u, physical));
+        CHECK(!ResolveWorldSurfaceIndexedRange(mesh, 0u, 128u, 128u, physical));
         mesh.geometry.surfaces.front().indexCount = 9u;
+        // Out-of-range surface index fails closed.
+        CHECK(!ResolveWorldSurfaceIndexedRange(mesh, 1u, 128u, 128u, physical));
+
+        // Multi-surface: two primitive ranges resolve independently, and the
+        // all-or-nothing helper returns the surface count only when every
+        // range is representable.
         mesh.geometry.surfaces.push_back(tour::Surface{49u, 3u, 64});
-        CHECK(!ResolveWorldSurfaceIndexedRange(mesh, 128u, 128u, physical));
+        std::array<tour::gfx::IndexedRange, kMaxSubmeshesPerLod> ranges{};
+        CHECK(ResolveWorldSurfaceIndexedRanges(mesh, 128u, 128u, ranges) == 2u);
+        CHECK(ranges[0].firstIndex == 40u && ranges[0].indexCount == 9u);
+        CHECK(ranges[1].firstIndex == 49u && ranges[1].indexCount == 3u &&
+              ranges[1].vertexOffset == 64);
+        // A malformed second surface makes the whole mesh unrepresentable.
+        mesh.geometry.surfaces[1].indexCount = 4u; // not a multiple of 3
+        CHECK(ResolveWorldSurfaceIndexedRanges(mesh, 128u, 128u, ranges) == 0u);
     }
     // Native indexed IDs reserve Gfx meshlet IDs when present but admit
     // World-only resident surfaces through a suffix. One conflicting Gfx
@@ -359,6 +372,73 @@ int main() {
         CHECK(thirdId == stable);
         CHECK(registry.Descriptors().size() <= 2u);
     }
+    // Multi-surface mesh: one LOD with N surfaces publishes N Submesh rows
+    // (one geometryId per primitive range) and N descriptors keyed per
+    // surface. All-or-nothing: a single unresolvable surface rejects the
+    // whole instance back to the direct path instead of skipping a primitive.
+    {
+        RenderDatabase db{};
+        SceneRegistry scene{};
+        SourceRecord source{};
+        source.instance = {9001u, 1u, 1u};
+        source.mesh = {9001u, 2u, 1u};
+        const auto stats = scene.Reconcile(std::span<const SourceRecord>(&source, 1), db);
+        CHECK(stats.created == 1u && stats.meshesCreated == 1u);
+        const auto meshId = scene.FindMesh(source.mesh);
+        const auto instanceId = scene.Find(source.instance);
+        CHECK(meshId && instanceId);
+
+        // Publish a two-surface resident LOD.
+        const LevelSource twoSurface{0.0f, {3u, 4u}, 2u, true, true};
+        CHECK(scene.PublishMesh(source.mesh, std::span(&twoSurface, 1), true, db));
+        const Mesh* mesh = db.meshes.Get(meshId);
+        CHECK(mesh && mesh->lodCount == 1u && mesh->residentMask == 1u);
+        const auto& lodRow = db.lods.Rows()[mesh->firstLod];
+        CHECK(lodRow.identity.y == 1u && lodRow.value.submeshCount == 2u);
+        CHECK((lodRow.value.flags & LodFlagFilterable) != 0u);
+        const auto& sub0 = db.submeshes.Rows()[lodRow.value.firstSubmesh];
+        const auto& sub1 = db.submeshes.Rows()[lodRow.value.firstSubmesh + 1u];
+        CHECK(sub0.identity.y == 1u && sub0.value.geometryId == 3u);
+        CHECK(sub1.identity.y == 1u && sub1.value.geometryId == 4u);
+        CHECK(InstanceDrawReady(db, instanceId));
+        CHECK(RasterIndexedInstanceReady(db, instanceId));
+
+        // Native ranges for geometry IDs 3 and 4; both resolve through the
+        // persistent registry into two distinct per-surface descriptors.
+        const std::array<tour::gfx::IndexedRange, 5> ranges{{
+            {0u, 0u, 0},
+            {0u, 0u, 0},
+            {0u, 0u, 0},
+            {10u, 9u, 0},
+            {20u, 6u, 0},
+        }};
+        IndexedGeometryTables tables{};
+        tables.meshCount = uint32_t(ranges.size());
+        tables.nativeRanges = ranges.data();
+        tables.nativeRangeCount = uint32_t(ranges.size());
+        tables.nativeIndexWordCount = 40u;
+        tables.nativeResident = true;
+        PersistentGeometryRegistry registry{};
+        CHECK(registry.Synchronize(db, tables));
+        const uint32_t d0 = registry.Find({meshId.slot, meshId.generation, 0u, 0u});
+        const uint32_t d1 = registry.Find({meshId.slot, meshId.generation, 0u, 1u});
+        CHECK(d0 != InvalidIndex && d1 != InvalidIndex && d0 != d1);
+        CHECK(registry.FromTransient(3u) == d0);
+        CHECK(registry.FromTransient(4u) == d1);
+        CHECK(registry.Descriptors()[d0].firstIndex == 10u &&
+              registry.Descriptors()[d0].indexCount == 9u);
+        CHECK(registry.Descriptors()[d1].firstIndex == 20u &&
+              registry.Descriptors()[d1].indexCount == 6u);
+
+        // All-or-nothing: one surface without a registered geometry makes the
+        // LOD non-filterable, so the whole instance stays on the direct path.
+        const LevelSource oneMissing{0.0f, {3u, InvalidIndex}, 2u, true, true};
+        CHECK(scene.PublishMesh(source.mesh, std::span(&oneMissing, 1), true, db));
+        const auto& nonFilterable = db.lods.Rows()[mesh->firstLod];
+        CHECK((nonFilterable.value.flags & LodFlagFilterable) == 0u);
+        CHECK(!RasterIndexedInstanceReady(db, instanceId));
+        CHECK(!InstanceDrawReady(db, instanceId));
+    }
     // A streamed metadata update must not report success when its registered
     // DB submesh or LOD slot has been retired behind the bridge's back.
     // Otherwise an evicted LOD can retain a previously resident descriptor.
@@ -372,7 +452,7 @@ int main() {
         CHECK(stats.created == 1u);
         const auto meshId = registry.FindMesh(source.mesh);
         // A provisional registration starts with no LOD rows. Publish one.
-        const LevelSource resident{0.0f, 5u, true, true};
+        const LevelSource resident{0.0f, {5u}, 1u, true, true};
         CHECK(registry.PublishMesh(source.mesh, std::span(&resident, 1), true, db));
         const auto* published = db.meshes.Get(meshId);
         CHECK(published && published->residentMask == 1u);
@@ -386,7 +466,7 @@ int main() {
         if (firstSub < db.submeshes.Rows().size()) {
             const auto generation = db.submeshes.Rows()[firstSub].identity.x;
             CHECK(db.submeshes.Erase({firstSub, generation}));
-            const LevelSource evicted{0.0f, InvalidIndex, false, true};
+            const LevelSource evicted{0.0f, {InvalidIndex}, 1u, false, true};
             CHECK(!registry.PublishMesh(source.mesh, std::span(&evicted, 1), true, db));
         }
     }
@@ -624,11 +704,11 @@ int main() {
     const auto meshKey = bridge.FindMesh(reloaded.mesh);
     CHECK(!InstanceDrawReady(db, current));
     CHECK(!RasterIndexedInstanceReady(db, current));
-    const LevelSource missingBounds{0.0f, 7u, true, false};
+    const LevelSource missingBounds{0.0f, {7u}, 1u, true, false};
     CHECK(bridge.PublishMesh(reloaded.mesh, std::span(&missingBounds, 1), false, db));
     CHECK(!InstanceDrawReady(db, current));
     CHECK(RasterIndexedInstanceReady(db, current)); // bounds conservatively bypassed
-    const LevelSource readyLevel{0.0f, 7u, true, true};
+    const LevelSource readyLevel{0.0f, {7u}, 1u, true, true};
     CHECK(bridge.PublishMesh(reloaded.mesh, std::span(&readyLevel, 1), true, db));
     CHECK(InstanceDrawReady(db, current));
     CHECK(RasterIndexedInstanceReady(db, current));
@@ -637,27 +717,27 @@ int main() {
     // registered resident sibling. The source's conservative bounds must
     // cover ALL cooked levels, including nonresident ones.
     const std::array<LevelSource, 3> levels{{
-        {0.0f, 7u, true, true},
-        {1.0f, 8u, true, true},
-        {2.0f, InvalidIndex, false, true},
+        {0.0f, {7u}, 1u, true, true},
+        {1.0f, {8u}, 1u, true, true},
+        {2.0f, {InvalidIndex}, 1u, false, true},
     }};
     CHECK(bridge.PublishMesh(reloaded.mesh, levels, true, db));
     CHECK(RasterIndexedInstanceReady(db, current));
     // LOD0 eviction is allowed: the GPU selector falls back to LOD1.
     auto fallbackLevels = levels;
-    fallbackLevels[0] = {0.0f, InvalidIndex, false, true};
+    fallbackLevels[0] = {0.0f, {InvalidIndex}, 1u, false, true};
     CHECK(bridge.PublishMesh(reloaded.mesh, fallbackLevels, true, db));
     CHECK(RasterIndexedInstanceReady(db, current));
     // Unknown bounds invalidate the union sphere: never GPU-own a
     // multi-LOD mesh while any sibling can escape the published bounds.
     auto unknownBounds = levels;
-    unknownBounds[2] = {2.0f, InvalidIndex, false, false};
+    unknownBounds[2] = {2.0f, {InvalidIndex}, 1u, false, false};
     CHECK(bridge.PublishMesh(reloaded.mesh, unknownBounds, false, db));
     CHECK(!RasterIndexedInstanceReady(db, current));
     // A resident level with no registered filterable geometry is not
     // safe to draw, even when another LOD is usable.
     auto missingGeometry = levels;
-    missingGeometry[1] = {1.0f, InvalidIndex, true, true};
+    missingGeometry[1] = {1.0f, {InvalidIndex}, 1u, true, true};
     CHECK(bridge.PublishMesh(reloaded.mesh, missingGeometry, true, db));
     CHECK(!RasterIndexedInstanceReady(db, current));
     // No resident geometry must never result in GPU ownership.
@@ -678,7 +758,7 @@ int main() {
     corrupted.refs.y = meshKey.generation;
     CHECK(db.instances.Update(current, corrupted));
     CHECK(InstanceDrawReady(db, current));
-    const LevelSource evicted{0.0f, InvalidIndex, false, true};
+    const LevelSource evicted{0.0f, {InvalidIndex}, 1u, false, true};
     CHECK(bridge.PublishMesh(reloaded.mesh, std::span(&evicted, 1), true, db));
     CHECK(!InstanceDrawReady(db, current));
     CHECK(!RasterIndexedInstanceReady(db, current));
@@ -730,7 +810,7 @@ int main() {
     const auto h0 = planRegistry.Find(i0.instance);
     const auto h1 = planRegistry.Find(i1.instance);
     const auto h2 = planRegistry.Find(i2.instance);
-    const LevelSource twoLods[2] = {{0.0f, 31u, true, true}, {0.5f, 32u, true, true}};
+    const LevelSource twoLods[2] = {{0.0f, {31u}, 1u, true, true}, {0.5f, {32u}, 1u, true, true}};
     CHECK(planRegistry.PublishMesh(i0.mesh, std::span(twoLods), true, planDb));
     const InstanceDrawCandidate chosen[] = {{h1, 0u},
                                             {h2, 0u},
@@ -749,7 +829,8 @@ int main() {
     CHECK(plan.ranges[2].instanceCount == 1u && plan.ranges[2].key.lod == 1u);
     // Eviction and stale generations are rejected; the direct fallback
     // continues to own anything that is not ready for GPU-scene raster.
-    const LevelSource oneEvicted[2] = {{0.0f, 31u, true, true}, {0.5f, InvalidIndex, false, true}};
+    const LevelSource oneEvicted[2] = {{0.0f, {31u}, 1u, true, true},
+                                       {0.5f, {InvalidIndex}, 1u, false, true}};
     CHECK(planRegistry.PublishMesh(i0.mesh, std::span(oneEvicted), true, planDb));
     const auto evictedPlan = BuildInstanceDrawPlan(planDb, chosen);
     CHECK(evictedPlan.rejected == 3u);

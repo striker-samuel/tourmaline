@@ -2668,9 +2668,12 @@ class WorldRenderer : public IRenderer {
     // the current registration ID. These are the indexed raster authority;
     // GfxRenderer's cluster index heap is only an optional meshlet source.
     std::vector<tour::gfx::IndexedRange> m_gpuScenePhysicalIndexedRanges;
-    // Revision-local IDs for World base mesh + selected resident LOD; the
-    // native-only suffix supports meshes with no cooked meshlet registration.
-    std::vector<std::vector<uint32_t>> m_gpuScenePhysicalLodIds;
+    // Revision-local IDs for World base mesh + selected resident LOD, one
+    // entry per authored SURFACE. Multi-surface meshes (several primitive
+    // ranges) register each surface under its own native suffix ID; the
+    // native-only suffix also supports meshes with no cooked meshlet
+    // registration.
+    std::vector<std::vector<std::vector<uint32_t>>> m_gpuScenePhysicalLodIds;
     bool m_gpuSceneTaskGeometryIdsCompatible = false;
     const smvk::World* m_gpuScenePhysicalWorld = nullptr;
     uint64_t m_gpuScenePhysicalTopologyRevision = ~uint64_t(0);

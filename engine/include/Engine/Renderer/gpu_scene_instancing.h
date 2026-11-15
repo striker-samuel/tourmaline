@@ -92,27 +92,41 @@ struct InstanceDrawPlan {
         const auto& lodRow = db.lods.Rows()[mesh->firstLod + candidate.lod];
         const Lod& lod = lodRow.value;
         if (lodRow.identity.y != 1u || !(lod.flags & LodFlagResident) ||
-            !(lod.flags & LodFlagFilterable) || lod.submeshCount != 1u ||
-            lod.firstSubmesh >= db.submeshes.Size()) {
+            !(lod.flags & LodFlagFilterable) || lod.submeshCount == 0u ||
+            lod.submeshCount > kMaxSubmeshesPerLod || lod.firstSubmesh >= db.submeshes.Size() ||
+            lod.submeshCount > db.submeshes.Size() - lod.firstSubmesh) {
             ++plan.rejected;
             continue;
         }
-        const auto& subRow = db.submeshes.Rows()[lod.firstSubmesh];
-        const Submesh& sub = subRow.value;
-        if (subRow.identity.y != 1u || sub.geometryId == InvalidIndex) {
+        // All-or-nothing: reject the whole instance if any surface of the
+        // selected LOD is unresolvable, then group each surface separately
+        // (one range per surface, sharing the instance material).
+        bool surfaceInvalid = false;
+        for (uint32_t s = 0; s < lod.submeshCount; ++s) {
+            const auto& subRow = db.submeshes.Rows()[lod.firstSubmesh + s];
+            if (subRow.identity.y != 1u || subRow.value.geometryId == InvalidIndex) {
+                surfaceInvalid = true;
+                break;
+            }
+        }
+        if (surfaceInvalid) {
             ++plan.rejected;
             continue;
         }
-        const InstanceDrawKey key{meshId.slot,
-                                  meshId.generation,
-                                  candidate.lod,
-                                  sub.geometryId,
-                                  instance->refs.z,
-                                  sub.materialId,
-                                  sub.pipelineGroup,
-                                  sub.passMask,
-                                  instance->refs.w};
-        grouped[key].push_back(candidate.instance);
+        for (uint32_t s = 0; s < lod.submeshCount; ++s) {
+            const auto& subRow = db.submeshes.Rows()[lod.firstSubmesh + s];
+            const Submesh& sub = subRow.value;
+            const InstanceDrawKey key{meshId.slot,
+                                      meshId.generation,
+                                      candidate.lod,
+                                      sub.geometryId,
+                                      instance->refs.z,
+                                      sub.materialId,
+                                      sub.pipelineGroup,
+                                      sub.passMask,
+                                      instance->refs.w};
+            grouped[key].push_back(candidate.instance);
+        }
     }
     for (const auto& [key, refs] : grouped) {
         plan.ranges.push_back(

@@ -62,7 +62,7 @@ void CheckMembership() {
     CHECK(added.created == 2 && added.meshesCreated == 1);
     const Id aId = source.Find(a.instance), bId = source.Find(b.instance);
     CHECK(aId && bId);
-    const std::array<LevelSource, 1> levels{{LevelSource{0, 9, true, true}}};
+    const std::array<LevelSource, 1> levels{{LevelSource{0, {9u}, 1u, true, true}}};
     CHECK(source.PublishMesh(a.mesh, levels, true, db));
     Apply(source, leaves, db);
     CHECK(leaves.LeafCount() == 1);

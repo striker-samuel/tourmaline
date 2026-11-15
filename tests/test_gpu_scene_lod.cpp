@@ -90,9 +90,9 @@ void CheckMeshResidency() {
     CHECK(meshId && instanceId);
     CHECK(db.instances.Get(instanceId)->refs.y == meshId.generation);
     std::array<LevelSource, 3> chain{{
-        {0.0f, 4u, true, true},             // LOD0: resident and filterable
-        {0.25f, InvalidIndex, false, true}, // LOD1 deferred, metadata known
-        {1.5f, InvalidIndex, true, true}    // LOD2 direct-draw only
+        {0.0f, {4u}, 1u, true, true},             // LOD0: resident and filterable
+        {0.25f, {InvalidIndex}, 1u, false, true}, // LOD1 deferred, metadata known
+        {1.5f, {InvalidIndex}, 1u, true, true}    // LOD2 direct-draw only
     }};
     CHECK(registry.PublishMesh(r.mesh, chain, true, db));
     const Mesh* mesh = db.meshes.Get(meshId);
@@ -124,7 +124,7 @@ void CheckMeshResidency() {
     // Deferred sibling is promoted. Mesh + LOD1 + submesh1 change,
     // everything else retains identity and does not upload again.
     chain[1].resident = true;
-    chain[1].gfxMesh = 17u;
+    chain[1].geometry[0] = 17u;
     CHECK(registry.PublishMesh(r.mesh, chain, true, db));
     mesh = db.meshes.Get(meshId);
     CHECK(mesh->firstLod == base && mesh->residentMask == 0b111u);
@@ -136,7 +136,7 @@ void CheckMeshResidency() {
     Ack(db.submeshes, 0);
     // A registration-table rebuild can remap geometry IDs without
     // changing physical residency or the persistent mesh handle.
-    chain[0].gfxMesh = 77u;
+    chain[0].geometry[0] = 77u;
     CHECK(registry.PublishMesh(r.mesh, chain, true, db));
     CHECK(db.meshes.PendingRows(0) == 0);
     CHECK(db.lods.PendingRows(0) == 0);
@@ -146,7 +146,7 @@ void CheckMeshResidency() {
     // Geometry eviction publishes a false resident bit and disables
     // transient geometry reuse, including on a flight that lagged behind.
     chain[1].resident = false;
-    chain[1].gfxMesh = InvalidIndex;
+    chain[1].geometry[0] = InvalidIndex;
     CHECK(registry.PublishMesh(r.mesh, chain, true, db));
     CHECK(db.meshes.Get(meshId)->residentMask == 0b101u);
     CHECK(db.lods.Rows()[base + 1].value.firstSubmesh == lodRows[base + 1].value.firstSubmesh);

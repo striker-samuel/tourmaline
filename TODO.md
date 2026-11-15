@@ -50,7 +50,10 @@
   - material instances (`materialInstance != 0`) and per-material userData
     (userData partial: the fragment varying already exists; remaining =
     GPU-visible material data, live updates, shader fetch, admission),
-  - multi-surface meshes (`surfaces.size() != 1`),
+  - multi-surface meshes (`surfaces.size() != 1`) — LANDED: one Submesh row
+    per primitive range, one descriptor per surface, all-or-nothing
+    admission (a single unresolvable surface keeps the whole instance on the
+    direct path),
   - packed-vertex lightmapped meshes (chart-xform/lightmap stream),
   - closeup-dither nodes (`IsDitherCloseupNode`) — partial: the instance
     flag + vertex varying already exist; remaining = mask/depth pipeline
@@ -59,7 +62,7 @@
     bounds — `RasterIndexedInstanceReady`).
   Closing any of these first needs a matching GPU-scene variant (skinning
   deformed-geometry consumption, masked-layered coverage/ProjectLit support,
-  multi-surface/lightmap admission, residency guarantees).
+  lightmap admission, residency guarantees).
 - [ ] **Production Map and World asset pipeline (PARTIAL; #231/#232/#272).**
   Authored Map identity, SMP8 packaging, scene tile providers, world-owned direct
   scene instances, leases, and the **default direct** `MapSceneStreaming`
