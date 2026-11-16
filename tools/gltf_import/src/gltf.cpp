@@ -513,35 +513,6 @@ bool GltfExtrasStatic(const tinygltf::Value& extras) {
 // FIRST instance's flag wins when several nodes reference the same
 // light definition with different extras.
 // Returns false for unknown types (caller skips the node link).
-bool GltfLightToSceneLight(const tinygltf::Light& src, bool staticLight, SceneLight& dst) {
-    dst.name = src.name;
-    dst.color = glm::vec3(1.0f);
-    if (src.color.size() >= 3) {
-        dst.color = glm::vec3(static_cast<float>(src.color[0]),
-                              static_cast<float>(src.color[1]),
-                              static_cast<float>(src.color[2]));
-    }
-    dst.intensity = static_cast<float>(src.intensity);
-    dst.range = static_cast<float>(src.range); // 0 = infinite
-    dst.innerConeAngle = 0.0f;
-    dst.outerConeAngle = 0.0f;
-    dst.flags = 0;
-    if (staticLight || (!src.name.empty() && src.name.rfind("STATIC_", 0) == 0))
-        dst.flags |= SceneLight::kSceneLightFlag_Static;
-    if (src.type == "directional") {
-        dst.type = SceneLight::Type::Directional;
-    } else if (src.type == "point") {
-        dst.type = SceneLight::Type::Point;
-    } else if (src.type == "spot") {
-        dst.type = SceneLight::Type::Spot;
-        dst.innerConeAngle = static_cast<float>(src.spot.innerConeAngle);
-        dst.outerConeAngle = static_cast<float>(src.spot.outerConeAngle);
-    } else {
-        return false;
-    }
-    return true;
-}
-
 // A glTF light node opts its light INTO the static bake set via
 // authoring extras (checked in importNodeRecursive; the light NAME
 // prefix "STATIC_" is handled in GltfLightToSceneLight):
@@ -1975,13 +1946,6 @@ static smvk::MeshData SourcePrimitiveToMeshData(const smvk::source::Primitive& r
     return data;
 }
 
-static smvk::MeshData SurfaceDataFromGltfPrimitive(const tinygltf::Model& model,
-                                                   const tinygltf::Primitive& primitive,
-                                                   int coordFix) {
-    (void)coordFix; // basis correction remains at the scene root
-    return SourcePrimitiveToMeshData(DecodeGltfPrimitive(model, primitive));
-}
-
 // Packs a primitive's JOINTS_0/WEIGHTS_0 into the PackedSkinInfluences stream
 // (top-4 renormalized RGBA8; joint ids in the glTF JOINTS_0 order = the
 // cluster Skeleton joint table). Built in the POSITION-accessor order,
@@ -2012,76 +1976,6 @@ static bool PackSourceSkinStream(const smvk::source::Primitive& primitive,
     return true;
 }
 
-static bool PackVertexSkinStream(const tinygltf::Model& model,
-                                 const tinygltf::Primitive& prim,
-                                 std::vector<smvk::PackedSkinInfluences>& out) {
-    auto jt = prim.attributes.find("JOINTS_0");
-    auto wt = prim.attributes.find("WEIGHTS_0");
-    if (jt == prim.attributes.end() || wt == prim.attributes.end() || jt->second < 0 ||
-        (size_t)jt->second >= model.accessors.size() || wt->second < 0 ||
-        (size_t)wt->second >= model.accessors.size())
-        return false;
-    const tinygltf::Accessor& jAcc = model.accessors[size_t(jt->second)];
-    const tinygltf::Accessor& wAcc = model.accessors[size_t(wt->second)];
-    const size_t verts = size_t(jAcc.count);
-    if (verts == 0 || size_t(wAcc.count) < verts)
-        return false;
-    out.resize(verts);
-    for (size_t v = 0; v < verts; ++v) {
-        uint32_t j[4] = {0u, 0u, 0u, 0u};
-        float w[4] = {1.0f, 0.0f, 0.0f, 0.0f};
-        {
-            const uint8_t* p = gltfPtr(model, jAcc, v);
-            if (p) {
-                for (int k = 0; k < 4; ++k) {
-                    if (jAcc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE)
-                        j[k] = p[k];
-                    else if (jAcc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) {
-                        const uint16_t* s16 = reinterpret_cast<const uint16_t*>(p);
-                        j[k] = s16[k];
-                    } else if (jAcc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT) {
-                        const uint32_t* s32 = reinterpret_cast<const uint32_t*>(p);
-                        j[k] = s32[k];
-                    }
-                }
-            }
-        }
-        {
-            const uint8_t* p = gltfPtr(model, wAcc, v);
-            if (p) {
-                for (int k = 0; k < 4; ++k) {
-                    if (wAcc.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT)
-                        w[k] = reinterpret_cast<const float*>(p)[k];
-                    else if (wAcc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE)
-                        w[k] = float(p[k]) * (1.0f / 255.0f);
-                    else if (wAcc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT)
-                        w[k] = float(reinterpret_cast<const uint16_t*>(p)[k]) * (1.0f / 65535.0f);
-                }
-            }
-        }
-        // Degenerate zero weights fall back to joint 0 at full weight
-        // (never a NaN normal in the shader).
-        float sum = w[0] + w[1] + w[2] + w[3];
-        if (!(sum > 1e-6f)) {
-            j[0] = j[1] = j[2] = j[3] = 0u;
-            w[0] = 1.0f;
-            w[1] = w[2] = w[3] = 0.0f;
-            sum = 1.0f;
-        }
-        out[v].joints = ((j[0] & 0xFFu)) | ((j[1] & 0xFFu) << 8) | ((j[2] & 0xFFu) << 16) |
-                        ((j[3] & 0xFFu) << 24);
-        out[v].weights =
-            glm::packUnorm4x8(glm::vec4(w[0] / sum, w[1] / sum, w[2] / sum, w[3] / sum));
-    }
-    return true;
-}
-
-// Reads the LOD-gate shape facts (AABB + index count) for a primitive from
-// the glTF accessors WITHOUT the full vertex extract — prepareMeshes' single
-// O(nodes) walk needs them to resolve the large-placed flag for every
-// instance. Mirrors SurfaceDataFromGltfPrimitive's AABB read (the POSITION
-// accessor's authored min/max); false = no position accessor / no authored
-// bounds (treated as "never large-placed", matching the zero-AABB fallback).
 static bool PrimitiveShapeFacts(const smvk::source::Primitive& primitive,
                                 glm::vec3* aabbMin,
                                 glm::vec3* aabbMax,
