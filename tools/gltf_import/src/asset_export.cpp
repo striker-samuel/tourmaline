@@ -1435,7 +1435,7 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
         return gm.name.empty() ? ("mat" + std::to_string(mi)) : gm.name;
     };
     const auto animName = [&](int ai) -> std::string {
-        const tinygltf::Animation& ga = model.animations[size_t(ai)];
+        const smvk::source::Animation& ga = native.animations[size_t(ai)];
         return ga.name.empty() ? ("anim" + std::to_string(ai)) : ga.name;
     };
     std::map<std::pair<int, std::string>, int> prevCounts;
@@ -1446,7 +1446,7 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
     std::map<std::pair<int, std::string>, int> newCounts;
     for (int mi = 0; mi < int(native.materials.size()); ++mi)
         ++newCounts[{int(AssetKind::Material), materialName(mi)}];
-    for (int ai = 0; ai < int(model.animations.size()); ++ai)
+    for (int ai = 0; ai < int(native.animations.size()); ++ai)
         ++newCounts[{int(AssetKind::Anim), animName(ai)}];
     ++newCounts[{int(AssetKind::Geometry), stem}];
     for (const auto& [group, newCount] : newCounts) {
@@ -1786,8 +1786,8 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
 
     // 5) Animation assets (the .tourAnim format; tracks retargeted onto
     // the .geometry's node ids via the import's gltf node map).
-    for (int ai = 0; ai < int(model.animations.size()); ++ai) {
-        const tinygltf::Animation& ga = model.animations[size_t(ai)];
+    for (int ai = 0; ai < int(native.animations.size()); ++ai) {
+        const smvk::source::Animation& ga = native.animations[size_t(ai)];
         smvk::touranim::AnimDoc doc{};
         doc.source = std::filesystem::path(gltfPath).filename().string();
         smvk::touranim::Clip clip{};
@@ -1810,42 +1810,22 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
         // local = parent_world_bind^-1 * parent_world(t) * raw. This runs on
         // the RAW glTF values, before the coordFix conjugation below, so both
         // share the same (raw, cm) frame.
-        std::vector<int> parentOf(model.nodes.size(), -1);
-        for (size_t n = 0; n < model.nodes.size(); ++n)
-            for (int c : model.nodes[n].children)
+        std::vector<int> parentOf(native.nodes.size(), -1);
+        for (size_t n = 0; n < native.nodes.size(); ++n)
+            for (int c : native.nodes[n].children)
                 if (c >= 0 && c < int(parentOf.size()) && parentOf[size_t(c)] < 0)
                     parentOf[size_t(c)] = int(n);
         std::map<int, std::map<int, std::vector<smvk::touranim::Key>>> rawByNode;
-        for (const tinygltf::AnimationChannel& rch : ga.channels) {
-            if (rch.sampler < 0 || rch.sampler >= int(ga.samplers.size()) || rch.target_node < 0 ||
-                rch.target_node >= int(model.nodes.size()))
+        for (const smvk::source::AnimationTrack& track : ga.tracks) {
+            if (track.node >= native.nodes.size())
                 continue;
-            const tinygltf::AnimationSampler& rs = ga.samplers[size_t(rch.sampler)];
-            if (rs.output < 0 || rs.output >= int(model.accessors.size()))
-                continue;
-            const tinygltf::Accessor& ro = model.accessors[size_t(rs.output)];
-            const tinygltf::Accessor& ri = (rs.input >= 0 && rs.input < int(model.accessors.size()))
-                                               ? model.accessors[size_t(rs.input)]
-                                               : tinygltf::Accessor{};
-            const size_t kc = std::min(size_t(ro.count), size_t(ri.count));
-            const int chan = (rch.target_path == "rotation") ? 1
-                             : (rch.target_path == "scale")  ? 2
-                                                             : 0;
-            auto& dst = rawByNode[rch.target_node][chan];
-            for (size_t k = 0; k < kc; ++k) {
-                double t = 0.0;
-                double val[4] = {};
-                if (!AnimReadValue(model, ri, k, &t, 1))
-                    break;
-                const int comp = (chan == 1) ? 4 : 3;
-                if (!AnimReadValue(model, ro, k, val, comp))
-                    break;
+            const int chan = track.channel == smvk::source::AnimationChannel::Rotation ? 1
+                             : track.channel == smvk::source::AnimationChannel::Scale ? 2 : 0;
+            auto& dst = rawByNode[int(track.node)][chan];
+            for (const auto& value : track.keys) {
                 smvk::touranim::Key key{};
-                key.t = t;
-                key.v = glm::vec4(float(val[0]),
-                                  float(val[1]),
-                                  float(val[2]),
-                                  (comp == 4) ? float(val[3]) : 1.0f);
+                key.t = value.time;
+                key.v = value.value;
                 dst.push_back(key);
             }
         }
@@ -1865,7 +1845,7 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
             return ks.back().v;
         };
         auto rawLocal = [&](int g, double t) -> glm::mat4 {
-            const glm::mat4 base = GetNodeLocalTransform(model.nodes[size_t(g)]);
+            const glm::mat4 base = native.nodes[size_t(g)].localTransform;
             const glm::vec3 T0(base[3]);
             const glm::mat3 R3(base);
             const glm::vec3 S0(glm::length(glm::vec3(R3[0])),
@@ -1901,41 +1881,30 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
             return w;
         };
         auto rawBindWorld = [&](auto&& self, int g) -> glm::mat4 {
-            glm::mat4 w = GetNodeLocalTransform(model.nodes[size_t(g)]);
+            glm::mat4 w = native.nodes[size_t(g)].localTransform;
             if (parentOf[size_t(g)] >= 0)
                 w = self(self, parentOf[size_t(g)]) * w;
             return w;
         };
         // The raw keys and the world sampler both live in the raw glTF frame
         // (cm; the root's cm->m scale cancels in the bind^-1 * world product).
-        for (const tinygltf::AnimationChannel& ch : ga.channels) {
-            if (ch.sampler < 0 || ch.sampler >= int(ga.samplers.size()))
-                continue;
-            const int target = ch.target_node;
+        for (const smvk::source::AnimationTrack& ch : ga.tracks) {
+            const int target = int(ch.node);
             if (target < 0 || target >= int(gltfNodeMap.size()))
                 continue;
             const int joint = gltfNodeMap[size_t(target)];
-            if (joint < 0)
-                continue;
-            const tinygltf::AnimationSampler& s = ga.samplers[size_t(ch.sampler)];
-            // Output values: a VEC3 (translate/scale) or a quat (rotate).
-            if (s.output < 0 || s.output >= int(model.accessors.size()))
-                continue;
-            const tinygltf::Accessor& out = model.accessors[size_t(s.output)];
-            const tinygltf::Accessor& in = (s.input >= 0 && s.input < int(model.accessors.size()))
-                                               ? model.accessors[size_t(s.input)]
-                                               : tinygltf::Accessor{};
-            const size_t keys = std::min(size_t(out.count), size_t(in.count));
-            if (keys == 0)
+            if (joint < 0 || ch.keys.empty())
                 continue;
             smvk::touranim::Track t{};
             t.joint = uint32_t(joint);
-            t.name = (target >= 0 && target < int(model.nodes.size()))
-                         ? model.nodes[size_t(target)].name
+            t.name = (target >= 0 && target < int(native.nodes.size()))
+                         ? native.nodes[size_t(target)].name
                          : std::string();
-            t.channel = (ch.target_path == "rotation") ? smvk::touranim::Channel::Rotate
-                        : (ch.target_path == "scale")  ? smvk::touranim::Channel::Scale
-                                                       : smvk::touranim::Channel::Translate;
+            t.channel = ch.channel == smvk::source::AnimationChannel::Rotation
+                            ? smvk::touranim::Channel::Rotate
+                        : ch.channel == smvk::source::AnimationChannel::Scale
+                            ? smvk::touranim::Channel::Scale
+                            : smvk::touranim::Channel::Translate;
             // RUNTIME-convention keys: the track REPLACES the node's
             // whole channel in the RUNTIME's local space, and the
             // import conjugates each CHAIN TOP node's local by the
@@ -1953,7 +1922,7 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
             glm::mat4 basis(1.0f);
             glm::vec3 basisScale(1.0f);
             {
-                const glm::mat4 rawLocal = GetNodeLocalTransform(model.nodes[size_t(target)]);
+                const glm::mat4 rawLocal = native.nodes[size_t(target)].localTransform;
                 if (joint < int(cluster->scene.localTransform.size())) {
                     basis = cluster->scene.localTransform[size_t(joint)] * glm::inverse(rawLocal);
                     basisScale = glm::vec3(glm::length(glm::vec3(basis[0])),
@@ -1983,9 +1952,11 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
                 glm::abs(basis[0].y) + glm::abs(basis[0].z) + glm::abs(basis[1].x) +
                         glm::abs(basis[1].z) + glm::abs(basis[2].x) + glm::abs(basis[2].y) <
                     1e-6f;
-            t.spline = (s.interpolation == "STEP")          ? smvk::touranim::Spline::Step
-                       : (s.interpolation == "CUBICSPLINE") ? smvk::touranim::Spline::CatmullRom
-                                                            : smvk::touranim::Spline::Linear;
+            t.spline = ch.interpolation == smvk::source::Interpolation::Step
+                           ? smvk::touranim::Spline::Step
+                       : ch.interpolation == smvk::source::Interpolation::CubicSpline
+                           ? smvk::touranim::Spline::CatmullRom
+                           : smvk::touranim::Spline::Linear;
             // World-space translation detection: a bone whose raw local
             // translation keeps its WORLD frozen (barely moves) while its
             // parent chain moves significantly was authored in WORLD space
@@ -2012,28 +1983,13 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
                     }
                 }
             }
-            for (size_t k = 0; k < keys; ++k) {
+            for (const smvk::source::AnimationKey& srcKey : ch.keys) {
                 smvk::touranim::Key key{};
-                // Component-type-aware reads (AnimReadValue): the raw
-                // AnimAccessorPtr<double> reinterpreted FLOAT accessor
-                // data as doubles - the knight's tracks came out as
-                // 2.67e+13 translates and 4e-10 key times.
-                if (!AnimReadValue(model, in, k, &key.t, 1))
-                    break;
+                key.t = srcKey.time;
                 lastT = std::max(lastT, key.t);
                 if (t.channel == smvk::touranim::Channel::Rotate) {
-                    double q[4] = {};
-                    if (!AnimReadValue(model, out, k, q, 4))
-                        break;
-                    // glTF stores rotate keys as unit quats (x, y, z,
-                    // w) - EXACTLY the .tourAnim contract (touranim.h:
-                    // "4 for rotate (UNIT QUATERNION xyzw)"). No glm
-                    // quat-ctor-order (w,x,y,z) swizzle here: key.v is a
-                    // plain vec4 the runtime reads componentwise as
-                    // xyzw (SampleAnimation's quat(v.w, v.x, v.y, v.z)
-                    // ctor); the earlier w-first swizzle permuted every
-                    // channel of every rotate key into garbage poses.
-                    glm::quat rot{float(q[3]), float(q[0]), float(q[1]), float(q[2])};
+                    const glm::vec4 q = srcKey.value; // glTF xyzw ordering preserved by adapter
+                    glm::quat rot{q.w, q.x, q.y, q.z};
                     if (!identityBasis) {
                         // The runtime composes the local as T * R * S
                         // and the true animated top local is
@@ -2051,10 +2007,7 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
                     }
                     key.v = glm::vec4(rot.x, rot.y, rot.z, rot.w);
                 } else {
-                    double v3[3] = {};
-                    if (!AnimReadValue(model, out, k, v3, 3))
-                        break;
-                    glm::vec3 val{float(v3[0]), float(v3[1]), float(v3[2])};
+                    glm::vec3 val(srcKey.value);
                     // World->local translation: subtract the parent chain's
                     // world-translation delta so a rigid child keeps its
                     // constant local offset (see the fix block above).
