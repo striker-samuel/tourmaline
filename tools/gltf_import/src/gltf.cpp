@@ -2595,8 +2595,8 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
 
     // glTF node index -> cluster id map (the asset derivation retargets
     // animations/material bindings onto the deterministic cluster ids).
-    if (gltfNodeMap_.size() < model.nodes.size())
-        gltfNodeMap_.resize(model.nodes.size(), -1);
+    if (gltfNodeMap_.size() < sourceScene_.nodes.size())
+        gltfNodeMap_.resize(sourceScene_.nodes.size(), -1);
 
     // Always create a "group" node that owns name + transform and preserves hierarchy.
     const int groupNode = addNode(cluster.scene, parentSceneNode, level);
@@ -2669,11 +2669,11 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
 
     // Unroll primitives into separate meshes (your current approach).
     if (sourceNode.mesh >= 0) {
-        const tinygltf::Mesh& gltfMesh = model.meshes[sourceNode.mesh];
-        const bool hasSkin = sourceNode.skin >= 0 && (size_t)sourceNode.skin < model.skins.size();
+        const smvk::source::Mesh& gltfMesh = sourceScene_.meshes[sourceNode.mesh];
+        const bool hasSkin = sourceNode.skin >= 0 && (size_t)sourceNode.skin < sourceScene_.skins.size();
 
         for (int primIndex = 0; primIndex < (int)gltfMesh.primitives.size(); ++primIndex) {
-            const tinygltf::Primitive& primitive = gltfMesh.primitives[primIndex];
+            const smvk::source::Primitive& primitive = gltfMesh.primitives[primIndex];
 
             const int primNode = addNode(cluster.scene, groupNode, level + 1);
             setNodeName(cluster.scene,
@@ -2808,12 +2808,12 @@ int GltfToSceneImporter::BuildSkinData() {
     int patched = 0;
     for (const SkinRef& r : skinRefs_) {
         if (r.skinIndex < 0 || (size_t)r.skinIndex >= sourceScene_.skins.size() || r.gltfMeshIndex < 0 ||
-            (size_t)r.gltfMeshIndex >= model.meshes.size())
+            (size_t)r.gltfMeshIndex >= sourceScene_.meshes.size())
             continue;
-        const tinygltf::Mesh& gm = model.meshes[size_t(r.gltfMeshIndex)];
+        const smvk::source::Mesh& gm = sourceScene_.meshes[size_t(r.gltfMeshIndex)];
         if (r.primitiveIndex < 0 || (size_t)r.primitiveIndex >= gm.primitives.size())
             continue;
-        const tinygltf::Primitive& prim = gm.primitives[size_t(r.primitiveIndex)];
+        const smvk::source::Primitive& prim = gm.primitives[size_t(r.primitiveIndex)];
         // The stream attached in getOrCreateMesh (BEFORE the meshopt pass)
         // already rode OptimizeMeshData's vertex remap, so it is in
         // FINAL vertex order - prefer it. The accessor-order pack is the
@@ -2823,7 +2823,7 @@ int GltfToSceneImporter::BuildSkinData() {
                 cluster.GetRetainedSkinStream(r.mesh);
             existing && !existing->empty()) {
             stream = *existing;
-        } else if (!PackVertexSkinStream(model, prim, stream)) {
+        } else if (!PackSourceSkinStream(prim, stream)) {
             std::cerr << "[Skin] mesh '" << gm.name
                       << "' has node.skin but no JOINTS_0/WEIGHTS_0"
                          " (skinned as static)"
