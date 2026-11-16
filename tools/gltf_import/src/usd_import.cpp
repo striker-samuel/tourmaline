@@ -17,17 +17,21 @@
 #include <pxr/base/vt/array.h>
 #include <pxr/pxr.h>
 #include <pxr/usd/sdf/layer.h>
+#include <pxr/usd/sdf/primSpec.h>
 #include <pxr/usd/usd/attribute.h>
 #include <pxr/usd/usd/prim.h>
+#include <pxr/usd/usd/primRange.h>
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usdGeom/camera.h>
 #include <pxr/usd/usdGeom/mesh.h>
 #include <pxr/usd/usdGeom/metrics.h>
+#include <pxr/usd/usdGeom/pointInstancer.h>
 #include <pxr/usd/usdGeom/primvar.h>
 #include <pxr/usd/usdGeom/primvarsAPI.h>
 #include <pxr/usd/usdGeom/scope.h>
 #include <pxr/usd/usdGeom/subset.h>
 #include <pxr/usd/usdGeom/tokens.h>
+#include <pxr/usd/usdGeom/xformCache.h>
 #include <pxr/usd/usdGeom/xformable.h>
 #include <pxr/usd/usdShade/material.h>
 #include <pxr/usd/usdShade/materialBindingAPI.h>
@@ -192,6 +196,16 @@ struct Converter {
     BufferBuilder blob;
     std::map<std::string, int> materialIndices;
     std::set<std::string> stableIds;
+    // Reference-deduplicated mesh cache (content identity -> mesh index) and
+    // the prototype subtree roots that must NOT be placed directly (they are
+    // instanced via their PointInstancer instead).
+    std::map<std::string, int> meshCache;
+    std::set<std::string> prototypeRoots;
+    // Content-identity cache keyed by prim path: GetPrimStack() resolves the
+    // full composition stack and is expensive, but a prototype leaf is visited
+    // once per instance proxy, so the identity is recomputed thousands of
+    // times without this cache.
+    std::map<std::string, std::string> identityCache;
 
     explicit Converter(tinygltf::Model& m) : model(m), blob{m, {}} {}
 
@@ -242,14 +256,56 @@ struct Converter {
         return true;
     }
 
+    // True when a prim lives inside (or is) a PointInstancer prototype
+    // subtree; those are instanced, never placed directly.
+    bool UnderPrototype(const UsdPrim& prim) const {
+        const std::string path = prim.GetPath().GetString();
+        for (const std::string& root : prototypeRoots) {
+            if (path == root)
+                return true;
+            if (path.size() > root.size() && path.compare(0, root.size(), root) == 0 &&
+                path[root.size()] == '/')
+                return true;
+        }
+        return false;
+    }
+
+    // Reference-based deduplication: Caldera places buildings by USD
+    // REFERENCE (not instance proxies), so the same source asset is composed
+    // into many distinct prim paths. The strongest DEFINING prim spec is the
+    // source asset; two prims that reference it share one identity, so the
+    // importer emits ONE native mesh and many placement nodes. Authored
+    // (non-referenced) prims fall back to their composed path. Cached by prim
+    // path: GetPrimStack() is expensive, and the same prototype leaf is
+    // revisited once per instance proxy.
+    std::string ContentIdentity(const UsdPrim& prim) {
+        const std::string path = prim.GetPath().GetString();
+        const auto hit = identityCache.find(path);
+        if (hit != identityCache.end())
+            return hit->second;
+        // Bind the prim stack to a LOCAL before iterating: calling
+        // GetPrimStack() twice in the loop header creates two temporaries
+        // whose reverse iterators dangle the moment the full-expression ends.
+        const SdfPrimSpecHandleVector stack = prim.GetPrimStack();
+        std::string identity;
+        for (auto it = stack.rbegin(); it != stack.rend(); ++it) {
+            if ((*it)->GetSpecifier() == SdfSpecifierDef) {
+                identity = (*it)->GetLayer()->GetIdentifier() + "::" + (*it)->GetPath().GetString();
+                break;
+            }
+        }
+        if (identity.empty())
+            identity = path;
+        identityCache.emplace(path, identity);
+        return identity;
+    }
+
     // Only scalar UsdPreviewSurface inputs are representable for now.
     // Connected shader networks need an explicit texture/MDL translator;
     // don't silently drop them or pretend they became PBR values.
     bool ReadMaterial(const UsdShadeMaterial& material, int& out) {
-        if (!material) {
-            out = -1;
-            return true;
-        }
+        if (!material)
+            return DefaultMaterial(out);
         const std::string key = material.GetPath().GetString();
         const auto existing = materialIndices.find(key);
         if (existing != materialIndices.end()) {
@@ -297,6 +353,12 @@ struct Converter {
             if (auto input = shader.GetInput(TfToken("emissiveColor"));
                 input && input.Get(&emission))
                 m.emissiveFactor = {emission[0], emission[1], emission[2]};
+            else
+                // tinygltf's Material leaves emissiveFactor EMPTY by default
+                // (the ctor only sets alphaMode/alphaCutoff/doubleSided), and
+                // DeriveGltfAssets reads [0..2] unconditionally. Always emit
+                // the three-component vector so the derive never overruns.
+                m.emissiveFactor = {0.0, 0.0, 0.0};
         }
         if (!previewFound)
             return Fail("material has no direct UsdPreviewSurface: " + key);
@@ -306,7 +368,39 @@ struct Converter {
         return true;
     }
 
+    // A source without any bound UsdPreviewSurface (Caldera strips materials)
+    // still needs a VALID material index on its draw items: the GPU-scene
+    // raster gate requires item.material != kInvalidIndex, and the derive's
+    // material table is what resolves that index. Emit ONE shared default
+    // dielectric PBR material so every unbound mesh references it (the
+    // "default-material geometry" the acceptance plan describes).
+    bool DefaultMaterial(int& out) {
+        const std::string key = "__default_material";
+        const auto existing = materialIndices.find(key);
+        if (existing != materialIndices.end()) {
+            out = existing->second;
+            return true;
+        }
+        tinygltf::Material m{};
+        m.name = "default";
+        m.pbrMetallicRoughness.metallicFactor = 0.0;
+        m.pbrMetallicRoughness.roughnessFactor = 1.0;
+        m.emissiveFactor = {0.0, 0.0, 0.0};
+        out = static_cast<int>(model.materials.size());
+        materialIndices.emplace(key, out);
+        model.materials.push_back(std::move(m));
+        return true;
+    }
+
     bool ReadMesh(const UsdPrim& prim, const std::string& stableName, int& outMesh) {
+        // Reference dedup: the same source asset composed via many references
+        // becomes ONE native mesh, referenced by every placement node.
+        const std::string identity = ContentIdentity(prim);
+        const auto cached = meshCache.find(identity);
+        if (cached != meshCache.end()) {
+            outMesh = cached->second;
+            return true;
+        }
         const UsdGeomMesh mesh(prim);
         VtVec3fArray points;
         VtIntArray counts, vertices;
@@ -316,10 +410,13 @@ struct Converter {
         if (points.empty() || counts.empty())
             return Fail("empty mesh: " + prim.GetPath().GetString());
 
-        TfToken scheme;
-        mesh.GetSubdivisionSchemeAttr().Get(&scheme);
-        if (scheme != UsdGeomTokens->none && !scheme.IsEmpty())
-            return Fail("subdivision mesh needs tessellation: " + prim.GetPath().GetString());
+        const UsdAttribute schemeAttr = mesh.GetSubdivisionSchemeAttr();
+        if (schemeAttr.HasAuthoredValue()) {
+            TfToken scheme;
+            schemeAttr.Get(&scheme);
+            if (scheme != UsdGeomTokens->none && !scheme.IsEmpty())
+                return Fail("subdivision mesh needs tessellation: " + prim.GetPath().GetString());
+        }
 
         // A materialBind GeomSubset assigns whole faces to a material.
         // Overlapping, malformed, or unsupported subsets fail closed.
@@ -343,8 +440,11 @@ struct Converter {
                 return Fail("missing subset indices: " + child.GetPath().GetString());
             const UsdShadeMaterial material =
                 UsdShadeMaterialBindingAPI(child).ComputeBoundMaterial();
+            // Caldera (and other stripped-material datasets) author materialBind
+            // subsets with no bound material; those faces keep the mesh's own
+            // default material rather than failing the import.
             if (!material)
-                return Fail("unbound materialBind subset: " + child.GetPath().GetString());
+                continue;
             for (const int face : faces) {
                 if (face < 0 || size_t(face) >= counts.size() || assigned[size_t(face)])
                     return Fail("overlapping/out-of-range material subset: " +
@@ -373,10 +473,18 @@ struct Converter {
         TfToken orientation;
         mesh.GetOrientationAttr().Get(&orientation);
         const bool reverse = orientation == UsdGeomTokens->leftHanded;
+        size_t skippedFaces = 0;
         for (size_t f = 0; f < counts.size(); ++f) {
             const int n = counts[f];
-            if (n < 3 || cornerOffset + size_t(n) > vertices.size())
+            if (n < 0 || cornerOffset + size_t(n) > vertices.size())
                 return Fail("invalid polygon: " + prim.GetPath().GetString());
+            if (n < 3) {
+                // Degenerate 0/1/2-vertex polygon (Caldera tag/marker
+                // geometry): skip it rather than failing the whole mesh.
+                ++skippedFaces;
+                cornerOffset += size_t(n);
+                continue;
+            }
             std::vector<GfVec3f> polygon;
             polygon.reserve(size_t(n));
             for (int i = 0; i < n; ++i) {
@@ -386,9 +494,11 @@ struct Converter {
                 polygon.push_back(points[size_t(vi)]);
             }
             std::vector<std::array<size_t, 3>> triangles;
-            if (!TriangulateFace(polygon, triangles))
-                return Fail("non-planar, degenerate, or invalid polygon: " +
-                            prim.GetPath().GetString());
+            if (!TriangulateFace(polygon, triangles)) {
+                ++skippedFaces;
+                cornerOffset += size_t(n);
+                continue;
+            }
 
             const UsdShadeMaterial material = faceMaterials[f];
             const std::string matKey = material ? material.GetPath().GetString() : std::string();
@@ -431,6 +541,16 @@ struct Converter {
         }
         if (cornerOffset != vertices.size())
             return Fail("topology corner count mismatch: " + prim.GetPath().GetString());
+        if (skippedFaces)
+            std::cerr << "USD import: skipped " << skippedFaces << " degenerate face(s) on "
+                      << prim.GetPath().GetString() << '\n';
+        if (groups.empty()) {
+            // Fully degenerate (tag/marker) mesh: no renderable faces. Cache -1
+            // so every reference skips it without re-deriving.
+            meshCache.emplace(identity, -1);
+            outMesh = -1;
+            return true;
+        }
 
         tinygltf::Mesh gm{};
         gm.name = stableName;
@@ -467,7 +587,132 @@ struct Converter {
             gm.primitives.push_back(std::move(primitive));
         }
         outMesh = static_cast<int>(model.meshes.size());
+        meshCache.emplace(identity, outMesh);
         model.meshes.push_back(std::move(gm));
+        return true;
+    }
+
+    // Walk a PointInstancer prototype subtree, converting each leaf Mesh once
+    // (deduplicated via ReadMesh) and recording its transform relative to the
+    // prototype root frame. `invRoot` is the prototype root's inverse
+    // local-to-world, so `invRoot * worldLeaf` is the leaf's transform inside
+    // the prototype (excluding the root's own xform, which the instance
+    // transform already carries via IncludeProtoXform).
+    struct ProtoLeaf {
+        int mesh = -1;
+        GfMatrix4d local{1.0};
+    };
+    bool CollectProtoLeaves(const UsdPrim& prim,
+                            const GfMatrix4d& invRoot,
+                            UsdGeomXformCache& xfCache,
+                            std::vector<ProtoLeaf>& out) {
+        if (prim.IsA<UsdGeomMesh>()) {
+            ProtoLeaf leaf;
+            leaf.local = invRoot * xfCache.GetLocalToWorldTransform(prim);
+            std::string name;
+            if (!IdentityName(prim, name))
+                return false;
+            if (!ReadMesh(prim, name, leaf.mesh))
+                return false;
+            if (leaf.mesh < 0)
+                return true; // fully degenerate prototype leaf: skip it
+            out.push_back(leaf);
+            return true;
+        }
+        for (const UsdPrim& child : prim.GetChildren())
+            if (!CollectProtoLeaves(child, invRoot, xfCache, out))
+                return false;
+        return true;
+    }
+
+    // Convert a PointInstancer into flat placement nodes: shared prototype
+    // meshes are emitted once, and each instance becomes one node per
+    // prototype leaf mesh whose matrix is (instance placement) * (leaf inside
+    // prototype). The instancer's own xform rides its normal hierarchy node.
+    bool ReadPointInstancer(const UsdPrim& prim, int parent) {
+        const UsdGeomPointInstancer instancer(prim);
+        const UsdTimeCode time = UsdTimeCode::Default();
+
+        VtIntArray protoIndices;
+        if (!instancer.GetProtoIndicesAttr().Get(&protoIndices))
+            return Fail("PointInstancer missing protoIndices: " + prim.GetPath().GetString());
+
+        SdfPathVector prototypes;
+        instancer.GetPrototypesRel().GetTargets(&prototypes);
+
+        UsdGeomXformCache xfCache(time);
+        std::vector<std::vector<ProtoLeaf>> protoLeaves(prototypes.size());
+        for (size_t p = 0; p < prototypes.size(); ++p) {
+            const UsdPrim protoRoot = prim.GetStage()->GetPrimAtPath(prototypes[p]);
+            if (!protoRoot)
+                return Fail("PointInstancer prototype missing: " + prototypes[p].GetString());
+            const GfMatrix4d invRoot = xfCache.GetLocalToWorldTransform(protoRoot).GetInverse();
+            if (!CollectProtoLeaves(protoRoot, invRoot, xfCache, protoLeaves[p]))
+                return false;
+        }
+
+        // Instance placement transforms (prototype root xform included, in
+        // instancer-local space). OpenUSD 25.x exposes only the batch form.
+        VtArray<GfMatrix4d> instanceXforms;
+        if (!instancer.ComputeInstanceTransformsAtTime(&instanceXforms, time, time))
+            return Fail("PointInstancer transform computation failed: " +
+                        prim.GetPath().GetString());
+
+        const std::string instancerName = prim.GetPath().GetString();
+        for (size_t i = 0; i < protoIndices.size(); ++i) {
+            const int pi = protoIndices[i];
+            if (pi < 0 || size_t(pi) >= prototypes.size())
+                return Fail("PointInstancer protoIndex out of range: " +
+                            prim.GetPath().GetString());
+            const GfMatrix4d instanceXf = instanceXforms[i];
+            const size_t id = i;
+            for (const ProtoLeaf& leaf : protoLeaves[size_t(pi)]) {
+                tinygltf::Node node{};
+                node.name = instancerName + ":inst:" + std::to_string(id);
+                const GfMatrix4d m = instanceXf * leaf.local;
+                for (int row = 0; row < 4; ++row)
+                    for (int col = 0; col < 4; ++col)
+                        node.matrix.push_back(m[row][col]);
+                node.mesh = leaf.mesh;
+                const int nodeId = static_cast<int>(model.nodes.size());
+                model.nodes.push_back(std::move(node));
+                if (parent >= 0)
+                    model.nodes[size_t(parent)].children.push_back(nodeId);
+                else
+                    model.scenes.front().nodes.push_back(nodeId);
+            }
+        }
+        return true;
+    }
+
+    // Convert an instance proxy into its prototype's meshes, placed as
+    // children of the proxy's own node. The proxy's world transform already
+    // rides the normal hierarchy (its xform node); each prototype mesh is a
+    // child node whose matrix is the mesh's transform inside the prototype
+    // root frame. Shared prototypes are deduplicated by ReadMesh.
+    bool ReadInstanceProxy(const UsdPrim& prim, int parent) {
+        const UsdPrim proto = prim.GetPrototype();
+        if (!proto)
+            return Fail("instance proxy has no prototype: " + prim.GetPath().GetString());
+        const UsdTimeCode time = UsdTimeCode::Default();
+        UsdGeomXformCache xfCache(time);
+        const GfMatrix4d invRoot = xfCache.GetLocalToWorldTransform(proto).GetInverse();
+        std::vector<ProtoLeaf> leaves;
+        if (!CollectProtoLeaves(proto, invRoot, xfCache, leaves))
+            return false;
+        const std::string base = prim.GetPath().GetString();
+        for (size_t i = 0; i < leaves.size(); ++i) {
+            tinygltf::Node child{};
+            child.name = base + ":proto:" + std::to_string(i);
+            const GfMatrix4d m = leaves[i].local;
+            for (int row = 0; row < 4; ++row)
+                for (int col = 0; col < 4; ++col)
+                    child.matrix.push_back(m[row][col]);
+            child.mesh = leaves[i].mesh;
+            const int id = static_cast<int>(model.nodes.size());
+            model.nodes.push_back(std::move(child));
+            model.nodes[size_t(parent)].children.push_back(id);
+        }
         return true;
     }
 
@@ -477,11 +722,10 @@ struct Converter {
         // Shading definitions are resources, not renderable scene nodes.
         if (prim.IsA<UsdShadeMaterial>() || prim.IsA<UsdShadeShader>() || prim.IsA<UsdGeomSubset>())
             return true;
-        if (prim.IsInstance())
-            return Fail("instance proxy expansion not yet supported: " +
-                        prim.GetPath().GetString());
-        if (prim.GetTypeName() == TfToken("PointInstancer"))
-            return Fail("PointInstancer is not yet supported: " + prim.GetPath().GetString());
+        // Prototype subtrees are instanced by their PointInstancer / instance
+        // proxies; never place them directly (that would duplicate geometry).
+        if (UnderPrototype(prim))
+            return true;
 
         tinygltf::Node node{};
         if (!IdentityName(prim, node.name))
@@ -499,6 +743,17 @@ struct Converter {
             for (int row = 0; row < 4; ++row)
                 for (int col = 0; col < 4; ++col)
                     node.matrix.push_back(local[row][col]);
+        }
+        if (prim.IsInstance()) {
+            // Instance proxy: its own xform node is the placement; the
+            // prototype's meshes become its children (ReadInstanceProxy).
+            const int id = static_cast<int>(model.nodes.size());
+            model.nodes.push_back(std::move(node));
+            if (parent >= 0)
+                model.nodes[size_t(parent)].children.push_back(id);
+            else
+                model.scenes.front().nodes.push_back(id);
+            return ReadInstanceProxy(prim, id);
         }
         if (prim.IsA<UsdGeomMesh>()) {
             if (!ReadMesh(prim, node.name, node.mesh))
@@ -529,6 +784,10 @@ struct Converter {
             model.nodes[size_t(parent)].children.push_back(id);
         else
             model.scenes.front().nodes.push_back(id);
+        // A PointInstancer's own node is a grouping Xformable; its instance
+        // placement nodes become its children (see ReadPointInstancer).
+        if (prim.GetTypeName() == TfToken("PointInstancer"))
+            return ReadPointInstancer(prim, id);
         return VisitChildren(prim, id);
     }
 };
@@ -556,8 +815,12 @@ bool LoadUsdFileAsModel(tinygltf::Model& model,
             continue; // anonymous/memory session
         std::error_code ec;
         const auto rel = std::filesystem::relative(real, root, ec);
-        if (ec || rel.empty() || rel.is_absolute() || *rel.begin() == "..")
-            return Fail("layer dependency escapes source directory: " + real);
+        // A shared-reference tree (Caldera) legitimately references layers
+        // outside the source file's own directory; a ".." relative path still
+        // fingerprints and stages correctly. Only a cross-root/cross-drive
+        // dependency that cannot be relativized at all fails closed.
+        if (ec || rel.empty() || rel.is_absolute())
+            return Fail("layer dependency cannot be relativized: " + real);
         layers.insert(rel.generic_string());
     }
     deps.assign(layers.begin(), layers.end());
@@ -569,6 +832,17 @@ bool LoadUsdFileAsModel(tinygltf::Model& model,
     model.defaultScene = 0;
 
     Converter cv(model);
+    // Collect every PointInstancer's prototype subtree roots up front: those
+    // subtrees are instanced (not placed directly) and must be skipped during
+    // the normal hierarchy walk below.
+    for (const UsdPrim& prim : stage->Traverse()) {
+        if (prim.GetTypeName() == TfToken("PointInstancer")) {
+            SdfPathVector targets;
+            UsdGeomPointInstancer(prim).GetPrototypesRel().GetTargets(&targets);
+            for (const SdfPath& target : targets)
+                cv.prototypeRoots.insert(target.GetString());
+        }
+    }
     // USD metrics are expressed as meters/unit; glTF/Tourmaline use
     // meters and Y-up. Keep one explicit root conversion node.
     const double scale = UsdGeomGetStageMetersPerUnit(stage);

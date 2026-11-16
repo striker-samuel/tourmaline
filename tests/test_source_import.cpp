@@ -571,7 +571,7 @@ void TestUsdReimportIdentityAndPolygons() {
     // Authoring order and prim names change, but authored stableIds should
     // keep imported logical names and material GUIDs the same.
     auto stage = [](bool swapped, bool renamed) {
-        const std::string one = R"USD(
+        std::string one = R"USD(
     def Mesh "PanelA" {
         custom string tourmaline:stableId = "panel-a"
         uniform token subdivisionScheme = "none"
