@@ -54,6 +54,7 @@
 
 #include <glm/glm.hpp>
 
+#include <gltf_import/source_scene.h>
 #include <Engine/App/cluster.h>
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/touranim.h>
