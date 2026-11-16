@@ -15,7 +15,7 @@
 #include "gpu_platform.hlsli"
 
 #define GS_RASTER_MAX_WORK     1048576u
-#define GS_RASTER_MAX_COMMANDS (4u * GS_RASTER_MAX_WORK)
+#define GS_RASTER_MAX_COMMANDS (8u * GS_RASTER_MAX_WORK)
 #define GS_RASTER_MAX_GEO      65535u
 #define GS_RASTER_MAX_CANDIDATES 1048576u
 #define GS_INVALID            0xffffffffu
