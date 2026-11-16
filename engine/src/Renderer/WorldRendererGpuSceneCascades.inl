@@ -81,7 +81,7 @@ if (s_gpuSceneShadows && m_gpuSceneRasterEnabled && m_gpuSceneDatabaseReady &&
                 m_renderViews.Get(sourceView), origin);
             const auto selected = tour::gpu_scene::SelectPassedInstanceRangesFrame(
                 m_gpuSceneDatabase, tickets, frustum,
-                tour::gpu_scene::CandidateMode::Frustum, 65536u, 1048576u);
+                tour::gpu_scene::CandidateMode::Frustum, 65536u, 1048560u);
             // Capacity overflow is *never* clamped: use the proven direct
             // path instead, so shadow coverage remains complete.
             if (!selected.Valid() || selected.candidateCount == 0)
