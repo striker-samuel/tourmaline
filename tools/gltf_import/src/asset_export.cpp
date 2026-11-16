@@ -1404,7 +1404,7 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
                       " the manifest is deleted deliberately; never re-minted"
                       " by accident");
     manifest.source = std::filesystem::path(gltfPath).filename().generic_string();
-    manifest.sourceDigest = SourceContentDigest(gltfPath, model, extraSourceDeps);
+    manifest.sourceDigest = SourceContentDigest(gltfPath, native, extraSourceDeps);
     manifest.importFingerprint = ImportFingerprintFor(config);
     manifest.stem = stem;
 
@@ -1505,22 +1505,21 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
         MaterialAsset m{};
         m.name = materialName(mi);
         m.guid = guidFor(AssetKind::Material, mi, m.name);
-        m.info.baseColorFactor = glm::vec4(
-            float(mat.baseColorFactor[0]), float(mat.baseColorFactor[1]),
-            float(mat.baseColorFactor[2]), float(mat.baseColorFactor[3]));
+        m.info.baseColorFactor = glm::vec4(float(mat.baseColorFactor[0]),
+                                           float(mat.baseColorFactor[1]),
+                                           float(mat.baseColorFactor[2]),
+                                           float(mat.baseColorFactor[3]));
         m.info.metallicFactor = float(mat.metallicFactor);
         m.info.roughnessFactor = float(mat.roughnessFactor);
-        m.info.emissiveFactor = glm::vec3(
-            float(mat.emissiveFactor[0]), float(mat.emissiveFactor[1]),
-            float(mat.emissiveFactor[2]));
+        m.info.emissiveFactor = glm::vec3(float(mat.emissiveFactor[0]),
+                                          float(mat.emissiveFactor[1]),
+                                          float(mat.emissiveFactor[2]));
         m.info.emissiveStrength = float(mat.emissiveStrength);
-        m.info.alphaMode = (mat.alphaMode == smvk::source::AlphaMode::Mask)
-                               ? smvk::AlphaMode::Mask
+        m.info.alphaMode = (mat.alphaMode == smvk::source::AlphaMode::Mask) ? smvk::AlphaMode::Mask
                            : (mat.alphaMode == smvk::source::AlphaMode::Blend)
                                ? smvk::AlphaMode::Blend
                                : smvk::AlphaMode::Opaque;
-        m.info.shadingModel = mat.unlit
-                                  ? smvk::ShadingModel::Unlit
+        m.info.shadingModel = mat.unlit ? smvk::ShadingModel::Unlit
                               : (m.info.alphaMode == smvk::AlphaMode::Mask)
                                   ? smvk::ShadingModel::Masked
                                   : smvk::ShadingModel::DefaultLit;
@@ -1535,8 +1534,7 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
         auto texRef = [&](const std::optional<smvk::source::TextureRef>& ref, bool srgb) {
             MaterialAsset::TexRef out{};
             out.srgb = srgb;
-            if (!ref || ref->imageIndex < 0 ||
-                size_t(ref->imageIndex) >= native.images.size())
+            if (!ref || ref->imageIndex < 0 || size_t(ref->imageIndex) >= native.images.size())
                 return out;
             out.path = native.images[size_t(ref->imageIndex)].uri;
             return out;
@@ -1804,7 +1802,8 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
             if (track.node >= native.nodes.size())
                 continue;
             const int chan = track.channel == smvk::source::AnimationChannel::Rotation ? 1
-                             : track.channel == smvk::source::AnimationChannel::Scale ? 2 : 0;
+                             : track.channel == smvk::source::AnimationChannel::Scale  ? 2
+                                                                                       : 0;
             auto& dst = rawByNode[int(track.node)][chan];
             for (const auto& value : track.keys) {
                 smvk::touranim::Key key{};

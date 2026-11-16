@@ -1032,21 +1032,19 @@ void TestRootReference() {
     // Bind parity B: direct import of the same glTF.
     tinygltf::Model model;
     Check(LoadModelFromSourceFile(model, gltf.string().c_str()), "rootref parse for direct import");
+    smvk::source::Scene native;
+    Check(DecodeGltfSourceScene(model, native), "rootref decode for direct import");
     auto dirCluster = std::make_unique<smvk::Cluster>(nullptr);
     dirCluster->SetOfflineMode(true);
     addNode(dirCluster->scene, -1, 0);
     {
-        GltfToSceneImporter importer(*dirCluster, model, gltf);
+        SourceSceneImporter importer(*dirCluster, native, gltf);
         importer.setTextureSource(std::make_shared<HostTextureSource>(dir));
-        // Direct-import roots: default scene's nodes, first-scene
-        // fallback (the same traversal GltfToCluster uses).
-        std::vector<int> gltfRoots;
-        if (model.defaultScene >= 0 && model.defaultScene < (int)model.scenes.size())
-            gltfRoots = model.scenes[size_t(model.defaultScene)].nodes;
-        else if (!model.scenes.empty())
-            gltfRoots = model.scenes.front().nodes;
-        for (int gltfNode : gltfRoots)
-            importer.import(gltfNode);
+        // Direct-import roots: the active authored scene's roots, else
+        // every root (the same traversal DeriveNativeAssets uses).
+        const auto& roots = native.activeRoots.empty() ? native.roots : native.activeRoots;
+        for (uint32_t gltfNode : roots)
+            importer.import(int(gltfNode));
     }
     // IDENTICAL builds: same node count, same names at the same ids
     // (no placeholder node, no namespace prefix).
@@ -3170,10 +3168,13 @@ void TestTextureCacheConsult() {
         tinygltf::Model model;
         if (!LoadModelFromSourceFile(model, gltfPath.string().c_str()))
             return false;
+        smvk::source::Scene native;
+        if (!DecodeGltfSourceScene(model, native))
+            return false;
         auto cluster = std::make_unique<smvk::Cluster>(nullptr);
         cluster->SetOfflineMode(true);
         addNode(cluster->scene, -1, 0);
-        GltfToSceneImporter importer(*cluster, model, gltfPath);
+        SourceSceneImporter importer(*cluster, native, gltfPath);
         importer.setTextureSource(std::make_shared<HostTextureSource>(dir));
         importer.setArtifactCache(&cache);
         importer.import(0);
