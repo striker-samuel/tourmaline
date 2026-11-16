@@ -295,7 +295,9 @@ class StateMachineInstance {
         return current_;
     }
     [[nodiscard]] std::string_view CurrentName() const {
-        return current_ < graph_->states.size() ? graph_->states[current_] : "";
+        if (current_ < graph_->states.size())
+            return graph_->states[current_];
+        return {};
     }
     [[nodiscard]] bool SetBool(std::string_view name, bool value) {
         return Set(name, StateParamKind::Bool, value ? 1.0 : 0.0);
