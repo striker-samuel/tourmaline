@@ -1295,6 +1295,7 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
     auto cluster = std::make_unique<smvk::Cluster>(nullptr);
     cluster->SetOfflineMode(true);
     std::vector<int> gltfNodeMap;
+    smvk::source::Scene native;
     {
         GltfToSceneImporter importer{*cluster, model, gltfPath};
         importer.setMeshOptConfig(meshOpt);
@@ -1344,6 +1345,7 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
         // streams (the gltfNodeMap is fully populated now - the same
         // post-pass contract as GltfToCluster's inline flow).
         importer.BuildSkinData();
+        native = importer.releaseSourceScene();
         RebuildStaticCache(cluster->scene);
         recalculateGlobalTransforms(cluster->scene);
         gltfNodeMap = importer.gltfNodeMap();
@@ -1429,7 +1431,7 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
     // rows) are unkeyable and skip the ledger entirely (fresh mints,
     // no ambiguity failure against them).
     const auto materialName = [&](int mi) -> std::string {
-        const tinygltf::Material& gm = model.materials[size_t(mi)];
+        const smvk::source::Material& gm = native.materials[size_t(mi)];
         return gm.name.empty() ? ("mat" + std::to_string(mi)) : gm.name;
     };
     const auto animName = [&](int ai) -> std::string {
@@ -1442,7 +1444,7 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
             if (!e.name.empty())
                 ++prevCounts[{int(e.kind), e.name}];
     std::map<std::pair<int, std::string>, int> newCounts;
-    for (int mi = 0; mi < int(model.materials.size()); ++mi)
+    for (int mi = 0; mi < int(native.materials.size()); ++mi)
         ++newCounts[{int(AssetKind::Material), materialName(mi)}];
     for (int ai = 0; ai < int(model.animations.size()); ++ai)
         ++newCounts[{int(AssetKind::Anim), animName(ai)}];
@@ -1511,143 +1513,56 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
         return guid;
     };
 
-    // 3) Material assets (straight from the glTF model: the PBR values
-    // + texture refs (as-authored image URIs; sRGB = baseColor/emissive,
-    // the importer's inferSrgb convention)).
-    for (int mi = 0; mi < int(model.materials.size()); ++mi) {
-        const tinygltf::Material& gm = model.materials[size_t(mi)];
+    // 3) Material artifacts use already-decoded native material values.
+    // glTF extensions and fallbacks were resolved by the source adapter,
+    // so all downstream PBR consumers agree on the effective semantics.
+    for (int mi = 0; mi < int(native.materials.size()); ++mi) {
+        const smvk::source::Material& mat = native.materials[size_t(mi)];
         MaterialAsset m{};
-        // The NAME resolves the identity (the ledger's logical key) —
-        // computed BEFORE the guid ask, then the guid asks with it.
         m.name = materialName(mi);
         m.guid = guidFor(AssetKind::Material, mi, m.name);
-        // The .material record must carry the SAME effective PBR values the
-        // runtime importer derives (gltf.cpp ExtractMaterial): the raw core
-        // block is NOT authoritative for spec-gloss / transmission /
-        // spec-default materials. Convert here so the cooked record matches
-        // the live cluster material (Bistro: 234 KHR_materials_pbrSpecular-
-        // Glossiness materials that would otherwise bake in as metallic=1).
-        std::vector<double> baseColorFactor = gm.pbrMetallicRoughness.baseColorFactor;
-        double metallicFactor = gm.pbrMetallicRoughness.metallicFactor;
-        double roughnessFactor = gm.pbrMetallicRoughness.roughnessFactor;
-        int baseColorTexIndex = gm.pbrMetallicRoughness.baseColorTexture.index;
-        const int metallicRoughnessTexIndex =
-            gm.pbrMetallicRoughness.metallicRoughnessTexture.index;
-        std::string alphaMode = gm.alphaMode;
-        bool doubleSided = gm.doubleSided;
-        // KHR_materials_pbrSpecularGlossiness fallback (FBX2glTF assets):
-        // diffuseTexture/diffuseFactor -> baseColor; glossinessFactor ->
-        // roughness (metallic forced dielectric). The specularGlossiness-
-        // Texture is intentionally skipped — its pixels are a specular
-        // COLOR, not an ORM packing.
-        if (auto it = gm.extensions.find("KHR_materials_pbrSpecularGlossiness");
-            it != gm.extensions.end() && it->second.IsObject()) {
-            const auto& obj = it->second.Get<tinygltf::Value::Object>();
-            int diffuseIdx = -1;
-            if (auto f = obj.find("diffuseTexture"); f != obj.end() && f->second.IsObject()) {
-                const auto& t = f->second.Get<tinygltf::Value::Object>();
-                if (auto fi = t.find("index"); fi != t.end() && fi->second.IsNumber())
-                    diffuseIdx = static_cast<int>(fi->second.GetNumberAsDouble());
-            }
-            if (baseColorTexIndex < 0)
-                baseColorTexIndex = diffuseIdx;
-            if (auto f = obj.find("diffuseFactor"); f != obj.end() && f->second.IsArray()) {
-                const auto& arr = f->second.Get<tinygltf::Value::Array>();
-                // tinygltf defaults baseColorFactor to [1,1,1,1]; a "white"
-                // core factor can never distinguish omitted from authored,
-                // so only apply the diffuse color when no PBR color exists.
-                const bool coreFactorDefault =
-                    baseColorFactor.size() < 4 ||
-                    (baseColorFactor[0] == 1.0 && baseColorFactor[1] == 1.0 &&
-                     baseColorFactor[2] == 1.0 && baseColorFactor[3] == 1.0);
-                const bool hasPbrColor = baseColorTexIndex >= 0 || !coreFactorDefault;
-                if (!hasPbrColor && arr.size() >= 3) {
-                    for (int k = 0; k < 3 && k < int(arr.size()); ++k)
-                        if (arr[k].IsNumber())
-                            baseColorFactor[k] = arr[k].GetNumberAsDouble();
-                    if (arr.size() >= 4 && arr[3].IsNumber())
-                        baseColorFactor[3] = arr[3].GetNumberAsDouble();
-                }
-            }
-            if (metallicFactor == 1.0 && roughnessFactor == 1.0) {
-                metallicFactor = 0.0;
-                if (auto f = obj.find("glossinessFactor"); f != obj.end() && f->second.IsNumber()) {
-                    const double gloss = f->second.GetNumberAsDouble();
-                    roughnessFactor = std::clamp(1.0 - gloss, 0.05, 1.0);
-                } else {
-                    roughnessFactor = 0.6;
-                }
-            }
-        }
-        // Explicit Tourmaline cloth extension; leave ordinary glTF PBR untouched.
-        if (auto it = gm.extensions.find("SMVK_materials_clothSheen");
-            it != gm.extensions.end() && it->second.IsObject()) {
-            const auto& obj = it->second.Get<tinygltf::Value::Object>();
-            if (auto f = obj.find("enabled"); f != obj.end() && f->second.IsBool())
-                m.info.clothSheen = f->second.Get<bool>();
-        }
-
-        // KHR_materials_transmission -> BLEND glass (the engine has no
-        // transmission path). Metallic forced dielectric; alpha derives
-        // from (1 - transmissionFactor); double-sided so panes read from
-        // both sides.
-        if (auto it = gm.extensions.find("KHR_materials_transmission");
-            it != gm.extensions.end() && it->second.IsObject()) {
-            const auto& obj = it->second.Get<tinygltf::Value::Object>();
-            double transmissionFactor = 0.0;
-            if (auto f = obj.find("transmissionFactor"); f != obj.end() && f->second.IsNumber())
-                transmissionFactor = f->second.GetNumberAsDouble();
-            if (transmissionFactor > 0.001) {
-                alphaMode = "BLEND";
-                metallicFactor = 0.0;
-                if (baseColorFactor.size() >= 4 && baseColorFactor[3] >= 0.999)
-                    baseColorFactor[3] = std::clamp(1.0 - transmissionFactor, 0.05, 1.0);
-                doubleSided = true;
-            }
-        }
-        // Untouched core PBR block (no MR texture, spec-default
-        // metallic=1/roughness=1): the spec default prints every such mesh
-        // as metal. Force dielectric, mirroring ExtractMaterial's final gate.
-        if (metallicRoughnessTexIndex < 0 && metallicFactor == 1.0 && roughnessFactor == 1.0)
-            metallicFactor = 0.0;
-        m.info.baseColorFactor = glm::vec4(float(baseColorFactor[0]),
-                                           float(baseColorFactor[1]),
-                                           float(baseColorFactor[2]),
-                                           float(baseColorFactor[3]));
-        m.info.metallicFactor = float(metallicFactor);
-        m.info.roughnessFactor = float(roughnessFactor);
+        m.info.baseColorFactor = glm::vec4(
+            float(mat.baseColorFactor[0]), float(mat.baseColorFactor[1]),
+            float(mat.baseColorFactor[2]), float(mat.baseColorFactor[3]));
+        m.info.metallicFactor = float(mat.metallicFactor);
+        m.info.roughnessFactor = float(mat.roughnessFactor);
         m.info.emissiveFactor = glm::vec3(
-            float(gm.emissiveFactor[0]), float(gm.emissiveFactor[1]), float(gm.emissiveFactor[2]));
-        m.info.alphaMode = (alphaMode == "MASK")    ? smvk::AlphaMode::Mask
-                           : (alphaMode == "BLEND") ? smvk::AlphaMode::Blend
-                                                    : smvk::AlphaMode::Opaque;
-        // Derive the shading model like the direct glTF import does: MASK
-        // -> Masked (the lit FS's cutout gates on ShadingModel::Masked; a
-        // lost flag killed the alpha test and masked foliage rendered
-        // fully opaque - the round-trip used to write shading=lit for
-        // alphaMode=mask).
-        m.info.shadingModel = (m.info.alphaMode == smvk::AlphaMode::Mask)
+            float(mat.emissiveFactor[0]), float(mat.emissiveFactor[1]),
+            float(mat.emissiveFactor[2]));
+        m.info.emissiveStrength = float(mat.emissiveStrength);
+        m.info.alphaMode = (mat.alphaMode == smvk::source::AlphaMode::Mask)
+                               ? smvk::AlphaMode::Mask
+                           : (mat.alphaMode == smvk::source::AlphaMode::Blend)
+                               ? smvk::AlphaMode::Blend
+                               : smvk::AlphaMode::Opaque;
+        m.info.shadingModel = mat.unlit
+                                  ? smvk::ShadingModel::Unlit
+                              : (m.info.alphaMode == smvk::AlphaMode::Mask)
                                   ? smvk::ShadingModel::Masked
                                   : smvk::ShadingModel::DefaultLit;
-        m.info.alphaCutoff = float(gm.alphaCutoff);
-        m.info.doubleSided = doubleSided;
-        auto texRef = [&](int texIndex, bool srgb) {
-            MaterialAsset::TexRef r;
-            r.srgb = srgb;
-            if (texIndex < 0 || texIndex >= int(model.textures.size()))
-                return r;
-            const int img = model.textures[size_t(texIndex)].source;
-            if (img < 0 || img >= int(model.images.size()))
-                return r;
-            r.path = model.images[size_t(img)].uri;
-            return r;
+        m.info.alphaCutoff = float(mat.alphaCutoff);
+        m.info.doubleSided = mat.doubleSided;
+        m.info.castsShadows = mat.castsShadows;
+        m.info.receiveContactShadows = mat.receiveContactShadows;
+        m.info.clothSheen = mat.clothSheen;
+        m.info.normalScale = mat.normalTex ? mat.normalTex->scaleOrStrength : 1.0f;
+        m.info.occlusionStrength = mat.occlusionTex ? mat.occlusionTex->scaleOrStrength : 1.0f;
+
+        auto texRef = [&](const std::optional<smvk::source::TextureRef>& ref, bool srgb) {
+            MaterialAsset::TexRef out{};
+            out.srgb = srgb;
+            if (!ref || ref->imageIndex < 0 ||
+                size_t(ref->imageIndex) >= native.images.size())
+                return out;
+            out.path = native.images[size_t(ref->imageIndex)].uri;
+            return out;
         };
-        m.baseColor = texRef(baseColorTexIndex, true);
-        m.metallicRoughness = texRef(metallicRoughnessTexIndex, false);
-        m.normalTex = texRef(gm.normalTexture.index, false);
-        m.occlusion = texRef(gm.occlusionTexture.index, false);
-        m.emissiveTex = texRef(gm.emissiveTexture.index, true);
-        // Manifest entry (file + name) + the file write.
+        m.baseColor = texRef(mat.baseColorTex, true);
+        m.metallicRoughness = texRef(mat.metallicRoughnessTex, false);
+        m.normalTex = texRef(mat.normalTex, false);
+        m.occlusion = texRef(mat.occlusionTex, false);
+        m.emissiveTex = texRef(mat.emissiveTex, true);
+
         const std::string file = MaterialFileName(stem, mi, m.name);
         for (AssetEntry& e : manifest.entries)
             if (e.kind == AssetKind::Material && e.sourceIndex == mi) {
