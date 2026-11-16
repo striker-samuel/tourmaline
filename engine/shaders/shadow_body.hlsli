@@ -45,7 +45,7 @@ struct ShadowPSIn
 #ifdef GPU_SCENE_MASKED_DEPTH
     [[vk::location(11)]] float3 cameraRelativePos : TEXCOORD10;
 #endif
-#ifdef GPU_SCENE_MASKED_DEPTH
+#if defined(GPU_SCENE_MASKED_DEPTH) || defined(GPU_SCENE_SHADOW_MASKED)
     [[vk::location(7)]] nointerpolation uint meshMaterial : TEXCOORD5;
 #endif
 };
@@ -102,7 +102,7 @@ ShadowPSOut mainPS(float4 clipPos : SV_Position, ShadowPSIn IN)
     OUT.outDepth = (d >= 0.0f && d <= 1.0f) ? d : 0.0f;
 #endif
 
-#ifdef GPU_SCENE_MASKED_DEPTH
+#if defined(GPU_SCENE_MASKED_DEPTH) || defined(GPU_SCENE_SHADOW_MASKED)
     MaterialValues mat = pc.bMats.Get().mats[IN.meshMaterial];
 #else
     MaterialValues mat = pc.bMats.Get().mats[pc.materialId];
@@ -112,7 +112,7 @@ ShadowPSOut mainPS(float4 clipPos : SV_Position, ShadowPSIn IN)
     // COLOR_0.a is the vertex-color alpha on the GPU-scene leg; the direct
     // leg has no such varying, so it contributes 1.0 there (its lit twin
     // also omits it).
-#ifdef GPU_SCENE_MASKED_DEPTH
+#if defined(GPU_SCENE_MASKED_DEPTH) || defined(GPU_SCENE_SHADOW_MASKED)
     const float colorAlpha = IN.color.a;
 #else
     const float colorAlpha = 1.0f;
