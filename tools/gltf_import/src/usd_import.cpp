@@ -474,6 +474,7 @@ struct Converter {
         mesh.GetOrientationAttr().Get(&orientation);
         const bool reverse = orientation == UsdGeomTokens->leftHanded;
         size_t skippedFaces = 0;
+        size_t skippedTris = 0;
         for (size_t f = 0; f < counts.size(); ++f) {
             const int n = counts[f];
             if (n < 0 || cornerOffset + size_t(n) > vertices.size())
@@ -510,8 +511,13 @@ struct Converter {
                 const GfVec3f cross = GfCross(polygon[corners[1]] - polygon[corners[0]],
                                               polygon[corners[2]] - polygon[corners[0]]);
                 const float length = cross.GetLength();
-                if (length <= 1e-12f)
-                    return Fail("degenerate triangle: " + prim.GetPath().GetString());
+                if (length <= 1e-12f) {
+                    // Collinear (zero-area) triangle from a triangulated
+                    // face: skip it like the degenerate faces above, never
+                    // fail the whole mesh (Caldera patches carry slivers).
+                    ++skippedTris;
+                    continue;
+                }
                 const GfVec3f flat = cross / length;
                 for (const size_t c : corners) {
                     const size_t corner = cornerOffset + c;
@@ -543,6 +549,9 @@ struct Converter {
             return Fail("topology corner count mismatch: " + prim.GetPath().GetString());
         if (skippedFaces)
             std::cerr << "USD import: skipped " << skippedFaces << " degenerate face(s) on "
+                      << prim.GetPath().GetString() << '\n';
+        if (skippedTris)
+            std::cerr << "USD import: skipped " << skippedTris << " degenerate triangle(s) on "
                       << prim.GetPath().GetString() << '\n';
         if (groups.empty()) {
             // Fully degenerate (tag/marker) mesh: no renderable faces. Cache -1
