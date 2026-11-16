@@ -2420,7 +2420,10 @@ void GltfToSceneImporter::prepareSourceScene() {
     for (size_t mi = 0; mi < model.meshes.size(); ++mi) {
         scene.meshes[mi].name = model.meshes[mi].name;
         scene.meshes[mi].stableKey = "mesh." + std::to_string(mi);
-        scene.meshes[mi].primitives.resize(model.meshes[mi].primitives.size());
+        auto& outMesh = scene.meshes[mi];
+        outMesh.primitives.reserve(model.meshes[mi].primitives.size());
+        for (const auto& primitive : model.meshes[mi].primitives)
+            outMesh.primitives.push_back(DecodeGltfPrimitive(model, primitive));
     }
     for (size_t i = 0; i < model.nodes.size(); ++i) {
         const tinygltf::Node& in = model.nodes[i];
