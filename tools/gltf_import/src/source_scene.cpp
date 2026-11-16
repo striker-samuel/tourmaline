@@ -34,7 +34,7 @@ bool Validate(const Scene& scene, std::string& error) {
         color[i] = 1;
         reached[i] = 1;
         const auto& n = scene.nodes[i];
-        if (n.mesh != InvalidIndex && n.mesh >= scene.meshes.size())
+        if (n.mesh < -1 || (n.mesh >= 0 && size_t(n.mesh) >= scene.meshes.size()))
             return fail("invalid mesh reference");
         for (unsigned c = 0; c < 4; ++c)
             if (!Finite(n.localTransform[c]))
