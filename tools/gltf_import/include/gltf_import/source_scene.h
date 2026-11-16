@@ -61,6 +61,8 @@ struct Vertex {
     glm::vec2 uv0{0.0f};
     glm::vec2 uv1{0.0f};
     glm::vec4 color{1.0f};
+    glm::uvec4 joints{0u};
+    glm::vec4 weights{1.0f, 0.0f, 0.0f, 0.0f};
 };
 
 struct Primitive {
@@ -74,6 +76,7 @@ struct Primitive {
     bool hasUv0 = false;
     bool hasUv1 = false;
     bool hasColors = false;
+    bool hasSkinWeights = false;
 };
 
 struct Mesh {
