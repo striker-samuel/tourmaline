@@ -444,7 +444,7 @@ enum class ViewMode : int {
     Lods = 4,         // F5: LOD index by color (flat, direct draws)
     VertexColors = 5, // F6: vertex-color layer weights as false color (default_vertexcolor_debug)
     Uv0 = 6,          // F9: base UV (TEXCOORD0) checker + gradient (default_uv0_debug)
-    Uv1 = 7,          // F10: lightmap atlas UV (uv2) checker + seam glow (default_uv1_debug)
+    Uv1 = 7,          // combo/env only: lightmap atlas UV (uv2) checker + seam glow (default_uv1_debug)
     Pom = 8,          // F11: parallax occlusion mapping (default_pom)
     SsrContribution = 9, // env/UI only (no F-key: F-keys exhausted):
                          // SSR contribution isolated (ssr_contribution_debug)
@@ -4081,10 +4081,10 @@ class WorldRenderer : public IRenderer {
     // (LoadGiOctree — the legacy .sggi loader — is DELETED; see the
     // members' retirement note above the ambient gating.)
     // (LoadCubemaps declared with the cubemap members above.)
-    // ---- SG 2D lightmaps: DEPRECATED and removed (were STATIC-geometry
-    // atlas textures plus a runtime branch). The pak-side chart payloads
-    // (texCoord2/chartId, lmChartXforms) stay cooked — the GPU filter's VS
-    // still indexes the chart-transform table (see EnsureChartXforms).
+    // SG 2D lightmaps remain an opt-in runtime path (LoadGiLightmaps and
+    // LmActive above). Cooked chart payloads (texCoord2/chartId,
+    // lmChartXforms) are still used by the GPU filter's vertex shader
+    // (see EnsureChartXforms).
     // ---- SG regular 3D probe volumes (DYNAMIC objects, tools/gi_baker
     // --regular-out output; artist OBBs + density, hardware trilinear).
     // Loaded from the CLUSTER bake-payload channel (ReadBakeBytes:
@@ -4108,11 +4108,11 @@ class WorldRenderer : public IRenderer {
     // ---- GI volumes (Engine/GI/cubemap_volume.h; the probes-only
     // pivot's confined-space path). Loaded from the CLUSTER bake-payload
     // channel (ReadBakeBytes — the scene's hard per-volume bindings, the
-    // tour giAsset records): up to 8 volumes, each 7 RGBA16F 3D textures
-    // (dense probe grid, HW trilinear) + one descriptor (convex planes +
-    // per-plane fades + priority). The lit shader composites them ordered
-    // over the sparse octree world field (volumes BLEND by priority —
-    // never cross-interpolated with the octree's neighbors). ----
+    // tour giAsset records): up to 8 volumes, each with 9 BC6H 3D lobe
+    // layers or 7 legacy RGBA16F layers (dense probe grid, HW trilinear),
+    // plus a descriptor (convex planes, per-plane fades and priority).
+    // Volumes blend by priority; the retired .sggi octree is not a
+    // compositing source. ----
     bool m_giVolumesLoaded = false;
     int m_giHotSwapAtFrame = -1;     // TOURMALINE_GI_HOTSWAP=<frame>: the
                                      // mid-bench generation swap (the
@@ -4127,7 +4127,8 @@ class WorldRenderer : public IRenderer {
         uint32_t layerSlots[9] = {}; // bindless slots
         // Isotropic-mean twin (the volumetric fog's one-fetch path —
         // PackGpuMeanLayer): created under the same failure discipline
-        // as the 7 layers (a volume publishes only with all 8 up).
+        // as the lobe layers (a volume publishes only with all required
+        // lobe layers and this mean texture available).
         smvk::Holder<smvk::TextureHandle> meanTex;
         uint32_t meanSlot = UINT32_MAX; // bindless slot
         // Visibility twins (PackGpuVisLayers — the through-wall
@@ -4913,7 +4914,7 @@ class WorldRenderer : public IRenderer {
     // (Ensure sees the useFft drift) when it flips.
     bool m_bloomUseFft = false;
     // ---- Tonemap operator (see Engine/Rendergraph/tonemap.h + tonemap.frag.hlsl) ----
-    // 0=Reinhard, 1=ACES (default), 2=Uncharted2, 3=GT7. ImGui combo in the
+    // 0=Reinhard, 1=ACES, 2=Uncharted2, 3=GT7 (default). ImGui combo in the
     // Exposure section; applied per-frame onto the tonemapDesc push.
     uint32_t m_tonemapMode = smvk::kTonemapGT7;
     // SDR display preview trims, applied after LUT and before the sRGB encode.
