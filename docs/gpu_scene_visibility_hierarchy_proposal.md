@@ -234,3 +234,174 @@ Safety: no false-negative camera or shadow culling; no partial ownership; no sta
 - Altering the authored transform hierarchy or undoing static flattening.
 - Reusing main-camera visibility for cascades.
 - Treating this RFC as an implemented performance optimization.
+
+## Concrete GPU data layout and costs (implementation appendix)
+
+These layouts are **proposals**, not compiled, reflected or benchmarked ABIs. Keep the old \`Instance\`, \`Leaf\`, \`LeafMember\` and raster-work layouts byte-identical during the first migration. Verify all new \`sizeof\`, \`alignof\`, \`offsetof\` and HLSL compiler offsets in one shared ABI test.
+
+### Persistent versus per-flight storage
+
+| Buffer | Proposed element | Ownership | Update trigger |
+| --- | --- | --- | --- |
+| GPUScene instances | Existing \`Row<Instance>\` (144 B including identity) | Existing per-flight uploader | Dirty instance/mesh |
+| Static sphere topology | 96 B \`SphereNode4\`, 16 B \`VisibilityLeaf\`, leaf index/adjacency | New visibility publisher | Topology/geometry revision |
+| Dynamic bounds/tree | 16 B local-to-region spheres and compact parent/leaf indices | GPU compute, immutable snapshot for readers | Dirty transforms / movement |
+| View descriptors | Existing 128 B cull view + view flag/epoch metadata | RenderViewSet publication | Per frame |
+| Frontiers | Double-buffered 16 B node+view-mask records | Per-flight scratch | Every traversal |
+| Leaf masks | 4 B per leaf (up to 32 views) | Per-flight scratch | Each frame |
+| Per-view ranges | Existing 32 B \`PassedInstanceRange\` | Per-flight GPU output | Each frame |
+| Per-view visibility/work | Existing verdict/work/indirect formats initially | Per-flight GPUScene downstream | Each frame |
+
+\`\`\`cpp
+// Conceptual v1 wire structures; no CPU pointers or platform bool.
+struct alignas(16) SphereNode4 {
+    float cx[4], cy[4], cz[4], radius[4];  // 0..63
+    uint32_t childRef[4];                  // 64..79
+    uint32_t childKind[4];                 // 80..95
+}; // 96 B
+
+struct alignas(16) VisibilityLeaf {
+    uint32_t leafSlot;
+    uint32_t leafGeneration;
+    uint32_t firstMember;
+    uint32_t memberCount;
+}; // 16 B
+
+struct alignas(16) Frontier {
+    uint32_t nodeIndex;
+    uint32_t activeViewMask;
+    uint32_t insideViewMask;
+    uint32_t pad;
+}; // 16 B
+
+struct alignas(16) Sphere {
+    float regionLocalX, regionLocalY, regionLocalZ, radius;
+}; // 16 B
+\`\`\`
+
+The sphere tree has a per-region double/high-low origin. Distances/planes must be rebased into the **same** frame; do not subtract unrelated float32 absolute-world coordinates. Use conservatively widened float radii. \`insideViewMask\` is transient scratch, never immutable node data. Explicit child types avoid deriving leaf/node identity from unchecked sentinel values.
+
+**Contiguous descendants are not implied.** An internally accepted node can skip *plane tests*, but \`PassedInstanceRange\` demands real, valid \`LeafMember\` addresses and the current generational leaf identity. Until a versioned packed ref-stream consumer exists, the GPU must enumerate valid descendant leaves from a packed adjacency/index table. Design the adjacency so each subtree spans a contiguous *leaf-index* interval; this does **not** imply that its \`LeafMember\` rows are contiguous.
+
+### Worked memory budget (capacity, not allocations observed)
+
+Assume **65,536 leaves** (scenario, not an observed \`bistro_grid32\` leaf count), a full four-way tree with approximately 21,845 internal nodes, five simultaneous views, at most 65,536 emitted ranges and 1,048,576 candidates *per view*. MiB uses 1,048,576 B.
+
+| Storage | Computation | Approx. |
+| --- | --- | ---: |
+| Sphere BVH4 internal nodes | 21,845 × 96 B | 2.00 MiB |
+| Leaf descriptors | 65,536 × 16 B | 1.00 MiB |
+| Double-buffer frontiers (if each holds <=65,536 entries) | 2 × 65,536 × 16 B | 2.00 MiB |
+| Per-leaf view mask | 65,536 × 4 B | 0.25 MiB |
+| Compatibility range stream, **one view** | 65,536 × 32 B | 2.00 MiB |
+| Compatibility range streams, **five views** | 5 × previous | 10.00 MiB |
+| Existing candidate verdicts, **one view** | 1,048,576 × 16 B | 16.00 MiB |
+| Existing candidate verdicts, **five views** | 5 × previous | 80.00 MiB |
+| Existing fixed 8-class indexed indirect command buffer, **one view** | 1,048,576 × 8 × 20 B | 160.00 MiB |
+| Existing fixed buffers, **five views** | 5 × previous | 800.00 MiB |
+
+**Critical caveats:** the 65,536-entry frontier is an *illustration*, not a proven worst-case queue bound; a four-way expansion can require more frontier entries transiently, and a shared traversal with several view-mask branches can inflate pressure. Prove maximum queue elements or allocate by a separately validated capacity; overflow must not silently drop children. The above omits scene storage, compaction counters/prefixes, LOD choices, work/demand buffers, transient geometry, GPU fallback, allocator overhead, flight replication and actual residency. The 800 MiB fixed-stride number is a major reason to prefer **compacted indirect draw counts** rather than retaining eight full padded command bins for each view. Multiply per-flight transient capacities by frames-in-flight *only if those buffers are actually independently allocated for each flight*.
+
+The existing instance row costs 144 B × 3M instances ≈ 412 MiB, excluding other scene data; the scene has roughly 3M meshes but the **actual GPUScene instance count must be measured**, not equated unconditionally to mesh count.
+
+### Memory and bandwidth model
+
+A packed node fetch is 96 B. A full four-way tree with L leaves has at most approximately (L−1)/3 internal nodes in the full-tree case. One complete traversal of 21,845 internal nodes reads ~2.0 MiB of raw node payload **if each node is fetched once**; memory transactions, cache misses, masks and output writes add cost. An efficiently fused traversal can amortize **node reads**, but not necessarily each view's six-plane distance tests.
+
+Let \`N\` = tested node-child spheres, \`V\` = active views, \`C_v\` = instances emitted for view v, \`R_v\` = leaf ranges emitted for view v, \`D_v\` = compact GPU draw commands for view v. Then a useful first-order model is:
+
+- Sphere math: **O(N × V × up to 6 planes)**, reduced by early-out and \`insideViewMask\`.
+- Leaf-range emission: **Σ R_v × 32 B** in compatibility mode.
+- Verdict traffic: at least **Σ C_v × 16 B** for one write of every candidate verdict, plus read/compaction traffic.
+- Compact indirect output: **Σ D_v × 20 B**, rather than \`8 × capacity × 20 B\` per view when fixed bins are written in full.
+- Dispatch count: approximately one stage per tree level, plus queue scan/compaction per level, leaf mask/range expansion, instance cull, compaction, LOD/work, and command build. It is a **GPU synchronization and launch cost**, not just arithmetic.
+
+For illustration only: a full tree with ~65k leaves is around 9 levels deep (\`ceil(log_4(65536)) = 8\` child-expansion levels plus the root). The actual number of dispatches depends on whether each level uses separate count/scan/scatter and on how sparse the active frontier is. Neither "eight levels" nor "one traversal" means "eight cheap dispatches".
+
+### GPU pipeline integration with #371
+
+\`\`\`text
+CPU Scene hierarchy / transform journal
+           |
+           v
+ GPUScene uploader: dirty instance rows, owner-generation mask
+           |
+           v
+ GPU visibility snapshot / GPU dynamic sphere refit (if dirty)
+           |
+           v
+ [one shared multi-view GPU visibility traversal]
+   tree frontiers -> leaf view masks -> per-view range counts
+           |
+           v
+ GPU per-view exclusive prefix + range scatter
+           |
+           v
+ GPU dispatch argument generation (compute -> indirect-read barrier)
+           |
+           +--------------+--------------+--------------+
+           |              |              |              |
+           v              v              v              v
+       Main view       Cascade 0      Cascade 1 ... Cascade 3
+           |              |              |
+       GPU instance cull, generation/owner checks, CastShadow gate
+           |              |              |
+       GPU compaction / resident LOD / work generation
+           |              |              |
+       GPU PSO bins + DrawIndexedIndirectCount, depth / masked
+\`\`\`
+
+The existing \`CandidateValidator::Prepare\` expects a CPU-built \`Selection\` with \`candidateCount\`; \`PrepareCompaction\`, \`PrepareWorkExpansion\` and \`PrepareParallelWorkPrefix\` also size and dispatch from a **CPU-known count**. Thus the change is **not** replacing one selector function while leaving the rest unchanged. Add an independent \`GpuVisibilityFrame\` runtime with capacity-proved GPU buffers and GPU-produced count/dispatch arguments; retain \`CandidateValidator\` as a CPU reference/legacy validation path. Modify or permute cull/compaction/work shaders to read live GPU counters, check counts against allocated capacity, and dispatch through generated arguments. The current \`gpu_scene_instance_cull.cs.hlsl\` binary-searches CPU-prefixed \`PassedInstanceRange\` entries; compatibility mode must generate monotonically increasing \`candidateBase\` on the GPU before it can be reused.
+
+Suggested RenderGraph boundaries:
+
+| Pass | Reads | Writes | Required dependency |
+| --- | --- | --- | --- |
+| VisibilityRefit (dirty only) | Dirty instances/spheres; previous safe tree | Next sphere snapshot | Compute write → traversal compute read |
+| VisibilityInit | RenderViews, stable root, epoch | Initial frontier + zeroed counters/status | Compute write → traversal compute read |
+| TraverseLevel | Sphere nodes, frontier, view planes | Next frontier, leaf masks, counters | Compute write → next compute/dispatch-indirect read |
+| LeafCount/Scan/Scatter | Masks, leaf identities, member ranges | Per-view prefixed GPU range buffer + candidate totals | Compute write → GPU cull compute read |
+| CullArgs | Device candidate totals and failure bits | Per-view \`VkDispatchIndirectCommand\` | Compute write → dispatch-indirect read |
+| InstanceCull | Device ranges, leaf/member/instance tables, view | Verdicts | Compute write → compact compute read |
+| Compact + LOD/work + drawbuild | Verdicts, count/LOD/geometry rows | Visible work and compact commands/counts | Compute write → draw-indirect/vertex read |
+| Render Main/CSM | Commands, counts, work, view, geometry | Depth/color/atlas | Indirect/vertex read barriers and normal attachments |
+
+Use real rendergraph logical resource edges, **not merely intra-command-buffer global memory barriers**. An indirect-dispatch buffer needs a compute-write-to-**draw/dispatch indirect command read** dependency. If a level becomes empty, choose a defined zero-work dispatch policy supported by the target API/driver; no stale arguments should be consumed. Separate compute/graphics queues require appropriate ownership/queue synchronization.
+
+### Avoiding the giant fixed indirect-bin cost
+
+Tourmaline's raster ABI has eight pipeline classes and a 20 B \`VkDrawIndexedIndirectCommand\`. The current compatibility drawbuilder pads each class to candidate capacity, potentially writing ~160 MiB for a 1M-candidate view. A staged replacement:
+
+1. Count eligible commands by class on GPU; reject invalid/dead/legacy-owned rows before counting.
+2. Prefix class counts; scatter **only nonzero** commands into a compact command buffer (or one contiguous segment per class).
+3. Use \`DrawIndexedIndirectCount\` with GPU-generated counts, or another proven Vulkan-supported counted-draw path. Keep PSO-class-specific bind/dispatch sequencing.
+4. Preserve generation identity and a work-row mapping: compacted command index cannot be assumed to equal the original work index. \`firstInstance\` must still point to the correct validated GPUScene work row or a new explicit compact-to-work map.
+5. Check actual GPU limits (\`maxDrawIndirectCount\`, buffer-size limits, descriptor access) and split large batches into valid bounded submissions, rather than assuming 1M draws can be issued in a single counted draw.
+6. Maintain a fully correct **GPU-side** overflow/fallback path. No "truncate candidates at 1,048,576", no hidden GPU→CPU readback to request direct fallback mid-frame, and no double-draw ownership.
+
+Compact output reduces both buffer bandwidth and memory residency when few candidates survive. It cannot eliminate a full-scene fallback's work/memory requirements: fallback capacity and page traversal must be designed independently.
+
+### Conservative overflow ownership — explicit gating
+
+A GPU traversal that overflows after the CPU decided to omit GPU-owned geometry from direct shadows is **incorrect** unless another GPU path can draw every eligible owned caster. Implement a per-view, GPU-resident status word plus two mutually exclusive draw paths:
+
+- \`status = VALID\`: use compact visibility commands, disable conservative fallback commands.
+- \`status = OVERFLOW/INVALID\`: disable compact visibility commands, enable a **complete, independently capacity-proven all-owned-instance fallback**, possibly in pages. It may be slow, but may not omit anything.
+- \`status = EMPTY_VALID\`: both paths correctly emit zero eligible draws.
+- CPU-side ownership and capacity admission happens before frame recording; do not rely on learning GPU overflow through a frame-stalling readback.
+
+A fallback itself is not "complete" merely because it has a larger fixed buffer. Prove all admitted instances have a drawable path (multi-submesh and residency included), test every failure mode, and ensure no stale commands can leak after switching states. A simpler rollout is **validation-only GPU visibility**, leaving complete direct shadows active until fallback and exclusivity are proven.
+
+### Milestones with measurable exit gates
+
+**M0 — instrumentation + ABI:** obtain actual GPUScene instance/leaf counts and current per-view allocation sizes, plus CPU ticket/selection cost and GPU \`preC\` time. Implement immutable GPU visibility snapshot storage and layout tests. **No rendering cutover.**
+
+**M1 — flat GPU sphere baseline:** upload stable leaf sphere bounds; GPU classify five views, scan/scatter GPU ranges, produce device counts, and compare readbacks (test mode only) against a reference that can admit extra candidates but **must not miss any actually visible instance**. Prove the safe overflow mechanism before enabling exclusive GPU ownership.
+
+**M2 — wide GPU sphere tree:** add level frontiers and subtree accept/reject. Compare flat GPU against hierarchical GPU on \`bistro_grid32\`, small scenes, large interiors, thin architecture, and dynamic-heavy worlds. If the sphere tree worsens GPU time or candidate inflation, keep the flat path.
+
+**M3 — integrate Main + CSM:** switch at the per-view RenderGraph boundary behind \`TOURMALINE_GPU_SCENE_VISIBILITY\` (proposed switch), preserve direct/legacy fallback and A/B with #371. Verify shadow caster offscreen parity, masked/dithered materials, unknown/skinned bounds, extreme origins, multi-flight and forced overflow.
+
+**M4 — optimize preC and memory:** compact per-class draws, optionally share view-invariant geometry/LOD selection, and only then explore GPU dynamic tree rebuilding and rebalancing if measured refit costs justify complexity.
+
+The success metric is **wall-clock reduction**, not merely fewer tested spheres. Report separately: CPU visibility preparation, GPU visibility traversal/compaction, GPU \`preC\`, GPU raster and full frame; report peak transient VRAM and all conservative candidate/fallback counts. Do not claim specific millisecond wins without measured results.
