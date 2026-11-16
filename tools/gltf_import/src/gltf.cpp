@@ -2406,6 +2406,30 @@ void GltfToSceneImporter::prepareSourceScene() {
     scene.materials.reserve(model.materials.size());
     for (size_t mi = 0; mi < model.materials.size(); ++mi)
         scene.materials.push_back(ExtractMaterial(model, int(mi)));
+    scene.skins.reserve(model.skins.size());
+    for (const auto& in : model.skins) {
+        smvk::source::Skin out{};
+        out.name = in.name;
+        out.skeleton = in.skeleton;
+        out.joints.reserve(in.joints.size());
+        for (int joint : in.joints)
+            out.joints.push_back(joint < 0 ? smvk::source::InvalidIndex : uint32_t(joint));
+        out.inverseBind.resize(in.joints.size(), glm::mat4(1.0f));
+        if (in.inverseBindMatrices >= 0 &&
+            size_t(in.inverseBindMatrices) < model.accessors.size()) {
+            const tinygltf::Accessor& accessor = model.accessors[size_t(in.inverseBindMatrices)];
+            for (size_t i = 0; i < out.inverseBind.size() && i < accessor.count; ++i) {
+                const uint8_t* raw = gltfPtr(model, accessor, i);
+                if (!raw)
+                    break;
+                const float* p = reinterpret_cast<const float*>(raw);
+                for (int c = 0; c < 4; ++c)
+                    for (int row = 0; row < 4; ++row)
+                        out.inverseBind[i][c][row] = p[c * 4 + row];
+            }
+        }
+        scene.skins.push_back(std::move(out));
+    }
     sourceScenePrepared_ = true;
 }
 
@@ -2548,9 +2572,10 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
 // wrong in ways nothing downstream can detect.
 // ---------------------------------------------------------------------------
 int GltfToSceneImporter::BuildSkinData() {
+    prepareSourceScene();
     if (skinRefs_.empty())
         return 0;
-    if (model.skins.empty()) {
+    if (sourceScene_.skins.empty()) {
         std::cerr << "[Skin] node.skin references exist but the glTF"
                      " carries no skins (skinned as static)"
                   << std::endl;
@@ -2559,7 +2584,7 @@ int GltfToSceneImporter::BuildSkinData() {
     }
     // The cluster Skeleton: the FIRST skin wins (documented above).
     if (!cluster.hasSkeleton) {
-        const tinygltf::Skin& skin = model.skins[size_t(skinRefs_[0].skinIndex)];
+        const smvk::source::Skin& skin = sourceScene_.skins[size_t(skinRefs_[0].skinIndex)];
         smvk::touranim::Skeleton& sk = cluster.skeleton;
         sk.joints.clear();
         sk.inverseBind.clear();
@@ -2571,7 +2596,7 @@ int GltfToSceneImporter::BuildSkinData() {
                 (j >= 0 && (size_t)j < gltfNodeMap_.size()) ? gltfNodeMap_[size_t(j)] : -1;
             if (clusterNode < 0) {
                 std::cerr << "[Skin] joint node " << j << " ("
-                          << (j >= 0 && (size_t)j < model.nodes.size() ? model.nodes[size_t(j)].name
+                          << (j >= 0 && (size_t)j < sourceScene_.nodes.size() ? sourceScene_.nodes[size_t(j)].name
                                                                        : "?")
                           << ") was never imported - the joint hierarchy must"
                              " be part of the scene graph (skin pass aborted,"
@@ -2582,23 +2607,8 @@ int GltfToSceneImporter::BuildSkinData() {
             }
             sk.joints.push_back(uint32_t(clusterNode));
         }
-        // inverseBindMatrices: FLOAT MAT4 accessor (column-major 16
-        // floats == glm's layout); identity when the skin omits it.
-        if (skin.inverseBindMatrices >= 0 &&
-            (size_t)skin.inverseBindMatrices < model.accessors.size()) {
-            const tinygltf::Accessor& acc = model.accessors[size_t(skin.inverseBindMatrices)];
-            for (size_t i = 0; i < sk.joints.size() && i < size_t(acc.count); ++i) {
-                const uint8_t* raw = gltfPtr(model, acc, i);
-                if (!raw)
-                    break;
-                const float* p = reinterpret_cast<const float*>(raw);
-                glm::mat4 m(1.0f);
-                for (int c = 0; c < 4; ++c)
-                    for (int r = 0; r < 4; ++r)
-                        m[c][r] = p[c * 4 + r];
-                sk.inverseBind[i] = m;
-            }
-        }
+        // Decoding is performed by the source adapter, not in the Cluster path.
+        sk.inverseBind = skin.inverseBind;
         // Skeleton root: the skin's authored `skeleton` node when
         // present; otherwise the glTF spec fallback - the joint
         // hierarchy's own root (the joint whose parent is not itself a
@@ -2614,15 +2624,15 @@ int GltfToSceneImporter::BuildSkinData() {
             // whose parent is missing or not a joint.
             std::unordered_set<int> jointSet(skin.joints.begin(), skin.joints.end());
             std::unordered_map<int, int> parentOf;
-            for (size_t ni = 0; ni < model.nodes.size(); ++ni) {
-                for (int child : model.nodes[ni].children)
+            for (size_t ni = 0; ni < sourceScene_.nodes.size(); ++ni) {
+                for (uint32_t child : sourceScene_.nodes[ni].children)
                     parentOf[child] = int(ni);
             }
             int rootGltf = -1;
-            for (int j : skin.joints) {
+            for (uint32_t j : skin.joints) {
                 const auto pit = parentOf.find(j);
                 if (pit == parentOf.end() || !jointSet.count(pit->second)) {
-                    rootGltf = j;
+                    rootGltf = int(j);
                     break;
                 }
             }
@@ -2644,7 +2654,7 @@ int GltfToSceneImporter::BuildSkinData() {
     // PackedSkinInfluences (top-4 renormalized RGBA8).
     int patched = 0;
     for (const SkinRef& r : skinRefs_) {
-        if (r.skinIndex < 0 || (size_t)r.skinIndex >= model.skins.size() || r.gltfMeshIndex < 0 ||
+        if (r.skinIndex < 0 || (size_t)r.skinIndex >= sourceScene_.skins.size() || r.gltfMeshIndex < 0 ||
             (size_t)r.gltfMeshIndex >= model.meshes.size())
             continue;
         const tinygltf::Mesh& gm = model.meshes[size_t(r.gltfMeshIndex)];
