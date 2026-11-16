@@ -14117,17 +14117,19 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 // below when spots run, else this cascade).
                 const bool evsmTsBegin = (ci == 0);
                 const bool evsmTsEnd = (ci == NUM_CASCADES - 1) && !evsmSpotOn;
+                const auto gpuCascade = gpuCascades[ci];
+                hintGpuCascade(momentPass, gpuCascade);
                 momentPass.SetRecordingFunc(
-                    [this, cascadePC, casterViewIndex, evsmTsBegin, evsmTsEnd](
-                        smvk::CommandBuffer& cmd) {
+                    [this, cascadePC, casterViewIndex, evsmTsBegin, evsmTsEnd,
+                     gpuCascade, recordGpuCascade](smvk::CommandBuffer& cmd) {
                         if (evsmTsBegin)
                             cmd.WriteStageTimestamp(smvk::kGpuStageEvsmCasters, /*begin=*/true);
-                        RecordShadowCastersDirect(cmd,
-                                                  m_viewportResources.directionalShadows.program,
-                                                  cascadePC,
-                                                  casterViewIndex,
-                                                  /*skipFiltered=*/false,
-                                                  smvk::MSAASettings::Count2());
+                        recordGpuCascade(cmd, cascadePC, gpuCascade,
+                                         smvk::MSAASettings::Count2());
+                        RecordShadowCastersDirect(
+                            cmd, m_viewportResources.directionalShadows.program,
+                            cascadePC, casterViewIndex, /*skipFiltered=*/false,
+                            smvk::MSAASettings::Count2(), gpuCascade.ready);
                         if (evsmTsEnd)
                             cmd.WriteStageTimestamp(smvk::kGpuStageEvsmCasters, /*begin=*/false);
                     });
@@ -14142,15 +14144,18 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // cascade).
             const bool pcfTsBegin = (ci == 0);
             const bool pcfTsEnd = (ci == NUM_CASCADES - 1) && !spotPassesOn && !pointPassesOn;
+            const auto gpuCascade = gpuCascades[ci];
+            hintGpuCascade(shadowPass, gpuCascade);
             shadowPass.SetRecordingFunc(
-                [this, cascadePC, casterViewIndex, pcfTsBegin, pcfTsEnd](smvk::CommandBuffer& cmd) {
+                [this, cascadePC, casterViewIndex, pcfTsBegin, pcfTsEnd,
+                 gpuCascade, recordGpuCascade](smvk::CommandBuffer& cmd) {
                     if (pcfTsBegin)
                         cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/true);
-                    RecordShadowCastersDirect(cmd,
-                                              m_viewportResources.directionalShadows.program,
-                                              cascadePC,
-                                              casterViewIndex,
-                                              /*skipFiltered=*/false);
+                    recordGpuCascade(cmd, cascadePC, gpuCascade, smvk::MSAASettings{});
+                    RecordShadowCastersDirect(
+                        cmd, m_viewportResources.directionalShadows.program,
+                        cascadePC, casterViewIndex, /*skipFiltered=*/false,
+                        smvk::MSAASettings{}, gpuCascade.ready);
                     if (pcfTsEnd)
                         cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/false);
                 });
