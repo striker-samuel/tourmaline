@@ -9,6 +9,7 @@
 // no window: everything here runs headless in CI.
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -1963,7 +1964,11 @@ int main() {
     // static-cull BVH section; the strict fail-on-open gate (added for the
     // deployment/launch path) would abort them. Opt this test process into
     // the legacy fallback so those hand-built paks freeze roots viewer-side.
+#ifdef _WIN32
     _putenv_s("TOURMALINE_LEGACY_STATIC_FALLBACK", "1");
+#else
+    setenv("TOURMALINE_LEGACY_STATIC_FALLBACK", "1", 1);
+#endif
     TestParallelCrcFirstUse();
     TestCliParse();
     TestRuntime();
