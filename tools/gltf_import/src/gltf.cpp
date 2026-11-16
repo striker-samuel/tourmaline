@@ -2432,10 +2432,10 @@ void GltfToSceneImporter::applyPreTransform(Scene& scene, int rootNode) {
 // Decode authored hierarchy and import policy once into Tourmaline-owned
 // source nodes. The glTF parser remains responsible for source-format extras;
 // scene traversal consumes these normalized nodes rather than tinygltf::Node.
-void GltfToSceneImporter::prepareSourceScene() {
-    if (sourceScenePrepared_)
-        return;
-    auto& scene = sourceScene_;
+bool DecodeGltfSourceScene(const tinygltf::Model& model,
+                           smvk::source::Scene& scene,
+                           std::string* error) {
+    scene = smvk::source::Scene{};
     scene.nodes.resize(model.nodes.size());
     scene.meshes.resize(model.meshes.size());
     for (size_t mi = 0; mi < model.meshes.size(); ++mi) {
@@ -2607,7 +2607,34 @@ void GltfToSceneImporter::prepareSourceScene() {
         }
         scene.lights.push_back(out);
     }
-    sourceScenePrepared_ = true;
+
+    // The default glTF scene determines the roots that become placed
+    // instances. Keep all authored nodes in the source table for animation
+    // identity and validation, including unused nodes.
+    if (model.defaultScene >= 0 && size_t(model.defaultScene) < model.scenes.size()) {
+        for (int i : model.scenes[size_t(model.defaultScene)].nodes)
+            if (i >= 0 && size_t(i) < scene.nodes.size())
+                scene.activeRoots.push_back(uint32_t(i));
+    } else if (!model.scenes.empty()) {
+        for (int i : model.scenes.front().nodes)
+            if (i >= 0 && size_t(i) < scene.nodes.size())
+                scene.activeRoots.push_back(uint32_t(i));
+    } else {
+        scene.activeRoots = scene.roots;
+    }
+    for (const auto& buffer : model.buffers)
+        if (!buffer.uri.empty() && buffer.uri.rfind("data:", 0) != 0)
+            scene.dependencies.push_back({buffer.uri});
+    for (const auto& image : scene.images)
+        if (!image.uri.empty() && image.uri.rfind("data:", 0) != 0)
+            scene.dependencies.push_back({image.uri});
+    std::string failure;
+    if (!smvk::source::Validate(scene, failure)) {
+        if (error)
+            *error = "invalid decoded source scene: " + failure;
+        return false;
+    }
+    return true;
 }
 
 void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
