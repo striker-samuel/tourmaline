@@ -30,7 +30,7 @@ point 1 1 0
 point 2 0 0
 ```
 
-Point cloud example:
+Point cloud example (packaged as an existing `Shape` asset, not a separate pak kind):
 
 ```text
 shape 1
@@ -39,6 +39,16 @@ point 0 0 0
 point 0 1 0
 point 1 0 0
 ```
+
+To **pack a point-cloud primitive**, save this text as a `.shape` file,
+for example `content/shapes/stars.shape`, and include that file in a pak
+recipe. The existing shape cooker validates it and stores it as a
+`PakAssetKind::Shape` blob; the catalog refers to it using `ShapeKey`.
+No new asset type, triangle conversion, or point-cloud-specific pak kind
+is needed. Place it in a scene using
+`shapeInstance -name "Stars" -source "content/shapes/stars.shape" -t 0 0 0 -color 1 1 1 -enabled on;`.
+At runtime it is read through the content registry or VFS and rendered
+by the persistent shape point pipeline.
 
 API: `ParseShapeAsset(text, shape, error)`,
 `SerializeShapeAsset(shape)`, `DefaultShapeAsset(kind)`,
