@@ -351,17 +351,12 @@ const smvk::tour::FileNode* GltfToSceneImporter::matchFileNode(const std::string
 bool GltfToSceneImporter::inferSrgb(int imageIndex) const {
     if (imageIndex < 0)
         return false;
-    auto uses = [&](int texIdx) {
-        return texIdx >= 0 && texIdx < int(model.textures.size()) &&
-               model.textures[size_t(texIdx)].source == imageIndex;
-    };
-    for (const auto& m : model.materials) {
-        if (uses(m.pbrMetallicRoughness.baseColorTexture.index))
-            return true;
-        if (uses(m.emissiveTexture.index))
+    for (const auto& material : sourceScene_.materials) {
+        if ((material.baseColorTex && material.baseColorTex->imageIndex == imageIndex) ||
+            (material.emissiveTex && material.emissiveTex->imageIndex == imageIndex))
             return true;
     }
-    return false; // data maps (and unknown uses) stay linear
+    return false;
 }
 
 bool GltfToSceneImporter::resolveKtxBytes(const std::string& imageUri,
@@ -691,9 +686,9 @@ smvk::TextureHandle GltfToSceneImporter::loadTextureForImage(int imageIndex, int
     auto cached = textureCache.find(imageIndex);
     if (cached != textureCache.end())
         return cached->second;
-    if (imageIndex < 0 || imageIndex >= (int)model.images.size())
+    if (imageIndex < 0 || imageIndex >= (int)sourceScene_.images.size())
         return {};
-    const tinygltf::Image& img = model.images[imageIndex];
+    const smvk::source::Image& img = sourceScene_.images[imageIndex];
     // LoadModelFromSourceFile EXTRACTS embedded images (data: URIs, GLB
     // bufferView payloads) to sidecar files and rewrites their uris, so
     // an empty/data uri here means a model that bypassed the loader —
@@ -783,10 +778,10 @@ smvk::TextureHandle GltfToSceneImporter::loadTextureForImage(int imageIndex, int
         // Persist authoring sampler (renderer still uses its default;
         // the desc travels into paks for a future sampler pass).
         smvk::TextureSamplerDesc samp;
-        if (textureIndex >= 0 && textureIndex < (int)model.textures.size()) {
-            const int s = model.textures[textureIndex].sampler;
-            if (s >= 0 && s < (int)model.samplers.size()) {
-                const auto& ts = model.samplers[s];
+        if (textureIndex >= 0 && textureIndex < (int)sourceScene_.textures.size()) {
+            const int s = sourceScene_.textures[textureIndex].sampler;
+            if (s >= 0 && s < (int)sourceScene_.samplers.size()) {
+                const auto& ts = sourceScene_.samplers[s];
                 samp.magFilter = ts.magFilter;
                 samp.minFilter = ts.minFilter;
                 samp.wrapS = ts.wrapS;
@@ -809,14 +804,14 @@ smvk::TextureHandle GltfToSceneImporter::loadTextureForImage(int imageIndex, int
 
 // ---- importer data rows (see setImportImages) --------------------------
 GltfImportImage* GltfToSceneImporter::importImageRow(int imageIndex) {
-    if (!importImages_ || imageIndex < 0 || imageIndex >= (int)model.images.size())
+    if (!importImages_ || imageIndex < 0 || imageIndex >= (int)sourceScene_.images.size())
         return nullptr;
     auto it = importImageRows_.find(imageIndex);
     if (it != importImageRows_.end())
         return &(*importImages_)[it->second];
     GltfImportImage row{};
     row.source = gltfModelPath.generic_string();
-    row.uri = model.images[size_t(imageIndex)].uri;
+    row.uri = sourceScene_.images[size_t(imageIndex)].uri;
     importImages_->push_back(std::move(row));
     importImageRows_[imageIndex] = importImages_->size() - 1;
     return &importImages_->back();
@@ -1357,12 +1352,12 @@ void GltfToSceneImporter::preloadTextures() {
     // decoded/uploaded in parallel from memory; registration (URI, sampler,
     // source stash) mirrors loadTextureForImage so both paths agree.
     std::vector<int> imageIndices;
-    imageIndices.reserve(model.images.size());
+    imageIndices.reserve(sourceScene_.images.size());
     std::unordered_map<int, int> firstTextureForImage; // imageIndex -> textureIndex (sampler)
     {
-        std::vector<bool> seen(model.images.size(), false);
+        std::vector<bool> seen(sourceScene_.images.size(), false);
         auto note = [&](const std::optional<GltfTextureRef>& ref) {
-            if (!ref || ref->imageIndex < 0 || ref->imageIndex >= (int)model.images.size())
+            if (!ref || ref->imageIndex < 0 || ref->imageIndex >= (int)sourceScene_.images.size())
                 return;
             if (!seen[ref->imageIndex]) {
                 seen[ref->imageIndex] = true;
@@ -1394,7 +1389,7 @@ void GltfToSceneImporter::preloadTextures() {
     for (int imageIndex : imageIndices) {
         if (textureCache.find(imageIndex) != textureCache.end())
             continue;
-        const tinygltf::Image& img = model.images[imageIndex];
+        const smvk::source::Image& img = sourceScene_.images[imageIndex];
         // Embedded / data-URI images are EXTRACTED to sidecar files by
         // LoadModelFromSourceFile (uri rewritten), so an empty/data uri
         // here means a model that bypassed the loader — same policy as
@@ -1453,10 +1448,10 @@ void GltfToSceneImporter::preloadTextures() {
             if (!p.identity.empty()) {
                 cluster.RegisterTextureUri(p.identity, h);
                 smvk::TextureSamplerDesc samp;
-                if (p.textureIndex >= 0 && p.textureIndex < (int)model.textures.size()) {
-                    const int s = model.textures[p.textureIndex].sampler;
-                    if (s >= 0 && s < (int)model.samplers.size()) {
-                        const auto& ts = model.samplers[s];
+                if (p.textureIndex >= 0 && p.textureIndex < (int)sourceScene_.textures.size()) {
+                    const int s = sourceScene_.textures[p.textureIndex].sampler;
+                    if (s >= 0 && s < (int)sourceScene_.samplers.size()) {
+                        const auto& ts = sourceScene_.samplers[s];
                         samp.magFilter = ts.magFilter;
                         samp.minFilter = ts.minFilter;
                         samp.wrapS = ts.wrapS;
@@ -1526,10 +1521,10 @@ void GltfToSceneImporter::preloadTextures() {
                     if (!p.identity.empty()) {
                         cluster.RegisterTextureUri(p.identity, h);
                         smvk::TextureSamplerDesc samp;
-                        if (p.textureIndex >= 0 && p.textureIndex < (int)model.textures.size()) {
-                            const int s = model.textures[p.textureIndex].sampler;
-                            if (s >= 0 && s < (int)model.samplers.size()) {
-                                const auto& ts = model.samplers[s];
+                        if (p.textureIndex >= 0 && p.textureIndex < (int)sourceScene_.textures.size()) {
+                            const int s = sourceScene_.textures[p.textureIndex].sampler;
+                            if (s >= 0 && s < (int)sourceScene_.samplers.size()) {
+                                const auto& ts = sourceScene_.samplers[s];
                                 samp.magFilter = ts.magFilter;
                                 samp.minFilter = ts.minFilter;
                                 samp.wrapS = ts.wrapS;
@@ -1585,10 +1580,10 @@ void GltfToSceneImporter::preloadTextures() {
         if (!p.identity.empty()) {
             cluster.RegisterTextureUri(p.identity, h);
             smvk::TextureSamplerDesc samp;
-            if (p.textureIndex >= 0 && p.textureIndex < (int)model.textures.size()) {
-                const int s = model.textures[p.textureIndex].sampler;
-                if (s >= 0 && s < (int)model.samplers.size()) {
-                    const auto& ts = model.samplers[s];
+            if (p.textureIndex >= 0 && p.textureIndex < (int)sourceScene_.textures.size()) {
+                const int s = sourceScene_.textures[p.textureIndex].sampler;
+                if (s >= 0 && s < (int)sourceScene_.samplers.size()) {
+                    const auto& ts = sourceScene_.samplers[s];
                     samp.magFilter = ts.magFilter;
                     samp.minFilter = ts.minFilter;
                     samp.wrapS = ts.wrapS;
@@ -1727,7 +1722,7 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
             // fills the preloaded case.
             noteImage(ref->imageIndex,
                       textureSource ? textureSource->ResolveIdentity(
-                                          model.images[size_t(ref->imageIndex)].uri)
+                                          sourceScene_.images[size_t(ref->imageIndex)].uri)
                                     : std::string(),
                       true);
         }
@@ -1816,7 +1811,7 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
 smvk::ClusterLightHandle GltfToSceneImporter::getOrCreateLight(int gltfLightIndex,
                                                                bool staticLight) {
     assert(gltfLightIndex >= 0);
-    assert(static_cast<size_t>(gltfLightIndex) < model.lights.size());
+    assert(static_cast<size_t>(gltfLightIndex) < sourceScene_.lights.size());
 
     auto& slot = lightCache[gltfLightIndex];
     if (!slot.empty()) {
@@ -1824,8 +1819,19 @@ smvk::ClusterLightHandle GltfToSceneImporter::getOrCreateLight(int gltfLightInde
     }
 
     SceneLight dst;
-    if (!GltfLightToSceneLight(model.lights[gltfLightIndex], staticLight, dst))
-        return {}; // unknown type: skip the node link
+    const smvk::source::Light& src = sourceScene_.lights[size_t(gltfLightIndex)];
+    dst.name = src.name;
+    dst.color = src.color;
+    dst.intensity = src.intensity;
+    dst.range = src.range;
+    dst.innerConeAngle = src.innerConeAngle;
+    dst.outerConeAngle = src.outerConeAngle;
+    dst.flags = (staticLight || src.name.rfind("STATIC_", 0) == 0)
+                    ? SceneLight::kSceneLightFlag_Static : 0u;
+    dst.type = src.type == smvk::source::LightType::Directional
+                   ? SceneLight::Type::Directional
+               : src.type == smvk::source::LightType::Spot
+                   ? SceneLight::Type::Spot : SceneLight::Type::Point; // unknown type: skip the node link
 
     slot = cluster.CreateLight(std::move(dst));
     if (!slot.valid())
@@ -2678,7 +2684,7 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
     // light name) flags the light as a bake source - first instance
     // wins when the definition is shared.
     const int gltfNodeLight = sourceNode.light;
-    if (gltfNodeLight >= 0 && gltfNodeLight < (int)model.lights.size()) {
+    if (gltfNodeLight >= 0 && gltfNodeLight < (int)sourceScene_.lights.size()) {
         const smvk::ClusterLightHandle h =
             getOrCreateLight(gltfNodeLight, sourceNode.staticLight);
         if (h.valid())
