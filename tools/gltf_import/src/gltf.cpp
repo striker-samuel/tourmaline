@@ -13,6 +13,7 @@
 #include <Engine/core.h>
 #include <gltf_import/asset_export.h>
 #include <gltf_import/gltf.h>
+#include <gltf_import/source_scene.h>
 #include <ktx.h>
 
 #include <algorithm>
@@ -1886,123 +1887,100 @@ smvk::ClusterLightHandle GltfToSceneImporter::getOrCreateLight(int gltfLightInde
     return slot;
 }
 
+// glTF decoding stops at the owned source representation. The downstream
+// mesh optimization/packing path consumes decoded Tourmaline attributes.
+static smvk::source::Primitive DecodeGltfPrimitive(const tinygltf::Model& model,
+                                                    const tinygltf::Primitive& primitive) {
+    smvk::source::Primitive raw{};
+    const auto positionIt = primitive.attributes.find("POSITION");
+    if (positionIt == primitive.attributes.end())
+        return raw;
+
+    const tinygltf::Accessor& pos = model.accessors[positionIt->second];
+    if (pos.minValues.size() >= 3 && pos.maxValues.size() >= 3) {
+        raw.aabbMin = glm::vec3(pos.minValues[0], pos.minValues[1], pos.minValues[2]);
+        raw.aabbMax = glm::vec3(pos.maxValues[0], pos.maxValues[1], pos.maxValues[2]);
+    } else {
+        assert(false && "failed to get bb");
+    }
+
+    raw.hasUv0 = primitive.attributes.count("TEXCOORD_0") != 0;
+    raw.hasUv1 = primitive.attributes.count("TEXCOORD_1") != 0;
+    raw.hasTangents = primitive.attributes.count("TANGENT") != 0;
+    raw.hasNormals = primitive.attributes.count("NORMAL") != 0;
+    raw.hasColors = primitive.attributes.count("COLOR_0") != 0;
+    raw.vertices.resize(pos.count);
+    for (size_t i = 0; i < pos.count; ++i)
+        raw.vertices[i].position = readVec3F(model, pos, i);
+
+    if (raw.hasColors) {
+        const auto& a = model.accessors[primitive.attributes.at("COLOR_0")];
+        const int components = tinygltf::GetNumComponentsInType(a.type);
+        for (size_t i = 0; i < a.count && i < raw.vertices.size(); ++i)
+            raw.vertices[i].color = readColorRGBA(model, a, i, components);
+    }
+    if (raw.hasUv0) {
+        const auto& a = model.accessors[primitive.attributes.at("TEXCOORD_0")];
+        for (size_t i = 0; i < a.count && i < raw.vertices.size(); ++i)
+            raw.vertices[i].uv0 = readVec2F(model, a, i);
+    }
+    if (raw.hasUv1) {
+        const auto& a = model.accessors[primitive.attributes.at("TEXCOORD_1")];
+        for (size_t i = 0; i < a.count && i < raw.vertices.size(); ++i)
+            raw.vertices[i].uv1 = readVec2F(model, a, i);
+    }
+    if (raw.hasTangents) {
+        const auto& a = model.accessors[primitive.attributes.at("TANGENT")];
+        for (size_t i = 0; i < a.count && i < raw.vertices.size(); ++i)
+            raw.vertices[i].tangent = readVec4F(model, a, i);
+    }
+    if (raw.hasNormals) {
+        const auto& a = model.accessors[primitive.attributes.at("NORMAL")];
+        for (size_t i = 0; i < a.count && i < raw.vertices.size(); ++i)
+            raw.vertices[i].normal = glm::normalize(readVec3F(model, a, i));
+    }
+    if (primitive.indices >= 0) {
+        const auto& a = model.accessors[primitive.indices];
+        raw.indices.reserve(a.count);
+        for (size_t i = 0; i < a.count; ++i)
+            raw.indices.push_back(readIndex(model, a, i));
+    } else {
+        raw.indices.reserve(raw.vertices.size());
+        for (uint32_t i = 0; i < raw.vertices.size(); ++i)
+            raw.indices.push_back(i);
+    }
+    return raw;
+}
+
+// Renderer/asset preparation sees no parser-owned types or accessor layout.
+static smvk::MeshData SourcePrimitiveToMeshData(const smvk::source::Primitive& raw) {
+    smvk::MeshData data{};
+    data.aabbMin = raw.aabbMin;
+    data.aabbMax = raw.aabbMax;
+    data.indices = raw.indices;
+    data.vertices.reserve(raw.vertices.size());
+    for (const auto& v : raw.vertices) {
+        smvk::MeshVertex out{};
+        out.pos = v.position;
+        out.normal = v.normal;
+        out.tangent = v.tangent;
+        out.texCoord = v.uv0;
+        out.texCoord2 = v.uv1;
+        out.color = v.color;
+        data.vertices.push_back(out);
+    }
+    if (!raw.hasNormals)
+        smvk::ComputeSmoothNormals(data);
+    if (!raw.hasTangents && raw.hasUv0)
+        smvk::GenerateTangents(data);
+    return data;
+}
+
 static smvk::MeshData SurfaceDataFromGltfPrimitive(const tinygltf::Model& model,
                                                    const tinygltf::Primitive& primitive,
                                                    int coordFix) {
-    smvk::MeshData data;
-    // AABB. for culling
-    {
-        auto it = primitive.attributes.find("POSITION");
-        if (it == primitive.attributes.end())
-            return data;
-
-        int accessorIndex = it->second;
-        const tinygltf::Accessor& accessor = model.accessors[accessorIndex];
-
-        if (accessor.minValues.size() >= 3 && accessor.maxValues.size() >= 3) {
-
-            // glTF stores AABB in the accessor; RAW as authored (the
-            // coordFix basis rides the chain top, never the geometry).
-            const std::vector<double>& min = accessor.minValues;
-            const std::vector<double>& max = accessor.maxValues;
-
-            data.aabbMin = glm::vec3(min[0], min[1], min[2]);
-            data.aabbMax = glm::vec3(max[0], max[1], max[2]);
-        } else {
-
-            // I wont handle this. just assert and fail.
-            assert(false && "failed to get bb ");
-        }
-    }
-
-    // Extract vertices. Presence flags decide which frames must be synthesized
-    // below: a missing NORMAL/TANGENT must never keep a placeholder, or
-    // normal-mapped lighting breaks on that primitive.
-    const bool hasUVs = primitive.attributes.find("TEXCOORD_0") != primitive.attributes.end();
-    const bool hasUV2s = primitive.attributes.find("TEXCOORD_1") != primitive.attributes.end();
-    const bool hasAuthoredTangents =
-        primitive.attributes.find("TANGENT") != primitive.attributes.end();
-    const bool hasAuthoredNormals =
-        primitive.attributes.find("NORMAL") != primitive.attributes.end();
-    const bool hasColors = primitive.attributes.find("COLOR_0") != primitive.attributes.end();
-
-    auto& posAcc = model.accessors[primitive.attributes.at("POSITION")];
-    data.vertices.reserve(posAcc.count);
-    for (size_t i = 0; i < posAcc.count; ++i) {
-        smvk::MeshVertex v{};
-        v.pos = readVec3F(model, posAcc, i);
-        v.color = {1.0f, 1.0f, 1.0f, 1.0f};
-        v.texCoord = {0.0f, 0.0f};            // will fill if UVs exist
-        v.texCoord2 = {0.0f, 0.0f};           // lightmap UV (TEXCOORD_1), if present
-        v.normal = {0.0f, 1.0f, 0.0f};        // replaced below if normals provided/generated
-        v.tangent = {1.0f, 0.0f, 0.0f, 1.0f}; // replaced below if tangents provided/generated
-        data.vertices.push_back(v);
-    }
-
-    // Vertex colors (COLOR_0): vec3 or vec4 floats, or normalized ubyte/
-    // ushort. Carries layered-material blend weights (RGBA) or a plain
-    // albedo tint; defaults to white when absent.
-    if (hasColors) {
-        auto& colAcc = model.accessors[primitive.attributes.at("COLOR_0")];
-        const int compCount = tinygltf::GetNumComponentsInType(colAcc.type);
-        for (size_t i = 0; i < colAcc.count && i < data.vertices.size(); ++i) {
-            data.vertices[i].color = readColorRGBA(model, colAcc, i, compCount);
-        }
-    }
-
-    if (hasUVs) {
-        auto& uvAcc = model.accessors[primitive.attributes.at("TEXCOORD_0")];
-        for (size_t i = 0; i < uvAcc.count && i < data.vertices.size(); ++i) {
-            glm::vec2 uv = readVec2F(model, uvAcc, i);
-            data.vertices[i].texCoord = uv; // flip V if your shader expects it: uv.y = 1.0f - uv.y;
-        }
-    }
-
-    // Lightmap UV channel (TEXCOORD_1): authored lightmap UVs, or zeros
-    // when the scene carries none (the lightmap cook overwrites these
-    // with chart-local UVs + chart ids at bake time; the shader gates on
-    // the per-draw flag, never on the value).
-    if (hasUV2s) {
-        auto& uv2Acc = model.accessors[primitive.attributes.at("TEXCOORD_1")];
-        for (size_t i = 0; i < uv2Acc.count && i < data.vertices.size(); ++i) {
-            data.vertices[i].texCoord2 = readVec2F(model, uv2Acc, i);
-        }
-    }
-
-    if (hasAuthoredTangents) {
-        auto& tangentAcc = model.accessors[primitive.attributes.at("TANGENT")];
-        for (size_t i = 0; i < tangentAcc.count && i < data.vertices.size(); ++i) {
-            glm::vec4 tangent = readVec4F(model, tangentAcc, i);
-            // RAW as authored (the basis rides the chain top): tangent
-            // space — including the handedness w — stays exactly as
-            // the glTF author wrote it.
-            data.vertices[i].tangent = tangent;
-        }
-    }
-
-    if (hasAuthoredNormals) {
-        auto& nAcc = model.accessors[primitive.attributes.at("NORMAL")];
-        for (size_t i = 0; i < nAcc.count && i < data.vertices.size(); ++i) {
-            glm::vec3 n = readVec3F(model, nAcc, i);
-            data.vertices[i].normal = glm::normalize(n);
-        }
-    }
-
-    if (primitive.indices >= 0) {
-        auto& idxAcc = model.accessors[primitive.indices];
-        for (size_t i = 0; i < idxAcc.count; ++i) {
-            data.indices.push_back(readIndex(model, idxAcc, i));
-        }
-    }
-
-    if (!hasAuthoredNormals) {
-        smvk::ComputeSmoothNormals(data);
-    }
-    if (!hasAuthoredTangents && hasUVs) {
-        smvk::GenerateTangents(data);
-    }
-
-    return data;
+    (void)coordFix; // basis correction remains at the scene root
+    return SourcePrimitiveToMeshData(DecodeGltfPrimitive(model, primitive));
 }
 
 // Packs a primitive's JOINTS_0/WEIGHTS_0 into the PackedSkinInfluences stream
