@@ -496,6 +496,13 @@ int main(int argc, char** argv) {
             return raw;
         };
         smvk::World world;
+        // The clusterLoader stub above builds a hand-built, BVH-less
+        // cluster (no cooked static-cull section). The strict cooked-BVH
+        // gate in ApplyCookedStaticFlags would abort that as a pre-section
+        // pak; the stub only exercises the load/remove plumbing, so opt it
+        // into the documented legacy freeze (the same toggle the app path
+        // exposes as TOURMALINE_LEGACY_STATIC_FALLBACK=1).
+        world.legacyStaticFallback = true;
         std::string lErr;
         app::SceneHandle h = scenes.LoadSceneAdditive(world, nullptr, nullptr, sceneId, lErr);
         Check(bool(h) && lErr.empty(), "e2e.scene-loads");
