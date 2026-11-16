@@ -8949,7 +8949,8 @@ void WorldRenderer::RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
                                               const IRenderer::PushConstants& pc,
                                               uint32_t casterViewIndex,
                                               bool skipFiltered,
-                                              const smvk::MSAASettings& msaa) {
+                                              const smvk::MSAASettings& msaa,
+                                              bool skipGpuSceneOwned) {
     // Phase 2 masked pipeline: cull follows the material raster so
     // the shadow depth contains exactly the faces the main view draws
     // (cutout has no backface shadow depth — always back-face cull
@@ -8977,6 +8978,9 @@ void WorldRenderer::RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
     };
     auto drawCaster = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
         if (item.material == smvk::World::kInvalidIndex)
+            return;
+        if (skipGpuSceneOwned &&
+            m_gpuSceneRasterOwnership.OwnsGpu(m_gpuSceneSync.SourceForNode(item.node)))
             return;
         // Indirect path: registered casters are covered by the per-view
         // command list - only unfilterable meshes rasterize here.
@@ -11722,6 +11726,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     }
     if (s_gpuSceneValidate || m_gpuSceneRasterEnabled)
         m_gpuSceneValidator.BeginFlight(*m_context, fb.frameIndex);
+    for (auto& validator : m_gpuSceneCascadeValidators)
+        validator.BeginFlight(*m_context, fb.frameIndex);
     m_gpuSceneDatabaseReady = false;
     // GPUIR scene mirror: topology reconciliation or dirty transforms,
     // then flight-safe GPU table publication. Draws still use GfxFilter.
@@ -14033,6 +14039,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         m_gpuSceneTaskMeshPlan.graphics.skinValid = fc.skinDeformedValid ? 1u : 0u;
     }
 
+    #include "WorldRendererGpuSceneCascades.inl"
+
     // ---- Cascaded shadow map passes - one per cascade tile (builder owns offsets/extents/load
     // ops) ---- Pass-config gate: no shadow sampling without tiles (the main shader reads
     // cascadeBuffer regardless; tiles just stay cleared).
@@ -14109,17 +14117,19 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 // below when spots run, else this cascade).
                 const bool evsmTsBegin = (ci == 0);
                 const bool evsmTsEnd = (ci == NUM_CASCADES - 1) && !evsmSpotOn;
+                const auto gpuCascade = gpuCascades[ci];
+                hintGpuCascade(momentPass, gpuCascade);
                 momentPass.SetRecordingFunc(
-                    [this, cascadePC, casterViewIndex, evsmTsBegin, evsmTsEnd](
-                        smvk::CommandBuffer& cmd) {
+                    [this, cascadePC, casterViewIndex, evsmTsBegin, evsmTsEnd,
+                     gpuCascade, recordGpuCascade](smvk::CommandBuffer& cmd) {
                         if (evsmTsBegin)
                             cmd.WriteStageTimestamp(smvk::kGpuStageEvsmCasters, /*begin=*/true);
-                        RecordShadowCastersDirect(cmd,
-                                                  m_viewportResources.directionalShadows.program,
-                                                  cascadePC,
-                                                  casterViewIndex,
-                                                  /*skipFiltered=*/false,
-                                                  smvk::MSAASettings::Count2());
+                        recordGpuCascade(cmd, cascadePC, gpuCascade,
+                                         smvk::MSAASettings::Count2());
+                        RecordShadowCastersDirect(
+                            cmd, m_viewportResources.directionalShadows.program,
+                            cascadePC, casterViewIndex, /*skipFiltered=*/false,
+                            smvk::MSAASettings::Count2(), gpuCascade.ready);
                         if (evsmTsEnd)
                             cmd.WriteStageTimestamp(smvk::kGpuStageEvsmCasters, /*begin=*/false);
                     });
@@ -14134,15 +14144,18 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // cascade).
             const bool pcfTsBegin = (ci == 0);
             const bool pcfTsEnd = (ci == NUM_CASCADES - 1) && !spotPassesOn && !pointPassesOn;
+            const auto gpuCascade = gpuCascades[ci];
+            hintGpuCascade(shadowPass, gpuCascade);
             shadowPass.SetRecordingFunc(
-                [this, cascadePC, casterViewIndex, pcfTsBegin, pcfTsEnd](smvk::CommandBuffer& cmd) {
+                [this, cascadePC, casterViewIndex, pcfTsBegin, pcfTsEnd,
+                 gpuCascade, recordGpuCascade](smvk::CommandBuffer& cmd) {
                     if (pcfTsBegin)
                         cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/true);
-                    RecordShadowCastersDirect(cmd,
-                                              m_viewportResources.directionalShadows.program,
-                                              cascadePC,
-                                              casterViewIndex,
-                                              /*skipFiltered=*/false);
+                    recordGpuCascade(cmd, cascadePC, gpuCascade, smvk::MSAASettings{});
+                    RecordShadowCastersDirect(
+                        cmd, m_viewportResources.directionalShadows.program,
+                        cascadePC, casterViewIndex, /*skipFiltered=*/false,
+                        smvk::MSAASettings{}, gpuCascade.ready);
                     if (pcfTsEnd)
                         cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/false);
                 });

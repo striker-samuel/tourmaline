@@ -3,6 +3,7 @@
 // Headless GPU Scene validation: view-space parity and struct ABI.
 #include <Engine/Renderer/gpu_scene_raster.h>
 #include <Engine/Renderer/gpu_scene_validation.h>
+#include <Engine/Renderer/gpu_scene_render_view_bridge.h>
 
 #include <cmath>
 #include <cstdio>
@@ -404,6 +405,40 @@ void CheckLegacyRebasing() {
     verdict = ReferenceCandidate(db, member.slot, frustum);
     CHECK(verdict.value.x == InvalidIndex && verdict.value.z == 0);
 }
+void CheckGpuSceneRenderViews() {
+    smvk::RenderViewSet source;
+    const glm::mat4 vp(1.0f);
+    CHECK(source.AllocateMainView(vp, glm::vec2(1920, 1080)) == 0u);
+    // The same per-frame view ABI supports a light VP independent of Main.
+    CHECK(source.AllocateView(vp, glm::vec2(2048, 2048),
+                              smvk::RenderViewFlagBit_ShadowCascade) == 1u);
+    CHECK(source.AllocateView(vp, glm::vec2(1024, 1024),
+                              smvk::RenderViewFlagBit_SpotShadow) == 2u);
+    CHECK(source.AllocateView(vp, glm::vec2(512, 512),
+                              smvk::RenderViewFlagBit_PointShadow) == 3u);
+    GpuSceneRenderViewSet bridge;
+    CHECK(bridge.Build(source, glm::dvec3(2.0, 0.0, 0.0)));
+    CHECK(bridge.count == 4u);
+    CHECK(bridge.views[0].flags == smvk::RenderViewFlagBit_MainView);
+    CHECK(bridge.views[1].flags == smvk::RenderViewFlagBit_ShadowCascade);
+    CHECK(bridge.views[2].flags == smvk::RenderViewFlagBit_SpotShadow);
+    CHECK(bridge.views[3].flags == smvk::RenderViewFlagBit_PointShadow);
+    CHECK(std::abs(bridge.views[1].cull.inwardPlanes[0].w - 3.0f) < 1e-5f);
+    CHECK(std::abs(bridge.views[1].raster.relativeViewProjection[3][0] - 2.0f) < 1e-5f);
+    CHECK(glm::length(tour::math::JoinDoubleFloat(bridge.views[1].raster.origin) -
+                      glm::dvec3(2.0, 0.0, 0.0)) < 1e-5);
+
+    // A disabled swept-contribution plane must stay fail-open when rebased.
+    smvk::RenderView swept{};
+    swept.m_viewProjectionMatrix = vp;
+    for (uint32_t i = 0; i < 6; ++i)
+        swept.m_viewPlanes[i] = source.Get(1).m_viewPlanes[i];
+    swept.m_viewPlanes[0] = glm::vec4(0.0f);
+    const auto packed = MakeGpuSceneRenderView(swept, 1u, glm::dvec3(2.0, 0.0, 0.0));
+    CHECK(packed.valid);
+    CHECK(packed.cull.inwardPlanes[0].w > 1e20f);
+}
+
 } // namespace
 int main() {
     CheckDoubleView();
@@ -415,6 +450,7 @@ int main() {
     CheckProjectedErrorWorkSelection();
     CheckRasterPsoBins();
     CheckLegacyRebasing();
+    CheckGpuSceneRenderViews();
     std::printf("checks=%d failures=%d\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

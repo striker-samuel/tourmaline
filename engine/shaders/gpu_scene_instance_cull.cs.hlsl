@@ -165,7 +165,7 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
             return;
     }
 
-    // Unknown/incomplete mesh bounds: fail OPEN, not invisible.
+    // Shadow views must reject non-casters before building work. Bit 1 of\n    // counts2.z requests CastShadow; bit 0 retains the view-valid flag.\n    if ((pcS.counts2.z & 2u) != 0u &&\n        (instance.value.refs.w & (1u << 5)) == 0u)\n        return;\n\n    // Unknown/incomplete mesh bounds: fail OPEN, not invisible.
     bool bypass = true;
     if (instance.value.refs.x < min(pcS.counts2.y, GPU_SCENE_MAX_ROW_SLOTS)) {
         const GpuSceneMeshRow mesh =
@@ -174,7 +174,7 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
                  mesh.identity.x != instance.value.refs.y ||
                  (mesh.value.flags & 1u) == 0u; // MeshFlagCompleteBounds
     }
-    const bool visible = bypass || pcS.counts2.z == 0u ||
+    const bool visible = bypass || (pcS.counts2.z & 1u) == 0u ||
         GpuSceneSphereVisible(instance.value, pcS.view.Get());
     result.value = uint4(instanceId, instanceGen, visible ? 1u : 0u,
                          bypass ? 1u : 0u);
