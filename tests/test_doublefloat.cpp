@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <Engine/Core/double_float.h>
+#include <Engine/Camera/stereo_view.h>
 
 #include <cmath>
 #include <cstdint>
@@ -104,6 +105,47 @@ int main() {
     const glm::dvec3 snapped = SnapRenderOrigin(glm::dvec3(-0.5, 4096.0, -4096.125));
     CHECK(snapped == glm::dvec3(-4096.0, 4096.0, -8192.0));
     CHECK(SnapRenderOrigin(glm::dvec3(4095.99, 0.0, 8191.0)) == glm::dvec3(0.0, 0.0, 4096.0));
+
+    // Stereo must preserve 64 mm IPD even at 1e12 world units and when
+    // the head straddles a snapping boundary. Both eyes share the origin.
+    for (const double base : {0.0, 4095.999, 1.0e12, -1.0e12}) {
+        const glm::dvec3 head(base, base, base);
+        const std::array<glm::dvec3, 2> offsets = {
+            glm::dvec3(-0.032, 0.0, 0.0), glm::dvec3(0.032, 0.0, 0.0)};
+        const std::array<glm::mat4, 2> projections = {glm::mat4(1.0f), glm::mat4(1.0f)};
+        const auto pair = tour::math::MakeStereoViewPair(
+            head, glm::dquat(1.0, 0.0, 0.0, 0.0), offsets, projections);
+        CHECK(pair.eyes[0].origin.high == pair.eyes[1].origin.high);
+        CHECK(pair.eyes[0].origin.low == pair.eyes[1].origin.low);
+        CHECK(std::abs((pair.eyes[1].worldPosition.x - pair.eyes[0].worldPosition.x) -
+                       0.064) < 0.0002);
+        const float relativeEyeDelta =
+            pair.eyes[0].relativeView[3].x - pair.eyes[1].relativeView[3].x;
+        CHECK(std::abs(relativeEyeDelta - 0.064f) < 0.0002f);
+        // A point in front of the head is offset correctly in both eyes,
+        // rather than collapsing to a single float32 absolute position.
+        const glm::vec4 headRelative(head - pair.originWorld, 1.0);
+        const glm::vec4 left = pair.eyes[0].relativeView * headRelative;
+        const glm::vec4 right = pair.eyes[1].relativeView * headRelative;
+        CHECK(std::abs(left.x - 0.032f) < 0.0002f);
+        CHECK(std::abs(right.x + 0.032f) < 0.0002f);
+    }
+
+    // Rotated head and independent per-eye orientation are respected.
+    {
+        const glm::dquat yaw = glm::angleAxis(glm::radians(90.0), glm::dvec3(0, 1, 0));
+        const std::array<glm::dvec3, 2> offsets = {
+            glm::dvec3(-0.032, 0, 0), glm::dvec3(0.032, 0, 0)};
+        const std::array<glm::dquat, 2> eyeRotations = {
+            glm::dquat(1, 0, 0, 0),
+            glm::angleAxis(glm::radians(5.0), glm::dvec3(0, 1, 0))};
+        const std::array<glm::mat4, 2> projections = {glm::mat4(1), glm::mat4(1)};
+        const auto pair = tour::math::MakeStereoViewPair(
+            glm::dvec3(1.0e12, 0, 0), yaw, offsets, eyeRotations, projections);
+        CHECK(std::abs(pair.eyes[1].worldPosition.z -
+                       pair.eyes[0].worldPosition.z + 0.064) < 0.0002);
+        CHECK(pair.eyes[0].relativeView != pair.eyes[1].relativeView);
+    }
 
     std::printf("checks=%d failures=%d\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
