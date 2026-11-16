@@ -571,9 +571,9 @@ add_subdirectory(external/imgui)
 add_subdirectory(core)
 add_subdirectory(engine)
 # Embree backend wiring (see the options block above): the engine links
-# the static lib (the traversal path is unconditional in the source —
-# the builtin stays as the deterministic reference backend + the
-# ClosestDistance path).
+# the static lib — Embree is the ONLY bake-transport backend (a hard
+# dependency; the builtin binned-SAH nodes only back the cold
+# ClosestDistance point-query path).
 target_link_libraries(engine PRIVATE embree)
 # Jolt: PRIVATE — the engine's public API exposes only Tourmaline-owned
 # physics handles/descriptions (the migration's hard constraint: no JPH

@@ -8,6 +8,7 @@
 #include <cstdio>
 #include <limits>
 #include <queue>
+#include <stdexcept>
 
 #include <embree4/rtcore.h>
 
@@ -25,38 +26,6 @@ constexpr uint32_t kMaxDepth = 32;
 
 inline float SafeSqrt(float v) {
     return v > 0.0f ? std::sqrt(v) : 0.0f;
-}
-
-// Moeller-Trumbore, two-sided (returns true for backfaces; negative
-// determinant handled by swapping the edge terms).
-inline bool IntersectTriangle(const glm::vec3& origin,
-                              const glm::vec3& dir,
-                              const glm::vec3& v0,
-                              const glm::vec3& v1,
-                              const glm::vec3& v2,
-                              float& outT,
-                              glm::vec2& outBaryUV) {
-    const glm::vec3 e1 = v1 - v0;
-    const glm::vec3 e2 = v2 - v0;
-    const glm::vec3 p = glm::cross(dir, e2);
-    const float det = glm::dot(e1, p);
-    if (std::abs(det) < 1e-12f)
-        return false;
-    const float invDet = 1.0f / det;
-    const glm::vec3 tv = origin - v0;
-    const float u = glm::dot(tv, p) * invDet;
-    if (u < 0.0f || u > 1.0f)
-        return false;
-    const glm::vec3 q = glm::cross(tv, e1);
-    const float v = glm::dot(dir, q) * invDet;
-    if (v < 0.0f || u + v > 1.0f)
-        return false;
-    const float t = glm::dot(e2, q) * invDet;
-    if (t < 1e-5f)
-        return false;
-    outT = t;
-    outBaryUV = glm::vec2(u, v);
-    return true;
 }
 
 // Ericson, Real-Time Collision Detection: closest point on triangle.
@@ -108,28 +77,6 @@ inline glm::vec3 ClosestPointOnTriangle(const glm::vec3& p,
     return a + ab * v + ac * w;
 }
 
-inline bool SlabTest(const glm::vec3& origin,
-                     const glm::vec3& invDir,
-                     const float bmin[4],
-                     const float bmax[4],
-                     float maxDist) {
-    float tmin = 0.0f;
-    float tmax = maxDist;
-    for (int a = 0; a < 3; ++a) {
-        const float d0 = bmin[a] - origin[a];
-        const float d1 = bmax[a] - origin[a];
-        float t0 = d0 * invDir[a];
-        float t1 = d1 * invDir[a];
-        if (t0 > t1)
-            std::swap(t0, t1);
-        tmin = std::max(tmin, t0);
-        tmax = std::min(tmax, t1);
-        if (tmin > tmax)
-            return false;
-    }
-    return true;
-}
-
 inline float PointAabbDistanceSq(const glm::vec3& p, const float bmin[4], const float bmax[4]) {
     float d = 0.0f;
     for (int a = 0; a < 3; ++a) {
@@ -142,15 +89,14 @@ inline float PointAabbDistanceSq(const glm::vec3& p, const float bmin[4], const 
 } // namespace
 
 // ---------------------------------------------------------------------------
-// Embree backend (vendored external/embree — the production backend for the
-// bake transport): packet/SIMD traversal over the same triangle soup
-// (zero-copy shared buffers). Two-sided (no cull flag — matches the builtin
-// Moeller-Trumbore convention), tnear = 1e-5 to match the builtin near
-// cutoff, primID == build triangle index (single regular triangle
-// geometry, order preserved). Thread-safe for concurrent queries (the
-// bakers trace from thread pools); build once, then trace.
-// ClosestDistance stays builtin (cold path: placement/relocation only —
-// Embree has no point-distance query).
+// Embree backend (vendored external/embree — THE transport backend):
+// packet/SIMD traversal over the same triangle soup (zero-copy shared
+// buffers). Two-sided (no cull flag), tnear = 1e-5, primID == build triangle
+// index (single regular triangle geometry, order preserved). Thread-safe for
+// concurrent queries (the bakers trace from thread pools); build once, then
+// trace. A device/scene failure throws (Embree is a hard dependency).
+// ClosestDistance stays on the builtin binned-SAH nodes (cold path:
+// placement/relocation only — Embree has no point-distance query).
 // ---------------------------------------------------------------------------
 
 struct TriangleBvh::EmbreeContext {
@@ -169,20 +115,17 @@ TriangleBvh::~TriangleBvh() = default;
 TriangleBvh::TriangleBvh(TriangleBvh&&) noexcept = default;
 TriangleBvh& TriangleBvh::operator=(TriangleBvh&&) noexcept = default;
 
-void TriangleBvh::Build(std::span<const glm::vec3> positions,
-                        std::span<const uint32_t> indices,
-                        TraceBackend backend) {
+void TriangleBvh::Build(std::span<const glm::vec3> positions, std::span<const uint32_t> indices) {
     positions_ = std::vector<glm::vec3>(positions.begin(), positions.end());
     indices_ = std::vector<uint32_t>(indices.begin(), indices.end());
     triCount_ = uint32_t(indices_.size() / 3);
-    backend_ = TraceBackend::Builtin;
     embree_.reset();
     if (triCount_ == 0) {
         nodes_.clear();
         return;
     }
-    // The builtin structures ALWAYS build (they back TriangleVertices,
-    // TriangleNormal, ClosestDistance and bounds regardless of backend).
+    // The builtin binned-SAH nodes ALWAYS build (they back TriangleVertices,
+    // TriangleNormal, ClosestDistance and bounds).
     triIndices_.resize(triCount_);
     for (uint32_t k = 0; k < triCount_; ++k)
         triIndices_[k] = k;
@@ -192,19 +135,12 @@ void TriangleBvh::Build(std::span<const glm::vec3> positions,
     boundsMax_ = glm::vec3(-kInf);
     BuildNode(0, 0, triCount_, 0);
     nodes_.resize(usedNodes_);
-    if (backend != TraceBackend::Embree)
-        return;
-    // Embree is the production backend (vendored, always compiled in) —
-    // the only fallback left is a runtime device/scene failure (driver
-    // trouble), which keeps the builtin traversal live UNTIL ITS
-    // DELETION PASS (the builtin TRANSPORT is deprecated — the fallback
-    // and the cold non-transport paths are its remaining roles).
+    // Embree is THE transport backend (a hard dependency): a device/scene
+    // failure is fatal — there is no builtin traversal fallback.
     auto ctx = std::make_unique<EmbreeContext>();
     ctx->device = rtcNewDevice(nullptr);
-    if (ctx->device == nullptr || rtcGetDeviceError(ctx->device) != RTC_ERROR_NONE) {
-        std::fprintf(stderr, "TriangleBvh: rtcNewDevice failed — builtin fallback\n");
-        return;
-    }
+    if (ctx->device == nullptr || rtcGetDeviceError(ctx->device) != RTC_ERROR_NONE)
+        throw std::runtime_error("TriangleBvh: rtcNewDevice failed (Embree is a hard dependency)");
     RTCGeometry geom = rtcNewGeometry(ctx->device, RTC_GEOMETRY_TYPE_TRIANGLE);
     rtcSetSharedGeometryBuffer(geom,
                                RTC_BUFFER_TYPE_VERTEX,
@@ -228,12 +164,9 @@ void TriangleBvh::Build(std::span<const glm::vec3> positions,
     rtcAttachGeometry(ctx->scene, geom);
     rtcReleaseGeometry(geom);
     rtcCommitScene(ctx->scene);
-    if (rtcGetDeviceError(ctx->device) != RTC_ERROR_NONE) {
-        std::fprintf(stderr, "TriangleBvh: Embree scene build failed — builtin fallback\n");
-        return;
-    }
+    if (rtcGetDeviceError(ctx->device) != RTC_ERROR_NONE)
+        throw std::runtime_error("TriangleBvh: Embree scene build failed (hard dependency)");
     embree_ = std::move(ctx);
-    backend_ = TraceBackend::Embree;
 }
 
 void TriangleBvh::UpdateNodeBounds(Node& node, uint32_t first, uint32_t count) {
@@ -396,9 +329,8 @@ bool TriangleBvh::Raycast(const glm::vec3& origin,
                           Hit& out) const {
     if (triCount_ == 0)
         return false;
-    if (backend_ == TraceBackend::Embree && embree_ != nullptr && embree_->scene != nullptr) {
-        // Defensive finite check (matches the builtin's graceful miss on
-        // degenerate input; Embree behavior on NaN rays is undefined).
+    if (embree_ != nullptr && embree_->scene != nullptr) {
+        // Defensive finite check (Embree behavior on NaN rays is undefined).
         if (!std::isfinite(origin.x + origin.y + origin.z + dir.x + dir.y + dir.z))
             return false;
         RTCRayHit rh{};
@@ -424,64 +356,13 @@ bool TriangleBvh::Raycast(const glm::vec3& origin,
         out.baryUV = glm::vec2(rh.hit.u, rh.hit.v);
         return true;
     }
-    glm::vec3 invDir(0.0f);
-    invDir.x = std::abs(dir.x) > 1e-8f ? 1.0f / dir.x : kInf * (dir.x >= 0.0f ? 1.0f : -1.0f);
-    invDir.y = std::abs(dir.y) > 1e-8f ? 1.0f / dir.y : kInf * (dir.y >= 0.0f ? 1.0f : -1.0f);
-    invDir.z = std::abs(dir.z) > 1e-8f ? 1.0f / dir.z : kInf * (dir.z >= 0.0f ? 1.0f : -1.0f);
-
-    float bestT = maxDist;
-    uint32_t bestTri = 0;
-    glm::vec2 bestBary(0.0f);
-    glm::vec3 v0, v1, v2;
-
-    uint32_t stack[64];
-    int sp = 0;
-    stack[sp++] = 0;
-    while (sp > 0) {
-        const uint32_t nodeIndex = stack[--sp];
-        const Node& node = nodes_[nodeIndex];
-        if (node.triCount > 0) {
-            for (uint32_t k = 0; k < node.triCount; ++k) {
-                const uint32_t tri = triIndices_[node.leftFirst + k];
-                TriangleVertices(tri, v0, v1, v2);
-                float t;
-                glm::vec2 bary;
-                if (IntersectTriangle(origin, dir, v0, v1, v2, t, bary) && t < bestT) {
-                    bestT = t;
-                    bestTri = tri;
-                    bestBary = bary;
-                }
-            }
-            continue;
-        }
-        const uint32_t left = node.leftFirst;
-        const uint32_t right = left + 1;
-        const bool hitL =
-            SlabTest(origin, invDir, nodes_[left].aabbMin, nodes_[left].aabbMax, bestT);
-        const bool hitR =
-            SlabTest(origin, invDir, nodes_[right].aabbMin, nodes_[right].aabbMax, bestT);
-        // Push the farther child first so the nearer one is processed first.
-        if (hitL && hitR) {
-            stack[sp++] = right;
-            stack[sp++] = left;
-        } else if (hitL) {
-            stack[sp++] = left;
-        } else if (hitR) {
-            stack[sp++] = right;
-        }
-    }
-    if (bestT >= maxDist)
-        return false;
-    out.t = bestT;
-    out.tri = bestTri;
-    out.baryUV = bestBary;
-    return true;
+    return false;
 }
 
 bool TriangleBvh::AnyHit(const glm::vec3& origin, const glm::vec3& dir, float maxDist) const {
     if (triCount_ == 0)
         return false;
-    if (backend_ == TraceBackend::Embree && embree_ != nullptr && embree_->scene != nullptr) {
+    if (embree_ != nullptr && embree_->scene != nullptr) {
         if (!std::isfinite(origin.x + origin.y + origin.z + dir.x + dir.y + dir.z))
             return false;
         RTCRay r{};
@@ -498,36 +379,6 @@ bool TriangleBvh::AnyHit(const glm::vec3& origin, const glm::vec3& dir, float ma
         rtcOccluded1(embree_->scene, &r);
         // Occlusion sets tfar to -inf; untouched (>= 0) means no hit.
         return r.tfar < 0.0f;
-    }
-    glm::vec3 invDir(0.0f);
-    invDir.x = std::abs(dir.x) > 1e-8f ? 1.0f / dir.x : kInf * (dir.x >= 0.0f ? 1.0f : -1.0f);
-    invDir.y = std::abs(dir.y) > 1e-8f ? 1.0f / dir.y : kInf * (dir.y >= 0.0f ? 1.0f : -1.0f);
-    invDir.z = std::abs(dir.z) > 1e-8f ? 1.0f / dir.z : kInf * (dir.z >= 0.0f ? 1.0f : -1.0f);
-
-    glm::vec3 v0, v1, v2;
-    uint32_t stack[64];
-    int sp = 0;
-    stack[sp++] = 0;
-    while (sp > 0) {
-        const uint32_t nodeIndex = stack[--sp];
-        const Node& node = nodes_[nodeIndex];
-        if (node.triCount > 0) {
-            for (uint32_t k = 0; k < node.triCount; ++k) {
-                const uint32_t tri = triIndices_[node.leftFirst + k];
-                TriangleVertices(tri, v0, v1, v2);
-                float t;
-                glm::vec2 bary;
-                if (IntersectTriangle(origin, dir, v0, v1, v2, t, bary) && t < maxDist)
-                    return true;
-            }
-            continue;
-        }
-        const uint32_t left = node.leftFirst;
-        const uint32_t right = left + 1;
-        if (SlabTest(origin, invDir, nodes_[left].aabbMin, nodes_[left].aabbMax, maxDist))
-            stack[sp++] = left;
-        if (SlabTest(origin, invDir, nodes_[right].aabbMin, nodes_[right].aabbMax, maxDist))
-            stack[sp++] = right;
     }
     return false;
 }

@@ -207,7 +207,7 @@ void GiTraceScene::Finalize() {
         }
     }
 
-    bvh_.Build(positions, indices, traceBackend_);
+    bvh_.Build(positions, indices);
     const uint32_t triCountFinal = uint32_t(indices.size() / 3);
 
     emissiveTris_.clear();
@@ -1291,8 +1291,6 @@ void AssembleTraceScene(const ::Scene& scene,
     if (opts.staticLights || opts.includeDynamicLights)
         CollectStaticBakeLightsImpl(
             scene, lightAt, out, opts.punctualAimAxis, opts.includeDynamicLights);
-
-    out.SetTraceBackend(opts.traceBackendEmbree ? TraceBackend::Embree : TraceBackend::Builtin);
 }
 
 } // namespace

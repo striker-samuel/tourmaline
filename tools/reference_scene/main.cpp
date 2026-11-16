@@ -106,10 +106,7 @@ void LoadScene(const std::string& path, tour::gi::GiTraceScene& scene) {
     for (uint32_t i : scene.indices)
         if (i >= scene.positions.size())
             throw std::runtime_error("invalid vertex index");
-    scene.SetTraceBackend(tour::gi::TraceBackend::Embree);
     scene.Finalize();
-    if (scene.Bvh().Backend() != tour::gi::TraceBackend::Embree)
-        throw std::runtime_error("Embree acceleration structure unavailable");
 }
 } // namespace
 

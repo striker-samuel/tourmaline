@@ -157,15 +157,6 @@ bool ParseArgs(int argc, char** argv, Args& out) {
             if (!need(v, i))
                 return false;
             out.verify = (v == "on" || v == "1" || v == "true");
-        } else if (a == "--backend") {
-            std::string v;
-            if (!need(v, i))
-                return false;
-            if (v != "builtin" && v != "embree") {
-                tool::err() << "--backend must be builtin|embree" << std::endl;
-                return false;
-            }
-            out.backend = v;
         } else if (a == "--analyze") {
             if (!need(out.analyze, i))
                 return false;
@@ -251,7 +242,6 @@ void Usage() {
                 << "         [--sky-intensity 600] [--textures on|off]\n"
                 << "         [--emissive on|off] sets the trace-scene emissive option.\n"
                 << "         [--verify on|off] [--uniform-albedo off|0.7|r,g,b]\n"
-                << "         [--backend builtin|embree]\n"
                 << "         [--spot px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela]\n"
                 << "         (bakes use REAL materials by default; sun + static spots\n"
                 << "         via NEE; transmissive meshes pass rays through, tinted.\n"
@@ -1194,12 +1184,6 @@ int Run(Args& args) {
 
     smvk::gi::GiTraceScene traceScene;
     std::string err;
-    buildOpts.traceBackendEmbree = (args.backend == "embree");
-    if (!buildOpts.traceBackendEmbree)
-        tool::err() << "  DEPRECATED: the builtin BVH bake transport is"
-                       " marked for deletion (Embree is the backend; results agree"
-                       " within Monte-Carlo noise) — rebake before the removal or"
-                       " your reference outputs die with it\n";
     // Weave-transmissive cloth (the effective maskTransmission — the
     // node-authored value unless the CLI overrode it, resolved above):
     // the GI field sees the tinted light pools behind the banners; the
@@ -1213,8 +1197,6 @@ int Run(Args& args) {
                         ? " (CLI override - the records will mismatch the pak gate; "
                           "author the exportSettings node instead)"
                         : "")
-                << "\n";
-    tool::out() << "  trace backend: " << (buildOpts.traceBackendEmbree ? "embree" : "builtin")
                 << "\n";
     smvk::gi::BuildTraceSceneFromCluster(*cluster, buildOpts, traceScene, err);
     if (!err.empty()) {

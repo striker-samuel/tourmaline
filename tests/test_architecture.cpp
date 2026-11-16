@@ -746,7 +746,7 @@ int main() {
             {"GI/lightmap.h", 37, 0},
             {"GI/regular_volume.h", 6, 0},
             {"GI/sg.h", 21, 0},
-            {"GI/triangle_bvh.h", 2, 0},
+            {"GI/triangle_bvh.h", 1, 0},
             // (The engine Memory/* headers became pure forwarding
             // shims over Core/Memory in the frame-arena extraction
             // (#251): zero compat aliases remain, so their R7 rows are

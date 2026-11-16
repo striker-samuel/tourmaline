@@ -21,9 +21,7 @@ int main() {
     scene.materials.push_back(mat);
     scene.skyIntensity = 0;
     scene.sunIntensity = 0;
-    scene.SetTraceBackend(gi::TraceBackend::Embree);
     scene.Finalize();
-    assert(scene.Bvh().Backend() == gi::TraceBackend::Embree);
 
     renderer::ReferenceCamera camera{};
     camera.position = {0, 0, 2};

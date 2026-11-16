@@ -71,20 +71,20 @@ bool ProcessAlive(unsigned long long pid) {
 
 #include <Engine/App/cluster.h>
 #include <Engine/App/world.h>
-#include <Engine/Asset/asset_registry.h>
 #include <Engine/Asset/appmanifest.h>
+#include <Engine/Asset/asset_registry.h>
 #include <Engine/Asset/cluster_serializer.h>
+#include <Engine/Asset/mesh_preparation_policy.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Asset/sdf.h>
-#include <Engine/Asset/mesh_preparation_policy.h>
 #include <Engine/Asset/tour.h>
 
 #include <artifact_cache/artifact_cache.h>
 #include <artifact_cache/assetdb.h>
 
 #include <gltf_import/asset_export.h>
-#include <gltf_import/tour_world.h>
 #include <gltf_import/source_formats.h>
+#include <gltf_import/tour_world.h>
 
 #include <project_pipeline/import_pipeline.h>
 #include <project_pipeline/project.h>
@@ -459,7 +459,8 @@ static bool BakePlanSdfs(const Project& project,
     std::set<std::string> eligibleSceneMeshes;
     auto canonicalFamily = [](std::string file) {
         for (char& c : file)
-            if (c == '\\') c = '/';
+            if (c == '\\')
+                c = '/';
         fs::path p(file);
         p.replace_extension(".geometry");
         file = p.lexically_normal().generic_string();
@@ -504,10 +505,11 @@ static bool BakePlanSdfs(const Project& project,
                 if (parts.second.empty())
                     continue;
                 const auto* upload = owner->GetRetainedUpload(handle);
-                if (!upload || !smvk::EligibleForSpatialDerivatives(
-                                   upload->aabbMin, upload->aabbMax,
-                                   upload->indices.size(), scene.globalTransform[row.node],
-                                   !upload->skin.empty()))
+                if (!upload || !smvk::EligibleForSpatialDerivatives(upload->aabbMin,
+                                                                    upload->aabbMax,
+                                                                    upload->indices.size(),
+                                                                    scene.globalTransform[row.node],
+                                                                    !upload->skin.empty()))
                     continue;
                 eligibleSceneMeshes.insert(canonicalFamily(parts.first.Str()) + "#" +
                                            parts.second.Str());
@@ -536,14 +538,19 @@ static bool BakePlanSdfs(const Project& project,
         std::vector<glm::mat4> globals(mesh.nodes.size(), glm::mat4(1.0f));
         std::vector<uint8_t> computed(mesh.nodes.size(), 0);
         auto globalFor = [&](auto&& self, size_t node) -> glm::mat4 {
-            if (node >= mesh.nodes.size()) return glm::mat4(1.0f);
-            if (computed[node] == 2) return globals[node];
-            if (computed[node] == 1) return glm::mat4(1.0f); // malformed cycle
+            if (node >= mesh.nodes.size())
+                return glm::mat4(1.0f);
+            if (computed[node] == 2)
+                return globals[node];
+            if (computed[node] == 1)
+                return glm::mat4(1.0f); // malformed cycle
             computed[node] = 1;
             const int32_t parent = mesh.nodes[node].parent;
             const glm::mat4 local = node < mesh.locals.size() ? mesh.locals[node] : glm::mat4(1.0f);
-            globals[node] = (parent >= 0 && size_t(parent) < mesh.nodes.size()
-                                 ? self(self, size_t(parent)) : glm::mat4(1.0f)) * local;
+            globals[node] =
+                (parent >= 0 && size_t(parent) < mesh.nodes.size() ? self(self, size_t(parent))
+                                                                   : glm::mat4(1.0f)) *
+                local;
             computed[node] = 2;
             return globals[node];
         };
@@ -564,15 +571,18 @@ static bool BakePlanSdfs(const Project& project,
             if (eligibleSceneMeshes.count(canonicalFamily(name) + "#" +
                                           mesh.geometry[gi].uriFragment))
                 eligible[gi] = 1;
-        if (!sceneOwned) for (const auto& instance : mesh.instances) {
-            if (instance.geometry >= mesh.geometry.size() || instance.node >= globals.size())
-                continue;
-            const auto& geo = mesh.geometry[instance.geometry];
-            if (smvk::EligibleForSpatialDerivatives(geo.aabbMin, geo.aabbMax,
-                                                     geo.indices.size(), globals[instance.node],
-                                                     !geo.skin.empty()))
-                eligible[instance.geometry] = 1;
-        }
+        if (!sceneOwned)
+            for (const auto& instance : mesh.instances) {
+                if (instance.geometry >= mesh.geometry.size() || instance.node >= globals.size())
+                    continue;
+                const auto& geo = mesh.geometry[instance.geometry];
+                if (smvk::EligibleForSpatialDerivatives(geo.aabbMin,
+                                                        geo.aabbMax,
+                                                        geo.indices.size(),
+                                                        globals[instance.node],
+                                                        !geo.skin.empty()))
+                    eligible[instance.geometry] = 1;
+            }
         // (::tour::asset — the leading :: is required inside smvk::project,
         // where tour.h's `namespace tour = ::tour::asset` alias shadows the
         // global tour namespace).
@@ -1692,7 +1702,7 @@ bool BuildProject(const Project& project,
     {
         // The legacy .sggi world bake is RETIRED from the schedule (stage
         // 2 of the octree retirement): NO --out, no
-        // --backend, no --max-probes — a bare run is GI-VOLUME-ONLY (the
+        // --max-probes — a bare run is GI-VOLUME-ONLY (the
         // world bake is gated on the explicit --out; see GiBaker's
         // outExplicit contract). The runtime's ambient rides the baked
         // .givolume set + the sky IBL fallback (stage 1 stopped loading

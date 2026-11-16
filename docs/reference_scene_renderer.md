@@ -17,7 +17,6 @@ evaluation with opt-in camera emission and smooth vertex normals.
 tour::gi::GiTraceScene scene;
 // Fill positions/indices/triMaterial/materials/normal data,
 // or call ExtractTraceSceneFromWorld/Cluster with appropriate opts.
-scene.SetTraceBackend(tour::gi::TraceBackend::Embree);
 scene.Finalize();
 
 tour::renderer::ReferenceCamera camera;

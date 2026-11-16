@@ -58,7 +58,6 @@ void EditorApp::StartReferenceRender() {
     opts.referenceMaterialSampling = true;
     // All visible meshes, not just GI-shadow-casting surfaces.
     opts.excludeDecalOverlays = false;
-    opts.traceBackendEmbree = true;
     // Decode the same source KTX data as the GI baker: texture samples
     // are evaluated at camera hits, not reduced to flat material factors.
     for (const auto& cluster : m_world->clusters) {
@@ -118,8 +117,6 @@ void EditorApp::StartReferenceRender() {
     m_referenceJob = std::async(
         std::launch::async, [this, scene = std::move(scene), camera, settings]() mutable {
             scene->Finalize();
-            if (scene->Bvh().Backend() != tour::gi::TraceBackend::Embree)
-                throw std::runtime_error("Embree scene construction failed");
             return tour::renderer::ReferenceSceneRenderer::Render(
                 *scene, camera, settings, &m_referenceCancel, &m_referenceRows);
         });

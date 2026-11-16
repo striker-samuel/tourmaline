@@ -274,12 +274,6 @@ struct Args {
     float skyIntensity = 600.0f;
     // Static spots for the bake: "px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela"
     std::vector<std::string> spots;
-    // Ray-tracing backend for the in-pak bake transport (GI volumes,
-    // cubemap captures, lightmaps): "embree" (vendored external/embree,
-    // packet/SIMD traversal — the fast default) or "builtin" (the
-    // deterministic binned-SAH BVH reference; agrees within
-    // Monte-Carlo noise).
-    std::string backend = "embree";
     // NOTE: no giProbes here (pak owns probe registration; a --gi-probe
     // CLI flag never took effect in cook and was removed).
     // ---- Preconvolved specular cubemaps (--cubemap on) ----
@@ -593,7 +587,6 @@ bool BakeAuthoredGiVolumes(std::vector<std::unique_ptr<smvk::Cluster>>& sceneClu
         buildOpts.env.sunElevationDeg = be.sunElevation;
         buildOpts.env.sunIntensity = be.sunIntensity;
         buildOpts.env.skyIntensity = be.skyIntensity;
-        buildOpts.traceBackendEmbree = (args.backend == "embree");
         // Weave-transmissive cloth (--mask-transmission): the volume
         // bakes see the tinted light pools behind the banners.
         buildOpts.maskTransmissive = args.maskTransmission;
@@ -959,15 +952,6 @@ bool ParseArgs(int argc, char** argv, Args& out) {
                 return false;
             out.sunAzimuth = std::stof(v);
             out.explicitSet.insert("sunAzimuth");
-        } else if (a == "--backend") {
-            std::string v;
-            if (!need(v))
-                return false;
-            if (v != "builtin" && v != "embree") {
-                tool::err() << "--backend must be builtin|embree" << std::endl;
-                return false;
-            }
-            out.backend = v;
         } else if (a == "--sun-elevation") {
             std::string v;
             if (!need(v))
@@ -1204,7 +1188,6 @@ void Usage() {
                 << "           --lm-bounces 3\n"
                 << "           --sun-azimuth 30 --sun-elevation 55\n"
                 << "           --sun-intensity 10000 --sky-intensity 600\n"
-                << "           --backend builtin|embree (bake ray-tracing backend)\n"
                 << "           --sun-color 1,0.95,0.9\n"
                 << "           --lm-lod-lock attr|hard\n"
                 << "           --lm-debug-pink on|off\n"
@@ -2737,11 +2720,6 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster,
     buildOpts.env.sunIntensity = be.sunIntensity;
     buildOpts.env.skyIntensity = be.skyIntensity;
     // uniformAlbedo stays off: captures show real materials. The backend
-    // honors --backend like every other bake stage (the old gap: the
-    // capture stage silently ran the builtin reference BVH while CV/LM
-    // ran the CLI choice - same transport math, but the packet/SIMD
-    // Embree traversal is the fast default everywhere else).
-    buildOpts.traceBackendEmbree = (args.backend == "embree");
     // Weave-transmissive cloth (--mask-transmission): the captures see
     // the banners' lit look AND the tinted light pools behind them.
     buildOpts.maskTransmissive = args.maskTransmission;
@@ -2946,7 +2924,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster,
                         kept.push_back(traceScene.indices[t * 3 + 1]);
                         kept.push_back(traceScene.indices[t * 3 + 2]);
                     }
-                    placementBvh.Build(traceScene.positions, kept, traceScene.GetTraceBackend());
+                    placementBvh.Build(traceScene.positions, kept);
                 }
                 if (clothTris > 0)
                     tool::err() << "  [CUBE] placement excludes " << clothTris
@@ -2994,7 +2972,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster,
                         clothIdx.push_back(traceScene.indices[t * 3 + 1]);
                         clothIdx.push_back(traceScene.indices[t * 3 + 2]);
                     }
-                    clothBvh.Build(traceScene.positions, clothIdx, traceScene.GetTraceBackend());
+                    clothBvh.Build(traceScene.positions, clothIdx);
                 }
                 constexpr float kClothClearance = 1.0f;
                 uint32_t pushedCount = 0;
@@ -4209,7 +4187,6 @@ int Run(const CookArgs& c) {
     args.sunColor = c.sunColor;
     args.skyIntensity = c.skyIntensity;
     args.spots = c.spots;
-    args.backend = c.backend;
     args.cubemap = c.cubemap;
     args.cubemapSize = c.cubemapSize;
     args.cubemapRays = c.cubemapRays;
@@ -5175,7 +5152,6 @@ int Run(const CookArgs& c) {
         buildOpts.env.sunElevationDeg = be.sunElevation;
         buildOpts.env.sunIntensity = be.sunIntensity;
         buildOpts.env.skyIntensity = be.skyIntensity;
-        buildOpts.traceBackendEmbree = (args.backend == "embree");
 
         // Static spot list ("px,py,pz,dx,dy,dz,innerDeg,outerDeg,range,r,g,b,candela").
         std::vector<GiTraceSpot> spots;
@@ -7049,7 +7025,6 @@ int main(int argc, char** argv) {
     c.sunColor = args.sunColor;
     c.skyIntensity = args.skyIntensity;
     c.spots = args.spots;
-    c.backend = args.backend;
     c.cubemap = args.cubemap;
     c.cubemapSize = args.cubemapSize;
     c.cubemapRays = args.cubemapRays;

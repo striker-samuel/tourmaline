@@ -42,11 +42,6 @@ struct Args {
     bool textures = true;
     bool emissive = true;
     bool verify = true;
-    // Ray-tracing backend for the bake transport: "embree" (vendored
-    // external/embree, packet/SIMD traversal — the fast default) or
-    // "builtin" (the deterministic binned-SAH BVH reference; same
-    // transport math, agrees within Monte-Carlo noise).
-    std::string backend = "embree";
     uint32_t lmProbe = 0; // >0: lightmap-chain diagnostic on N meshes
     std::string analyze;  // .sgrv / .givolume host path: inspect instead of
                           // baking (.sggi is retired — Run() refuses it)

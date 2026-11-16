@@ -4,12 +4,14 @@
 #pragma once
 // Triangle-level BVH for the GI baker: raycasting (primary/shadow rays) and
 // closest-point distance queries (probe placement / relocation / brick
-// refinement). Embree (external/embree) is the CANONICAL transport backend;
-// this builtin binned-SAH build is the DEPRECATED-for-transport fallback
-// (retained for closest-point distance + as an Embree-failure net — see
-// TraceBackend below). The engine's Utils/bvh.h is a mesh-AABB BVH for CPU
-// frustum culling; GI needs triangle-accurate intersection, so this is a
-// separate, CPU-only acceleration structure (no GPU use).
+// refinement). Embree (external/embree) is THE transport backend — a hard
+// dependency: the ray/occlusion traversal is unconditional, and an Embree
+// device/scene failure is fatal (never a fallback). The engine's Utils/bvh.h
+// is a mesh-AABB BVH for CPU frustum culling; GI needs triangle-accurate
+// intersection, so this is a separate, CPU-only acceleration structure (no
+// GPU use). The builtin binned-SAH nodes below stay ONLY for the cold
+// point-distance query (ClosestDistance — Embree has no triangle
+// closest-point query).
 //
 // Conventions:
 //  - Rays are two-sided (no backface culling): rooms and thin geometry must
@@ -29,17 +31,6 @@
 
 namespace tour::gi {
 // (self-sufficient: no smvk types referenced - no bridge needed)
-// Ray-tracing backend for the bake transport (primary/shadow rays): the
-// vendored Embree (external/embree, packet/SIMD traversal over the same
-// triangle soup — the fast production backend, THE backend: the builtin
-// transport is DEPRECATED and marked for deletion) or the builtin
-// binned-SAH BVH (the deterministic reference — deprecated for transport;
-// it also owns ClosestDistance, which stays builtin either way — cold
-// placement/relocation path).
-enum class TraceBackend {
-    Builtin, // DEPRECATED for the bake transport (deletion target)
-    Embree,
-};
 
 class TriangleBvh {
   public:
@@ -62,14 +53,10 @@ class TriangleBvh {
     };
 
     // Triangles are consumed as a prebuilt vertex + index soup; `triCount`
-    // is indices.size() / 3. Triangle k uses indices[3k..3k+2].
-    void Build(std::span<const glm::vec3> positions,
-               std::span<const uint32_t> indices,
-               TraceBackend backend = TraceBackend::Builtin);
-
-    TraceBackend Backend() const {
-        return backend_;
-    }
+    // is indices.size() / 3. Triangle k uses indices[3k..3k+2]. Builds BOTH
+    // the builtin binned-SAH nodes (for ClosestDistance) and the Embree
+    // scene (for Raycast/AnyHit) — Embree is the ONLY transport.
+    void Build(std::span<const glm::vec3> positions, std::span<const uint32_t> indices);
 
     bool Empty() const {
         return triCount_ == 0;
@@ -140,14 +127,13 @@ class TriangleBvh {
     uint32_t triCount_ = 0;
     glm::vec3 boundsMin_{0.0f};
     glm::vec3 boundsMax_{0.0f};
-    // Embree traversal state (backend == Embree only): shares positions_/
-    // indices_ zero-copy (rtcSetSharedGeometryBuffer — the vectors are
-    // stable after Build, so the device pointers stay valid for the
-    // BVH's lifetime). Forward-declared so this header never includes
+    // Embree traversal state (the transport backend, always built): shares
+    // positions_/indices_ zero-copy (rtcSetSharedGeometryBuffer — the
+    // vectors are stable after Build, so the device pointers stay valid for
+    // the BVH's lifetime). Forward-declared so this header never includes
     // embree.h (engine targets build without it).
     struct EmbreeContext;
     std::unique_ptr<EmbreeContext> embree_;
-    TraceBackend backend_ = TraceBackend::Builtin;
 };
 
 } // namespace tour::gi
@@ -157,6 +143,5 @@ class TriangleBvh {
 // existing call sites compiling through the consumer migration.
 namespace smvk {} // namespace smvk
 namespace smvk::gi {
-using ::tour::gi::TraceBackend;
 using ::tour::gi::TriangleBvh;
 } // namespace smvk::gi

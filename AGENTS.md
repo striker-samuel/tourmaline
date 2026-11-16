@@ -1027,11 +1027,10 @@ when the exposure is deliberate.
   invalidation hashes fold the ratio). Known transport limitation
   (deferred): skylight is evaluated ON MISS ONLY — partially-enclosed
   scenes need deep paths to find openings.
-- Bake ray-tracing backend: EMBREE is THE backend (the GiBaker default
-  and the engine's GiSceneBuildOptions default). The builtin
-  binned-SAH BVH TRANSPORT is DEPRECATED and marked for deletion. Bakes
-  are reproducible per backend; the two backends agree within
-  Monte-Carlo noise.
+- Bake ray-tracing backend: EMBREE is THE (only) bake-transport backend
+  — a hard dependency (a device/scene failure is fatal). The builtin
+  binned-SAH BVH nodes only back the cold ClosestDistance point query
+  (placement/relocation).
 - Ambient closure (`--cubemap-ambient-closure`, default OFF): captures
   + the GI stack both carrying the ambient double-counts every
   mirror-like surface. ON only for stack-less cooks (bistro's bat).

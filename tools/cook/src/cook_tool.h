@@ -67,7 +67,6 @@ struct CookArgs {
     glm::vec3 sunColor{1.0f, 0.95f, 0.90f};
     float skyIntensity = 600.0f;
     std::vector<std::string> spots;
-    std::string backend = "embree";
     // NOTE: no giProbes here (pak owns probe registration; a --gi-probe
     // CLI flag never took effect in cook and was removed).
     // Preconvolved specular cubemaps (--cubemap on; cook.exe bakes, pak

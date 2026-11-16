@@ -113,13 +113,12 @@ void EditorApp::RefreshCubemapDensity() {
         }
     }
     const size_t soupTris = soupIdx.size() / 3;
-    // Occlusion predicate over the cached BVH (builtin backend: no
-    // Embree context in the editor process). Empty soup -> null
+    // Occlusion predicate over the cached BVH. Empty soup -> null
     // predicate: the placement lib skips culling (openness 0), and the
     // status line says so instead of silently changing density.
     smvk::CubemapOcclusionRay occ;
     if (soupTris > 0) {
-        m_cubemapDensityBvh.Build(soupPos, soupIdx, smvk::gi::TraceBackend::Builtin);
+        m_cubemapDensityBvh.Build(soupPos, soupIdx);
         occ = [this](const glm::vec3& o, const glm::vec3& d, float m) {
             const float l = glm::length(d);
             if (!(l > 1e-9f) || !(m > 0.0f))
