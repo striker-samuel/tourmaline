@@ -97,6 +97,14 @@ struct Node {
     bool staticLight = false;
 };
 
+// Joint indices address Scene::nodes, not glTF accessors or runtime node IDs.
+struct Skin {
+    std::string name;
+    std::vector<uint32_t> joints;
+    std::vector<glm::mat4> inverseBind;
+    int32_t skeleton = -1;
+};
+
 struct Dependency {
     std::string relativePath;
 };
@@ -106,6 +114,7 @@ struct Scene {
     std::vector<uint32_t> roots;
     std::vector<Mesh> meshes;
     std::vector<Material> materials;
+    std::vector<Skin> skins;
     std::vector<Dependency> dependencies;
 };
 
