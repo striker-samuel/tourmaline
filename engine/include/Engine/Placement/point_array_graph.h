@@ -18,6 +18,7 @@
 #include <vector>
 
 #include <glm/glm.hpp>
+#include <Engine/Graph/graph.h>
 
 namespace tour::placement::point_graph {
 
@@ -76,31 +77,60 @@ inline bool Compile(const Graph& graph, Program& out, std::string& error) {
         return false;
     }
 
-    Program compiled;
-    std::unordered_set<uint32_t> visiting, visited;
-    uint32_t sourceCount = 0;
-    std::function<bool(uint32_t)> visit = [&](uint32_t id) -> bool {
-        if (visited.count(id))
-            return true;
-        if (!visiting.insert(id).second) {
-            error = "point graph contains a cycle";
-            return false;
-        }
-        const auto it = byId.find(id);
-        if (it == byId.end()) {
-            error = "point graph refers to a missing input";
-            return false;
-        }
-        const Node& node = *it->second;
+    // Reuse the ENGINE's canonical graph document, typed ports and
+    // deterministic validator. This domain only supplies node semantics.
+    tour::graph::Document topology;
+    for (const Node& node : graph.nodes) {
+        tour::graph::Node gn;
+        gn.id = node.id;
+        gn.type = node.op == Op::Input ? "point.input" : "point.transform";
+        if (node.op != Op::Input)
+            gn.ports.push_back({"in", "point_array", tour::graph::PortDirection::Input});
+        gn.ports.push_back({"out", "point_array", tour::graph::PortDirection::Output});
+        topology.nodes.emplace(node.id, std::move(gn));
+    }
+    uint32_t linkId = 1;
+    for (const Node& node : graph.nodes) {
         if (node.op == Op::Input) {
             if (node.input != 0) {
                 error = "input node cannot consume another array";
                 return false;
             }
+            continue;
+        }
+        if (node.input == 0) {
+            error = "transformation has no input";
+            return false;
+        }
+        topology.links.emplace(linkId, tour::graph::Link{linkId, node.input, node.id, "out", "in"});
+        ++linkId;
+    }
+    const auto validation = tour::graph::Validate(topology);
+    if (!validation.ok) {
+        error = validation.error;
+        return false;
+    }
+    // The array program has one selected output. Prune unrelated branches
+    // while retaining the shared graph's dependency order.
+    std::unordered_set<uint32_t> live;
+    uint32_t cursor = graph.output;
+    while (cursor != 0) {
+        if (!live.insert(cursor).second) {
+            error = "point graph contains a cycle";
+            return false;
+        }
+        const Node& node = *byId.at(cursor);
+        cursor = node.input;
+    }
+    Program compiled;
+    uint32_t sourceCount = 0;
+    for (uint32_t id : validation.order) {
+        if (!live.count(id))
+            continue;
+        const Node& node = *byId.at(id);
+        if (node.op == Op::Input) {
             ++sourceCount;
         } else {
-            if (node.input == 0 || !visit(node.input))
-                return node.input != 0 ? false : (error = "transformation has no input", false);
             if (node.op != Op::KeepEveryNth && node.op != Op::SetPrototype &&
                 (!std::isfinite(node.value.x) || !std::isfinite(node.value.y) ||
                  !std::isfinite(node.value.z) || !std::isfinite(node.value.w))) {
@@ -118,13 +148,8 @@ inline bool Compile(const Graph& graph, Program& out, std::string& error) {
                 return false;
             }
         }
-        visiting.erase(id);
-        visited.insert(id);
         compiled.steps.push_back(node);
-        return true;
-    };
-    if (!visit(graph.output))
-        return false;
+    }
     if (sourceCount != 1) {
         error = "point graph requires one reachable input array";
         return false;
