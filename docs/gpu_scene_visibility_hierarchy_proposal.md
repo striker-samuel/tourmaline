@@ -128,39 +128,48 @@ GpuVisibilityRefit [when dirty; static topology normally unchanged]
 GpuVisibilityInit [root + active RenderViews, reset counters/flags]
     |
     v
-GpuVisibilityTraverseLevel0
-    |  wave ballots + block counts + prefix/compaction
+GpuVisibilityTraverseLevel0...N
+    |  sphere vs frustum, multi-view active/inside masks
+    |  wave ballots + block counts + frontier prefix/compaction
     v
-GpuVisibilityTraverseLevel1...N
-    |  GPU dispatch-indirect of produced frontier counts
-    |  each wave classifies child spheres for active view mask
-    v
-GpuVisibilityLeafCount [per-view counts and overflow flags]
+GpuVisibilityLeafMask [one uint32 mask per leaf, all views]
     |
     v
-GpuVisibilityLeafScatter [compact leaf/ref output per view]
+LeafWorkQueue [compact ACTIVE leaf refs + instance range + view mask]
+    |  block/leaf-level prefix — NEVER per-instance scatter
+    v
+FusedInstanceWork [load instance + mesh + LOD + geometry ONCE]
+    |  generation + ownership + CastShadow, once
+    |  evaluate the leaf's active views; shared resident-LOD policy
+    v
+SubgroupViewAggregate [per-view ballot, block counts, reserved output]
     |
     v
-GpuSceneInstanceCull / owner + generation + shadow caster
-    |
-    v
-GPUScene work select -> GPU prefix -> indirect command build
+Per-view compact indirect bins [only surviving draw work]
     |
     v
 Main / CSM indexed indirect raster
 ```
 
+The decisive cost is the **5× instance amplification** in the four independent cascade expansion chains, not the leaf scan. Compacting *leaves* (one 32-bit mask each) and fusing instance loading/LOD/residency across views replaces four per-cascade `cull -> compact -> work -> scan -> drawbuild` pipelines with one leaf-driven pass that reads each instance once and emits only surviving per-view draw work.
+
 For DXC/Vulkan feasibility: **dispatch-indirect argument generation is GPU-side** and must have explicit shader-write -> indirect-read dependencies. A zero-entry frontier is represented by a valid zero-group dispatch or a no-op branch according to the target Vulkan requirements. Avoid an unrestricted global atomic append per candidate; use wave/block aggregation then prefix-scan and scatter. Bound wave output by explicit frontier/output capacity.
 
 **Important pipeline design issue:** the existing `CandidateValidator::Prepare` consumes CPU `Selection.ranges` and CPU candidate count and sizes scratch from that count. A real GPU-driven path cannot reuse that interface unchanged. Add a GPU-input publication/dispatch API with **capacity-sized per-flight scratch**, GPU-produced counters and indirect dispatches, while retaining `Prepare` as the legacy debug/validation path. Existing kernels assuming a CPU-known candidate count must be revised to consume device-produced counts, with all bounds checks remaining active.
 
-### Compact per-view output without five duplicated tree walks
+### Compact leaves, not instances — the leaf work queue
 
-Share *tree loads and frontier traversal*. Output a per-leaf view mask first, then compute per-view counts and prefixes on GPU and scatter the relevant leaf/member references. Main and four cascades have independently compacted outputs even though the parent tree is traversed once.
+Share *tree loads and frontier traversal*, and output a **per-leaf view mask** (one `uint32` per leaf, never a per-instance scatter). The classifier's result (`uint leafViewMask[leafCount]`) is the compact output: 65,536 leaves produce 256 KiB of masks, whereas five per-view 16-byte verdict streams over 3 M instances would emit ~229 MiB of writes alone.
 
-**Do not immediately expand accepted subtrees into individual instance IDs.** Mark a subtree as fully contained for selected views, retain its leaf-range metadata, and lower it using GPU leaf range enumeration or a flattened subtree-to-leaf index. Where old `LeafMember` spans are not contiguous, preserve a short list of actual member ranges and compute device prefixes. A future packed adjacency publication can make accepted subtree refs contiguous, but that is an ABI change that must be benchmarked and versioned.
+The next stage is a **leaf work queue**: compact the *active leaf references* (leaf index + its stable instance range + view mask) into a small work list using a leaf/block-level prefix — not a per-instance, per-view prefix/scatter. Each active leaf's instance range is stored once, not expanded into five candidate arrays.
+
+A **fused instance pass** then walks each queued leaf's instance range, loading each instance (and its mesh/LOD/geometry) **once**, validating generation/ownership/CastShadow once, evaluating the leaf's active views, and emitting only surviving per-view draw work. The LOD/residency choice follows a proven common policy (or a cheap per-view refinement) — the camera LOD decision must never be silently reused for shadow cascades.
+
+**Do not immediately expand accepted subtrees into individual instance IDs.** Mark a subtree as fully contained for selected views, retain its leaf-range metadata, and lower it using GPU leaf range enumeration or a flattened subtree-to-leaf index. A future packed adjacency publication can make accepted subtree refs contiguous, but that is an ABI change that must be benchmarked and versioned.
 
 A fully-contained subtree skips *further frustum tests*; it never skips per-instance generation, geometry residency or shadow eligibility checks. Per-cascade caster flags remain independent.
+
+**Avoid global atomics per draw.** Assign one or more workgroups per active leaf/chunk, use subgroup ballots to determine per-view survival, aggregate counts per block, reserve output via aggregated atomics (or a block-level prefix where stable ordering is required), and scatter only surviving work. A global prefix over millions of instances becomes a prefix over far fewer workgroups. Where GPUScene temporal visibility relies on persistent ordering, preserve stable instance identity and map compacted commands back to their work rows.
 
 ## No CPU visibility readback; correct overflow/failure semantics
 
@@ -192,13 +201,13 @@ Test union/mask correctness against the existing CPU `SelectPassedInstanceRanges
 - Add an experimental, fully GPU-output `GpuVisibilityFrame` interface with device counters, capacity sizes, view masks and epoch. Keep existing `CandidateValidator::Prepare` untouched for validation and direct fallback.
 - Add GPU readback **only in tests/debug** to compare oracle leaf/instance sets. Probe DXC push/layout constraints, minimum dispatch limits and exact RenderGraph barrier stages.
 
-### P1 — flat GPU multi-view selector (no tree yet)
+### P1 — flat leaf classifier + fused multi-view instance work (no tree yet)
 
-- Upload/retain the current immutable sphere-leaf table and generational member ranges once per relevant topology revision; only dirty bounds on change.
-- One GPU compute pass classifies each leaf against Main+C0..C3, writes a per-leaf view mask.
-- GPU wave/block prefix + scatter produce independent per-view candidate lists and counters. No CPU leaf scan, sorting, or per-view range serialization.
-- Run GPU instance cull from GPU-produced counts via GPU dispatch-indirect. Implement the proven safe overflow policy **before enabling owned draws**.
-- A/B all-candidates, CPU flat selector, and GPU flat selector; report both GPU time and render-thread CPU time.
+- Upload/retain the current leaf table (AABB bounds) and generational member ranges once per relevant topology revision; only dirty bounds on change.
+- One GPU compute pass classifies each leaf against Main+C0..C3, writes a per-leaf view mask (`uint leafViewMask[leafCount]`).
+- Compact **active leaves** into a leaf work queue (leaf index + stable instance range + view mask) via a leaf/block-level prefix — never a per-instance, per-view scatter.
+- A **fused instance pass** loads each instance/mesh/LOD/geometry once, validates generation/ownership/CastShadow once, evaluates the leaf's active views, and emits per-view draw work via subgroup ballots + block aggregation (no per-draw global atomics).
+- Implement the proven safe overflow policy **before enabling owned draws**. A/B the fused pipeline against the four independent cascade chains on `bistro_grid32` (report GPU `preC` and render-thread CPU).
 
 ### P2 — balanced GPU sphere tree
 
