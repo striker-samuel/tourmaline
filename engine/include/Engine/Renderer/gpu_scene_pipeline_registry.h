@@ -6,12 +6,14 @@
 // CPU pak registration owns worst-case capacities; the GPU owns visibility
 // counts. Neither a mesh nor a material directly owns a Vulkan PSO.
 // IDs are snapshot-local and must be remapped on registry rebuild.
+#include <cstddef>
 #include <cstdint>
 #include <limits>
 #include <optional>
 #include <span>
 #include <unordered_map>
 #include <vector>
+#include <utility>
 
 namespace tour::gpu_scene {
 
