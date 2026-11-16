@@ -252,6 +252,12 @@ struct GltfToSceneImporter {
     // Returns the number of skinned meshes patched.
     int BuildSkinData();
 
+    // The owned decoded authoring scene is handed to the artifact derivation
+    // after cluster import. The caller must use it only after BuildSkinData.
+    smvk::source::Scene releaseSourceScene() {
+        return std::move(sourceScene_);
+    }
+
   private:
     smvk::ClusterMaterialHandle getOrCreateMaterial(int gltfMaterialIndex);
 
