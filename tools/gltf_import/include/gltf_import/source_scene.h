@@ -98,6 +98,22 @@ struct Node {
 };
 
 // Joint indices address Scene::nodes, not glTF accessors or runtime node IDs.
+struct Image {
+    std::string uri;
+};
+
+struct Texture {
+    int32_t image = -1;
+    int32_t sampler = -1;
+};
+
+struct Sampler {
+    int magFilter = -1;
+    int minFilter = -1;
+    int wrapS = 10497;
+    int wrapT = 10497;
+};
+
 struct Skin {
     std::string name;
     std::vector<uint32_t> joints;
@@ -114,6 +130,9 @@ struct Scene {
     std::vector<uint32_t> roots;
     std::vector<Mesh> meshes;
     std::vector<Material> materials;
+    std::vector<Image> images;
+    std::vector<Texture> textures;
+    std::vector<Sampler> samplers;
     std::vector<Skin> skins;
     std::vector<Dependency> dependencies;
 };
