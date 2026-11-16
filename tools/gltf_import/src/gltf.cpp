@@ -1983,6 +1983,30 @@ static smvk::MeshData SurfaceDataFromGltfPrimitive(const tinygltf::Model& model,
 // parallel to the mesh upload's vertices, so OptimizeMeshData can
 // keep it in lockstep through the vertex remap. Returns false for an
 // unskinned primitive (missing/invalid attributes or empty).
+// Source skin weights are authoring floats; GPU packing remains a distinct
+// derivation step, preserving the same 4-influence normalization as before.
+static bool PackSourceSkinStream(const smvk::source::Primitive& primitive,
+                                 std::vector<smvk::PackedSkinInfluences>& out) {
+    if (!primitive.hasSkinWeights || primitive.vertices.empty())
+        return false;
+    out.resize(primitive.vertices.size());
+    for (size_t i = 0; i < primitive.vertices.size(); ++i) {
+        const auto& vertex = primitive.vertices[i];
+        glm::vec4 weights = vertex.weights;
+        glm::uvec4 joints = vertex.joints;
+        float sum = weights.x + weights.y + weights.z + weights.w;
+        if (!(sum > 1e-6f)) {
+            joints = glm::uvec4(0u);
+            weights = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);
+            sum = 1.0f;
+        }
+        out[i].joints = (joints.x & 0xFFu) | ((joints.y & 0xFFu) << 8u) |
+                        ((joints.z & 0xFFu) << 16u) | ((joints.w & 0xFFu) << 24u);
+        out[i].weights = glm::packUnorm4x8(weights / sum);
+    }
+    return true;
+}
+
 static bool PackVertexSkinStream(const tinygltf::Model& model,
                                  const tinygltf::Primitive& prim,
                                  std::vector<smvk::PackedSkinInfluences>& out) {
@@ -2053,25 +2077,15 @@ static bool PackVertexSkinStream(const tinygltf::Model& model,
 // instance. Mirrors SurfaceDataFromGltfPrimitive's AABB read (the POSITION
 // accessor's authored min/max); false = no position accessor / no authored
 // bounds (treated as "never large-placed", matching the zero-AABB fallback).
-static bool PrimitiveShapeFacts(const tinygltf::Model& model,
-                                const tinygltf::Primitive& primitive,
+static bool PrimitiveShapeFacts(const smvk::source::Primitive& primitive,
                                 glm::vec3* aabbMin,
                                 glm::vec3* aabbMax,
                                 size_t* indexCount) {
-    auto it = primitive.attributes.find("POSITION");
-    if (it == primitive.attributes.end())
+    if (primitive.vertices.empty())
         return false;
-    if (it->second < 0 || (size_t)it->second >= model.accessors.size())
-        return false;
-    const tinygltf::Accessor& acc = model.accessors[(size_t)it->second];
-    if (acc.minValues.size() < 3 || acc.maxValues.size() < 3)
-        return false;
-    *aabbMin = glm::vec3((float)acc.minValues[0], (float)acc.minValues[1], (float)acc.minValues[2]);
-    *aabbMax = glm::vec3((float)acc.maxValues[0], (float)acc.maxValues[1], (float)acc.maxValues[2]);
-    if (primitive.indices >= 0 && (size_t)primitive.indices < model.accessors.size())
-        *indexCount = model.accessors[(size_t)primitive.indices].count;
-    else
-        *indexCount = acc.count;
+    *aabbMin = primitive.aabbMin;
+    *aabbMax = primitive.aabbMax;
+    *indexCount = primitive.indices.empty() ? primitive.vertices.size() : primitive.indices.size();
     return true;
 }
 
