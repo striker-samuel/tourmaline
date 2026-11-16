@@ -2010,11 +2010,13 @@ bool ParseSceneBlob(std::span<const uint8_t> payload,
     // scene may not be refused either. 1 Mi nodes predated the stress
     // grids - a 100x100 Sponza grid (one reference family per cell) is
     // 10,001 x 105 = 1,050,107 nodes, 0.15% over the old bound - so the
-    // ceiling moves to 4 Mi (~400 MB worst-case parse structures, still
-    // a loud bounded fail on garbage). The small authored-few tables
-    // (lights/cameras/envs/decals/rooms/triggers) keep their 1 Mi caps:
-    // they do not scale with scene size.
-    if (!c.ok || nodeCount == 0 || nodeCount > 4096 * 1024)
+    // ceiling moved to 4 Mi. The Bistro grid32 (32x32 references to the
+    // dense ~8.9k-node bistro_static family) is 1024 x 8925 = 9,138,900
+    // nodes, so the ceiling moves again to 16 Mi (~1.6 GB worst-case
+    // parse structures, still a loud bounded fail on garbage). The small
+    // authored-few tables (lights/cameras/envs/decals/rooms/triggers)
+    // keep their 1 Mi caps: they do not scale with scene size.
+    if (!c.ok || nodeCount == 0 || nodeCount > 16 * 1024 * 1024)
         return fail("bad scene node count");
     if (scene.nodeSlotBudget && nodeCount > scene.nodeSlotBudget)
         tour::scene::CrashNodeBudget("pak scene parse", nodeCount, scene.nodeSlotBudget);
