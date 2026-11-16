@@ -2440,6 +2440,82 @@ void GltfToSceneImporter::prepareSourceScene() {
     for (const auto& sampler : model.samplers)
         scene.samplers.push_back(smvk::source::Sampler{
             sampler.magFilter, sampler.minFilter, sampler.wrapS, sampler.wrapT});
+    // Decode source animation sampler payloads into owned time/value tracks.
+    // Tourmaline's .anim conversion no longer needs glTF accessor layout.
+    auto animRead = [&](const tinygltf::Accessor& acc, size_t index,
+                        double* values, size_t count) -> bool {
+        if (index >= acc.count || acc.bufferView < 0 ||
+            size_t(acc.bufferView) >= model.bufferViews.size())
+            return false;
+        const uint8_t* p = gltfPtr(model, acc, index);
+        if (!p)
+            return false;
+        for (size_t c = 0; c < count; ++c) {
+            if (acc.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT) {
+                float v = 0.0f;
+                std::memcpy(&v, p + c * sizeof(float), sizeof(float));
+                values[c] = v;
+            } else if (acc.componentType == TINYGLTF_COMPONENT_TYPE_DOUBLE) {
+                double v = 0.0;
+                std::memcpy(&v, p + c * sizeof(double), sizeof(double));
+                values[c] = v;
+            } else {
+                return false;
+            }
+        }
+        return true;
+    };
+    scene.animations.reserve(model.animations.size());
+    for (const auto& animation : model.animations) {
+        smvk::source::Animation out{};
+        out.name = animation.name;
+        for (const auto& channel : animation.channels) {
+            if (channel.sampler < 0 || size_t(channel.sampler) >= animation.samplers.size() ||
+                channel.target_node < 0 || size_t(channel.target_node) >= model.nodes.size())
+                continue;
+            const auto& sampler = animation.samplers[size_t(channel.sampler)];
+            if (sampler.input < 0 || sampler.output < 0 ||
+                size_t(sampler.input) >= model.accessors.size() ||
+                size_t(sampler.output) >= model.accessors.size())
+                continue;
+            const auto& times = model.accessors[size_t(sampler.input)];
+            const auto& values = model.accessors[size_t(sampler.output)];
+            smvk::source::AnimationTrack track{};
+            track.node = uint32_t(channel.target_node);
+            track.channel = channel.target_path == "rotation"
+                                ? smvk::source::AnimationChannel::Rotation
+                            : channel.target_path == "scale"
+                                ? smvk::source::AnimationChannel::Scale
+                            : channel.target_path == "weights"
+                                ? smvk::source::AnimationChannel::Weights
+                                : smvk::source::AnimationChannel::Translation;
+            track.interpolation = sampler.interpolation == "STEP"
+                                      ? smvk::source::Interpolation::Step
+                                  : sampler.interpolation == "CUBICSPLINE"
+                                      ? smvk::source::Interpolation::CubicSpline
+                                      : smvk::source::Interpolation::Linear;
+            if (track.channel == smvk::source::AnimationChannel::Weights)
+                continue; // native .tourAnim has no morph weight channel yet
+            const size_t count = std::min(times.count, values.count);
+            const size_t components =
+                track.channel == smvk::source::AnimationChannel::Rotation ? 4u : 3u;
+            track.keys.reserve(count);
+            for (size_t k = 0; k < count; ++k) {
+                double t = 0.0;
+                double v[4] = {};
+                if (!animRead(times, k, &t, 1) ||
+                    !animRead(values, k, v, components))
+                    break;
+                smvk::source::AnimationKey key{};
+                key.time = t;
+                key.value = glm::vec4(float(v[0]), float(v[1]), float(v[2]),
+                                      components == 4 ? float(v[3]) : 1.0f);
+                track.keys.push_back(key);
+            }
+            out.tracks.push_back(std::move(track));
+        }
+        scene.animations.push_back(std::move(out));
+    }
     sourceScenePrepared_ = true;
 }
 
