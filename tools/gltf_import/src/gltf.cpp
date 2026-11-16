@@ -293,44 +293,43 @@ inline void ApplyFileNodeSampler(smvk::TextureSamplerDesc& samp, const smvk::tou
 }
 }; // namespace
 
-GltfToSceneImporter::GltfToSceneImporter(smvk::Cluster& inCluster,
-                                         const tinygltf::Model& inModel,
+SourceSceneImporter::SourceSceneImporter(smvk::Cluster& inCluster,
+                                         const smvk::source::Scene& inScene,
                                          std::filesystem::path inGltfModelPath)
-    : cluster(inCluster), model(inModel), gltfModelPath(std::move(inGltfModelPath)),
+    : cluster(inCluster), sourceScene_(inScene), gltfModelPath(std::move(inGltfModelPath)),
       textureSource(std::make_shared<HostTextureSource>(gltfModelPath.parent_path())),
       modelUriBase(ResolveUriBase(gltfModelPath.generic_string())),
-      materialCache(inModel.materials.size()) {
-    meshCache.resize(inModel.meshes.size());
-    for (size_t i = 0; i < inModel.meshes.size(); ++i) {
-        meshCache[i].resize(inModel.meshes[i].primitives.size());
-    }
-    lightCache.resize(inModel.lights.size());
+      materialCache(inScene.materials.size()) {
+    meshCache.resize(inScene.meshes.size());
+    for (size_t i = 0; i < inScene.meshes.size(); ++i)
+        meshCache[i].resize(inScene.meshes[i].primitives.size());
+    lightCache.resize(inScene.lights.size());
 }
 
-void GltfToSceneImporter::setTextureSource(std::shared_ptr<TextureSource> source) {
+void SourceSceneImporter::setTextureSource(std::shared_ptr<TextureSource> source) {
     if (source)
         textureSource = std::move(source);
 }
 
-void GltfToSceneImporter::setModelUriBase(const std::string& vfsPath) {
+void SourceSceneImporter::setModelUriBase(const std::string& vfsPath) {
     const std::string base = ResolveUriBase(vfsPath);
     if (!base.empty())
         modelUriBase = base;
 }
 
-void GltfToSceneImporter::setMeshOptConfig(const smvk::MeshOptConfig& config) {
+void SourceSceneImporter::setMeshOptConfig(const smvk::MeshOptConfig& config) {
     meshOptConfig = config;
 }
 
-void GltfToSceneImporter::setMeshletConfig(const smvk::MeshletConfig& config) {
+void SourceSceneImporter::setMeshletConfig(const smvk::MeshletConfig& config) {
     meshletConfig = config;
 }
 
-void GltfToSceneImporter::setFileNodes(const std::vector<smvk::tour::FileNode>& nodes) {
+void SourceSceneImporter::setFileNodes(const std::vector<smvk::tour::FileNode>& nodes) {
     fileNodes_ = nodes;
 }
 
-const smvk::tour::FileNode* GltfToSceneImporter::matchFileNode(const std::string& imageUri) const {
+const smvk::tour::FileNode* SourceSceneImporter::matchFileNode(const std::string& imageUri) const {
     if (fileNodes_.empty() || imageUri.empty())
         return nullptr;
     const std::string base = BaseNameOf(imageUri);
@@ -348,7 +347,7 @@ const smvk::tour::FileNode* GltfToSceneImporter::matchFileNode(const std::string
     return nullptr;
 }
 
-bool GltfToSceneImporter::inferSrgb(int imageIndex) const {
+bool SourceSceneImporter::inferSrgb(int imageIndex) const {
     if (imageIndex < 0)
         return false;
     for (const auto& material : sourceScene_.materials) {
@@ -359,7 +358,7 @@ bool GltfToSceneImporter::inferSrgb(int imageIndex) const {
     return false;
 }
 
-bool GltfToSceneImporter::resolveKtxBytes(const std::string& imageUri,
+bool SourceSceneImporter::resolveKtxBytes(const std::string& imageUri,
                                           std::vector<uint8_t> srcBytes,
                                           int imageIndex,
                                           std::vector<uint8_t>& out,
@@ -682,7 +681,7 @@ bool GltfExtrasDitherCloseup(const tinygltf::Value& extras) {
 // fake handles (Handle::Mint ids) that only feed MaterialValues slots and
 // the serializer's slot->uri remap. Either way the asset URI, sampler
 // params and source bytes are registered/stashed on the Cluster.
-smvk::TextureHandle GltfToSceneImporter::loadTextureForImage(int imageIndex, int textureIndex) {
+smvk::TextureHandle SourceSceneImporter::loadTextureForImage(int imageIndex, int textureIndex) {
     auto cached = textureCache.find(imageIndex);
     if (cached != textureCache.end())
         return cached->second;
@@ -803,7 +802,7 @@ smvk::TextureHandle GltfToSceneImporter::loadTextureForImage(int imageIndex, int
 }
 
 // ---- importer data rows (see setImportImages) --------------------------
-GltfImportImage* GltfToSceneImporter::importImageRow(int imageIndex) {
+GltfImportImage* SourceSceneImporter::importImageRow(int imageIndex) {
     if (!importImages_ || imageIndex < 0 || imageIndex >= (int)sourceScene_.images.size())
         return nullptr;
     auto it = importImageRows_.find(imageIndex);
@@ -817,14 +816,14 @@ GltfImportImage* GltfToSceneImporter::importImageRow(int imageIndex) {
     return &importImages_->back();
 }
 
-void GltfToSceneImporter::noteImage(int imageIndex, const std::string& identity, bool loaded) {
+void SourceSceneImporter::noteImage(int imageIndex, const std::string& identity, bool loaded) {
     if (GltfImportImage* row = importImageRow(imageIndex)) {
         row->identity = identity;
         row->loaded = loaded;
     }
 }
 
-void GltfToSceneImporter::noteImageUser(int imageIndex,
+void SourceSceneImporter::noteImageUser(int imageIndex,
                                         const std::string& materialUri,
                                         const char* slot) {
     if (GltfImportImage* row = importImageRow(imageIndex)) {
@@ -1343,8 +1342,7 @@ static GltfMaterial ExtractMaterial(const tinygltf::Model& model, int materialIn
 
     return mat;
 }
-void GltfToSceneImporter::preloadTextures() {
-    prepareSourceScene();
+void SourceSceneImporter::preloadTextures() {
     // Collect every image referenced by any material (dedup by imageIndex).
     // Per-material creation later hits textureCache; anything missed here
     // still loads sequentially via loadTextureForImage.
@@ -1666,7 +1664,7 @@ std::string TextureConversionHash(const void* data, size_t size, bool srgb) {
 // it too and an out-of-line definition here made every engine consumer
 // order-dependent on linking gltf_import; see the header note.)
 
-smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMaterialIndex) {
+smvk::ClusterMaterialHandle SourceSceneImporter::getOrCreateMaterial(int gltfMaterialIndex) {
     if (gltfMaterialIndex < 0) {
         if (!defaultMaterialHandle.empty())
             return defaultMaterialHandle;
@@ -1697,7 +1695,6 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
         return slot;
     }
 
-    prepareSourceScene();
     const smvk::source::Material& mat = sourceScene_.materials[size_t(gltfMaterialIndex)];
 
     // Importer data users (see setImportImages): every (material, slot)
@@ -1808,7 +1805,7 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
     return slot;
 }
 
-smvk::ClusterLightHandle GltfToSceneImporter::getOrCreateLight(int gltfLightIndex,
+smvk::ClusterLightHandle SourceSceneImporter::getOrCreateLight(int gltfLightIndex,
                                                                bool staticLight) {
     assert(gltfLightIndex >= 0);
     assert(static_cast<size_t>(gltfLightIndex) < sourceScene_.lights.size());
@@ -2095,8 +2092,7 @@ static bool PrimitiveShapeFacts(const smvk::source::Primitive& primitive,
     return true;
 }
 
-void GltfToSceneImporter::prepareMeshes() {
-    prepareSourceScene();
+void SourceSceneImporter::prepareMeshes() {
     if (meshesPrepared_)
         return;
     meshesPrepared_ = true;
@@ -2204,7 +2200,7 @@ void GltfToSceneImporter::prepareMeshes() {
             deriveMesh(w.mesh, w.prim, w.skinned, w.largePlaced);
 }
 
-GltfToSceneImporter::DerivedMesh GltfToSceneImporter::deriveMesh(int gltfMeshIndex,
+SourceSceneImporter::DerivedMesh SourceSceneImporter::deriveMesh(int gltfMeshIndex,
                                                                  int primitiveIndex,
                                                                  bool skinned,
                                                                  bool largePlaced) const {
@@ -2317,7 +2313,7 @@ GltfToSceneImporter::DerivedMesh GltfToSceneImporter::deriveMesh(int gltfMeshInd
     return out;
 }
 
-smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshIndex,
+smvk::ClusterStaticMeshHandle SourceSceneImporter::getOrCreateMesh(int gltfMeshIndex,
                                                                    int primitiveIndex) {
     assert(gltfMeshIndex >= 0);
     assert(static_cast<size_t>(gltfMeshIndex) < sourceScene_.meshes.size());
@@ -2420,7 +2416,7 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
     return slot;
 }
 
-void GltfToSceneImporter::applyPreTransform(Scene& scene, int rootNode) {
+void SourceSceneImporter::applyPreTransform(Scene& scene, int rootNode) {
     // Identity fast path (exact float compare is fine for a default matrix).
     static const glm::mat4 kIdentity{1.0f};
     if (preTransform_ == kIdentity)
@@ -2637,11 +2633,10 @@ bool DecodeGltfSourceScene(const tinygltf::Model& model,
     return true;
 }
 
-void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
+void SourceSceneImporter::importNodeRecursive(int gltfNodeIndex,
                                               int parentSceneNode,
                                               int level,
                                               bool topOfImport) {
-    prepareSourceScene();
     const smvk::source::Node& sourceNode = sourceScene_.nodes[size_t(gltfNodeIndex)];
 
     // glTF node index -> cluster id map (the asset derivation retargets
@@ -2775,8 +2770,7 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
 // imported) aborts the whole pass loudly: a half-skinned skeleton renders
 // wrong in ways nothing downstream can detect.
 // ---------------------------------------------------------------------------
-int GltfToSceneImporter::BuildSkinData() {
-    prepareSourceScene();
+int SourceSceneImporter::BuildSkinData() {
     if (skinRefs_.empty())
         return 0;
     if (sourceScene_.skins.empty()) {
@@ -3081,7 +3075,7 @@ size_t BuildFromMeshAsset(
     const smvk::assets::AssetManifest& manifest,
     const std::string& meshBaseUri,
     int ph,
-    const std::shared_ptr<GltfToSceneImporter::TextureSource>& textureSource,
+    const std::shared_ptr<SourceSceneImporter::TextureSource>& textureSource,
     bool autoKtx,
     GltfArtifactCache* artifactCache,
     const std::function<std::optional<std::vector<uint8_t>>(const std::string&)>& readSibling,
@@ -3489,7 +3483,7 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
         std::string resolved;
         std::string baseDir;
         bool manifestLoaded = false;
-        std::shared_ptr<GltfToSceneImporter::TextureSource> textureSource;
+        std::shared_ptr<SourceSceneImporter::TextureSource> textureSource;
     };
     std::map<std::string, MeshAssetCacheEntry> meshAssetCache;
     size_t successfulReferences = 0;
