@@ -121,6 +121,26 @@ struct Skin {
     int32_t skeleton = -1;
 };
 
+enum class AnimationChannel { Translation, Rotation, Scale, Weights };
+enum class Interpolation { Linear, Step, CubicSpline };
+
+struct AnimationKey {
+    double time = 0.0;
+    glm::vec4 value{0.0f};
+};
+
+struct AnimationTrack {
+    uint32_t node = InvalidIndex;
+    AnimationChannel channel = AnimationChannel::Translation;
+    Interpolation interpolation = Interpolation::Linear;
+    std::vector<AnimationKey> keys;
+};
+
+struct Animation {
+    std::string name;
+    std::vector<AnimationTrack> tracks;
+};
+
 struct Dependency {
     std::string relativePath;
 };
@@ -134,6 +154,7 @@ struct Scene {
     std::vector<Texture> textures;
     std::vector<Sampler> samplers;
     std::vector<Skin> skins;
+    std::vector<Animation> animations;
     std::vector<Dependency> dependencies;
 };
 
