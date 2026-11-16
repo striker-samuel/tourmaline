@@ -11,6 +11,7 @@ add_library(gltf_import STATIC
     # The ONLY TU compiling the tinyobjloader implementation (the OBJ
     # source adapter; tinygltf's implementation lives in gltf.cpp).
     src/obj_import.cpp
+    src/source_scene.cpp
     src/tex_transcode.cpp
     src/material_pack.cpp
     src/asset_export.cpp
