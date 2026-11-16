@@ -3,12 +3,14 @@
 # SPDX-License-Identifier: MIT
 """caldera_batch_import: convert the whole Caldera island district-by-district.
 
-Runs the built `Import.exe` on every district assembly (`season_4/map_*.usd`)
-and terrain section (`superterrrain/**/*.terrain.usd`), capturing per-file
-geometry/instance/material stats, and writes a JSON + text summary. This is the
-M4 "complete island converted" step: coverage is validated against the audit's
-content model. Cross-district shared-mesh dedup (Phase 3) and `.splined_models`
-splines are separate concerns and are reported, not silently dropped.
+Runs the built `Import.exe` on every district assembly (`season_4/map_*.usd`),
+capturing per-file geometry/instance/material stats, and writes a JSON + text
+summary. This is the M4 "complete island converted" step: coverage is validated
+against the audit's content model. Cross-district shared-mesh dedup (Phase 3)
+and `.splined_models` splines are separate concerns and are reported, not
+silently dropped. Terrain sections (`superterrrain/**/*.terrain.usd`) are
+NOT meshes — they are heightfield grids, extracted by
+caldera_terrain_heightfield.py into 16-bit heightmap textures.
 
 The USD runtime DLLs (pxr lib/bin/python/plugin) must be resolvable; pass
 `--usd-root` pointing at the extracted OpenUSD prebuilt.
@@ -60,9 +62,9 @@ def discover_districts(caldera_root: Path) -> list[Path]:
         if ".splined_models" in p.name or "_audio" in p.name:
             continue
         files.append(p)
-    # Terrain sections.
-    for p in sorted((island / "superterrrain").rglob("*.terrain.usd")):
-        files.append(p)
+    # Terrain sections (superterrrain/**/*.terrain.usd) are NOT imported as
+    # meshes: they are heightfield grids, extracted separately by
+    # caldera_terrain_heightfield.py -> 16-bit heightmap textures + meta.
     return files
 
 
