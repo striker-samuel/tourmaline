@@ -3,7 +3,7 @@
 The USD importer is an **offline authoring adapter**, not a Tourmaline renderer
 or a USD runtime backend. A composed OpenUSD stage is translated into an
 in-memory `tinygltf::Model`, then passed to Tourmaline's existing
-`ImportMeshSource -> DeriveGltfAssets` pipeline. It produces native
+`ImportMeshSource -> DeriveNativeAssets` pipeline. It produces native
 `.geometry`, `.material`, and `<source>.meta` assets, which continue
 through the ordinary cook/pak/project pipeline. Vulkan, scene tables, and the
 runtime do not link to OpenUSD.
@@ -40,7 +40,7 @@ resolvable by the installed OpenUSD plugins. Import with the existing CLI
 - Direct, unconnected `UsdPreviewSurface` scalar/color values become
   Tourmaline PBR material properties.
 - Native `.geometry` and related assets are created by the **existing**
-  `DeriveGltfAssets` pipeline; USD is not embedded into a pak.
+  `DeriveNativeAssets` pipeline; USD is not embedded into a pak.
 
 ## Explicitly unsupported (fail closed)
 

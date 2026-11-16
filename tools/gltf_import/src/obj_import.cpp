@@ -5,7 +5,7 @@
 // Wavefront .obj (+ its mtllib .mtl files) with the vendored
 // tinyobjloader and builds the tinygltf::Model INTERCHANGE FORM in
 // memory — so the entire downstream (GltfToSceneImporter,
-// DeriveGltfAssets: LOD chains, meshlets, .material/.anim artifacts,
+// DeriveNativeAssets: LOD chains, meshlets, .material/.anim artifacts,
 // the .meta identity ledger) runs UNCHANGED over OBJ sources. No
 // runtime, cooker or .geometry-format knowledge lives here; this file
 // is a pure source-format adapter, exactly like the tinygltf load is

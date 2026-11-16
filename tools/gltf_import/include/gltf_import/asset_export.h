@@ -296,7 +296,7 @@ struct MeshAsset {
 // cooks consume them and never re-decide. The chain settings (ratios +
 // error) live HERE, are recorded in the manifest's import fingerprint
 // (ImportFingerprintFor) and flow into MeshOptConfig inside
-// DeriveGltfAssets; changing them changes the fingerprint and re-derives
+// DeriveNativeAssets; changing them changes the fingerprint and re-derives
 // the artifact.
 struct DeriveConfig {
     bool meshlets = true;    // TOURMALINE_EDITOR_MESHLETS parity
@@ -332,8 +332,10 @@ struct DeriveStats {
     uint32_t dropped = 0;
 };
 
-// Runs the (deterministic, GPU-free offline-mode) import of the glTF + writes
-// every derived asset + the manifest next to it (its directory). Identity is
+// Runs the (deterministic, GPU-free offline-mode) import of a source MODEL —
+// the tinygltf::Model interchange every adapter (glTF/GLB, OBJ, USD) folds
+// into — + writes every derived native asset + the manifest next to it (its
+// directory). Identity is
 // the LEDGER contract (see the identity block in asset_export.cpp): the
 // family guid comes from the caller's explicit resolution (the .meta the
 // pipeline resolved up front) or the previous manifest (identity carries
@@ -348,19 +350,19 @@ struct DeriveStats {
 // Returns false + err on a failed import, an identity failure or a failed
 // write (a partial derivation leaves older files — the next successful
 // derive overwrites them).
-bool DeriveGltfAssets(const tinygltf::Model& model,
-                      const std::filesystem::path& gltfPath,
-                      const std::string& gltfGuid,
-                      const AssetManifest* prevIdentity,
-                      const DeriveConfig& config,
-                      AssetManifest& outManifest,
-                      DeriveStats* outStats = nullptr,
-                      std::string* err = nullptr,
-                      // Non-glTF source dependencies the synthetic model cannot express
-                      // (today: the .mtl files an OBJ source consumed — LoadModelFrom-
-                      // SourceFile's extraDeps). Folded into the recorded sourceDigest so
-                      // an .mtl edit re-derives exactly like a texture edit does.
-                      const std::vector<std::string>& extraSourceDeps = {});
+bool DeriveNativeAssets(const tinygltf::Model& model,
+                        const std::filesystem::path& gltfPath,
+                        const std::string& gltfGuid,
+                        const AssetManifest* prevIdentity,
+                        const DeriveConfig& config,
+                        AssetManifest& outManifest,
+                        DeriveStats* outStats = nullptr,
+                        std::string* err = nullptr,
+                        // Non-glTF source dependencies the synthetic model cannot express
+                        // (today: the .mtl files an OBJ source consumed — LoadModelFrom-
+                        // SourceFile's extraDeps). Folded into the recorded sourceDigest so
+                        // an .mtl edit re-derives exactly like a texture edit does.
+                        const std::vector<std::string>& extraSourceDeps = {});
 
 // THE MESH IMPORTER entry: parse + derive in one call. The parse is
 // host-side (mesh source formats — .gltf/.glb through tinygltf, .obj
@@ -389,12 +391,12 @@ bool ImportMeshSource(const std::filesystem::path& gltfPath,
 // SOURCE FILE CONTENT (two-lane FNV-1a over the glTF bytes, 32-hex — the
 // .meta GUID format). Identical bytes derive the identical GUID on any
 // machine, in any directory, with no project DB and no .meta — a from-zero
-// re-import reproduces the identity. DeriveGltfAssets falls back to this
+// re-import reproduces the identity. DeriveNativeAssets falls back to this
 // when neither the caller nor a previous manifest supplies the family
 // identity (the FIRST import of a family); on every later import the
 // identity CARRIES (the ledger), and this value only seeds the fresh mints.
 // NOTE: this is the FROM-ZERO mint, not the live identity — logical
-// identity is the ledger's (see DeriveGltfAssets), staleness is
+// identity is the ledger's (see DeriveNativeAssets), staleness is
 // SourceContentDigest below (the full source set), so a texture/.bin edit
 // re-derives without re-GUIDing the family.
 [[nodiscard]] std::string SourceAssetGuid(const std::filesystem::path& gltfPath);
@@ -503,7 +505,7 @@ bool LoadAssetManifest(const std::filesystem::path& gltfPath, AssetManifest& out
 // Text form (VFS reads cook through the overlay; the host form wraps
 // this). Tolerant: unknown keys skip, a missing guid fails.
 bool LoadAssetManifestText(const std::string& text, AssetManifest& out, std::string& err);
-// Writes the manifest (DeriveGltfAssets' tail; exposed for tests).
+// Writes the manifest (DeriveNativeAssets' tail; exposed for tests).
 bool SaveAssetManifest(const std::filesystem::path& gltfPath,
                        const AssetManifest& manifest,
                        std::string& err);

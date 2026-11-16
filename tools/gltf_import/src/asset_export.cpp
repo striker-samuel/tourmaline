@@ -1261,15 +1261,15 @@ bool LoadMeshAssetBytes(const uint8_t* data, size_t size, MeshAsset& out, std::s
 // Derivation
 // ---------------------------------------------------------------------------
 
-bool DeriveGltfAssets(const tinygltf::Model& model,
-                      const std::filesystem::path& gltfPath,
-                      const std::string& gltfGuid,
-                      const AssetManifest* prevIdentity,
-                      const DeriveConfig& config,
-                      AssetManifest& outManifest,
-                      DeriveStats* outStats,
-                      std::string* err,
-                      const std::vector<std::string>& extraSourceDeps) {
+bool DeriveNativeAssets(const tinygltf::Model& model,
+                        const std::filesystem::path& gltfPath,
+                        const std::string& gltfGuid,
+                        const AssetManifest* prevIdentity,
+                        const DeriveConfig& config,
+                        AssetManifest& outManifest,
+                        DeriveStats* outStats,
+                        std::string* err,
+                        const std::vector<std::string>& extraSourceDeps) {
     DeriveStats stats{};
     std::string fail;
     const std::string stem = std::filesystem::path(gltfPath).stem().string();
@@ -2215,14 +2215,14 @@ bool ImportMeshSource(const std::filesystem::path& gltfPath,
     std::vector<std::string> extraDeps;
     if (!LoadModelFromSourceFile(model, gltfPath.string().c_str(), &extraDeps))
         return giveUp("source parse failed: " + gltfPath.generic_string());
-    return DeriveGltfAssets(
+    return DeriveNativeAssets(
         model, gltfPath, gltfGuid, prevIdentity, config, outManifest, outStats, err, extraDeps);
 }
 
 std::string SourceAssetGuid(const std::filesystem::path& gltfPath) {
     // The content identity: hash the SOURCE FILE bytes. Registered in the
     // .meta (sourcedigest=) AND used as the from-zero asset GUID (see
-    // DeriveGltfAssets). Read errors fall back to the file name — a
+    // DeriveNativeAssets). Read errors fall back to the file name — a
     // deterministic-but-weaker identity beats none (the derivation's own
     // read of the glTF would fail loudly right after anyway).
     std::ifstream in(gltfPath, std::ios::binary);

@@ -3,7 +3,7 @@
 //
 // OpenUSD is an AUTHORING input only. The composed stage is converted to
 // tinygltf's in-memory interchange shape, then the existing Tourmaline
-// DeriveGltfAssets path writes .geometry/.material/.meta. No USD types or
+// DeriveNativeAssets path writes .geometry/.material/.meta. No USD types or
 // libraries appear in the engine, the cooked pak, or the runtime.
 //
 // Deliberately fail closed on USD constructs this adapter cannot represent.
@@ -356,7 +356,7 @@ struct Converter {
             else
                 // tinygltf's Material leaves emissiveFactor EMPTY by default
                 // (the ctor only sets alphaMode/alphaCutoff/doubleSided), and
-                // DeriveGltfAssets reads [0..2] unconditionally. Always emit
+                // DeriveNativeAssets reads [0..2] unconditionally. Always emit
                 // the three-component vector so the derive never overruns.
                 m.emissiveFactor = {0.0, 0.0, 0.0};
         }
