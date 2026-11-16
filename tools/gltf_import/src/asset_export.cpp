@@ -2067,8 +2067,12 @@ bool ImportMeshSource(const std::filesystem::path& gltfPath,
     std::vector<std::string> extraDeps;
     if (!LoadModelFromSourceFile(model, gltfPath.string().c_str(), &extraDeps))
         return giveUp("source parse failed: " + gltfPath.generic_string());
+    smvk::source::Scene scene;
+    std::string conversionError;
+    if (!DecodeGltfSourceScene(model, scene, &conversionError))
+        return giveUp(conversionError);
     return DeriveNativeAssets(
-        model, gltfPath, gltfGuid, prevIdentity, config, outManifest, outStats, err, extraDeps);
+        scene, gltfPath, gltfGuid, prevIdentity, config, outManifest, outStats, err, extraDeps);
 }
 
 std::string SourceAssetGuid(const std::filesystem::path& gltfPath) {
@@ -2142,6 +2146,59 @@ std::string SourceContentDigest(const std::filesystem::path& gltfPath,
             // Missing/unreadable/remote: the URI is the identity (a
             // deleted texture re-derives — the digest can never match a
             // recorded bytes-digest; a remote pin is content-constant).
+            const std::string mark = ":missing:" + uri;
+            all.insert(all.end(), mark.begin(), mark.end());
+        }
+    }
+    return GuidHexFromBytes(all.data(), all.size());
+}
+
+// Native digest path used by the real derive entry. All source readers
+// record their file dependency set in SourceScene, with non-format-specific
+// sidecars supplied by the parser adapter as extraSourceDeps.
+std::string SourceContentDigest(const std::filesystem::path& sourcePath,
+                                const smvk::source::Scene& scene,
+                                const std::vector<std::string>& extraSourceDeps) {
+    namespace fs = std::filesystem;
+    std::vector<uint8_t> seed;
+    {
+        std::ifstream in(sourcePath, std::ios::binary);
+        if (in)
+            seed.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    if (seed.empty()) {
+        const std::string p = sourcePath.generic_string();
+        seed.assign(p.begin(), p.end());
+    }
+    std::set<std::string> uris;
+    auto collect = [&](const std::string& uri) {
+        if (!uri.empty() && uri.rfind("data:", 0) != 0)
+            uris.insert(uri);
+    };
+    for (const auto& dependency : scene.dependencies)
+        collect(dependency.relativePath);
+    for (const std::string& dep : extraSourceDeps)
+        collect(dep);
+    std::vector<uint8_t> all = std::move(seed);
+    for (const auto& uri : uris) {
+        all.push_back(0);
+        all.insert(all.end(), uri.begin(), uri.end());
+        all.push_back(0);
+        const bool remote = uri.rfind("http://", 0) == 0 || uri.rfind("https://", 0) == 0;
+        bool hashed = false;
+        if (!remote) {
+            const fs::path full = fs::path(uri).is_absolute()
+                                      ? fs::path(uri)
+                                      : sourcePath.parent_path() / fs::path(uri);
+            std::ifstream in(full, std::ios::binary);
+            if (in) {
+                const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+                                                 std::istreambuf_iterator<char>());
+                all.insert(all.end(), bytes.begin(), bytes.end());
+                hashed = true;
+            }
+        }
+        if (!hashed) {
             const std::string mark = ":missing:" + uri;
             all.insert(all.end(), mark.begin(), mark.end());
         }
