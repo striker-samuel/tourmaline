@@ -124,10 +124,10 @@ struct Skin {
     int32_t skeleton = -1;
 };
 
-enum class LightType { Directional, Point, Spot };
+enum class LightType { Unknown, Directional, Point, Spot };
 struct Light {
     std::string name;
-    LightType type = LightType::Point;
+    LightType type = LightType::Unknown;
     glm::vec3 color{1.0f};
     float intensity = 1.0f;
     float range = 0.0f;
