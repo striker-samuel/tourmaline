@@ -340,7 +340,7 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
     float2 fullExtent = float2(1.0f / max(invDepth.x, 1e-9f),
                                1.0f / max(invDepth.y, 1e-9f));
     // SSSR trace Hi-Z layout (MAX-reduce — see hzb_max.cs.hlsl): the
-    // per-mip dims + float offsets mirror gfx_filter.h's HzbMipCount /
+    // per-mip dims + float offsets mirror visibility_hiz.h's HzbMipCount /
     // HzbMipDims / HzbMipOffsetFloats exactly (mip k dims = repeated
     // max((d+1)>>1, 1); offset m = prefix sum of mip sizes; count stops
     // at 1x1, capped 16) so the shader-side indexing agrees with the

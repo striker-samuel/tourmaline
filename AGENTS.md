@@ -182,8 +182,8 @@ are still required for actual re-simulation.
   parallel): a `.audiograph` text asset (tour::asset::AudioGraphDoc —
   node topology + exposed params + ALL of its cues; STRICT parse with
   line numbers, gated at catalog ids, cooker AND runtime) is a
-  first-class kind (`PakAssetKind::AudioGraph` = 16, catalog byte 6,
-  0x7xxx ids, the FOURTH VFS-addressable kind — authored text
+  first-class kind (`PakAssetKind::AudioGraph` = 16, catalog byte 7,
+  0x7xxx ids, a VFS-addressable kind — authored text
   verbatim). `PakAssetKind`/catalog kinds APPEND, never renumber.
   Instances are ENGINE-owned (`tour::audio::AudioEngine` registries +
   generational `smvk::AudioInstanceHandle` + the
@@ -369,10 +369,10 @@ including/referencing engine-domain headers.
    fully qualified now (the recorded lessons: a broad import's
    transitive lookup also collides same-named types — the
    `tour::gfx::Cluster` vs `tour::Cluster` ambiguity that decided
-   gfx_filter.h; and a directive in one placement header silently
+   gfx_types.h; and a directive in one placement header silently
    covers every sibling in the same enclosing namespace — the
    placement_pass.h lean). TU-LOCAL using-directives in .cpp files
-   (impl.cpp, pak.cpp, mesh.cpp, gfx_filter.cpp) are the contained
+   (impl.cpp, pak.cpp, mesh.cpp, gfx_types.cpp) are the contained
    escape hatch while a moved block still spells RHI names
    unqualified.
 3. Migrations follow the landed pattern: declare in `tour::`, add the
@@ -488,7 +488,7 @@ propose splitting them again.
 | GPU scene | `engine/App/world.h+cluster.h`, `engine/Scene/scene.h` | `ResolveAndFixup_clusters` rebuilds `drawItems/flagLists/lodChains` |
 | Tour | `engine/Asset/tour.h+.cpp`, `editor/src/editor_commands.cpp` | `CmdToTour`/`TourToCmd`/`ApplyTourToCluster`/`ReplayTourDoc`; `TestTourFuzz` |
 | Memory | `engine/Memory/memory.h+linear_vector.h` | `FrameVector` = FrameScratch (reset/frame); `UploadInFlightVector` = monotonic (never reset while live); `ProcessVector` = process (ThreadPool ring) |
-| GPU-driven filter | `engine/Renderer/gfx_filter.h` | filtered main view ALWAYS ON (no runtime off; the direct leg stays as the unfilterable/LOD-far fallback); `m_useGfxMesh`/`GpuCullEnabled` stay setup-time; `MeshDrawEligible` truth table in contract tests |
+| GPU-driven filter | `engine/Renderer/gfx_types.h`, `GfxRenderer.h` | filtered main view ALWAYS ON (no runtime off; the direct leg stays as the unfilterable/LOD-far fallback); `m_useGfxMesh` stays setup-time; `MeshDrawEligible` truth table in contract tests |
 | Goldens | `tools/golden_capture.py`, `tools/golden_hashes.txt` | `--update` records, a mismatch fails the run — LOCAL/dev-GPU tooling (per-GPU baselines; CI never runs it) |
 
 Data flow per frame: `DrawFrame` fills `AppFrameContext` → `GfxRenderer`
@@ -1006,12 +1006,12 @@ when the exposure is deliberate.
   hand-rolled `Check()` runner, `checks=/failures=` summary, exit
   nonzero on failure.
 - Bake albedo: the CUBEMAP captures bake TEXTURED (per-hit baseColor —
-  `GiTraceScene::AlbedoAt`); the GI fields (.sggi octree + GI volumes)
-  bake white-world 0.7 by convention (the 9-lobe SG fit cannot
+  `GiTraceScene::AlbedoAt`); the GI fields (the GI volumes) bake
+  white-world 0.7 by convention (the 9-lobe SG fit cannot
   represent per-material chroma); `--uniform-albedo off`(GiBaker) opts
   into the textured transport for the volume bakes — the invalidation
   hashes fold the albedo MODE + value, so the flip re-traces.
-- Bake transport is FULL PBR (`kBakeAlgorithmRevision` 2): every vertex
+- Bake transport is FULL PBR (`kBakeAlgorithmRevision` 3): every vertex
   traces the whole glTF metallic-roughness BSDF — the Lambertian
   diffuse NEE PLUS the GGX specular NEE toward the sun + static spots
   and one-sample-MIS lobe sampling for the bounce hop. A diffuse-only

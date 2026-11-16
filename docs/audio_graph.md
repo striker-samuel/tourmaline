@@ -33,8 +33,9 @@ core** — and nothing else:
   pinning).
 - **Paks + the content registry keep the content.**
   `MA_NO_RESOURCE_MANAGER` / `MA_NO_DECODING` — sounds are created
-  from in-memory `ma_audio_buffer`s over the bytes SDL decoded from
-  the pak's Sound-kind blob (ONE copy of the bytes, no second decode).
+  from in-memory data over the bytes SDL decoded from
+  the pak's Sound-kind blob (ONE copy of the bytes, no second decode;
+  voices wrap the samples in per-voice ma_audio_buffer_ref cursors).
 - **miniaudio owns the graph machinery**: the per-voice
   source/pan/pitch/resample path, the biquad + delay effect nodes,
   and the sound-group submix buses.
@@ -76,12 +77,14 @@ set   -param "wind" -t 0 -value 1.0
 loop), `gain` (a submix bus; the master shape), `lpf`/`hpf`/`bpf`
 (cutoff + order), `notch`/`peak`/`loshelf`/`hishelf` (frequency, q,
 gainDb), `delay` (delay seconds + decay — feedback lives INSIDE the
-node, never in the edge topology: graph cycles are a parse error).
+node, never in the edge topology: graph cycles are a parse error),
+`reverb` (the Schroeder reverb — `wet`/`rt60`/`damping`).
 
 **Param fields** (the `-field` vocabulary): `gain`, `cutoff`,
-`frequency`, `q`, `gainDb`, `decay`. A param's field must be valid
-for its node's type. Params are the ONLY automated/controllable
-surface — raw node addressing never leaves the asset.
+`frequency`, `q`, `gainDb`, `decay`, `wet`, `rt60`, `damping`. A
+param's field must be valid for its node's type. Params are the ONLY
+automated/controllable surface — raw node addressing never leaves the
+asset.
 
 **Cue events**: `start`/`stop -node <source> -t <sec>` (edge-fired)
 and `set`/`ramp -param <name> -t <sec> -value <v>` (keyframes: set =
@@ -166,7 +169,7 @@ immediate sets, teardown — with RMS assertions over rendered chunks.
 
 The kind's full ladder (the shaders/gi pattern):
 
-- **ABI kind byte** `kCatalogKindAudioGraph = 6` (appmanifest.h;
+- **ABI kind byte** `kCatalogKindAudioGraph = 7` (appmanifest.h;
   kinds append, never renumber) + the `"audiograph"` string join.
 - **Pak kind** `PakAssetKind::AudioGraph = 16` — the authored text
   VERBATIM, the FOURTH VFS-addressable kind (PakBackend
@@ -180,7 +183,7 @@ The kind's full ladder (the shaders/gi pattern):
   in emission order), the parsed **cue table** (catalog-time
   validation), the `AudioGraphKey`/`AudioCueKey` typed keys, the
   `project::audiographs` + `project::audiocues` namespaces, the
-  `AssetKind::AudioGraph = 6` enum row, the flat `Assets` table and
+  `AssetKind::AudioGraph = 7` enum row, the flat `Assets` table and
   the `AssetTraits<AudioGraphKey>` query binding.
 - **The cook**: the content-set lane validates the parse (corrupt
   never ships) and embeds the blob; the per-pak `#ids` identity table

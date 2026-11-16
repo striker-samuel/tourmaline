@@ -193,9 +193,9 @@ static_assert(std::is_trivially_copyable_v<DecalRow> && sizeof(DecalRow) == 8);
 
 // All authored association tables. One vector per kind; rows are
 // unordered (node order is a COOK-time property, see the header).
-// More kinds arrive with their migration epochs (giVolume / cubemap /
-// env / envVolume / export rows at Epoch 5, rigid bodies + colliders
-// at Epoch 10) — each as its own explicit member + row type.
+// Each kind is its own explicit member + row type (the xForNode
+// migration landed kind-by-kind across the epochs; every kind is
+// present now).
 struct SceneTables {
     std::vector<MeshRow> meshes;
     std::vector<MaterialRow> materials;
@@ -212,15 +212,13 @@ struct SceneTables {
     std::vector<TriggerVolumeRow> triggerVolumes;
     std::vector<PhysicsBodyRow> physicsBodies;
     std::vector<SchemaAssocRow> schemaAssocs;
-    // Rigid bodies + colliders arrive at Epoch 10.
 };
 
 // Derived per-node index over SceneTables — resized to the node count,
 // one entry per table kind (InvalidRow = the node has no row of that
 // kind). NEVER serialized, never a source of truth: RebuildNodeRows
-// reconstructs it from the tables alone. `body` is reserved for
-// Epoch 10's RigidBodyRow (present now so the struct's shape is
-// stable across the migration).
+// reconstructs it from the tables alone. `body` is the physics-body
+// association (PhysicsBodyRow).
 struct NodeRows {
     RowId mesh = InvalidRow;
     RowId material = InvalidRow;
@@ -347,7 +345,7 @@ const std::string& GetNodeUuid(const Scene& scene, NodeId node);
 void SetNodeUuidRaw(Scene& scene, NodeId node, const std::string& uuid);
 
 // Drops EVERY row the node holds (all kinds at once — the node-
-// deletion hook the editor/tour paths adopt in Epoch 5). Returns
+// deletion hook the editor/tour paths adopt). Returns
 // whether anything was removed.
 bool RemoveNodeRows(Scene& scene, NodeId node);
 

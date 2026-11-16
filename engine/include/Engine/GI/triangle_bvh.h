@@ -4,9 +4,12 @@
 #pragma once
 // Triangle-level BVH for the GI baker: raycasting (primary/shadow rays) and
 // closest-point distance queries (probe placement / relocation / brick
-// refinement). The engine's Utils/bvh.h is a mesh-AABB BVH for CPU frustum
-// culling; GI needs triangle-accurate intersection, so this is a separate,
-// CPU-only acceleration structure (binned-SAH build, no GPU use).
+// refinement). Embree (external/embree) is the CANONICAL transport backend;
+// this builtin binned-SAH build is the DEPRECATED-for-transport fallback
+// (retained for closest-point distance + as an Embree-failure net — see
+// TraceBackend below). The engine's Utils/bvh.h is a mesh-AABB BVH for CPU
+// frustum culling; GI needs triangle-accurate intersection, so this is a
+// separate, CPU-only acceleration structure (no GPU use).
 //
 // Conventions:
 //  - Rays are two-sided (no backface culling): rooms and thin geometry must

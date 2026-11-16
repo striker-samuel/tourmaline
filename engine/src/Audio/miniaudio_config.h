@@ -19,7 +19,8 @@
 //   MA_NO_RESOURCE_MANAGER content identity/loading is TOURMALINE's
 //                          (paks + the content registry); sounds are
 //                          created from in-memory data sources only
-//                          (ma_audio_buffer over decoded clip bytes).
+//                          (per-voice ma_audio_buffer_ref cursors over
+//                          decoded clip bytes).
 //   MA_NO_DECODING         WAV decoding is SDL3's (SDL_LoadWAV +
 //                          SDL_CreateAudioStream conversion, the
 //                          existing tested path).

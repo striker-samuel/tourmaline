@@ -15,7 +15,7 @@
 // Buffers arrive via buffer-device-address push (vk::BufferPointer, same as
 // gfxfilter.cs.hlsl) so no descriptor/pipeline-layout changes are needed.
 //
-// C++ mirror: Engine/Renderer/gfx_filter.h (HzbPush, 48 bytes).
+// C++ mirror: Engine/Renderer/visibility_hiz.h (HzbPush, 48 bytes).
 
 #define HZB_PASS
 #include "common.hlsli"

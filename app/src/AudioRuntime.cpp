@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 // AudioRuntime — see AudioRuntime.h. The spatial reasoning lives HERE
-// (the mixer stays amplitude+pan-only): emitter poses from the merged
-// world's global transforms, the listener from the pinned pose or the
+// (the mixer does no 3D positioning — amplitude/pan/reverb only):
+// emitter poses from the merged world's global transforms, the listener
 // renderer's active camera, linear distance rolloff + right-axis pan
 // per voice per frame.
 
@@ -580,15 +580,13 @@ class AudioRuntimeElement final : public engine::IAppElement {
     // The last-applied environmental target (change detection).
     tour::audio::EnvironmentReverb m_envTarget{};
 
-    // The content session this layer resolves through. THE SHARED	// LANE (the consolidated
+    // The content session this layer resolves through. THE SHARED LANE (the consolidated
     // content architecture): a --project launch builds ONE session up front (RunPakApp — the
     // manifest adopted into the registry, every listed pak's backend adopted as the preloads
     // resolve, the loose discovery tree registered as an override) and hands it to the element here
     // — the SAME images + provider selection the world load used, no re-read of the archives, no
     // divergent override state. THE LAZY LANE (a host with no launch session): the façade + the
-    // scene layer build at FIRST USE from the manifest path — ProjectScenes then opens + mounts the
-    // paks into the ELEMENT'S OWN overlay (the apphost's attach-time vfs is scoped to the world
-    // source call, nothing persists).
+    // scene layer build at FIRST USE from the manifest path.
     std::string m_tappPath; // the lazy lane's manifest (empty on the shared lane)
     std::shared_ptr<ProjectRuntime> m_session; // the SHARED session (null on the lazy lane)
     std::shared_ptr<ProjectRuntime> m_rt;      // the built session (shared or lazily loaded)

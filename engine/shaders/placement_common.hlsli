@@ -3,7 +3,7 @@
 
 // placement_common.hlsli — GPU mirror of placement_ids.h + placement_point.h.
 // Bit-identical 32-bit integer hashing (plain uint math, no Int64 — the
-// engine avoids Capability Int64, cf. gfx_filter.h FilterPush comments).
+// engine avoids Capability Int64, cf. gfx_types.h's push-constant comments).
 // DXC 2018-compatible: no static_assert at global scope.
 
 #ifndef PLACEMENT_COMMON_HLSLI

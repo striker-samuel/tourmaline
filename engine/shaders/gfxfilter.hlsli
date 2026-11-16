@@ -2,8 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 // Shared GeometryFX-filter structs (Vulkan port, per-cluster).
-// Included by gfxfilter.cs.hlsl (compute) and gfxfiltered.vert.hlsl.
-// C++ mirrors: Engine/Renderer/gfx_filter.h (static_asserted sizes).
+// Included by default.vert.hlsl, shadow.vert.hlsl, uvflat.vert.hlsli,
+// gpu_scene_meshlet.task.hlsl, gpu_scene_raster_hiz_cull.cs.hlsl,
+// gfxskinbounds.cs.hlsl, gfxcone_debug.cs.hlsl, gfxseed.hlsli, gfxmesh.hlsli.
+// C++ mirrors: Engine/Renderer/gfx_types.h (static_asserted sizes).
 
 #pragma once
 
@@ -47,7 +49,7 @@
 #define GFX_MAX_BATCHES 65536
 #define GFX_MAX_BATCH_SLOTS 4194304
 // Explicit bounds (this DXC rejects unsized struct members; mirrors the
-// C++ capacities in Engine/Renderer/gfx_filter.h).
+// C++ capacities in Engine/Renderer/gfx_types.h).
 #define GFX_MAX_VERTICES 44739242   // 512MB pos heap / 12B (see mesh.cpp)
 #define GFX_POS_WORDS 134217726     // GFX_MAX_VERTICES * 3 (uint view below)
 #define GFX_MAX_CLUSTERS 262144
@@ -73,8 +75,8 @@ struct GfxClusters  { GfxClusterData cluster[GFX_MAX_CLUSTERS]; };
 // (center.xyz, radius) per draw index, OBJECT space; the deformed twin of
 // GfxMeshBounds' static unions, written DEFINITIVELY for every skinned draw
 // index each frame the pass runs — dropped/capped draws get a keep-sphere
-// radius 1e30). One buffer, one pointer: the consumers (gfxbatchcull /
-// gfxdrawcull / gfxfilter's ClusterOccluded + PublishDrawDemand) index the
+// radius 1e30). One buffer, one pointer: the consumers (ClusterOccluded +
+// PublishDrawDemand, defined below) index the
 // region they need.
 //
 // THE DYNAMIC-CAPACITY LAYOUT RULE (the fixed layout made the tail's
@@ -251,7 +253,7 @@ struct GfxIndirectCmd
 struct GfxIndirect { GfxIndirectCmd cmds[GFX_MAX_BATCH_SLOTS]; };
 
 // ---------------------------------------------------------------------------
-// GPU cull chain (Northlight-style; mirrors C++ gfx_filter.h). CPU seeds
+// GPU cull chain (Northlight-style; mirrors C++ gfx_types.h). CPU seeds
 // the draw list + candidate slot layout; gfxbatchcull -> GfxSeedDepth ->
 // GfxHiz -> gfxdrawcull -> gfxfilter all run GPU-side with zero mid-pipeline
 // CPU readbacks. The temporal link (seed = prev-kept AND curr-kept,
@@ -329,7 +331,7 @@ struct GfxMeshes { GfxMeshEntry mesh[GFX_MAX_MESHES]; };
 
 // ---------------------------------------------------------------------------
 // Shared cull math (CPU mirrors: renderview.h ExtractViewPlanes /
-// RenderViewIntersectsSphere / MaxBasisScale, gfx_filter.cpp CullCluster).
+// RenderViewIntersectsSphere / MaxBasisScale, gfx_types.cpp CullCluster).
 // ---------------------------------------------------------------------------
 
 // Gribb-Hartmann plane extraction from the (untransposed, GLM-bytes) view
@@ -788,7 +790,7 @@ struct GfxFilterPush
 //static_assert(sizeof(GfxFilterPush) == 256);
 
 // ---------------------------------------------------------------------------
-// GPU cull chain pushes (C++ mirrors: gfx_filter.h BatchCullPush /
+// GPU cull chain pushes (C++ mirrors: gfx_types.h BatchCullPush /
 // DrawCullPush, static_asserted sizes).
 // ---------------------------------------------------------------------------
 
@@ -863,9 +865,9 @@ struct GfxBatchCullPush
 // math, on the animated face normals), so the batch cull sees the ANIMATED
 // silhouette (the static clusters[] stays bind-pose). Writes the
 // GfxSkinBoundsTable: cluster[per candidate slot] + the per-draw deformed
-// union-bound tail drawBound[drawIdx]. C++ mirror: gfx_filter.h
+// union-bound tail drawBound[drawIdx]. C++ mirror: gfx_types.h
 // State::skinBounds* / FitDeformedCone (the tested CPU reference of the cone
-// fit) / gfx_filter.cpp PushAndDispatchSkinBounds.
+// fit) / gfx_types.cpp PushAndDispatchSkinBounds.
 struct GfxSkinBoundsPush
 {
     GPU_PTR_READ(GfxDraws) draws;      // this frame (misc2.z = slot base)
@@ -892,7 +894,7 @@ struct GfxSkinBoundsPush
 // skinned draws (GPU-driven: zero latency, no readback — the retired CPU
 // readback path corrupted the host heap, its download destinations dangled
 // through vector reallocation between submit and poll). Runs after
-// GfxSkinBounds, before Main's overlay draw. C++ mirror: gfx_filter.h
+// GfxSkinBounds, before Main's overlay draw. C++ mirror: gfx_types.h
 // (ConeDebugPush).
 struct GfxConeDebugPush
 {

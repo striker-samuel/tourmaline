@@ -9,8 +9,8 @@
 // treatment (anim attach, cooked static flags, the resolve).
 
 #include "ProjectScenes.h"
-#include "MapSceneStreaming.h" // canonical direct World Map streaming adapter
 #include "LegacyMapSceneStreaming.h" // explicit compatibility adapter: compile-check only
+#include "MapSceneStreaming.h"       // canonical direct World Map streaming adapter
 
 #include "PakPreload.h"
 #include "PakWorldLoader.h"
@@ -225,8 +225,8 @@ std::optional<ProjectScenes::SceneTarget> ProjectScenes::ResolveSceneTarget(uint
         t.sceneName = scenes[0].name;
     } else {
         err = "the scene pak '" + record->pak + "' carries " + std::to_string(scenes.size()) +
-              " scenes and the manifest"
-              " row records no cooked name — recook (the build records"
+              " scenes and the registry"
+              " record carries no cooked name — recook (the build records"
               " the name since the scene-name token)";
         return std::nullopt;
     }

@@ -58,7 +58,7 @@
 // GfxSkinBoundsTable per (view, flight) slice (same slot indexing the batch
 // cull already uses), so multi-instance skinned draws stay independent.
 //
-// C++ mirror: Engine/Renderer/gfx_filter.h (GfxSkinBoundsPush /
+// C++ mirror: Engine/Renderer/gfx_types.h (GfxSkinBoundsPush /
 // FitDeformedCone — the tested CPU reference of the cone fit).
 
 #define GFXSKINBOUNDS_PASS

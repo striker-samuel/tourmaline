@@ -5,9 +5,9 @@
 // ProjectRuntime: the apphost's PUBLIC project façade — the SESSION
 // over the content registry (the consolidated content architecture).
 // The generated project.h gives game code STABLE IDS at compile time;
-// the appmanifest's [ids] table mirrors them at run time. This class
-// bridges the two: it OWNS the manifest (the identity source, until
-// per-pak identity metadata replaces it) and ONE
+// the paks' own "#ids" identity tables mirror them at run time. This
+// class bridges the two: it OWNS the manifest (the pure release
+// pointer) and ONE
 // tour::asset::ContentRegistry — the single content-resolution
 // authority where BOTH the stable-id form and the logical-path form
 // converge on the same effective provider (ReadAsset(id) and
@@ -69,10 +69,10 @@ class ProjectRuntime {
     // paks" walks (ProjectScenes' adopt-or-open, the log lines).
     [[nodiscard]] std::vector<std::string> PakNames() const;
 
-    // The parsed manifest (the entry pak/scene, the pak order, the id
-    // table — see Engine/Asset/appmanifest.h). EMPTY in the discovery
-    // lane (no deployment manifest — PakNames() + the registry are
-    // the authority there).
+    // The parsed manifest (the entry pak/scene + the pak order — see
+    // Engine/Asset/appmanifest.h). EMPTY in the discovery lane (no
+    // deployment manifest — PakNames() + the registry are the
+    // authority there).
     [[nodiscard]] const smvk::AppManifest& Manifest() const {
         return m_manifest;
     }
@@ -151,17 +151,17 @@ class ProjectRuntime {
     // Attaches the COMPILED catalog (the generated header's Assets
     // array + CatalogFingerprint — `project::Assets` is
     // `inline constexpr`, so the game passes a raw pointer + count).
-    // Validates it against the DEPLOYED manifest:
-    //   * the fingerprint line (when present) must equal the compiled
+    // Validates it against the DEPLOYED record table (the paks' own
+    // "#ids" identity rows, discovered into the registry):
+    //   * the fingerprint must equal the registry's RecordFingerprint
     //     fold — a mismatch is a version skew between the game binary
     //     and its content (recook the project or rebuild the game;
     //     fail loudly, never guess);
-    //   * row-by-row: every compiled row must resolve to a manifest
-    //     [ids] row with the same id, kind and path — IDENTITY ONLY
+    //   * row-by-row: every compiled row must resolve to a record
+    //     with the same id, kind and path — IDENTITY ONLY
     //     (the package index and filenames are selection state: the
     //     same catalog proves itself against ANY package layout).
-    // A manifest with no fingerprint line (pre-contract) degrades to
-    // the row-by-row form. Idempotent (re-attach re-validates).
+    // Idempotent (re-attach re-validates).
     bool AttachCompiledCatalog(const CompiledAssetDesc* assets,
                                size_t assetCount,
                                uint64_t fingerprint,
@@ -232,9 +232,10 @@ class ProjectRuntime {
     std::string m_baseDir;
     // THE CONTENT REGISTRY (Engine/Asset/content_registry.h): the
     // single resolution authority this façade fronts — the record
-    // table (adopted from the manifest at Load), the provider set
-    // (base manifest paks + the host's overrides) and BOTH byte
-    // lanes (the adopted-backend image lane + the SMP8 pager lane).
+    // table (discovered from each pak's "#ids" blob at Load), the
+    // provider set (base manifest paks + the host's overrides) and
+    // BOTH byte lanes (the adopted-backend image lane + the SMP8
+    // pager lane).
     // The per-pak backend/pager caches the façade used to own live
     // HERE now (one image + one pager per archive, on the provider).
     tour::asset::ContentRegistry m_registry;

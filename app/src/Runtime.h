@@ -113,7 +113,7 @@ class Context {
     std::shared_ptr<tour::World*> m_worldHandle;
     std::unique_ptr<app::ProjectScenes> m_scenes;
     std::unique_ptr<app::AudioGraphs> m_audio;
-    smvk::OverlayVfs m_vfs; // protocol surface only (see content(8))
+    smvk::OverlayVfs m_vfs; // protocol surface only (see docs/content_as_code.md)
 };
 
 // ---- THE GAME BEHAVIOUR ----------------------------------------------------
@@ -224,7 +224,7 @@ int RunGame(GameBehaviour* game,
             GameLaunchOptions options = {}) {
     app::PakAppConfig cfg;
     cfg.run = engine::RunConfig::Parse();
-    cfg.run.Log(); // the TOURMALINE_* pins (the sample's old block)
+    cfg.run.Log(); // the TOURMALINE_* pins
     std::vector<const char*> args = ArgsWithDefaultEntry(argc, argv, options.defaultManifest);
     int exitCode = 0;
     if (!app::ParsePakAppArgs(int(args.size()), args.data(), cfg.cli, exitCode))

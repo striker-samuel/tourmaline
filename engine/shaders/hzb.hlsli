@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // Hierarchical-Z (occlusion) shared structs (Vulkan port).
-// C++ mirrors: Engine/Renderer/gfx_filter.h (HzbPush, 48 bytes).
+// C++ mirrors: Engine/Renderer/visibility_hiz.h (HzbPush, 48 bytes).
 //
 // Conventions (must match app + forwardplus.cs.hlsl):
 //   - Reversed infinite-Z: depth value 1 = near, 0 = far/sky (clear 0).
@@ -52,7 +52,7 @@ struct HzbSpdCounter
     uint completed; // groups that published mips 0..6 this dispatch
 };
 
-// C++ mirror: Engine/Renderer/gfx_filter.h (HzbSpdPush, 104 bytes, DX
+// C++ mirror: Engine/Renderer/visibility_hiz.h (HzbSpdPush, 104 bytes, DX
 // layout — two 64-bit BDAs lead, four scalars, the 16 mip float
 // offsets, then the tail). mipOffsets carries gfx::HzbMipOffsetFloats
 // per level (only [0, mipCount) is meaningful); groupCount is the

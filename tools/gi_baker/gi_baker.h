@@ -55,9 +55,9 @@ struct Args {
     // + KTX averages; known to print chromatic dots on contrasty scenes).
     // "r,g,b" bakes a custom uniform tint instead of grey.
     std::string uniformAlbedo = "0.7";
-    // Regular-lattice prototype (Ready-at-Dawn style, .sgrv alongside
-    // the adaptive .sggi): fixed OBB grid, diagonal projection, hardware
-    // trilinear at runtime. Empty regularOut = no regular bake.
+    // Regular-lattice bake (Ready-at-Dawn style, .sgrv): fixed OBB grid,
+    // diagonal projection, hardware trilinear at runtime. Empty
+    // regularOut = no regular bake.
     std::string regularOut;
     std::string regMin, regMax;       // "x,y,z" world AABB (axis-aligned OBB)
     std::string regDims = "32,16,32"; // "nx,ny,nz"
@@ -68,9 +68,8 @@ struct Args {
     // Static spot lights for the bake (same spec as PakCooker --spot).
     std::vector<std::string> spots;
     // Convex GI volumes (the probes-only pivot's confined-space path):
-    // --cv-spec authoring file, baked by sparse radiance+depth captures
-    // + cubemap reprojection into dense probe grids (BO3 pipeline).
-    // Empty giVolumeSpec = no convex bake.
+    // --gi-volume-spec authoring file, baked by direct per-probe path
+    // tracing into dense probe grids. Empty giVolumeSpec = no convex bake.
     std::string giVolumeSpec;
     uint32_t giVolumeDirs = 1536;        // capture direction count (6*16^2)
     float giVolumeCaptureSpacing = 0.0f; // INERT (per-probe bake — no capture lattice); CLI compat

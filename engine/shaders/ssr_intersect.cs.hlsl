@@ -32,7 +32,7 @@
 //     direction.z < 0).
 //   - the depth hierarchy is the app's MAX-reduce SSR pyramid (hzb_max,
 //     nearest-surface per block) in the BDA HzbBuffer with manual mip
-//     offsets (mirroring gfx_filter.h's HzbMipCount layout byte-for
+//     offsets (mirroring visibility_hiz.h's HzbMipCount layout byte-for
 //     byte) — NOT a texture chain.
 // The miss case: the ray's OWN radiance slot is zeroed at the top of
 // mainCS (the early rejects return before any other write — see the
@@ -442,7 +442,7 @@ void mainCS(uint3 groupId : SV_GroupID, uint groupIndex : SV_GroupIndex)
     // the app's MAX-reduce SSR pyramid (nearest-surface per block —
     // the ray-trace direction, unlike the culling MIN pyramid).
     int mipCount = int(min(sp.ssrHzbMipCount, 16u));
-    // Per-mip (dims, offset) table (mirrors gfx_filter.h's HzbMipDims +
+    // Per-mip (dims, offset) table (mirrors visibility_hiz.h's HzbMipDims +
     // HzbMipOffsetFloats byte-for-byte: repeated max((d+1)>>1, 1),
     // prefix-sum offsets).
     uint hzbOff[16]; uint hzbW[16]; uint hzbH[16];

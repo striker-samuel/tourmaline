@@ -50,9 +50,9 @@
 // ---- v1 scope ----
 // The provider seam + interest flow + the frame sequence below, all
 // CPU-pure and testable. The request dedupe/priority/dependency engine
-// and the per-layer CPU/GPU budget enforcement grow here next; the
-// WorldFields provider (Engine/WorldFields/WorldFieldProvider.h) is the
-// first live client, terrain/ecology/scene follow.
+// and the per-layer CPU/GPU budget enforcement grow here next; live
+// providers today include WorldFields, scene, placement, environment
+// and cubemap (see the StreamLayer enum below).
 // ============================================================================
 
 #include <algorithm>
@@ -360,7 +360,8 @@ class WorldPartition {
     // Providers are borrowed from the renderer. Release registrations before
     // a renderer detaches so a later onAttach cannot register duplicates.
     void ClearProviders() {
-        for (auto* provider : providers_) provider->SetBudgetPool(nullptr);
+        for (auto* provider : providers_)
+            provider->SetBudgetPool(nullptr);
         providers_.clear();
         interests_.clear();
         requestCount_ = 0;

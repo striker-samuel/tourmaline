@@ -308,7 +308,7 @@ Both effects run within one compiled `ProjectLit` family; the low 8 and next 8 u
 **Phase A — baseline userdata and hooks**
 
 1. Define runtime `MaterialInstanceHandle`, ownership and base/override resolution in the World/material layer. Start with runtime mesh entities; explicitly decide whether baked/static scene nodes can attach instances in this release.
-2. Add `userData` to the draw request and CPU-to-GPU draw path. Update `gfx_filter.h`, `gfxfilter.hlsli` and any code that initializes/copies draw records. Preserve all existing fields and asserts.
+2. Add `userData` to the draw request and CPU-to-GPU draw path. Update `gfx_types.h`, `gfxfilter.hlsli` and any code that initializes/copies draw records. Preserve all existing fields and asserts.
 3. Add the flat varyings to `default.vert.hlsl`, `gfxfiltered.vert.hlsl`, `gfxfilter.mesh.hlsl`, the lit body's default `PSIn`, and the mesh lit `PSIn`.
 4. Audit the direct-path push scratch; add the CPU push of byte 244 alongside the existing byte-240 dither flag without breaking the generated push ABI.
 5. Add typed hook structs, default no-op functions, and the two hook calls in the shared lit body. Ensure standard rendering still matches baseline.
@@ -360,7 +360,7 @@ The useful primitive is **one 32-bit runtime value** delivered reliably to an **
 - [Existing shader entry wrapper](https://github.com/striker-samuel/tourmaline/blob/master/engine/shaders/default_lit.frag.hlsl)
 - [Mesh fragment wrapper](https://github.com/striker-samuel/tourmaline/blob/master/engine/shaders/gfxmesh_lit.frag.hlsl)
 - [Material definition](https://github.com/striker-samuel/tourmaline/blob/master/engine/include/Engine/Renderer/mesh.h)
-- [GPU draw structure](https://github.com/striker-samuel/tourmaline/blob/master/engine/include/Engine/Renderer/gfx_filter.h)
+- [GPU draw structure](https://github.com/striker-samuel/tourmaline/blob/master/engine/include/Engine/Renderer/gfx_types.h)
 - [GPU draw HLSL mirror](https://github.com/striker-samuel/tourmaline/blob/master/engine/shaders/gfxfilter.hlsli)
 - [Direct vertex shader](https://github.com/striker-samuel/tourmaline/blob/master/engine/shaders/default.vert.hlsl)
 - [Filtered vertex shader](https://github.com/striker-samuel/tourmaline/blob/master/engine/shaders/gfxfiltered.vert.hlsl)

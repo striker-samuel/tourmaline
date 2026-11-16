@@ -7,7 +7,7 @@
 // Composition, never duplication: every load rides an EXISTING layer -
 // the AssetStore (the shared-resource ownership: the found-or-loaded
 // carrier acquire/release + the asset-side refs that keep carriers
-// alive across scene removals), the [ids] join (ProjectRuntime), the
+// alive across scene removals), the record resolution (ProjectRuntime), the
 // pak backends (OpenPak's shared cache), the cluster deserializer
 // (through the store's cluster-source seam), and the GI build/publish
 // (WorldRenderer's BuildGiVolumeSetFromPaths + the adopt entries).

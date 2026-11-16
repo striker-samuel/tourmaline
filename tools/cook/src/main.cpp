@@ -1644,8 +1644,8 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
             continue;
         }
         // ---- meshlet-walk audit: localIndex -> window -> global ----
-        // Reproduces the runtime indirection exactly (gfx_filter
-        // AppendMeshlet / BuildMeshletIndirectCommands):
+        // Reproduces the runtime indirection exactly (gpu_scene_static.cpp's
+        // AppendMeshlet + meshlet.h's BuildMeshletIndirectCommands):
         //   local   = triangles[triangleOffset + k]
         //   global  = vertices[vertexOffset + local]
         // then EVERY attribute (uv1/chartId here) must come from that

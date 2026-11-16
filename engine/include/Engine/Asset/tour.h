@@ -773,8 +773,8 @@ bool SetNodeUuid(Scene& scene, uint32_t node, const std::string& uuid);
 // uniquely, or empty when even the full path is ambiguous.
 std::string DagFullPath(const Scene& scene, uint32_t node);
 std::string DagShortestUniquePath(const Scene& scene, uint32_t node);
-// Resolve a full path, a '/'-separated suffix from any depth, or a
-// bare name (unique match only).
+// Resolve a full path or a '/'-separated suffix from any depth (the
+// bare-name unique match lives in ResolveDeleteTarget, not here).
 bool ResolveDagPath(const Scene& scene, const std::string& path, uint32_t& out);
 
 // Delete addressing shared by the cook replay and the editor live

@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 // CPU reference planner for a future GPU-scene-driven instanced raster path.
-// This is NOT a draw consumer and does not replace gfx_filter's indirect path.
+// This is NOT a draw consumer and does not replace the filtered renderer's
+// indirect path (gfx_types.h).
 // Candidates are selected per view; persistent identity lives ONLY in the DB.
 
 #include <Engine/Renderer/gpu_scene_world.h>

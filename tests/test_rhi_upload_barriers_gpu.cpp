@@ -17,7 +17,7 @@
 // The upload declares its FIRST consumer (the compute rewrite:
 // Compute / ShaderRead|ShaderWrite) - the placement seed's exact hint
 // shape. The draw's hint uses the production pairing (IndirectCommandRead
-// @ PipelineStageBit_DrawIndirect - gfx_filter's AddConsumeHints rule;
+// @ PipelineStageBit_DrawIndirect - gfx_types' AddConsumeHints rule;
 // the engine's AllGraphics maps to the shader-stage union ONLY and never
 // covers the fixed-function command fetch). With correct hints the test
 // asks the ENGINE question PR2 exists for: does the frame's
@@ -253,7 +253,7 @@ int main() {
                           smvk::AttachmentLoadOp::Clear,
                           smvk::AttachmentStoreOp::Store,
                           smvk::ClearColor(0.1f, 0.2f, 0.3f, 1.0f));
-            // The PRODUCTION pairing rule (gfx_filter's AddConsumeHints):
+            // The PRODUCTION pairing rule (gfx_types' AddConsumeHints):
             // the indirect command fetch runs at the fixed-function
             // DRAW_INDIRECT stage - the engine's AllGraphics maps to the
             // shader-stage union ONLY, so IndirectCommandRead MUST pair

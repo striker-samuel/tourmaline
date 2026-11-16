@@ -53,7 +53,7 @@ struct KindRows {
     const std::vector<CatalogEntry>* entries;
 };
 
-std::array<KindRows, 10> Kinds(const ProjectCatalog& c) {
+std::array<KindRows, 11> Kinds(const ProjectCatalog& c) {
     return {{
         {"SCENE", "TOUR_C_KIND_SCENE", &c.scenes},
         {"TEXTURE", "TOUR_C_KIND_TEXTURE", &c.textures},
@@ -65,6 +65,7 @@ std::array<KindRows, 10> Kinds(const ProjectCatalog& c) {
         {"SPRITESET", "TOUR_C_KIND_SPRITESET", &c.spritesets},
         {"STATEMACHINE", "TOUR_C_KIND_STATEMACHINE", &c.statemachines},
         {"NAVMESH", "TOUR_C_KIND_NAVMESH", &c.navmeshes},
+        {"SHAPE", "TOUR_C_KIND_SHAPE", &c.shapes},
     }};
 }
 

@@ -67,7 +67,7 @@ struct CommandBuffer final {
     void BindIndexBuffer(BufferHandle buffer, uint64_t offset = 0);
 
     // Indirect indexed draws consuming VkDrawIndexedIndirectCommand
-    // entries produced by the filter compute (see Engine/Renderer/gfx_filter.h).
+    // entries produced by the filter compute (see Engine/Renderer/gfx_types.h).
     // The indirect buffer must have been created with BufferType_Indirect.
     void DrawIndexedIndirect(BufferHandle buffer,
                              uint64_t offset,

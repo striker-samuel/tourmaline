@@ -58,7 +58,7 @@ import pixel_compare
 # dispatches seed + Hi-Z gate + history in a frame.
 WITNESS = "[GpuSceneTemporal] engaged:"
 UNKNOWN_RUNCONFIG_PIN = "[RunConfig] unknown TOURMALINE_* var (typo?):"
-# smvk::gfx::CullFlagBit_HzbOcclusion (gfx_filter.h) - gates the gpu-scene
+# smvk::gfx::CullFlagBit_HzbOcclusion (gfx_types.h) - gates the gpu-scene
 # instance Hi-Z test AND GfxFilter's cluster-level HZB test.
 HZB_OCCLUSION_BIT = 0x40
 # The engine's default cull flags with the HZB occlusion bit cleared

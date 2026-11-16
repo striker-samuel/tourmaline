@@ -21,7 +21,7 @@ Forward-compat rule everywhere: **unknown verbs / attrs warn-and-skip, never abo
     (`ApplyTourToCluster`), before meshopt/LOD/bake so pool indices match.
 * WYSIWYG contract: `deterministic source import + tour replay = cooked pak`.
 
-File order (writer-enforced, `SaveTour`, `engine/src/Asset/tour.cpp:461`):
+File order (writer-enforced, `SaveTour`, `engine/src/Asset/tour.cpp:999`):
 
 ```
 1. //Name: <file> / //Last modified: <stamp>   (comments, Maya header flavor)
@@ -32,7 +32,6 @@ File order (writer-enforced, `SaveTour`, `engine/src/Asset/tour.cpp:461`):
 6. <direct commands> + tabulated -ref children (indented with \t)
 7. override ...                                 (0..N, ordered — later wins)
 8. editorSet ...                                (0..N, editor-only, never cooked)
-9. cook ...                                     (0..1)
 ```
 
 Every statement ends with `;`. `//` starts a comment outside quotes.
@@ -56,7 +55,7 @@ create (human tabulation only — parse order is file order).
 Minimal grammar (informal):
 
 ```
-tour      := header? source? reference* fileInfo* fileNode* command* override* editorSet* cook?
+tour      := header? source? reference* fileInfo* fileNode* command* override* editorSet*
 header    := "//Name:" TEXT NL "//Last modified:" TEXT NL
 command   := verb flags ";" ("//" TEXT)?
 flags     := ("-n" UINT | "-m" UINT | "-p" (UINT|QUOTED) | "-at" WORD
@@ -136,25 +135,12 @@ editorSet -k "path.remap.tex/a.ktx2" -v "tex/b.ktx2";
 `ApplyTourToCluster` ignores this section. Carries: IBL env, placement graphs,
 path remaps, viewport prefs. Editor IBL must never leak into paks.
 
-### 3.6 `cook` — cook-settings interchange (0..1 line)
+### 3.6 `exportSettings` — cook-settings node (replaced the old `cook` block)
 
-```
-cook -outPak "" -meshopt on -lods off -lodRatios "0.75,0.5,0.3,0.15" -lodError 0.01
-  -lightmap off -lmMetersPerTexel 0.25 -lmLobes 12 -lmAtlasWidth 1024 -lmRays 256
-  -lmProxyRes 256 -lmExcludeSmall 0 -lmExcludeKw "" -sunAzimuth 30 -sunElevation 55
-  -sunIntensity 10000 -skyIntensity 600 -cubemap off -cubemapName "" -cubemapSize 128
-  -cubemapRays 128 -meshlets off -meshletVerts 64 -meshletTris 124 -meshletConeWeight 0
-  -giCvol on -giWorld on -autoKtx on;
-```
-
-* Mirrors `TourCook` (`engine/include/Engine/Asset/tour.h:68`) / `CookSettings`
-  (`editor/src/editor_app.h:235`).
-* PakCooker consumes as defaults under `--tour`; **CLI wins on conflict**.
-* Destination (`outPak`) is conventionally empty in-file; the editor fills it at cook time.
-* Legacy inputs tolerated: `-lmDensity` (texels/m → m/texel), `-lmBudget` (ignored).
-* Struct fields: see `TourCook` — meshopt/lods/lodRatios/lodError, lightmap +
-  `lmMetersPerTexel/lmLobes/lmAtlasWidth/lmRays/lmProxyRes/lmExcludeSmall/lmExcludeKw`,
-  sun/sky, cubemap stage, meshlets, `giCvol/giWorld` (GiBaker loose bakes), `autoKtx`.
+Cook settings are no longer a dedicated `cook` line: they live as an
+`exportSettings` scene node (`createNode -at exportSettings` + `setExportAttr`
+verbs, payload `SceneExportSettings` / `Scene::exportForNode`). See
+`engine/include/Engine/Asset/tour.h` (`ExportSettingsFromDoc`, `ApplyExportAttr`).
 
 ---
 
@@ -169,7 +155,9 @@ cook -outPak "" -meshopt on -lods off -lodRatios "0.75,0.5,0.3,0.15" -lodError 0
   (`CmdToTour` / `TourToCmd`, `editor/src/editor_app.h:1091`):
   `WorldToCluster` / `ClusterToWorld`, `WorldMatToCluster` / `ClusterMatToWorld`
   (single-cluster scenes; `-1` = unmapped).
-* Recorded node names are **verify-only**: warn on mismatch, apply by id anyway.
+* Recorded node names and uuids are **resolution keys** on the generic node
+  verbs (uuid exact → unique full name → DAG suffix → numeric id); only
+  keyless numeric commands keep the verify-only warn-and-apply-by-id path.
 
 ### 4.2 Created-node `-ref` addressing
 
@@ -180,12 +168,13 @@ them by creation-order file index within their family:
 |---|---|---|
 | `0x80000000` `kCreateLightRefBase` | light-family (`createLight`, `createNode pointLight/spotLight`) | `setLightAttr -ref k` |
 | `0x40000000` `kCreateTerrainRefBase` | terrain-family (`createTerrain`, `createNode terrain`) | `terrainPaint -ref k` + generic verbs (`Rename/SetTranslate/.../Parent`) |
-| `0x20000000` `kCreateCvolRefBase` | cvolume-family (`createCvolume`, `createNode cvolume`) | `setCvolAttr -ref k` |
+| `0x20000000` `kCreateGiVolumeRefBase` | givolume-family (`createGiVolume`, `createNode -at givolume`) | `setGiVolumeAttr -ref k` |
 | `0x10000000` `kCreateCubemapRefBase` | cubemap-family (`createCubemap`, `createNode cubemap`) | `setCubemapAttr -ref k` |
 
 Bases are disjoint; a node carries at most one. Families span both legacy and
 unified `createNode` spellings in one file-order index each.
-Editor mirrors with `m_tourCreatedNodes/Cvol/Cubemap/TerrainNodes` (rebuilt every replay).
+Editor mirrors with `m_tourCreatedNodes` / `m_tourCreatedGiVolumeNodes` /
+`m_tourCreatedCubemapNodes` / `m_tourCreatedTerrainNodes` (rebuilt every replay).
 
 ### 4.3 Symbolic parents (`-p` quoted form)
 
@@ -210,7 +199,7 @@ Resolution (`ResolveDeleteTarget`): **uuid exact → unique full-name → DAG-pa
 suffix (`grp/mesh`, any depth) → id disambiguator** (id valid + still naming the
 same node) → legacy nameless id. False = warn-and-skip.
 
-Maya parity (`tour.h:437`):
+Maya parity (see `ResolveDeleteTarget`/`SetNodeUuid` in `tour.cpp`):
 
 | Maya | Here |
 |---|---|
@@ -219,18 +208,18 @@ Maya parity (`tour.h:437`):
 | `MDagPath` (location) | `DagFullPath` / `DagShortestUniquePath` / `ResolveDagPath` |
 | name+namespace (human) | `getNodeName` (namespaced for refs) |
 
-* `TourReparent` (`tour.cpp:1729`): index-preserving, cycle-guarded, refuses root
+* `TourReparent` (`tour.cpp:3461`): index-preserving, cycle-guarded, refuses root
   and `MAX_NODE_LEVEL` overflow, appends as last child, fixes subtree levels.
 * Delete never renumbers, never reclaims pool resources — only LINKS drop
-  (`mesh/material/light/cvol/cubemapForNode`).
+  (`mesh/material/light/givolume/cubemapForNode`).
 
 ---
 
 ## 5. Command verbs
 
-`Verb` enum (`tour.h:134`), `Command` struct (`tour.h:291`), writer
-(`tour.cpp:114`), parser (`tour.cpp:1161`), replay (`tour.cpp:1967`),
-one-liners (`Describe`, `tour.cpp:2828`).
+`Verb` enum (`tour.h:182`), `Command` struct (`tour.h:476`), writer
+(`SaveTour`, `tour.cpp:999`), parser (`LoadTour`, `tour.cpp:1642`), replay
+(`ApplyTourToCluster`, `tour.cpp:3920`), one-liners (`Describe`, `tour.cpp:5974`).
 
 ### 5.1 Node updates
 
@@ -302,13 +291,13 @@ material mints deterministic `editor://default`.
 `terrainPaint` ops: `raise|lower|flatten|smooth`. `-t` = worldX worldZ radius
 flattenTarget; `-v` = strength.
 
-**Convex volumes** — `vec` = box center; `svec` = full-extents size (m);
+**GI volumes** — `vec` = box center; `svec` = full-extents size (m);
 `vec4` = `(priority, spacing[m], insideFade[m], outsideFade[m])`, axis-aligned,
 rotation ignored by design:
 
 ```
-createCvolume -p 0 -name "CVol_1" -t 0 1 0 0 0.5 0.1 0.1 -s 8 4 8;
-	setCvolAttr -ref 0 -at spacing -v 0.5;
+createGiVolume -p 0 -name "GIVol_1" -t 0 1 0 0 0.5 0.1 0.1 -s 8 4 8;
+	setGiVolumeAttr -ref 0 -at spacing -v 0.5;
 ```
 
 Attrs: `priority/spacing/inside/outside/position/rotation/size/name`.
@@ -336,12 +325,12 @@ createTransform -p 0 -name "grp" -t 1 2 3 0 0 0 -s 1 1 1;
 createNode -at transform -p 0 -name "grp" -t 1 2 3 0 0 0 -s 1 1 1;
 createNode -at spotLight -p 0 -name "Spot_1" -t 1 2 3 1500 25 20 35 0 1;
 createNode -at terrain -p 0 -name "Terrain" -t 0 0 0 64 64 8 0.02 1 1 1 -m 0;
-createNode -at cvolume -p 0 -name "CVol_1" -t 0 1 0 0 0.5 0.1 0.1 -s 8 4 8;
+createNode -at givolume -p 0 -name "GIVol_1" -t 0 1 0 0 0.5 0.1 0.1 -s 8 4 8;
 createNode -at cubemap -p 0 -name "Cube_1" -t 0 1.5 0 -v 1.5;
 ```
 
-* `-at` type table (`CreateNodeTypes`, `tour.cpp:907`): DAG kinds
-  (`transform/pointLight/spotLight/terrain/cvolume/cubemap` — take scene presence)
+* `-at` type table (`CreateNodeTypes`, `tour.h:394`): DAG kinds
+  (`transform/pointLight/spotLight/terrain/givolume/cubemap` — take scene presence)
   vs system kinds (`material/file/image/camera` — parsed+validated, skipped at
   cook replay with a log; editor-managed).
 * DAG types **lower to legacy verbs at parse** (single payload path downstream);
@@ -456,7 +445,7 @@ AppImpl (window, smvk::Context m_context, swapchain, frame loop)
   (root ref + `<stem>.tour` or override) → `ReplayTourDoc` → overrides/env/refs/placement
   restore → autosave check. `m_tourPath = TourPath()` (`<stem>.tour` next to source).
 * `LoadPakIntoWorld`: read-only GPU world (`LoadClusterFromPak`), no glTF picking,
-  no tour; `TryLoadSiblingSglm` (`gi/<stem>.sglm`) + `TryLoadCvolumes` (`.cvmanifest`+`.cvol`).
+  no tour; `TryLoadSiblingSglm` (`gi/<stem>.sglm`) + `TryLoadGiVolumes` (`.givolumemanifest`+`.givolume`).
 * `OpenTourFile(path)`: load differing source if needed, replay doc into fresh stack,
   adopt cook block, file becomes save target.
 * `CloseScene`: reset world + history + refs/env/placement, save prefs
@@ -467,7 +456,7 @@ AppImpl (window, smvk::Context m_context, swapchain, frame loop)
 * `EditCmd` (`editor_commands.h:20`): every scene edit with exact inverse
   (`Rename/Translate/Rotate/Scale/AssignMaterial/SetMatAttr/SetNoLightmap/
   SetDitherCloseup/SetVisibility/Parent/CreateLight/CreateTerrain/TerrainPaint/
-  SetLightAttr/Delete/CreateTransform/CreateCVolume/SetCvolAttr/CreateCubemap/
+  SetLightAttr/Delete/CreateTransform/CreateGiVolume/SetGiVolumeAttr/CreateCubemap/
   SetCubemapAttr`). Before-state rides `before*` (+ `terrainBefore` patch,
   `delNodeMaps/delDrawItems` for deletes).
 * `Do` (execute+push+autosave), `PushDone` (already-executed live drags),
@@ -491,7 +480,7 @@ AppImpl (window, smvk::Context m_context, swapchain, frame loop)
 | Placement (never cooked) | `editor_placement*.cpp` | Scatter graphs → `PlacementProgram`; live CPU preview; `place.*` settings |
 | Images/file nodes | `editor_app.h:789` | `ImageDef` (path+wrap/colorspace/filter) → cluster texture on use; `fileNode` cooked, `editorSettings` not |
 | Paths | `editor_paths.cpp` | Unified source/tour/ref/URI/cook/atlas view; live relink = undoable slot reassign + `path.remap.*`; copy-fix is cook-safe |
-| Cook/Run | `editor_cook.cpp` | `CookToPak`: temp coalesced tour → `PakCooker --tour` pipe worker (`CookFeed` live console) → optional `GiBaker` cvol+world stages; the cooked pak runs in the App (`--pak`, never `--gltf` — the App loads our format only); pak scenes refuse cook |
+| Cook/Run | `editor_cook.cpp` | `CookToPak`: temp coalesced tour → `PakCooker --tour` pipe worker (`CookFeed` live console) → optional `GiBaker` givolume+world stages; the cooked pak runs in the App (`--pak`, never `--gltf` — the App loads our format only); pak scenes refuse cook |
 | LM inspect/export | `editor_lmexport.cpp` | `.sglm` atlas inspection and offscreen unwrapped PNG export; F8 now uses the full renderer's baked-GI debug rather than the retired lightmap-only shader |
 | Live preview | `editor_render.cpp`, `editor_live_preview_policy.h` | One inlined `WorldRenderer`: viewport 0 Lit by default or the chosen F8 baked view; propagates current selection and draws subtree bounds in the full renderer |
 | Asset browser | `editor_ui.cpp`, `editor_asset_inspect.h`, `editor_asset_browser_nav.h` | Typed inspectors for recognized asset formats; fallback file/directory metadata and bounded, read-only UTF-8 preview for other entries; hide internal cubemap/GI-cook artifacts from browser tiles and collections (not from disk or cooking) |
@@ -506,7 +495,7 @@ AppImpl (window, smvk::Context m_context, swapchain, frame loop)
 ### 7.6 UI layout (docks)
 
 Menu bar (gem mark) → tool topbar tabs (Select/Transform/Terrain/Placement/Modes) →
-left Outliner (Scene/VFS tabs) + right Inspector (node/World/material/env/cvol/cubemap/
+left Outliner (Scene/VFS tabs) + right Inspector (node/World/material/env/givolume/cubemap/
 overrides) + bottom dock (Overrides/Console) → central viewport(s) + viewport overlay
 (mode legend, Play bar, recovery/save/cook/terrain dialogs). Panels are siblings —
 never overlap the rendered view; splitters resize (`m_outlinerW/inspectorW/bottomDockH`).
@@ -535,7 +524,6 @@ never overlap the rendered view; splitters resize (`m_outlinerW/inspectorW/botto
  	setLightAttr -ref 0 -at intensity -v 1500;
  override -pattern "Building_.*" -at visibility -v 1 -enabled on;
  editorSet -k "env.sunAzimuth" -v "30";
- cook -outPak "" -meshopt on ...;
 ```
 
 ---
@@ -545,8 +533,8 @@ never overlap the rendered view; splitters resize (`m_outlinerW/inspectorW/botto
 * [ ] Writer keeps section order §1; `;` terminates; strings quoted (`Quote`).
 * [ ] New verbs/attrs: parser warns-and-skips old files; replay `strict=false` skips per-command.
 * [ ] New `createNode -at`: register in `kCreateNodeTypes` + family mapping + replay case.
-* [ ] Ids in-file are cluster-space; names verify-only; parents prefer symbolic `-p`.
+* [ ] Ids in-file are cluster-space; names/uuid are resolution keys; parents prefer symbolic `-p`.
 * [ ] Deletes carry uuid+name+id; replay drops links only.
 * [ ] Overrides: locals win, later rules win, evaluated last.
-* [ ] `editorSettings` never read by cook; `fileNodes`/`cook` always honored by cook.
+* [ ] `editorSettings` never read by cook; `fileNodes` always honored by cook.
 * [ ] Cook flows through temp coalesced tour; canonical `.tour` untouched until explicit save.

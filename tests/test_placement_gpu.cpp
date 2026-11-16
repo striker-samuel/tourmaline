@@ -2480,7 +2480,7 @@ int main() {
                           smvk::AttachmentStoreOp::Store,
                           smvk::ClearColor(0.1f, 0.2f, 0.3f, 1.0f));
             // The ordering edges: the draw reads the chain's outputs.
-            // TWO hint shapes (the production pairing rule, gfx_filter's
+            // TWO hint shapes (the production pairing rule, gfx_types'
             // AddConsumeHints): the indirect COMMAND fetch runs at the
             // fixed-function DRAW_INDIRECT stage — the engine's
             // AllGraphics maps to the SHADER-stage union only and NEVER

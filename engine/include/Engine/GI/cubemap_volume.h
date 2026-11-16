@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
-// GI volumes: shaped local probe grids cooked by cubemap
-// reprojection (Black Ops 3 style), blended over the sky base.
+// GI volumes: shaped local probe grids baked by direct per-probe path
+// tracing, blended over the sky base.
 //
 // The GI pivot: probes only. The ambient is carried by AUTHORED GI
 // volumes (one per room/street/alley), each a dense SG probe grid;

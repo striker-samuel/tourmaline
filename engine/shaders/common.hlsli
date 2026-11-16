@@ -445,7 +445,9 @@ struct SpotShadowBuffer
     GpuCascadeDescription tiles[MAX_LOCAL_SHADOW_TILES];
 };
 
-#define MAX_FP_LIGHTS 1024
+// Forward+ light-ring budget: derives from the single source of truth
+// (MAX_SIMULTANEOUS_LIGHTS in engine_limits.hlsli) so the two cannot drift.
+#define MAX_FP_LIGHTS MAX_SIMULTANEOUS_LIGHTS
 #define MAX_FP_TILES 32768
 #define MAX_FP_PER_TILE 128
 // Dedicated per-tile slots for type-2 probe entries (specular IBL): the
@@ -685,7 +687,11 @@ struct EnvTileCell {
 // fields at 1040, frameHot at 1296, dsVizParams at 1304, flags at 1312
 // (total 1328); the append-only tail adds giLevelLayers at 1320,
 // giVolumeMeanLayers at 1640, envZones at 1672, lightmaps at 1888,
-// probe pre-mix at 1952, worldFields at 1976 (total 2000).
+// probe pre-mix at 1952, worldFields at 1976, then the fog-shadow,
+// contact-shadow, GI-blend B-set, GI volume layer-table, stats and
+// octahedral/spec-atlas groups (each carries its own inline offset
+// comment below) — the struct's final size is pinned by the C++
+// static_assert in WorldRenderer.h (currently 3392).
 // The DS visualizer inputs live in the standalone DsVizParams payload
 // (NOT inlined here): viz-gated #ifdefs inside this struct once made the
 // CPU/GPU layout config-dependent.

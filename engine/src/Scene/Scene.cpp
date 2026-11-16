@@ -210,7 +210,7 @@ int addNode(Scene& scene, int parent, int level, bool autoName) {
         assert(nodeCount < int(kNodeSlotCountMax - 1) && "node slot space exhausted (2^20)");
         node = nodeCount;
         {
-            // TODO: resize aux arrays (local/global etc.)
+            // Resize the per-node aux arrays for the new slot.
             scene.localTransform.push_back(glm::mat4(1.0f));
             scene.globalTransform.push_back(glm::mat4(1.0f));
             scene.localTransformDouble.push_back(glm::dmat4(1.0));

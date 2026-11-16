@@ -182,8 +182,7 @@ static constexpr uint32_t kMaxViews = 64; // mirrors kMaxRenderViews
 // candidate capacities are runtime state (View::drawCapacity /
 // View::candidateCapacity, page-planned grow-only by FinalizeView), and
 // the cullState counter/diag words sit at the RUNTIME suffix
-// (View::drawCapacity + 0..4) carried to the shaders through the push
-// (FilterPush::cullStateCounterWord)
+// (View::drawCapacity + 0..4) carried to the shaders through the pushes
 // — never a compile-time macro. The fail-closed ceilings survive as
 // tour::gfx::kDeclaredMaxDraws / kDeclaredMaxCandidates.)
 
@@ -587,7 +586,7 @@ struct View {
     // persistent regions, allocated on slot creation, freed on teardown.
     // Base in uint32 indices; allocBits is the VMA virtual-allocation
     // bit pattern (VmaVirtualAllocation is a uint64_t handle; this header
-    // stays VMA-free, see the static_assert in gfx_filter.cpp).
+    // stays VMA-free, see the static_assert in gfx_types.cpp).
     uint32_t filteredBase[smvk::limits::MaxFramesInFlight] = {};
     uint64_t filteredAllocBits[smvk::limits::MaxFramesInFlight] = {};
     // RUNTIME per-(view, flight) capacities (the dynamic-capacity cutover,
@@ -691,8 +690,8 @@ struct State : StaticGeometry {
     // cull/draw/mesh/Hi-Z state the GPU-scene backends and GfxRenderer
     // still consume.
     uint32_t frameCounter = 0; // BeginFrame ++
-    // Draw-level texture-demand source (gfxfilter.cs.hlsl
-    // PublishDrawDemand; see the FilterPush tail + the demand API below).
+    // Draw-level texture-demand source (gfxfilter.hlsli
+    // PublishDrawDemand; see the demand API below).
     // meshBounds: per-mesh union bound over the mesh's clusters (xyz
     // center, w radius, OBJECT space), static after UploadStaticData.
     std::vector<glm::vec4> meshBounds;

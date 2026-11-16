@@ -583,7 +583,7 @@ RunConfig RunConfig::Parse() {
     if ((v = Get("TOURMALINE_IBL")) != nullptr)
         c.iblKilled = std::atoi(v) == 0;
 
-    // Geometry / culling (WorldRenderer.cpp:800..848, :909; gfx_filter.cpp:230).
+    // Geometry / culling (WorldRenderer.cpp:800..848, :909; gfx_types.cpp).
     if ((v = Get("TOURMALINE_HIZ")) != nullptr)
         c.hizKilled = std::atoi(v) == 0;
     if ((v = Get("TOURMALINE_LOD")) != nullptr)

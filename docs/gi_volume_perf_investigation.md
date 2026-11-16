@@ -1,6 +1,6 @@
 # GI volume correctness and GPU performance: implementation plan
 
-**Status:** investigation and implementation checklist (no implementation in this documentation PR)  
+**Status:** §1 correctness gates **LANDED** (1.1 `giVolumeLayerTable[80]`/`[80]B` capacity table + 1.2 B-set plane-pool helper); §2–§8 (reproducible benchmark + optimization experiments) remain follow-up work.
 **Entry points:** `engine/shaders/sg_gi_volume.hlsli`, `engine/shaders/default_lit_body.hlsli`, `engine/shaders/common.hlsli`, `engine/src/Renderer/WorldRenderer.cpp`.  
 **Benchmark tooling:** [perf harness](perf_harness.md), [scenario catalog](../benchmarks/README.md), [headless pins](headless_bench.md), [GI tolerance contracts](gi_volume_tolerances.md).
 
@@ -39,6 +39,13 @@ The shader also has a potentially expensive **visibility-weighted GI sampling** 
 Counts are from source, not hardware transactions; filtered cells often skip some corners. They include the first clean-flag read. Measure the *fraction of visible pixels* taking this branch before redesigning it.
 
 ## 1. Correctness gates — resolve before trusting multi-volume results
+
+> **Both gates landed** since this plan was written: §1.1's 80-slot table
+> (`giVolumeLayerTable[80]` / `giVolumeLayerTableB[80]` in `common.hlsli`,
+> addressed `vol * 10 + layer` in `sg_gi_volume.hlsli`) and §1.2's
+> A/B plane-pool split (`SgGiVolumeWeightInPool` + `SgGiVolumeWeightB`).
+> The detailed required-implementation lists below are retained as the
+> historical record of what landed.
 
 ### 1.1 GI descriptor table capacity disagrees with the indexing stride
 

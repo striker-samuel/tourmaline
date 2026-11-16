@@ -60,7 +60,7 @@
 //
 // Edge semantics (deliberately NOT stock SPD): AMD's SPD drops odd edge
 // texels; Tourmaline's pyramid clamps them (min(2x+1, extent-1) — the
-// orphan edge folds into the last texel, gfx_filter.h HzbMipDims
+// orphan edge folds into the last texel, visibility_hiz.h HzbMipDims
 // repeated max((d+1)>>1, 1)). This shader reproduces the clamped
 // footprint EXACTLY, mapped into tile-local coordinates: within a tile,
 // a clamp can only engage at the GLOBAL mip edge (tile boundaries are
@@ -77,7 +77,7 @@
 // hzb_max.cs.hlsl / hzb.cs.hlsl (non-finite -> 0 = far/sky: keep-safe
 // for MIN culling, skip-safe for MAX tracing).
 //
-// C++ mirror: Engine/Renderer/gfx_filter.h (HzbSpdPush, 104 bytes).
+// C++ mirror: Engine/Renderer/visibility_hiz.h (HzbSpdPush, 104 bytes).
 
 #ifndef HZB_REDUCE_MAX
 #define HZB_REDUCE_MAX 1 // base output = the SSR/AO MAX twin
@@ -126,7 +126,7 @@ float SanitizeDepth(float z)
     return (isnan(z) || isinf(z)) ? 0.0f : z;
 }
 
-// Exact mirror of gfx_filter.h HzbMipDims: repeated max((d+1)>>1, 1).
+// Exact mirror of visibility_hiz.h HzbMipDims: repeated max((d+1)>>1, 1).
 uint2 SpdMipDims(uint2 wh, uint mip)
 {
     [loop]

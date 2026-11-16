@@ -5670,10 +5670,10 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
         return true;
     };
     // LOGICAL TARGET KEYS (the Item-6 layer): the COMMAND target may
-    // carry -uuid/-name keys — uuid exact, then unique name / DAG
-    // path, against the LIVE world scene (the same chain the cook
-    // replay runs on the cluster side; a stale numeric id under a key
-    // must NOT win — the whole point is surviving id shifts). The
+    // carry -uuid/-name keys — uuid exact, then the name via
+    // ResolveDagPath (a '/' path, not a bare unique name), against the
+    // LIVE world scene (a stale numeric id under a key must NOT win —
+    // the whole point is surviving id shifts). The
     // PARENT slot (Verb::Parent's node2) never resolves through the
     // command's keys: they describe the CHILD (its symbolic parent
     // lane is tc.parentRef).

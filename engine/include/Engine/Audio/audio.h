@@ -232,8 +232,9 @@ class AudioEngine {
     // The mixer-thread core (ma_engine, the clip store, voices,
     // instances) — an opaque pimpl: the public header never sees a
     // miniaudio type (the vendored include path is PRIVATE to
-    // engine/src/Audio). The clip store lives here because a clip's
-    // decoded bytes are wrapped by an ma_audio_buffer (a miniaudio
+    // engine/src/Audio). The clip store lives here because the decoded
+    // bytes must stay resident for the lifetime of every voice that
+    // wraps them in a per-voice ma_audio_buffer_ref cursor (a miniaudio
     // type). The GAME thread reaches it only through the mutex-guarded
     // store/unload entry points in the .cpp.
     struct Core;

@@ -794,7 +794,7 @@ the RHI ONLY; smvk::detail::vulkan = the private impl. Remaining:
       spelled smvk::-qualified, no broad import; mesh.h's material data
       model trio (MaterialValues/ShadingModel/AlphaMode) -> tour with
       smvk re-exports; the gfx cull/filter family
-      (Renderer/gfx_filter.h + gfx_filter.cpp) -> tour::gfx, namespace
+      (Renderer/gfx_types.h + gfx_types.cpp) -> tour::gfx, namespace
       alias smvk::gfx, the header FULLY QUALIFIED after the broad-import
       form's transitive lookup proved ambiguous (tour::gfx::Cluster vs
       tour::Cluster for using-namespace-gfx consumers — the recorded
@@ -808,7 +808,7 @@ the RHI ONLY; smvk::detail::vulkan = the private impl. Remaining:
       defined against smvk.h's VertexLayoutDesc and consumed by the
       Vulkan backend) deliberately STAYS smvk::; the three cross-file
       `struct MeshData;` fwd decls (meshlet.h/lightmap.h/
-      gfx_filter.h) became using-declarations so they cannot collide
+      gfx_types.h) became using-declarations so they cannot collide
       with mesh.h's compat block. (b) THE GLOBAL-NAMESPACE CLEANUP IS
       COMPLETE: bvh.h -> tour + the global bridge, dxc_integration.h
       -> tour::dxc + bridge, and the stale GLOBAL `struct Scene;` fwd
@@ -874,7 +874,7 @@ the RHI ONLY; smvk::detail::vulkan = the private impl. Remaining:
      ::smvk imports in public headers; the last ten removed with their
      RHI names qualified - the impl TUs that still spell them
      unqualified carry the documented TU-local using-directive
-     (impl.cpp, pak.cpp, mesh.cpp, gfx_filter.cpp) and the R6 baseline
+     (impl.cpp, pak.cpp, mesh.cpp, gfx_types.cpp) and the R6 baseline
      is EMPTY, any new public-header import fails outright. Recorded
      lesson: placement_pass.h silently leaned on placement_terrain.h's
      directive through the shared enclosing namespace), R7 confines the

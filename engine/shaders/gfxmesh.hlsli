@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // Shared mesh-shader gfx filter structs (task-less mesh path).
-// Included by gfxfilter.mesh.hlsl. C++ mirrors: Engine/Renderer/gfx_filter.h
+// Included by gfxseed.hlsli. C++ mirrors: Engine/Renderer/gfx_types.h
 // (GfxMeshParams, static_asserted sizes).
 //
 // Path shape (slice 1): ONE mesh workgroup per cluster HALF —
@@ -104,7 +104,7 @@ struct GfxMeshParamsData
     uint height;
     uint listCount;
     // The per-frame DEFORMED buffer (the Northlight compute-skinning
-    // output; C++ mirror GfxMeshParams - gfx_filter.h): skinned draws
+    // output; C++ mirror GfxMeshParams - gfx_types.h): skinned draws
     // (GFX_DRAW_SKINNED) fetch pos/normal/tangent words from it (indexed
     // vi - deformedBase), everything else from the bind-pose heaps.
     // 0 = static fetches (no skinned cluster this frame).

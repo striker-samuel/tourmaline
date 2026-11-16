@@ -1,5 +1,5 @@
 // Copyright (c) 2026 Samuel Martin
-// SPDX-License-Identifier: LicenseRef-Tourmaline-Community-1.0
+// SPDX-License-Identifier: MIT
 
 #pragma once
 // THE CONTENT-AS-CODE QUERY API (project::MatchAssets - the compile-

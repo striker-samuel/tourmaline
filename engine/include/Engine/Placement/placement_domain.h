@@ -4,7 +4,7 @@
 #pragma once
 // PlacementGraph domains: Grid, MeshSurface, Heightfield and painted PointCloud.
 // Each domain exposes deterministic sampling from (StableID, candidateIndex).
-// CPU here is the reference oracle; the GPU kernels in Phase 3 mirror it
+// CPU here is the reference oracle; the GPU kernels mirror it
 // (same hashes, same alias-walk, same bilinear filtering).
 
 #include <cstdint>

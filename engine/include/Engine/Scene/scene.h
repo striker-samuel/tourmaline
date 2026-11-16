@@ -289,7 +289,8 @@ struct Scene {
     // AUTHORITATIVE for EVERY node association since Epoch 5: the old
     // xForNode maps are GONE — every consumer reads scene.tables
     // (meshes/materials/lights/cameras/decals/giVolumes/cubemaps/
-    // exports/envs/envVolumes) through scene_tables.h.
+    // exports/envs/envVolumes/audioSources/audioRooms/triggerVolumes/
+    // physicsBodies/schemaAssocs) through scene_tables.h.
     SceneTables tables;
     // Derived per-node index over `tables` — maintained by the
     // scene_tables.h mutators, rebuilt by RebuildNodeRows, never

@@ -1106,13 +1106,12 @@ std::vector<uint8_t> PakReader::PayloadCopyUncached(const PakTocEntry& entry) co
     if (file_) {
         file_->f.clear();
         file_->f.seekg(std::streamoff(entry.offset), std::ios::beg);
-        file_->f.read(reinterpret_cast<char*>(stored.data()),
-                      std::streamsize(stored.size()));
+        file_->f.read(reinterpret_cast<char*>(stored.data()), std::streamsize(stored.size()));
         if (file_->f.gcount() != std::streamsize(stored.size()))
             throw std::runtime_error("pak uncached page read failed: " + entry.path);
     } else {
-        const auto blob = image_.subspan(
-            static_cast<size_t>(entry.offset), static_cast<size_t>(entry.size));
+        const auto blob =
+            image_.subspan(static_cast<size_t>(entry.offset), static_cast<size_t>(entry.size));
         std::copy(blob.begin(), blob.end(), stored.begin());
     }
     if (PakCrc32(stored.data(), stored.size()) != entry.contentCrc)
@@ -1384,8 +1383,8 @@ bool ParseAssetIdsBlob(std::span<const uint8_t> blob,
         }
         row.sceneName.assign(reinterpret_cast<const char*>(blob.data() + off), nameLen);
         off += nameLen;
-        // The row invariants (the same ones the manifest's [ids]
-        // validation enforces — the shared ABI never drifts):
+        // The row invariants (the shared catalog ABI, identical to the
+        // values appmanifest.h's kCatalogKind* bytes define):
         // a nonzero id, a non-Nil kind byte inside the catalog ABI, and the
         // scene-name rule (names ride SCENE rows only).
         if (row.id == 0) {
@@ -1393,7 +1392,7 @@ bool ParseAssetIdsBlob(std::span<const uint8_t> blob,
                   " no-identity value)";
             return false;
         }
-        if (row.kind == smvk::kCatalogKindNil || row.kind > smvk::kCatalogKindNavMesh) {
+        if (row.kind == smvk::kCatalogKindNil || row.kind > smvk::kCatalogKindShape) {
             err = "identity table row kind byte out of the catalog ABI";
             return false;
         }
@@ -1435,10 +1434,9 @@ bool PakBackend::Exists(const VfsPath& path) const {
     const VfsPath n = vfs::Normalize(path);
     if (n.empty() || !reader_)
         return false;
-    // The four VFS-addressable kinds (pak.h's interop contract):
-    // texture blobs (embedded .ktx2), sound blobs (raw .wav), shader
-    // blobs (raw compiled bytecode) and audiograph blobs (authored
-    // text, verbatim).
+    // The VFS-addressable kinds (pak.h's interop contract): texture,
+    // sound, shader, audiograph, spriteset, statemachine, navmesh, sdf,
+    // shape and anim blobs (see PakServeVfsBytes for the per-kind bytes).
     return reader_->Find(PakAssetKind::Texture, n) != nullptr ||
            reader_->Find(PakAssetKind::Sound, n) != nullptr ||
            reader_->Find(PakAssetKind::Shader, n) != nullptr ||
@@ -1470,8 +1468,7 @@ std::optional<std::vector<uint8_t>> PakServeVfsBytes(PakAssetKind kind,
     if (kind == PakAssetKind::Sound || kind == PakAssetKind::Shader ||
         kind == PakAssetKind::AudioGraph || kind == PakAssetKind::SpriteSet ||
         kind == PakAssetKind::StateMachine || kind == PakAssetKind::NavMesh ||
-        kind == PakAssetKind::Sdf || kind == PakAssetKind::Shape ||
-        kind == PakAssetKind::Anim)
+        kind == PakAssetKind::Sdf || kind == PakAssetKind::Shape || kind == PakAssetKind::Anim)
         return std::vector<uint8_t>(payload.begin(), payload.end());
     return std::nullopt;
 }
@@ -1480,7 +1477,7 @@ std::optional<std::vector<uint8_t>> PakBackend::TryRead(const VfsPath& path) con
     const VfsPath n = vfs::Normalize(path);
     if (n.empty() || !reader_)
         return std::nullopt;
-    // The four VFS-addressable kinds (pak.h's interop contract),
+    // The VFS-addressable kinds (pak.h's interop contract),
     // served through the shared per-kind helper.
     for (const PakAssetKind kind : {PakAssetKind::Texture,
                                     PakAssetKind::Sound,

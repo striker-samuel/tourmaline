@@ -38,15 +38,17 @@ KINDS = {
     9: "Terrain", 10: "Level", 11: "Sound", 12: "Shader",
     13: "Plan", 14: "Schema", 15: "Identity", 16: "AudioGraph",
     17: "SpriteSet", 18: "StateMachine", 19: "NavMesh", 20: "Sdf",
+    21: "Shape", 22: "ShapePlacements", 23: "MapTile", 24: "MapManifest",
+    25: "EnvTile", 26: "Anim",
 }
 KIND_BY_NAME = {name: kind for kind, name in KINDS.items()}
 # The kinds PakServeVfsBytes serves by VFS path (keep in lockstep with
 # engine/src/Asset/pak.cpp's blob-kind list).
-VFS_KINDS = frozenset((4, 11, 12, 16, 17, 18, 19, 20))
-# The catalog kind ABI (PR #64): byte 0 is Nil — the invalid/unset
-# kind, never stored; the real kinds start at 1. Kept in lockstep with
-# the engine's kCatalogKind* constants (engine/include/Engine/Asset/
-# appmanifest.h); new kinds APPEND here too.
+VFS_KINDS = frozenset((4, 11, 12, 16, 17, 18, 19, 20, 21, 26))
+# The catalog kind ABI: byte 0 is Nil — the invalid/unset kind, never
+# stored; the real kinds start at 1. Kept in lockstep with the engine's
+# kCatalogKind* constants (engine/include/Engine/Asset/appmanifest.h);
+# new kinds APPEND here too.
 CATALOG_KINDS = (
     "nil",
     "scene",
@@ -59,6 +61,7 @@ CATALOG_KINDS = (
     "spriteset",
     "statemachine",
     "navmesh",
+    "shape",
 )
 
 KTX2_PREFIX = bytes([0xAB, 0x4B, 0x54, 0x58, 0x20])
@@ -85,15 +88,10 @@ def fnv1a64(s: str) -> int:
 
 
 def vfs_normalize(path: str) -> str:
-    """Mirror smvk::vfs::Normalize, including the //flintbase/ scheme."""
+    """Mirror smvk::vfs::Normalize."""
     if not path:
         return ""
     p = path.replace("\\", "/")
-    low = p.lower()
-    if low == "//flintbase" or low.startswith("//flintbase/"):
-        rest = p[len("//flintbase/"):] if low.startswith("//flintbase/") else ""
-        normalized, ok = _norm_rel(rest)
-        return ("//flintbase/" + normalized) if ok else ""
     if p.startswith("/") or (len(p) >= 2 and p[1] == ":"):
         return ""
     normalized, ok = _norm_rel(p)

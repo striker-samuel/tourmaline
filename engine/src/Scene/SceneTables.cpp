@@ -1014,7 +1014,7 @@ void SetNodeUuidRaw(Scene& scene, NodeId node, const std::string& uuid) {
     scene.metadata[node].uuid = uuid;
 }
 // ---- all kinds at once (the node-deletion hook the editor/tour paths
-// adopt in Epoch 5) ----
+// adopt) ----
 
 bool RemoveNodeRows(Scene& scene, NodeId node) {
     bool removed = false;
@@ -1032,6 +1032,7 @@ bool RemoveNodeRows(Scene& scene, NodeId node) {
     removed |= RemoveAudioRoom(scene, node);
     removed |= RemoveTriggerVolume(scene, node);
     removed |= RemovePhysicsBody(scene, node);
+    removed |= RemoveSchemaAssoc(scene, node);
     return removed;
 }
 

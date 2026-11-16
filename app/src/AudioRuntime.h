@@ -38,9 +38,11 @@
 // or the layer follows the renderer's active camera (the default).
 //
 // v1 scope (deliberate): linear distance rolloff + right-axis pan
-// clamp (no cones/occlusion/reverb), mono-directional emitters (the
-// node's orientation is ignored — bells don't face), one autoplay
-// slot. The authored node model carries all of it forward.
+// clamp (no cones/occlusion; no PER-EMITTER reverb parameter — the
+// listener-side environmental reverb is a separate world-level bus),
+// mono-directional emitters (the node's orientation is ignored — bells
+// don't face), one autoplay slot. The authored node model carries all
+// of it forward.
 //
 // THREADING: main/render thread only (the element pump); the mixer
 // commands are internally thread-safe.
@@ -80,7 +82,7 @@ class IAppElement;
 namespace app {
 
 // The scene-aware audio element (see the header comment). Constructed
-// by the host (RunPakApp's extraElement hook / a game's element stack)
+// by the host (RunPakApp's extraElements hook / a game's element stack)
 // AFTER the renderer attached (the world exists); `tappPath` is the
 // project manifest — the runtime façade + the scene layer are built
 // LAZILY at first use, by which time the apphost's launch path has

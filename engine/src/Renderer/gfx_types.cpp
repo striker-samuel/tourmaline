@@ -122,7 +122,7 @@ static uint32_t PageMinCapacity(size_t stride) {
 }
 
 static_assert(sizeof(smvk::StaticHeapArena::AllocId) == sizeof(uint64_t),
-              "the arena token must fit the opaque uint64_t region fields in gfx_filter.h");
+              "the arena token must fit the opaque uint64_t region fields in gfx_types.h");
 
 // Suballocates indexCount uint32 indices from the static index monoblock
 // (one index VkBuffer for mesh + cluster-ordered + filtered regions, so

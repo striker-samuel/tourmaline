@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
-// THE PROJECT-SCOPOPED NATIVE FILESYSTEM WATCHER (the watched-resource
+// THE PROJECT-SCOPED NATIVE FILESYSTEM WATCHER (the watched-resource
 // pipeline's OS event source): ReadDirectoryChangesW on Windows,
 // inotify on Linux — one background thread over a set of REGISTERED
 // watch roots, filtered by an ignore policy, DEBOUNCED to settled

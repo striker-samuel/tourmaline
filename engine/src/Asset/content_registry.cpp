@@ -10,8 +10,6 @@
 
 #include <Engine/Asset/content_registry.h>
 
-#include <Engine/Asset/content_registry.h>
-
 #include <algorithm>
 #include <filesystem>
 #include <sstream>
@@ -37,10 +35,11 @@ std::string HexId(uint64_t id) {
 bool CatalogKindToPakKind(uint8_t kind, smvk::PakAssetKind& out) {
     // The byte forms: TEXTURE (the .ktx2 envelope bytes), SOUND (the
     // raw .wav), SHADER (the raw compiled bytecode), AUDIOGRAPH (the
-    // authored text, verbatim) and GI (the manifest rows ride Texture-
-    // kind blobs — the .gi/* payload channel). SCENE and MESH are
-    // identity-addressed (the world loader / the cluster) and have NO
-    // VFS byte form.
+    // authored text, verbatim), the other authored-text kinds
+    // (SPRITESET / STATEMACHINE / NAVMESH / SHAPE), and GI (the
+    // manifest rows ride Texture-kind blobs — the .gi/* payload
+    // channel). SCENE and MESH are identity-addressed (the world
+    // loader / the cluster) and have NO VFS byte form.
     switch (kind) {
     case smvk::kCatalogKindTexture:
     case smvk::kCatalogKindGi:
@@ -173,7 +172,8 @@ bool ContentRegistry::DiscoverPak(const std::string& name,
             err = "the pak '" + name +
                   "' carries no identity metadata (the '#ids'"
                   " registry blob) — recook it through the project"
-                  " build (or use the appmanifest compatibility lane)";
+                  " build (or open with requireIdentityBlob=false to"
+                  " join path-only)";
             return false;
         }
         // The LEGACY form: a pre-identity pak joins as a BASE
@@ -391,14 +391,14 @@ std::optional<std::vector<uint8_t>> ContentRegistry::Read(uint64_t id, std::stri
         return std::nullopt;
     }
     // The kind gate (the same contract the runtime façade always
-    // enforced): only TEXTURE, SOUND, SHADER and GI payloads are
-    // VFS-addressed bytes; scenes load BY IDENTITY through the world
+    // enforced): only VFS-addressable catalog kinds serve bytes (see
+    // CatalogKindToPakKind); scenes load BY IDENTITY through the world
     // loader and meshes ship inside their scene's cluster.
     smvk::PakAssetKind pakKind = smvk::PakAssetKind::Texture;
     if (!CatalogKindToPakKind(record->kind, pakKind)) {
         err = "content id " + HexId(id) + " is a '" + smvk::CatalogKindToString(record->kind) +
-              "' — only TEXTURE, SOUND, SHADER and GI payloads are"
-              " VFS-addressed bytes (scenes load by identity through the"
+              "' — not a VFS-addressable byte kind"
+              " (scenes load by identity through the"
               " world loader; meshes ship inside their scene's cluster)";
         return std::nullopt;
     }
@@ -773,10 +773,10 @@ uint64_t ContentRegistry::PathKey(uint8_t kind, const std::string& norm) const {
 
 uint64_t ContentRegistry::RecordFingerprint() const {
     // The identity fold in CANONICAL emission order: kind-bucketed
-    // (the generator's bucket sequence — scene..gi), id-sorted within
-    // each bucket. The records' INSERTION order is whatever lane
-    // built the table (manifest adoption rows, per-pak discovery
-    // rows) — the fingerprint is over IDENTITY, and identity's order
+    // (the generator's bucket sequence — the catalog kind byte), id-sorted
+    // within each bucket. The records' INSERTION order is whatever lane
+    // built the table (pak discovery, in mount order) — the fingerprint
+    // is over IDENTITY, and identity's order
     // is the emission sequence, never the build order.
     std::vector<const ContentRecord*> ordered;
     ordered.reserve(m_records.size());

@@ -10,7 +10,7 @@
 // bytecode VALIDATED (SPIR-V magic) before it ever lands, and the
 // compiled .spv written ATOMICALLY into the output tree the engine
 // shader library serves as the DEV OVERRIDE — so the next
-// smvk::shaders::Read returns the fresh bytes.
+// tour::shaders::Read returns the fresh bytes.
 //
 // THE LAST-KNOWN-GOOD CONTRACT: a failed compile (or a bytecode that
 // fails validation) NEVER touches the existing .spv — the previous
@@ -57,8 +57,8 @@
 // against each other: builders also consume lit-family modules
 // (ForwardPlus's depth VS is default.vert, bloom/DOF ride
 // tonemap.vert). STILL last-known-good (the one remaining documented
-// gap): the gfx compute chain (gfxfilter/gfxbatchcull/hzb — the
-// smvk::gfx::State modules) and WorldRenderer's auxiliary FS sets
+// gap): the gfx compute chain (gfxskinbounds / gfxcone_debug / hzb —
+// the tour::gfx::State modules) and WorldRenderer's auxiliary FS sets
 // (debug views, shadow/gbuffer twins). The headless frame-safety
 // regression: TOURMALINE_SHADER_SWAP=<frame> forces the FULL swap
 // (both legs) mid-bench (the TOURMALINE_GI_HOTSWAP discipline;

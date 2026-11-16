@@ -32,9 +32,10 @@
 //
 //   3. THE ID->SCENE JOIN — ResolveSceneTarget maps a scene id to
 //      (pak, cooked scene name, pak scene index) through the
-//      appmanifest's recorded name (the [ids] row's 5th token) or, for
-//      rows that predate it, single-scene inference (a multi-scene pak
-//      without a recorded name refuses loudly — recook).
+//      registry record's cooked name (the "#ids" row's scene-name
+//      token) or, for rows that predate it, single-scene inference
+//      (a multi-scene pak without a recorded name refuses loudly —
+//      recook).
 //
 // SceneHandle is the same 64-bit generational shape the gameplay
 // handles (MeshEntityHandle / AnimatorHandle / AudioSourceHandle) use:
@@ -147,7 +148,6 @@ class ProjectScenes {
         m_boundResources = context.resources;
         m_boundTextures = context.textures;
     }
-
 
     // The constructor's adopt-or-open pass: every manifest pak adopted
     // from the host's mounts or preloaded + opened in parallel, then

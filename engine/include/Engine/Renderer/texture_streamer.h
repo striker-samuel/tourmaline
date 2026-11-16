@@ -19,7 +19,7 @@
 //
 // Feedback (what SHOULD be resident) is the minimum of two sources:
 //   * GPU readback: the gfx filter reports the wanted mip per visible
-//     meshlet's material texture slots (see Renderer/gfx_filter; wired
+//     meshlet's material texture slots (see Renderer/gfx_types; wired
 //     through RequestMipFromLod).
 //   * CPU heuristic: screen-coverage / distance demand (WantedMipFor*,
 //     driven by the scene pass) covers pre-warming and edge cases.
@@ -199,7 +199,7 @@ class TextureStreamer {
     std::vector<smvk::TextureHandle> BuildBindlessSlotMap() const;
 
     // Per-slot meta for the gfx filter's draw-level demand publisher
-    // (gfxfilter.cs.hlsl PublishDrawDemand): baseLongSide + fullMips per
+    // (gfxfilter.hlsli PublishDrawDemand): baseLongSide + fullMips per
     // bindless slot, same sizing rule as BuildBindlessSlotMap. Slots
     // without a streamed texture report fullMips == 0 (the shader skips
     // them). Slots are stable across retargets, so this only changes on

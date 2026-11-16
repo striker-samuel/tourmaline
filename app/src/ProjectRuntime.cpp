@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: MIT
 
 // ProjectRuntime — see ProjectRuntime.h (the SESSION over the content
-// registry). The manifest is the identity source (the .tapp
-// compatibility lane); the registry owns resolution + both byte
+// registry). The paks' own "#ids" identity tables are the identity
+// source (the .tapp release pointer names only `entry` + `[paks]`);
+// the registry owns resolution + both byte
 // lanes. The whole-image preloads ride the same KickPakPreload the
 // apphost's world loading uses; an opened backend is ADOPTED into
 // the registry so every read — id form AND path form — serves
@@ -79,10 +80,10 @@ std::optional<ProjectRuntime> ProjectRuntime::OpenDiscovered(
 
 std::vector<std::string> ProjectRuntime::PakNames() const {
     // The registry's BASE providers in order — the manifest's [paks]
-    // list in the .tapp lane (AdoptManifest registered them in
-    // manifest order), the discovered base providers in the discovery
-    // lane. ONE authority: whatever iterated the manifest's pak list
-    // iterates this (the manifest itself is a compatibility surface).
+    // list in the .tapp lane (DiscoverPak registered them in manifest
+    // order), the discovered base providers in the discovery lane.
+    // ONE authority: whatever iterated the manifest's pak list
+    // iterates this (the manifest itself is a pure release pointer).
     std::vector<std::string> names;
     for (const tour::asset::ContentRegistry::ProviderInfo& p : m_registry.ProviderInfos())
         if (p.base)
@@ -210,8 +211,8 @@ bool ProjectRuntime::AttachCompiledCatalog(const CompiledAssetDesc* assets,
         return false;
     }
     // The fast gate: the REGISTRY's own identity fold (the deployed
-    // half — the record table is the authority, whatever lane built
-    // it: manifest adoption or pak discovery). A mismatch is a
+    // half — the record table is the authority, built from pak
+    // discovery). A mismatch is a
     // version skew between the game binary and its content (recook
     // the project or rebuild the game; fail loudly, never guess).
     const uint64_t deployed = m_registry.RecordFingerprint();

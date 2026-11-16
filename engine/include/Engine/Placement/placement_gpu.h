@@ -8,8 +8,9 @@
 // (base + value-noise) → quantized accept → weighted prototype → transform,
 // compacted via atomic append into a persistent per-tile instance buffer.
 //
-// Mesh-surface / heightfield domains + GPU min-distance arrive next;
-// the CPU EvaluateTile() in placement_tile.h is the oracle for all paths.
+// Mesh-surface / heightfield / point-cloud domains are present (the
+// scatter-domain + tile-CS paths below); the CPU EvaluateTile() in
+// placement_tile.h is the oracle for all paths.
 
 #include <cstddef>
 #include <cstdint>

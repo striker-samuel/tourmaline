@@ -16,7 +16,7 @@
 // BlendSettings, the static vertex heap) are still spelled
 // unqualified: the TU-LOCAL using-directive stands in for the old
 // enclosing-smvk lookup (contained to this TU; the header carries no
-// broad import — see the gfx_filter.h lesson).
+// broad import — see the gfx_types.h lesson).
 namespace tour {
 using namespace ::smvk;
 

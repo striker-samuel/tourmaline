@@ -17,7 +17,7 @@
 //      CPU regime); RunConfig mesh default ON.
 //   4. Filtered/motion tail prefix identity: FilteredVsPush's first 24B
 //      (draws/renderViews/renderViewIndex at 192..216) match the motion
-//      VS tail's reads (documented in gfx_filter.h:348-359).
+//      VS tail's reads (documented in gfx_types.h:348-359).
 //
 // Heavier coverage (barrier emission, cull-builder differentials) follows
 // the test_gfxfilter.cpp pattern; headless goldens via

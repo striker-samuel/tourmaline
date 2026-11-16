@@ -274,7 +274,7 @@ void mainCS(uint3 dtid : SV_DispatchThreadID)
         SSGI_MISS()
 
     // ---- The classic Hi-Z cell-exit mip walk over the shared MAX
-    // pyramid (per-mip table mirrors gfx_filter.h byte-for-byte).
+    // pyramid (per-mip table mirrors visibility_hiz.h byte-for-byte).
     const int mipCount = int(min(sp.hzbMipCount, 16u));
     uint hzbOff[16]; uint hzbW[16]; uint hzbH[16];
     {

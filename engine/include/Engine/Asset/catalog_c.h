@@ -23,7 +23,8 @@ enum tour_c_asset_kind {
     TOUR_C_KIND_AUDIOGRAPH = 7,
     TOUR_C_KIND_SPRITESET = 8,
     TOUR_C_KIND_STATEMACHINE = 9,
-    TOUR_C_KIND_NAVMESH = 10
+    TOUR_C_KIND_NAVMESH = 10,
+    TOUR_C_KIND_SHAPE = 11
 };
 
 // NUL-terminated strings are borrowed from the generated project_c.h.
@@ -32,7 +33,8 @@ typedef struct tour_c_asset_desc {
     uint64_t id;
     uint8_t kind;
     const char* path;
-    const char* scene_name; // reserved, currently empty
+    const char* scene_name; // the C emitter leaves this empty; the per-pak
+                            // "#ids" tables carry the cooked scene names
 } tour_c_asset_desc;
 
 typedef struct tour_c_package {

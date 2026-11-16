@@ -30,10 +30,10 @@
 //
 // Identity vs selection (the architectural split):
 //   * The RECORD is identity: id, kind, logical path (+ the scene
-//     join's cooked name). Today the .tapp appmanifest's [ids] table
-//     is the identity source (the manifest compatibility lane); a
-//     per-pak identity metadata lane (discovery without a manifest)
-//     is the format-side successor that will feed the same table.
+//     join's cooked name). The identity source is each pak's OWN
+//     "#ids" identity table (the discovery lane — no manifest): the
+//     appmanifest v2 release pointer carries only `entry` + `[paks]`,
+//     so records are discovered from the paks themselves.
 //   * The PROVIDER is selection: which pak / loose directory / memory
 //     source currently supplies the record's path. BASE providers
 //     are the manifest's release content (manifest order); OVERRIDE
@@ -52,8 +52,10 @@
 //
 // KINDS: byte reads serve the VFS-addressable payloads only —
 // TEXTURE (.ktx2 envelope bytes), SOUND (raw .wav), SHADER (raw
-// compiled bytecode) and GI manifests (Texture-kind blobs — the .gi/*
-// payload channel). SCENE and MESH records refuse byte reads loudly
+// compiled bytecode), AUDIOGRAPH (authored text, verbatim), the other
+// authored-text kinds (SPRITESET / STATEMACHINE / NAVMESH / SHAPE),
+// and GI manifests (Texture-kind blobs — the .gi/* payload channel).
+// SCENE and MESH records refuse byte reads loudly
 // (scenes load BY IDENTITY through the world loader; meshes ship
 // inside their scene's cluster) — the refusal is the same contract
 // the runtime façade always enforced, never a silent skip.
@@ -85,14 +87,14 @@
 namespace tour::asset {
 
 // One canonical CONTENT RECORD: the asset's STABLE IDENTITY. Built
-// from the identity source ([ids] rows today; per-pak identity blobs
-// next); immutable once adopted; NEVER carries provider state (the
+// from the identity source (each pak's "#ids" identity rows);
+// immutable once adopted; NEVER carries provider state (the
 // provider selection answers "who supplies it NOW").
 struct ContentRecord {
     uint64_t id = 0;                      // the stable content id (the catalog identity)
     uint8_t kind = smvk::kCatalogKindNil; // invalid until assigned a real kind
     std::string path;                     // the LOGICAL path (VFS-normalized; the join key)
-    std::string pak;                      // the manifest-declared owner pak (diagnostics)
+    std::string pak;                      // the discovery-assigned owner pak (diagnostics)
     std::string sceneName;                // scene rows: the cooked scene name (the id->scene join)
 };
 
@@ -124,8 +126,9 @@ struct ContentProvider {
 
 // The byte-read mapping for a catalog kind (the shared fold of the
 // backend lane + the pager lane): TEXTURE and GI ride Texture-kind
-// blobs (the .ktx2 envelope / the manifest row channel), SOUND and
-// SHADER their own kinds; SCENE and MESH are identity-addressed and
+// blobs (the .ktx2 envelope / the manifest row channel), SOUND,
+// SHADER, AUDIOGRAPH, SPRITESET, STATEMACHINE, NAVMESH and SHAPE
+// their own kinds; SCENE and MESH are identity-addressed and
 // never byte-served. False = the kind has no VFS byte form.
 [[nodiscard]] bool CatalogKindToPakKind(uint8_t kind, smvk::PakAssetKind& out);
 
@@ -295,15 +298,14 @@ class ContentRegistry {
         return m_records.size();
     }
     // THE RECORD FINGERPRINT: the identity fold over the records in
-    // CANONICAL emission order (kind-bucketed: scenes, textures,
-    // meshes, sounds, shaders, gi; id-sorted within — the generator's
-    // exact emission sequence), folding (id, kind, path) through the
-    // ONE shared fold (appmanifest.h's ComputeCatalogFingerprint).
-    // This is the DEPLOYED half of the compiled-catalog contract: a
-    // game's compiled CatalogFingerprint proves itself against THIS,
-    // whatever lane built the record table (manifest adoption or pak
-    // discovery — the records are the authority, never the manifest's
-    // [ids] mirror).
+    // CANONICAL emission order (kind-bucketed by the catalog kind
+    // byte, id-sorted within — the generator's exact emission
+    // sequence), folding (id, kind, path) through the ONE shared fold
+    // (appmanifest.h's ComputeCatalogFingerprint). This is the
+    // DEPLOYED half of the compiled-catalog contract: a game's
+    // compiled CatalogFingerprint proves itself against THIS (the
+    // records are the authority, built from pak discovery — the
+    // manifest carries no [ids] mirror).
     [[nodiscard]] uint64_t RecordFingerprint() const;
 
   private:

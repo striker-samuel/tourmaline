@@ -34,7 +34,7 @@
 // Runs after GfxSkinBounds (the skinBounds read hint pair is the ordering
 // edge) and before Main's overlay draw (the compute-write ->
 // vertex-attribute-read hint pair). C++ mirror: Engine/Renderer/
-// gfx_filter.h (ConeDebugPush) + gfx_filter.cpp PushAndDispatchConeDebug.
+// gfx_types.h (ConeDebugPush) + gfx_types.cpp PushAndDispatchConeDebug.
 
 #define GFXCONEDEBUG_PASS
 #include "common.hlsli"

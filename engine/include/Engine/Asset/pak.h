@@ -72,12 +72,14 @@ namespace tour::asset {
 // never by TOC position. `contentCrc` is the CRC-32 of the entry's STORED
 // bytes (the LZ4 wrapper included when compressed).
 //
-// VFS interop: PakBackend serves *texture*, *sound* and *shader*
-// entries through the smvk::IVfsBackend interface (returns the embedded
-// .ktx2 / raw .wav / raw compiled-shader bytes for the original VFS
-// path), so materials in one pak can reference textures stored in
-// another pak via plain VFS paths, emitters the same for sounds, and
-// the shader library the same for engine/project shader packages.
+// VFS interop: PakBackend serves the VFS-addressable kinds (texture,
+// sound, shader, audiograph, spriteset, statemachine, navmesh, sdf,
+// shape, anim) through the smvk::IVfsBackend interface (returns the
+// embedded .ktx2 / raw .wav / raw compiled-shader / authored-text bytes
+// for the original VFS path), so materials in one pak can reference
+// textures stored in another pak via plain VFS paths, emitters the
+// same for sounds, graphs the same for .audiograph files, and the
+// shader library the same for engine/project shader packages.
 // Scene/Mesh/Material blobs are cluster-internal and are consumed
 // through PakReader by the cluster deserializer, not via VFS file
 // reads.
@@ -152,20 +154,20 @@ enum class PakAssetKind : uint32_t {
     // SOUND (the audio asset kind): one blob per .wav sound asset,
     // keyed by its original VFS path, payload = the raw .wav bytes
     // (LoadWavFromMemory decodes whatever SDL accepts — any rate/
-    // channel count/bit depth, converted at load). The SECOND VFS-
-    // addressable kind (with Texture): PakBackend serves Sound blobs
+    // channel count/bit depth, converted at load). A VFS-addressable
+    // kind: PakBackend serves Sound blobs
     // by path so cross-pak sound resolution + the runtime façade's
     // ReadAsset(project::sounds::*) flow exactly like textures. The
     // COOKED SCENE references sounds by their stable numeric content
     // id (the scene blob's audio section) — never by path — and the
-    // appmanifest's [ids] table carries the id -> (pak, path) join.
+    // per-pak "#ids" table carries the id -> (pak, path) join.
     Sound = 11,
     // SHADER (the compiled-shader asset kind): one blob per compiled
     // shader stage/variant, keyed by its original VFS path (the same
     // "content/shaders/<file>.spv" strings every consumer already
     // uses), payload = the raw compiled bytecode (SPIR-V on the
-    // Vulkan backend — NEVER wrapped in a texture payload). The THIRD
-    // VFS-addressable kind (with Texture + Sound): PakBackend serves
+    // Vulkan backend — NEVER wrapped in a texture payload). A VFS-
+    // addressable kind: PakBackend serves
     // Shader blobs by path through the same Exists/TryRead/ListDir/
     // Stat surface, and the engine shader library (Engine/Utils/
     // shader_library.h) reads + VALIDATES them (the SPIR-V magic on
@@ -207,8 +209,8 @@ enum class PakAssetKind : uint32_t {
     // .audiograph file, keyed by its original VFS path, payload = the
     // AUTHORED TEXT VERBATIM (the strict parser — engine/Engine/Asset/
     // audiograph.h — validates it at pack time, the corrupt-refused
-    // discipline; the runtime parses after ReadAsset). The FOURTH
-    // VFS-addressable kind (with Texture + Sound + Shader): PakBackend
+    // discipline; the runtime parses after ReadAsset). A VFS-
+    // addressable kind: PakBackend
     // serves AudioGraph blobs by path so graphs resolve cross-pak
     // exactly like sounds. A graph's SOURCE nodes reference sound
     // assets by VFS path (resolved loudly at instance create through
@@ -412,21 +414,6 @@ std::vector<uint8_t> BuildTexturePayloadV4(const std::string& uri,
 bool BuildTextureDigest(const smvk::TextureStreamMeta& meta, std::vector<uint8_t>& out);
 bool ParseTextureDigest(std::span<const uint8_t> digest, smvk::TextureStreamMeta& out);
 
-// v4 tail-upload digest record (smvk::TextureStreamMeta serialization):
-//   u32 kind(=1) | u32 tailFirstMip
-bool BuildTextureDigest(const smvk::TextureStreamMeta& meta, std::vector<uint8_t>& out);
-bool ParseTextureDigest(std::span<const uint8_t> digest, smvk::TextureStreamMeta& out);
-
-// v4 tail-upload digest record (smvk::TextureStreamMeta serialization; fixed
-// u32/u64 fields, 16 B per region row):
-//   u32 kind(=1) | u32 tailFirstMip | u32 residentMips |
-//   u32 baseWidth | u32 baseHeight | u32 baseDepth | u32 numLevels |
-//   u32 ktxLayers | u32 numFaces | u32 ktxVkFormat | u32 transferSrgb |
-//   u32 dims | u32 cubemap | u32 regionCount |
-//   rows: u64 bufferOffset | u32 mip | u32 arrayLayer
-bool BuildTextureDigest(const smvk::TextureStreamMeta& meta, std::vector<uint8_t>& out);
-bool ParseTextureDigest(std::span<const uint8_t> digest, smvk::TextureStreamMeta& out);
-
 // Incremental pak builder (cooker side).
 class PakWriter {
   public:
@@ -584,9 +571,10 @@ class PakReader {
     std::unique_ptr<FileHandle> file_;
 };
 
-// smvk::IVfsBackend over a loaded pak image. Serves texture entries by their
-// original VFS path (embedded .ktx2 bytes). All other kinds are invisible
-// to VFS file reads (Exists() == false) — load them via PakReader.
+// smvk::IVfsBackend over a loaded pak image. Serves the VFS-addressable
+// kinds (texture / sound / shader / audiograph / spriteset / statemachine /
+// navmesh / sdf / shape / anim) by their original VFS path. All other kinds
+// are invisible to VFS file reads (Exists() == false) — load them via PakReader.
 class PakBackend final : public smvk::IVfsBackend {
   public:
     // Takes shared ownership of the pak image bytes.

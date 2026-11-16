@@ -44,7 +44,8 @@
 // single frame uploads and binds. Both light paths draw from this one
 // value: LightBuffer.lights[] below (the legacy ring — the sun/cascade
 // entry lives in lights[0]) and the Forward+ ForwardPlusLight ring +
-// its per-tile lists (WorldRenderer's FP_MAX_LIGHTS derives from it).
+// its per-tile lists (both WorldRenderer's FP_MAX_LIGHTS and the HLSL
+// MAX_FP_LIGHTS in common.hlsli derive from it).
 // 1024 = the Forward+ budget this engine actually runs.
 #define MAX_SIMULTANEOUS_LIGHTS 1024
 

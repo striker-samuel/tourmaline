@@ -35,7 +35,7 @@
 //   engine/shaders/engine_limits.hlsli (bridged into C++ by
 //   Engine/Core/Limits.h — the only C++ includer of that file).
 // Retired with the move (dead constants, zero references anywhere):
-//   MAX_BUFFERS, MAX_SHADOW_SAMPLERS, MAX_COLOR_ATTACHEMNTS.
+//   MAX_BUFFERS, MAX_SHADOW_SAMPLERS, MAX_COLOR_ATTACHMENTS.
 
 namespace smvk {
 
@@ -597,10 +597,10 @@ struct MSAASettings {
 // Buffer
 // ============================================================================
 
-// BufferType encapsulates mmeoryUsage, locality and more.
-// This is a higher level abstraction than the rest of the rhi but reality is
-// we need to cover X uses for 99% of apps. No need to provideo MemoryUsage or Locality and expose
-// them to user
+// BufferType encapsulates memoryUsage, locality and more.
+// This is a higher-level abstraction than the rest of the RHI: it covers
+// the handful of buffer-use shapes 99% of apps need, without exposing
+// raw MemoryUsage or Locality to the caller.
 
 typedef enum BufferType {
     BufferType_Index = 0,

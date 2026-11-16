@@ -15,7 +15,7 @@
 // The manager composes the EXISTING runtime layers - never a parallel
 // loading path: the AssetStore (the shared-resource OWNERSHIP layer -
 // found-or-loaded carriers, asset-side refs, the park-on-unload
-// bridge), ProjectRuntime (the [ids] join + the pak backends), the
+// bridge), ProjectRuntime (the record resolution + the pak backends), the
 // World's cluster loader (DeserializeCluster - the mesh/material/
 // texture dependency resolution), and the WorldRenderer's GI
 // machinery (BuildGiVolumeSetFromPaths + the blend publish).
@@ -138,7 +138,7 @@ class AssetManager {
     AssetStore& Store();
 
     // ---- MESHES -------------------------------------------------------
-    // Loads one mesh BY KEY: resolves the [ids] row -> the owning pak
+    // Loads one mesh BY KEY: resolves the record -> the owning pak
     // -> ACQUIRES the scene cluster that carries it through the store
     // (found, adopted from a loaded scene, or loaded through the
     // cluster-source seam: the mesh/material/texture graph resolves
@@ -210,7 +210,7 @@ class AssetManager {
     bool UnloadLut(LutHandle handle);
 
     // ---- GI BAKE SETS --------------------------------------------------
-    // Loads a GI set BY KEY: the [ids] row's .givolumemanifest bytes
+    // Loads a GI set BY KEY: the record's .givolumemanifest bytes
     // through the pak's VFS surface (ReadAsset), its .givolume rows
     // parsed, the set built (the renderer's BuildGiVolumeSetFromPaths
     // - the same per-volume load/upload as scene GI). Multiple sets
