@@ -462,6 +462,11 @@ struct World {
     // Cluster so resources stay owned by clusters.
     std::vector<MeshLocation> meshLocations;
     std::vector<MaterialLocation> materialLocations;
+    // The fallback material for renderable surfaces that carry no material
+    // row (Caldera strips materials). A world index into materialLocations,
+    // resolved once by ResolveAndFixup_clusters from the cooked
+    // "editor://default" material; kInvalidIndex when no default exists.
+    uint32_t defaultMaterialIndex = kInvalidIndex;
     std::vector<TextureLocation> textureLocations;
     std::vector<LightLocation> lightLocations;
     std::vector<CameraLocation> cameraLocations;

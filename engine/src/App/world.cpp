@@ -1721,6 +1721,27 @@ void World::ResolveAndFixup_clusters() {
         });
     }
 
+    // Material-less surfaces (Caldera strips materials) fall back to the
+    // cooked "editor://default" material. Resolve its world index here, BEFORE
+    // the per-material userdata/shader-family arrays are sized below, so the
+    // fallback participates in those re-keys like any node-referenced
+    // material. Appends a world slot on first use; a node-referenced slot
+    // (or a later re-resolve) finds the existing one.
+    defaultMaterialIndex = kInvalidIndex;
+    if (!clusters.empty() && clusters[0]) {
+        Cluster* cl = clusters[0].get();
+        if (const std::optional<ClusterMaterialHandle> hit =
+                cl->FindMaterialByUri("editor://default")) {
+            const uint32_t existing = WorldIndexOfMaterial(materialLocations, cl, *hit);
+            if (existing != UINT32_MAX) {
+                defaultMaterialIndex = existing;
+            } else {
+                defaultMaterialIndex = static_cast<uint32_t>(materialLocations.size());
+                materialLocations.push_back(MaterialLocation{.cluster = cl, .handle = *hit});
+            }
+        }
+    }
+
     // MATERIAL USERDATA RE-KEY: re-emit the captured defaults into
     // the new index layout (values keyed by the stable (owner,
     // handle) pair; unset entries read 0 — the neutral default).
@@ -2075,7 +2096,7 @@ void World::RefreshRuntimeSceneCaches() {
         drawItems.push_back(RenderItem{
             .node = node,
             .mesh = row.mesh,
-            .material = matRow ? matRow->material : kInvalidIndex,
+            .material = matRow ? matRow->material : defaultMaterialIndex,
             .flags = flags[node],
             .materialInstance = instanceLink,
         });
