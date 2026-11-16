@@ -12,6 +12,7 @@
 #include <vector>
 
 #include <tiny_gltf.h>
+#include <gltf_import/source_scene.h>
 
 // ---------------------------------------------------------------------------
 // Artifact-cache hook (optional): the registry store adapter the
@@ -296,6 +297,7 @@ struct GltfToSceneImporter {
     GltfImportImage* importImageRow(int imageIndex);
     void noteImage(int imageIndex, const std::string& identity, bool loaded);
     void noteImageUser(int imageIndex, const std::string& materialUri, const char* slot);
+    void prepareSourceScene();
     void importNodeRecursive(int gltfNodeIndex,
                              int parentSceneNode,
                              int level,
@@ -304,6 +306,8 @@ struct GltfToSceneImporter {
     );
     smvk::Cluster& cluster;
     const tinygltf::Model& model;
+    smvk::source::Scene sourceScene_;
+    bool sourceScenePrepared_ = false;
     std::filesystem::path gltfModelPath;
     std::shared_ptr<TextureSource> textureSource;
     std::string modelUriBase;            // normalized VFS file part for asset URIs
