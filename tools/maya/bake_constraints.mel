@@ -1,0 +1,59 @@
+// Bake the knight rig's deform-joint constraints + reset the bind pose.
+//
+// The knight rig uses two joint layers:
+//   - FK/control joints (hipSwinger_M, ...) drive the animation.
+//   - deform joints (unrealhipSwinger_M, unreal*Flap*, ...) are skinned and
+//     PARENT-CONSTRAINED to the FK joints.
+// A naive export bakes the deform joints' PARKED rest pose (the bindPose /
+// .bindPose matrix) instead of their EVALUATED constrained pose, so the
+// skinned region sits offset from where the mesh was actually skinned.
+//
+// This script:
+//   1. bakes the constraint-driven animation into keyframes (bakeResults),
+//   2. resets the bind pose to the evaluated pose at frame 1 (dagPose).
+// After it, export the skeleton (Maya -> FBX -> Blender -> glTF -> Import.exe)
+// and the deform joints carry the correct bind pose + animation.
+//
+// Usage:
+//   mayabatch.exe -file tools/maya/bake_constraints.mel
+// (edit SCENE / OUTPUT below for the source scene).
+
+string $SCENE = "C:/Users/samuel/Downloads/pkg_e_knight_anim/Scenes/knight_ARNOLD_ANIM_002.rnd.ma";
+string $OUTPUT = "C:/Users/samuel/Downloads/pkg_e_knight_anim/Scenes/knight_BAKED.mb";
+
+file -open -force $SCENE;
+currentTime -edit 1;
+
+// Union of all skin joints across every skinCluster.
+string $allJoints[];
+string $skins[] = `ls -type skinCluster`;
+for ($s in $skins) {
+    string $j[] = `skinCluster -q -inf $s`;
+    for ($x in $j) {
+        $allJoints[size($allJoints)] = $x;
+    }
+}
+print ("total skin joints (with dupes): " + size($allJoints) + "\n");
+
+// Bake the constraint-driven animation into keyframes on the joints.
+select -r $allJoints;
+bakeResults -simulation true -t "1:376" -at {"tx","ty","tz","rx","ry","rz"} $allJoints;
+print "baked animation\n";
+
+// Reset the bind poses to the evaluated (constrained) pose at frame 1.
+// Only reset the poses that actually contain these joints; the _M rig's
+// bindPose1-4 belong to a different joint set and would error.
+string $poses[] = `ls -type dagPose`;
+for ($p in $poses) {
+    string $members[] = `dagPose -q -m $p`;
+    if (size($members) > 0) {
+        select -cl;
+        select -r $members;
+        dagPose -reset -name $p;
+        print ("reset bind pose: " + $p + "\n");
+    }
+}
+
+file -rename $OUTPUT;
+file -save;
+print ("saved baked scene: " + $OUTPUT + "\n");

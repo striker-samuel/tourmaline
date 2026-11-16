@@ -1,0 +1,39 @@
+// Inspect the knight rig's skin clusters, bind poses, and one joint's
+// bind vs constrained pose. Diagnostic companion to bake_constraints.mel.
+//
+// Usage:
+//   mayabatch.exe -file tools/maya/query_pose.mel
+
+string $SCENE = "C:/Users/samuel/Downloads/pkg_e_knight_anim/Scenes/knight_ARNOLD_ANIM_002.rnd.ma";
+file -open -force $SCENE;
+currentTime -edit 1;
+
+string $skins[] = `ls -type skinCluster`;
+print ("skinClusters (" + size($skins) + "):\n");
+for ($s in $skins) {
+    string $j[] = `skinCluster -q -inf $s`;
+    print ("  " + $s + ": " + size($j) + " influences\n");
+}
+
+string $poses[] = `ls -type dagPose`;
+print ("dagPose nodes (" + size($poses) + "):\n");
+for ($p in $poses) {
+    int $m = `dagPose -q -mn $p`;
+    print ("  " + $p + ": " + $m + " members\n");
+}
+
+// Bind (parked) vs constrained pose for the hip swinger deform joint.
+string $u = "knight_rig:unrealhipSwinger_M";
+float $t[] = `xform -q -t $u`;
+float $r[] = `xform -q -ro $u`;
+float $ws[] = `xform -q -ws -t $u`;
+float $jo[] = `getAttr ($u + ".jo")`;
+print ("\nunrealhipSwinger_M (deform joint):\n");
+print ("  t  (constrained) = " + $t[0] + ", " + $t[1] + ", " + $t[2] + "\n");
+print ("  r  (constrained) = " + $r[0] + ", " + $r[1] + ", " + $r[2] + "\n");
+print ("  ws               = " + $ws[0] + ", " + $ws[1] + ", " + $ws[2] + "\n");
+print ("  jo (joint orient)= " + $jo[0] + ", " + $jo[1] + ", " + $jo[2] + "\n");
+
+string $h = "knight_rig:hipSwinger_M";
+float $hws[] = `xform -q -ws -t $h`;
+print ("hipSwinger_M (FK target): ws = " + $hws[0] + ", " + $hws[1] + ", " + $hws[2] + "\n");
