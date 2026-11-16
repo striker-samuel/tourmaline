@@ -350,7 +350,7 @@ struct DeriveStats {
 // Returns false + err on a failed import, an identity failure or a failed
 // write (a partial derivation leaves older files — the next successful
 // derive overwrites them).
-bool DeriveNativeAssets(const tinygltf::Model& model,
+bool DeriveNativeAssets(const smvk::source::Scene& model,
                         const std::filesystem::path& gltfPath,
                         const std::string& gltfGuid,
                         const AssetManifest* prevIdentity,
@@ -415,7 +415,10 @@ bool ImportMeshSource(const std::filesystem::path& gltfPath,
 // extracted sidecars are untouched digests to its own bytes + the
 // extracted payloads (deterministic; a hand-edit of an extracted
 // sidecar flips it and the re-import regenerates it from the source).
-[[nodiscard]] std::string SourceContentDigest(const std::filesystem::path& gltfPath,
+[[nodiscard]] std::string SourceContentDigest(const std::filesystem::path& sourcePath,
+                                const smvk::source::Scene& scene,
+                                const std::vector<std::string>& extraSourceDeps = {});
+std::string SourceContentDigest(const std::filesystem::path& gltfPath,
                                               const tinygltf::Model& model,
                                               const std::vector<std::string>& extraSourceDeps = {});
 // Single-image import (import.exe + loose-image drops): writes
