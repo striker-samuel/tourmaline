@@ -25,7 +25,7 @@ HLSL_FILES = [
     ROOT / "engine/shaders/gpu_scene.hlsli",
 ]
 ANNOTATION = re.compile(r"(?:^|\n)\s*(?://\s*)?GPU_STRUCT_NAME\((\w+)\)\s*\n\s*struct\s+(?:alignas\(\d+\)\s+)?(\w+)\s*\{", re.M)
-MEMBER = re.compile(r"^\s*(?:(?:const|volatile)\s+)?[\w:<> ,]+\s+(\w+)\s*(?:\{[^;]*\}|=[^;]*)?;\s*(?://.*)?$")
+MEMBER = re.compile(r"^\s*(?:(?:const|volatile)\s+)?[\w:<> ,]+\s+(\w+)(?:\s*\[[^\]]*\])?\s*(?:\{[^;]*\}|=[^;]*)?;\s*(?://.*)?$")
 SPV_MEMBER = re.compile(r'OpMemberName\s+(%\S+)\s+(\d+)\s+"([^"]+)"')
 SPV_OFFSET = re.compile(r'OpMemberDecorate\s+(%\S+)\s+(\d+)\s+Offset\s+(\d+)')
 SPV_STRIDE = re.compile(r'OpDecorate\s+(%\S+)\s+ArrayStride\s+(\d+)')
