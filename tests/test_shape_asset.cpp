@@ -42,6 +42,21 @@ int main() {
         assert(!ShapeToObj(DefaultShapeAsset(ShapeKind::PointCloud), obj, error));
         assert(!ShapeToObj(DefaultShapeAsset(ShapeKind::Spline), obj, error));
     }
+    // A point cloud is a first-class authored .shape primitive and can be
+    // packed without converting its point topology into triangles.
+    {
+        ShapeAsset cloud = DefaultShapeAsset(ShapeKind::PointCloud);
+        const std::string source = SerializeShapeAsset(cloud);
+        ShapeAsset loaded;
+        assert(ParseShapeAsset(source, loaded, error));
+        assert(loaded.kind == ShapeKind::PointCloud);
+        assert(loaded.points.size() == cloud.points.size());
+        ShapeGeometry points;
+        assert(TessellateShape(loaded, points, error));
+        assert(points.topology == ShapeGeometry::Topology::Points);
+        assert(points.vertices.size() == cloud.points.size());
+        assert(points.indices.empty());
+    }
     ShapeAsset loop = DefaultShapeAsset(ShapeKind::Spline);
     loop.closed = true;
     loop.segments = 5;
