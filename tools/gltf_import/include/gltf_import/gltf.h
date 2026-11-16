@@ -254,14 +254,40 @@ struct GltfToSceneImporter {
   private:
     smvk::ClusterMaterialHandle getOrCreateMaterial(int gltfMaterialIndex);
 
+    // A fully-derived, upload-ready mesh payload (PHASE A — the pure,
+    // CPU-bound meshopt/meshlet/LOD derivation). prepareMeshes computes one
+    // per (mesh, primitive) in PARALLEL (one task per mesh) before the node
+    // walk; getOrCreateMesh then only uploads + registers it (PHASE B — the
+    // cluster mutation, sequential on the traversal thread).
+    struct DerivedMesh {
+        smvk::MeshData data;         // optimized upload (copied into the cluster)
+        smvk::LodInfo lod;           // LOD0 metadata (groupId/triCount/acmr)
+        smvk::CookedMeshlets cooked; // baked meshlets (empty when none)
+        bool haveMeshlets = false;
+        std::vector<smvk::CookedLod> lodChain; // LOD siblings (empty when none)
+    };
+
+    // Phase A pre-pass: resolves the skinned + large-placed flags (a single
+    // O(nodes) walk — the old per-mesh traversal was O(meshes x nodes)), then
+    // derives every mesh's optimized upload + meshlets + LOD chain in parallel
+    // into meshDerived_. Runs ONCE (idempotent guard) on the first
+    // getOrCreateMesh; the configs (meshOptConfig/meshletConfig/coordFix_)
+    // must be set first (they are, before any import()).
+    void prepareMeshes();
+    // Derives ONE mesh's upload-ready payload. Pure over `model` + the configs
+    // (never touches the cluster), so it runs safely on a worker thread.
     // `skinned` attaches the primitive's JOINTS_0/WEIGHTS_0 as a
-    // PackedSkinInfluences stream BEFORE the meshopt pass, so it rides the vertex
-    // remap in lockstep with the geometry (BuildSkinData then only builds
-    // the Skeleton + publishes the stream; a stream attached after
+    // PackedSkinInfluences stream BEFORE the meshopt pass, so it rides the
+    // vertex remap in lockstep with the geometry (BuildSkinData then only
+    // builds the Skeleton + publishes the stream; a stream attached after
     // optimization would desync from the reordered vertices and spike).
-    smvk::ClusterStaticMeshHandle getOrCreateMesh(int gltfMeshIndex,
-                                                  int primitiveIndex,
-                                                  bool skinned = false);
+    // `largePlaced` is the LOD gate resolved by prepareMeshes' node walk.
+    DerivedMesh deriveMesh(int gltfMeshIndex,
+                           int primitiveIndex,
+                           bool skinned,
+                           bool largePlaced) const;
+    // Phase B: upload + register a pre-derived mesh (see prepareMeshes).
+    smvk::ClusterStaticMeshHandle getOrCreateMesh(int gltfMeshIndex, int primitiveIndex);
 
     smvk::ClusterLightHandle getOrCreateLight(int gltfLightIndex, bool staticLight);
     // Importer data rows (see setImportImages): find-or-create the row for
@@ -291,6 +317,10 @@ struct GltfToSceneImporter {
     glm::mat4 preTransform_{1.0f};
     std::vector<smvk::ClusterMaterialHandle> materialCache;
     std::vector<std::vector<smvk::ClusterStaticMeshHandle>> meshCache;
+    // Phase A derived payloads (see DerivedMesh): [mesh][prim], filled by
+    // prepareMeshes before the node walk uploads anything.
+    std::vector<std::vector<DerivedMesh>> meshDerived_;
+    bool meshesPrepared_ = false;
     std::vector<smvk::ClusterLightHandle> lightCache;          // gltf light index -> handle
     std::unordered_map<int, smvk::TextureHandle> textureCache; // imageIndex -> handle
     // glTF skin references recorded during the node walk: (mesh handle,

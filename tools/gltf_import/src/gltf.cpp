@@ -2075,42 +2075,166 @@ static bool PackVertexSkinStream(const tinygltf::Model& model,
     return true;
 }
 
-smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshIndex,
-                                                                   int primitiveIndex,
-                                                                   bool skinned) {
-    assert(gltfMeshIndex >= 0);
-    assert(static_cast<size_t>(gltfMeshIndex) < model.meshes.size());
+// Reads the LOD-gate shape facts (AABB + index count) for a primitive from
+// the glTF accessors WITHOUT the full vertex extract — prepareMeshes' single
+// O(nodes) walk needs them to resolve the large-placed flag for every
+// instance. Mirrors SurfaceDataFromGltfPrimitive's AABB read (the POSITION
+// accessor's authored min/max); false = no position accessor / no authored
+// bounds (treated as "never large-placed", matching the zero-AABB fallback).
+static bool PrimitiveShapeFacts(const tinygltf::Model& model,
+                                const tinygltf::Primitive& primitive,
+                                glm::vec3* aabbMin,
+                                glm::vec3* aabbMax,
+                                size_t* indexCount) {
+    auto it = primitive.attributes.find("POSITION");
+    if (it == primitive.attributes.end())
+        return false;
+    if (it->second < 0 || (size_t)it->second >= model.accessors.size())
+        return false;
+    const tinygltf::Accessor& acc = model.accessors[(size_t)it->second];
+    if (acc.minValues.size() < 3 || acc.maxValues.size() < 3)
+        return false;
+    *aabbMin = glm::vec3((float)acc.minValues[0], (float)acc.minValues[1], (float)acc.minValues[2]);
+    *aabbMax = glm::vec3((float)acc.maxValues[0], (float)acc.maxValues[1], (float)acc.maxValues[2]);
+    if (primitive.indices >= 0 && (size_t)primitive.indices < model.accessors.size())
+        *indexCount = model.accessors[(size_t)primitive.indices].count;
+    else
+        *indexCount = acc.count;
+    return true;
+}
 
-    const tinygltf::Mesh& gltfMesh = model.meshes[gltfMeshIndex];
+void GltfToSceneImporter::prepareMeshes() {
+    if (meshesPrepared_)
+        return;
+    meshesPrepared_ = true;
+    meshDerived_.resize(model.meshes.size());
+    for (size_t i = 0; i < model.meshes.size(); ++i)
+        meshDerived_[i].resize(model.meshes[i].primitives.size());
 
-    assert(primitiveIndex >= 0);
-    assert(static_cast<size_t>(primitiveIndex) < gltfMesh.primitives.size());
+    // Skinned + large-placed flags resolved by a SINGLE node walk (the old
+    // per-mesh traversal inside getOrCreateMesh was O(meshes x nodes) — for a
+    // district that is ~7k meshes x ~400k nodes, a billion world-transform
+    // multiplies). skinned[mesh][prim] = any node with a valid skin references
+    // it; largePlaced[mesh][prim] = any instance's world transform clears the
+    // LOD gate (EligibleForSpatialDerivatives).
+    std::vector<std::vector<bool>> skinned(model.meshes.size());
+    std::vector<std::vector<bool>> largePlaced(model.meshes.size());
+    for (size_t i = 0; i < model.meshes.size(); ++i) {
+        skinned[i].resize(model.meshes[i].primitives.size(), false);
+        largePlaced[i].resize(model.meshes[i].primitives.size(), false);
+    }
+    {
+        std::vector<glm::mat4> worldOf(model.nodes.size(), glm::mat4(1.0f));
+        std::vector<uint8_t> visited(model.nodes.size(), 0);
+        std::vector<uint8_t> child(model.nodes.size(), 0);
+        for (const auto& n : model.nodes)
+            for (int c : n.children)
+                if (c >= 0 && size_t(c) < child.size())
+                    child[size_t(c)] = 1;
+        auto walk = [&](auto&& self, int idx, const glm::mat4& parent) -> void {
+            if (idx < 0 || size_t(idx) >= model.nodes.size() || visited[size_t(idx)])
+                return;
+            visited[size_t(idx)] = 1;
+            const auto& n = model.nodes[size_t(idx)];
+            worldOf[size_t(idx)] = parent * GetNodeLocalTransform(n);
+            for (int c : n.children)
+                self(self, c, worldOf[size_t(idx)]);
+        };
+        for (size_t i = 0; i < model.nodes.size(); ++i)
+            if (!child[i])
+                walk(walk, int(i), glm::mat4(1.0f));
+        // Orphan/cyclic malformed inputs, handled conservatively (same as
+        // the old per-mesh traversal).
+        for (size_t i = 0; i < model.nodes.size(); ++i)
+            if (!visited[i])
+                walk(walk, int(i), glm::mat4(1.0f));
 
-    auto& slot = meshCache[gltfMeshIndex][primitiveIndex];
-
-    if (!slot.empty()) {
-        return slot;
+        for (size_t ni = 0; ni < model.nodes.size(); ++ni) {
+            const tinygltf::Node& n = model.nodes[ni];
+            if (n.mesh < 0 || (size_t)n.mesh >= model.meshes.size())
+                continue;
+            const bool hasSkin = n.skin >= 0 && (size_t)n.skin < model.skins.size();
+            const tinygltf::Mesh& mesh = model.meshes[(size_t)n.mesh];
+            for (int pi = 0; pi < (int)mesh.primitives.size(); ++pi) {
+                if (hasSkin)
+                    skinned[(size_t)n.mesh][(size_t)pi] = true;
+                glm::vec3 mn, mx;
+                size_t idxCount = 0;
+                if (!PrimitiveShapeFacts(model, mesh.primitives[(size_t)pi], &mn, &mx, &idxCount))
+                    continue;
+                if (smvk::EligibleForSpatialDerivatives(mn, mx, idxCount, worldOf[ni], hasSkin))
+                    largePlaced[(size_t)n.mesh][(size_t)pi] = true;
+            }
+        }
     }
 
-    const tinygltf::Primitive& primitive = gltfMesh.primitives[primitiveIndex];
+    // Flatten the unique (mesh, primitive) work list, then derive each in
+    // PARALLEL (one task per mesh — the meshopt/meshlet/LOD passes are pure
+    // over `model` + the configs and write only their own DerivedMesh).
+    struct Work {
+        int mesh;
+        int prim;
+        bool skinned;
+        bool largePlaced;
+    };
+    std::vector<Work> work;
+    work.reserve(model.meshes.size());
+    for (size_t m = 0; m < model.meshes.size(); ++m)
+        for (size_t p = 0; p < model.meshes[m].primitives.size(); ++p)
+            work.push_back(Work{int(m), int(p), skinned[m][p], largePlaced[m][p]});
+    if (work.empty())
+        return;
 
-    auto data = SurfaceDataFromGltfPrimitive(model, primitive, coordFix_);
+    if (work.size() > 1 && std::thread::hardware_concurrency() > 1) {
+        try {
+            // Default pool: hardware_concurrency workers, capped at
+            // kNumPoolShards-1 (15). The meshopt passes are CPU-bound and
+            // scale near-linearly, so this is the ~15x win for free.
+            smvk::ThreadPool pool;
+            std::vector<std::future<DerivedMesh>> futures;
+            futures.reserve(work.size());
+            for (const Work& w : work)
+                futures.push_back(pool.enqueue(
+                    [this, w] { return deriveMesh(w.mesh, w.prim, w.skinned, w.largePlaced); }));
+            for (size_t i = 0; i < work.size(); ++i)
+                meshDerived_[(size_t)work[i].mesh][(size_t)work[i].prim] = futures[i].get();
+            return;
+        } catch (const std::exception& e) {
+            // All pool shards leased elsewhere (>= 15 live workers): degrade
+            // to sequential derivation — the honest fallback, never a deadlock
+            // (mirrors PakCrc32Parallel's serial CRC fallback).
+            (void)e;
+        }
+    }
+    for (const Work& w : work)
+        meshDerived_[(size_t)w.mesh][(size_t)w.prim] =
+            deriveMesh(w.mesh, w.prim, w.skinned, w.largePlaced);
+}
+
+GltfToSceneImporter::DerivedMesh GltfToSceneImporter::deriveMesh(int gltfMeshIndex,
+                                                                 int primitiveIndex,
+                                                                 bool skinned,
+                                                                 bool largePlaced) const {
+    DerivedMesh out;
+    const tinygltf::Primitive& primitive =
+        model.meshes[(size_t)gltfMeshIndex].primitives[(size_t)primitiveIndex];
+
+    out.data = SurfaceDataFromGltfPrimitive(model, primitive, coordFix_);
 
     // Attach the skin stream BEFORE the meshopt pass so the weld +
-    // vertex-fetch remaps carry it in lockstep with `data.vertices`
+    // vertex-fetch remaps carry it in lockstep with `out.data.vertices`
     // (OptimizeMeshData remaps `skin` alongside). A stream
     // attached after optimization would be in ACCESSOR order while the
     // vertices are reordered - bind-pose masks it (all joints = bind) but
     // animation scatters the weights into spikes.
     if (skinned)
-        PackVertexSkinStream(model, primitive, data.skin);
+        PackVertexSkinStream(model, primitive, out.data.skin);
 
     // Cook-time meshoptimizer pass (off by default; the cooker enables it
     // via setMeshOptConfig). Overdraw optimization is gated off for
     // non-opaque primitives — it can hurt cutout rendering.
-    smvk::LodInfo lod;
-    lod.groupId = static_cast<uint32_t>(gltfMeshIndex);
-    if (meshOptConfig.enabled && !data.vertices.empty() && !data.indices.empty()) {
+    out.lod.groupId = static_cast<uint32_t>(gltfMeshIndex);
+    if (meshOptConfig.enabled && !out.data.vertices.empty() && !out.data.indices.empty()) {
         bool opaque = true;
         if (primitive.material >= 0 && primitive.material < (int)model.materials.size()) {
             const std::string& am = model.materials[primitive.material].alphaMode;
@@ -2120,29 +2244,34 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
         if (!opaque)
             cfg.overdraw = false;
         smvk::MeshOptStats optStats;
-        const size_t inVerts = data.vertices.size();
-        if (OptimizeMeshData(data, cfg, static_cast<uint32_t>(gltfMeshIndex), &optStats, &lod)) {
+        const size_t inVerts = out.data.vertices.size();
+        if (OptimizeMeshData(
+                out.data, cfg, static_cast<uint32_t>(gltfMeshIndex), &optStats, &out.lod)) {
 #ifndef NDEBUG
             std::cout << "MeshOpt mesh." << gltfMeshIndex << "/prim." << primitiveIndex
-                      << ": verts " << inVerts << "->" << data.vertices.size() << " tris "
+                      << ": verts " << inVerts << "->" << out.data.vertices.size() << " tris "
                       << optStats.triangles << " ACMR " << optStats.acmrBefore << "->"
                       << optStats.acmrAfter << " overdraw " << optStats.overdrawBefore << "->"
                       << optStats.overdrawAfter << std::endl;
 #endif
         }
     } else {
-        lod.triCount = static_cast<uint32_t>(data.indices.size() / 3);
+        out.lod.triCount = static_cast<uint32_t>(out.data.indices.size() / 3);
     }
+
+    // The triangle-count floor shared by the meshlet bake and the LOD chain:
+    // tiny meshes are a single draw anyway (see EligibleForGpuDrivenMesh).
+    const size_t triCount = out.data.indices.size() / 3;
+    const bool gpuDriven = smvk::EligibleForGpuDrivenMesh(triCount);
 
     // Meshlet cook path (opt-in): builds from the optimized upload so the
     // meshlet windows match the vertex-cache-friendly triangle order.
-    smvk::CookedMeshlets cooked;
-    smvk::MeshletStats meshletStats;
-    bool haveMeshlets = false;
-    if (meshletConfig.enabled && !data.vertices.empty() && !data.indices.empty()) {
+    if (meshletConfig.enabled && gpuDriven && !out.data.vertices.empty() &&
+        !out.data.indices.empty()) {
         std::string merr;
-        if (BuildMeshletsForUpload(data, meshletConfig, &cooked, &meshletStats, &merr)) {
-            haveMeshlets = true;
+        smvk::MeshletStats meshletStats;
+        if (BuildMeshletsForUpload(out.data, meshletConfig, &out.cooked, &meshletStats, &merr)) {
+            out.haveMeshlets = true;
 #ifndef NDEBUG
             std::cout << "Meshlets mesh." << gltfMeshIndex << "/prim." << primitiveIndex
                       << ": count " << meshletStats.meshletCount << " tris "
@@ -2170,39 +2299,8 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
     // silently freezing at LOD-switch distance. Skipping the siblings
     // here keeps every draw on the streamed base mesh, which is also
     // the GPU-driven raster eligibility shape (single-level chains).
-    // Evaluate ALL authored instances, not the raw primitive dimensions.
-    // A shared mesh needs derived siblings if any placement is large in
-    // scene/world space. Node local transforms are traversed from roots.
-    bool largePlacedInstance = false;
-    std::vector<uint8_t> visited(model.nodes.size(), 0);
-    std::vector<uint8_t> child(model.nodes.size(), 0);
-    for (const auto& n : model.nodes)
-        for (int c : n.children)
-            if (c >= 0 && size_t(c) < child.size())
-                child[size_t(c)] = 1;
-    auto visit = [&](auto&& self, int idx, const glm::mat4& parent) -> void {
-        if (idx < 0 || size_t(idx) >= model.nodes.size() || visited[size_t(idx)])
-            return;
-        visited[size_t(idx)] = 1;
-        const auto& n = model.nodes[size_t(idx)];
-        const glm::mat4 world = parent * GetNodeLocalTransform(n);
-        if (n.mesh == gltfMeshIndex &&
-            smvk::EligibleForSpatialDerivatives(
-                data.aabbMin, data.aabbMax, data.indices.size(), world, skinned))
-            largePlacedInstance = true;
-        for (int c : n.children)
-            self(self, c, world);
-    };
-    for (size_t i = 0; i < model.nodes.size(); ++i)
-        if (!child[i])
-            visit(visit, int(i), glm::mat4(1.0f));
-    // Handle orphan/cyclic malformed inputs conservatively.
-    for (size_t i = 0; i < model.nodes.size(); ++i)
-        if (!visited[i])
-            visit(visit, int(i), glm::mat4(1.0f));
-    std::vector<smvk::CookedLod> lodChain;
-    if (meshOptConfig.generateLods && data.skin.empty() && !data.vertices.empty() &&
-        largePlacedInstance) {
+    if (meshOptConfig.generateLods && out.data.skin.empty() && !out.data.vertices.empty() &&
+        largePlaced && gpuDriven) {
         // Alpha cutout (MASK) and blended foliage sample coverage from the
         // base-color alpha via the UVs: positions-only simplify collapses
         // quad borders and stretches UVs, flashing background through the
@@ -2212,16 +2310,42 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
             const std::string& am = model.materials[primitive.material].alphaMode;
             preserveCoverage = (am == "MASK" || am == "BLEND");
         }
-        if (smvk::BuildLodChainForUpload(data, meshOptConfig, lodChain, preserveCoverage)) {
+        if (smvk::BuildLodChainForUpload(out.data, meshOptConfig, out.lodChain, preserveCoverage)) {
 #ifndef NDEBUG
-            for (size_t li = 0; li < lodChain.size(); ++li) {
+            for (size_t li = 0; li < out.lodChain.size(); ++li) {
                 std::cout << "LOD mesh." << gltfMeshIndex << "/prim." << primitiveIndex << "/lod"
-                          << (li + 1) << ": tris " << lodChain[li].triCount << " localErr "
-                          << lodChain[li].localError << std::endl;
+                          << (li + 1) << ": tris " << out.lodChain[li].triCount << " localErr "
+                          << out.lodChain[li].localError << std::endl;
             }
 #endif
         }
     }
+
+    return out;
+}
+
+smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshIndex,
+                                                                   int primitiveIndex) {
+    assert(gltfMeshIndex >= 0);
+    assert(static_cast<size_t>(gltfMeshIndex) < model.meshes.size());
+    assert(primitiveIndex >= 0);
+    assert(static_cast<size_t>(primitiveIndex) < model.meshes[gltfMeshIndex].primitives.size());
+
+    auto& slot = meshCache[gltfMeshIndex][primitiveIndex];
+    if (!slot.empty()) {
+        return slot;
+    }
+
+    // Phase A runs once, before any mesh is uploaded (the configs are set
+    // before import()).
+    prepareMeshes();
+
+    DerivedMesh& derived = meshDerived_[gltfMeshIndex][primitiveIndex];
+    smvk::MeshData& data = derived.data;
+    smvk::LodInfo& lod = derived.lod;
+    const smvk::CookedMeshlets& cooked = derived.cooked;
+    const bool haveMeshlets = derived.haveMeshlets;
+    std::vector<smvk::CookedLod>& lodChain = derived.lodChain;
 
     slot = cluster.UploadMesh(data);
 
@@ -2255,8 +2379,9 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
                 continue;
             const smvk::StringViewT lodUri =
                 smvk::LodSiblingUri(uri, static_cast<uint32_t>(li + 1));
-            if (meshletConfig.enabled && !kept.upload.vertices.empty() &&
-                !kept.upload.indices.empty()) {
+            if (meshletConfig.enabled &&
+                smvk::EligibleForGpuDrivenMesh(kept.upload.indices.size() / 3) &&
+                !kept.upload.vertices.empty() && !kept.upload.indices.empty()) {
                 smvk::CookedMeshlets lodCooked;
                 smvk::MeshletStats lodStats;
                 std::string lodErr;
@@ -2289,6 +2414,15 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
             cluster.RegisterMeshLod(lodUri, llod);
         }
     }
+
+    // Release the derived payload now that the cluster retained its own copy
+    // — prepareMeshes derived every mesh up front (the parallel win), so
+    // without this the importer would hold the whole district's geometry twice
+    // (the retained upload + this pre-pass copy).
+    derived.data = smvk::MeshData{};
+    derived.cooked = smvk::CookedMeshlets{};
+    derived.lodChain.clear();
+    derived.lodChain.shrink_to_fit();
 
     return slot;
 }
@@ -2401,7 +2535,7 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
             cluster.scene.localTransform[primNode] = glm::mat4(1.0f);
             cluster.scene.globalTransform[primNode] = glm::mat4(1.0f);
             const smvk::ClusterStaticMeshHandle primMesh =
-                getOrCreateMesh(gltfNode.mesh, primIndex, hasSkin);
+                getOrCreateMesh(gltfNode.mesh, primIndex);
             SetMesh(cluster.scene, primNode, primMesh.index());
             SetMaterial(cluster.scene, primNode, getOrCreateMaterial(primitive.material).index());
             markAsChanged(cluster.scene, primNode);
