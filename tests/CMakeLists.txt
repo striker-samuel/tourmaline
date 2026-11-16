@@ -1545,6 +1545,13 @@ set_target_properties(FramePacerTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME frame_pacer_tests COMMAND FramePacerTests)
 
+# Pure point-array graph compiler/evaluator (no GPU required).
+add_executable(PointArrayGraphTests test_point_array_graph.cpp)
+target_include_directories(PointArrayGraphTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/include
+    ${CMAKE_SOURCE_DIR}/external/glm)
+add_test(NAME point_array_graph_tests COMMAND PointArrayGraphTests)
+
 # CPU-only authored spline/point cloud/primitive regression tests.
 add_executable(ShapeAssetTests test_shape_asset.cpp)
 target_include_directories(ShapeAssetTests PRIVATE ${CMAKE_SOURCE_DIR}/engine/include)
