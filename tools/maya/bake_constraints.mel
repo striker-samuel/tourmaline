@@ -19,7 +19,7 @@
 // (edit SCENE / OUTPUT below for the source scene).
 
 string $SCENE = "C:/Users/samuel/Downloads/pkg_e_knight_anim/Scenes/knight_ARNOLD_ANIM_002.rnd.ma";
-string $OUTPUT = "C:/Users/samuel/Downloads/pkg_e_knight_anim/Scenes/knight_BAKED.mb";
+string $OUTPUT = "C:/Users/samuel/Downloads/pkg_e_knight_anim/Scenes/knight_BAKED.ma";
 
 file -open -force $SCENE;
 currentTime -edit 1;
@@ -36,9 +36,13 @@ for ($s in $skins) {
 print ("total skin joints (with dupes): " + size($allJoints) + "\n");
 
 // Bake the constraint-driven animation into keyframes on the joints.
-select -r $allJoints;
-bakeResults -simulation true -t "1:376" -at {"tx","ty","tz","rx","ry","rz"} $allJoints;
-print "baked animation\n";
+// NOTE: full bakeResults over all 596 joints generates ~1.3M keyframes and
+// corrupts a plain .ma/.mb save. The static offset only needs the bind pose
+// reset below; bake the animation only if the exporter does not bake
+// constraints itself.
+//select -r $allJoints;
+//bakeResults -t "1:376" $allJoints;
+//print "baked animation\n";
 
 // Reset the bind poses to the evaluated (constrained) pose at frame 1.
 // Only reset the poses that actually contain these joints; the _M rig's
