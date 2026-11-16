@@ -42,6 +42,11 @@ def usd_env(usd_root: Path) -> dict[str, str]:
     paths = [str(usd_root / "lib"), str(usd_root / "bin"),
              str(usd_root / "python"), str(usd_root / "plugin" / "usd")]
     env["PATH"] = os.pathsep.join(paths + [env.get("PATH", "")])
+    # USD resolves its asset resolver + file-format plugins through plugInfo
+    # registries; the prebuilt's top-level registry lives under lib/usd/. Point
+    # PXR_PLUGINPATH_NAME there so ArDefaultResolver and the .usd/.usdc plugins
+    # are found regardless of where the USD DLLs were loaded from.
+    env["PXR_PLUGINPATH_NAME"] = str(usd_root / "lib" / "usd")
     return env
 
 
