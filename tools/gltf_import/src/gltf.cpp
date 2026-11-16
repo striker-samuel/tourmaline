@@ -1944,10 +1944,6 @@ static smvk::source::Primitive DecodeGltfPrimitive(const tinygltf::Model& model,
         raw.indices.reserve(a.count);
         for (size_t i = 0; i < a.count; ++i)
             raw.indices.push_back(readIndex(model, a, i));
-    } else {
-        raw.indices.reserve(raw.vertices.size());
-        for (uint32_t i = 0; i < raw.vertices.size(); ++i)
-            raw.indices.push_back(i);
     }
     return raw;
 }
