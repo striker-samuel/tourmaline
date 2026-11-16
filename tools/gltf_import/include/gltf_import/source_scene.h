@@ -6,6 +6,8 @@
 // representation; no glTF/OBJ/USD parser types or packed GPU structures live here.
 // Phase 1: the live glTF geometry path consumes Primitive through ToMeshData.
 // Materials, animation and source dispatch migrate in follow-up changes.
+#include <array>
+#include <optional>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -15,6 +17,42 @@
 namespace smvk::source {
 
 inline constexpr uint32_t InvalidIndex = std::numeric_limits<uint32_t>::max();
+
+enum class AlphaMode { Opaque, Mask, Blend };
+
+// Resolved authoring texture reference. Image and texture tables are owned by
+// the source adapter; these indices are not GPU texture handles.
+struct TextureRef {
+    int textureIndex = -1;
+    int imageIndex = -1;
+    int samplerIndex = -1;
+    int texCoord = 0;
+    float scaleOrStrength = 1.0f;
+    [[nodiscard]] bool valid() const {
+        return textureIndex >= 0 && imageIndex >= 0;
+    }
+};
+
+struct Material {
+    std::string name;
+    std::array<double, 4> baseColorFactor{1.0, 1.0, 1.0, 1.0};
+    double metallicFactor = 1.0;
+    double roughnessFactor = 1.0;
+    std::optional<TextureRef> baseColorTex;
+    std::optional<TextureRef> metallicRoughnessTex;
+    std::optional<TextureRef> normalTex;
+    std::optional<TextureRef> occlusionTex;
+    std::optional<TextureRef> emissiveTex;
+    std::array<double, 3> emissiveFactor{0.0, 0.0, 0.0};
+    double emissiveStrength = 1.0;
+    bool unlit = false;
+    AlphaMode alphaMode = AlphaMode::Opaque;
+    double alphaCutoff = 0.5;
+    bool doubleSided = false;
+    bool castsShadows = true;
+    bool receiveContactShadows = true;
+    bool clothSheen = false;
+};
 
 struct Vertex {
     glm::vec3 position{0.0f};
@@ -67,6 +105,7 @@ struct Scene {
     std::vector<Node> nodes;
     std::vector<uint32_t> roots;
     std::vector<Mesh> meshes;
+    std::vector<Material> materials;
     std::vector<Dependency> dependencies;
 };
 
