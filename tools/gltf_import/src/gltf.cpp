@@ -1841,6 +1841,7 @@ smvk::ClusterLightHandle GltfToSceneImporter::getOrCreateLight(int gltfLightInde
 static smvk::source::Primitive DecodeGltfPrimitive(const tinygltf::Model& model,
                                                     const tinygltf::Primitive& primitive) {
     smvk::source::Primitive raw{};
+    raw.material = primitive.material;
     const auto positionIt = primitive.attributes.find("POSITION");
     if (positionIt == primitive.attributes.end())
         return raw;
@@ -1893,6 +1894,54 @@ static smvk::source::Primitive DecodeGltfPrimitive(const tinygltf::Model& model,
         raw.indices.reserve(a.count);
         for (size_t i = 0; i < a.count; ++i)
             raw.indices.push_back(readIndex(model, a, i));
+    }
+    // Preserve the unquantized authoring skin stream in source vertices.
+    // Packing happens only when preparing the renderer's mesh upload.
+    const auto jt = primitive.attributes.find("JOINTS_0");
+    const auto wt = primitive.attributes.find("WEIGHTS_0");
+    if (jt != primitive.attributes.end() && wt != primitive.attributes.end() &&
+        jt->second >= 0 && wt->second >= 0 &&
+        size_t(jt->second) < model.accessors.size() &&
+        size_t(wt->second) < model.accessors.size()) {
+        const auto& jAcc = model.accessors[size_t(jt->second)];
+        const auto& wAcc = model.accessors[size_t(wt->second)];
+        if (jAcc.count == raw.vertices.size() && wAcc.count >= jAcc.count) {
+            raw.hasSkinWeights = true;
+            for (size_t i = 0; i < raw.vertices.size(); ++i) {
+                const uint8_t* jp = gltfPtr(model, jAcc, i);
+                const uint8_t* wp = gltfPtr(model, wAcc, i);
+                if (jp) {
+                    for (int k = 0; k < 4; ++k) {
+                        uint32_t index = 0;
+                        if (jAcc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE)
+                            index = jp[k];
+                        else if (jAcc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) {
+                            uint16_t v = 0;
+                            std::memcpy(&v, jp + k * sizeof(v), sizeof(v));
+                            index = v;
+                        } else if (jAcc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT) {
+                            std::memcpy(&index, jp + k * sizeof(index), sizeof(index));
+                        }
+                        raw.vertices[i].joints[k] = index;
+                    }
+                }
+                if (wp) {
+                    for (int k = 0; k < 4; ++k) {
+                        float weight = raw.vertices[i].weights[k];
+                        if (wAcc.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT) {
+                            std::memcpy(&weight, wp + k * sizeof(float), sizeof(float));
+                        } else if (wAcc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE) {
+                            weight = float(wp[k]) / 255.0f;
+                        } else if (wAcc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) {
+                            uint16_t v = 0;
+                            std::memcpy(&v, wp + k * sizeof(v), sizeof(v));
+                            weight = float(v) / 65535.0f;
+                        }
+                        raw.vertices[i].weights[k] = weight;
+                    }
+                }
+            }
+        }
     }
     return raw;
 }
