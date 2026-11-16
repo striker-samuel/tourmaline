@@ -2410,11 +2410,59 @@ void GltfToSceneImporter::applyPreTransform(Scene& scene, int rootNode) {
         return;
     scene.localTransform[(size_t)rootNode] = preTransform_ * scene.localTransform[(size_t)rootNode];
 }
+// Decode authored hierarchy and import policy once into Tourmaline-owned
+// source nodes. The glTF parser remains responsible for source-format extras;
+// scene traversal consumes these normalized nodes rather than tinygltf::Node.
+void GltfToSceneImporter::prepareSourceScene() {
+    if (sourceScenePrepared_)
+        return;
+    auto& scene = sourceScene_;
+    scene.nodes.resize(model.nodes.size());
+    scene.meshes.resize(model.meshes.size());
+    for (size_t mi = 0; mi < model.meshes.size(); ++mi) {
+        scene.meshes[mi].name = model.meshes[mi].name;
+        scene.meshes[mi].stableKey = "mesh." + std::to_string(mi);
+        scene.meshes[mi].primitives.resize(model.meshes[mi].primitives.size());
+    }
+    for (size_t i = 0; i < model.nodes.size(); ++i) {
+        const tinygltf::Node& in = model.nodes[i];
+        auto& out = scene.nodes[i];
+        out.name = in.name;
+        out.stableKey = "node." + std::to_string(i);
+        out.localTransform = GetNodeLocalTransform(in);
+        out.mesh = in.mesh;
+        out.skin = in.skin;
+        out.light = GltfNodeLightIndex(in);
+        out.staticRoot = GltfExtrasStatic(in.extras) ||
+                         (!in.name.empty() && in.name.rfind("STATIC_", 0) == 0);
+        out.noLightmap = GltfExtrasNoLightmap(in.extras) ||
+                         (!in.name.empty() && in.name.rfind("NOLM_", 0) == 0);
+        out.ditherCloseup = GltfExtrasDitherCloseup(in.extras) ||
+                            (!in.name.empty() && in.name.rfind("DITHER_", 0) == 0);
+        out.staticLight = GltfExtrasStaticLight(in.extras);
+        out.children.reserve(in.children.size());
+        for (int child : in.children) {
+            if (child < 0 || size_t(child) >= scene.nodes.size())
+                continue;
+            out.children.push_back(uint32_t(child));
+        }
+    }
+    for (size_t i = 0; i < scene.nodes.size(); ++i) {
+        for (uint32_t child : scene.nodes[i].children)
+            scene.nodes[child].parent = uint32_t(i);
+    }
+    for (size_t i = 0; i < scene.nodes.size(); ++i)
+        if (scene.nodes[i].parent == smvk::source::InvalidIndex)
+            scene.roots.push_back(uint32_t(i));
+    sourceScenePrepared_ = true;
+}
+
 void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
                                               int parentSceneNode,
                                               int level,
                                               bool topOfImport) {
-    const tinygltf::Node& gltfNode = model.nodes[gltfNodeIndex];
+    prepareSourceScene();
+    const smvk::source::Node& sourceNode = sourceScene_.nodes[size_t(gltfNodeIndex)];
 
     // glTF node index -> cluster id map (the asset derivation retargets
     // animations/material bindings onto the deterministic cluster ids).
@@ -2425,7 +2473,7 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
     const int groupNode = addNode(cluster.scene, parentSceneNode, level);
     gltfNodeMap_[size_t(gltfNodeIndex)] = groupNode;
 
-    setNodeName(cluster.scene, groupNode, gltfNode.name.empty() ? "Node" : gltfNode.name);
+    setNodeName(cluster.scene, groupNode, sourceNode.name.empty() ? "Node" : sourceNode.name);
 
     // RAW local (as authored). The TOP node of each imported chain
     // (importUnder) additionally carries the coordFix basis on the
@@ -2435,15 +2483,14 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
     // the local gizmo + the inspector read true).
     cluster.scene.localTransform[groupNode] =
         (topOfImport ? CoordFixBasis(coordFix_) : glm::mat4(1.0f)) *
-        GetNodeLocalTransform(gltfNode);
+        sourceNode.localTransform;
     cluster.scene.globalTransform[groupNode] = glm::mat4(1.0f); // resolved later
 
     // Static-subtree opt-in: authoring extras or STATIC_ name prefix.
     // Flag is stamped directly; the staticNode cache is rebuilt once at the
     // end of the import flow (see GltfToClusterFromVfs / GltfToCluster).
     {
-        const bool wantStatic = GltfExtrasStatic(gltfNode.extras) ||
-                                (!gltfNode.name.empty() && gltfNode.name.rfind("STATIC_", 0) == 0);
+        const bool wantStatic = sourceNode.staticRoot;
         if (wantStatic && (size_t)groupNode < cluster.scene.staticRoot.size())
             cluster.scene.staticRoot[(size_t)groupNode] = 1;
     }
@@ -2451,8 +2498,7 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
     // Lightmap opt-out: authoring extras or NOLM_ name prefix. Stored on
     // the group node; IsNoLightmapNode() resolves subtree membership.
     {
-        const bool wantNoLm = GltfExtrasNoLightmap(gltfNode.extras) ||
-                              (!gltfNode.name.empty() && gltfNode.name.rfind("NOLM_", 0) == 0);
+        const bool wantNoLm = sourceNode.noLightmap;
         if (wantNoLm) {
             if (cluster.scene.noLightmap.size() != cluster.scene.hierarchy.size())
                 cluster.scene.noLightmap.resize(cluster.scene.hierarchy.size(), 0);
@@ -2465,8 +2511,7 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
     // Stored on the group node; IsDitherCloseupNode() resolves subtree
     // membership. Cooked into the pak scene blob (v6 section).
     {
-        const bool wantDither = GltfExtrasDitherCloseup(gltfNode.extras) ||
-                                (!gltfNode.name.empty() && gltfNode.name.rfind("DITHER_", 0) == 0);
+        const bool wantDither = sourceNode.ditherCloseup;
         if (wantDither) {
             if (cluster.scene.ditherCloseup.size() != cluster.scene.hierarchy.size())
                 cluster.scene.ditherCloseup.resize(cluster.scene.hierarchy.size(), 0);
@@ -2485,18 +2530,18 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
     // exactly like meshes. Node extras "smvk.staticLight" (or a STATIC_
     // light name) flags the light as a bake source - first instance
     // wins when the definition is shared.
-    const int gltfNodeLight = GltfNodeLightIndex(gltfNode);
+    const int gltfNodeLight = sourceNode.light;
     if (gltfNodeLight >= 0 && gltfNodeLight < (int)model.lights.size()) {
         const smvk::ClusterLightHandle h =
-            getOrCreateLight(gltfNodeLight, GltfExtrasStaticLight(gltfNode.extras));
+            getOrCreateLight(gltfNodeLight, sourceNode.staticLight);
         if (h.valid())
             SetLight(cluster.scene, (uint32_t)groupNode, h.index());
     }
 
     // Unroll primitives into separate meshes (your current approach).
-    if (gltfNode.mesh >= 0) {
-        const tinygltf::Mesh& gltfMesh = model.meshes[gltfNode.mesh];
-        const bool hasSkin = gltfNode.skin >= 0 && (size_t)gltfNode.skin < model.skins.size();
+    if (sourceNode.mesh >= 0) {
+        const tinygltf::Mesh& gltfMesh = model.meshes[sourceNode.mesh];
+        const bool hasSkin = sourceNode.skin >= 0 && (size_t)sourceNode.skin < model.skins.size();
 
         for (int primIndex = 0; primIndex < (int)gltfMesh.primitives.size(); ++primIndex) {
             const tinygltf::Primitive& primitive = gltfMesh.primitives[primIndex];
@@ -2504,12 +2549,12 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
             const int primNode = addNode(cluster.scene, groupNode, level + 1);
             setNodeName(cluster.scene,
                         primNode,
-                        (gltfNode.name.empty() ? "Node" : gltfNode.name) + std::string("Shape") +
+                        (sourceNode.name.empty() ? "Node" : sourceNode.name) + std::string("Shape") +
                             std::to_string(primIndex));
             cluster.scene.localTransform[primNode] = glm::mat4(1.0f);
             cluster.scene.globalTransform[primNode] = glm::mat4(1.0f);
             const smvk::ClusterStaticMeshHandle primMesh =
-                getOrCreateMesh(gltfNode.mesh, primIndex);
+                getOrCreateMesh(sourceNode.mesh, primIndex);
             SetMesh(cluster.scene, primNode, primMesh.index());
             SetMaterial(cluster.scene, primNode, getOrCreateMaterial(primitive.material).index());
             markAsChanged(cluster.scene, primNode);
@@ -2521,14 +2566,14 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
             // own attributes available (the post pass re-reads them from
             // the recorded indices).
             if (hasSkin && primMesh.valid())
-                skinRefs_.push_back(SkinRef{primMesh, gltfNode.skin, gltfNode.mesh, primIndex});
+                skinRefs_.push_back(SkinRef{primMesh, sourceNode.skin, sourceNode.mesh, primIndex});
         }
     }
 
     // Recurse children under the group node to preserve hierarchy
     // (never top-of-import: only the chain's first node carries the
     // coordFix basis).
-    for (int child : gltfNode.children) {
+    for (uint32_t child : sourceNode.children) {
         importNodeRecursive(child, groupNode, level + 1, false);
     }
 }
