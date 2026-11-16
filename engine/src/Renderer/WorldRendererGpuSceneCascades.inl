@@ -67,7 +67,11 @@ if (s_gpuSceneShadows && m_gpuSceneRasterEnabled && m_gpuSceneDatabaseReady &&
         // Coarse ticket selection is spatial, never a World::drawItems walk.
         // FrameArena allocations remain valid until the recording callbacks
         // have copied the entire compute push data.
+        const auto ticketStart = std::chrono::steady_clock::now();
         const auto tickets = m_gpuSceneSync.LeafTicketsFrame(m_gpuSceneDatabase);
+        const double ticketMs =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - ticketStart)
+                .count();
         const glm::dvec3 origin(m_cameraPositioner.cameraPosition_);
         // SHARED COARSE SELECTION (one pass, not four). A conservative union
         // of the cascade frusta: the CSM boxes all sit within the split far
@@ -278,9 +282,9 @@ if (s_gpuSceneShadows && m_gpuSceneRasterEnabled && m_gpuSceneDatabaseReady &&
                 .count();
         if (m_frameCounter % 60 == 0) {
             std::fprintf(stderr,
-                         "[GpuSceneShadow] coarse %.3f ms (%u candidates, radius %.1f m) | "
+                         "[GpuSceneShadow] ticket %.3f ms | coarse %.3f ms (%u candidates, radius %.1f m) | "
                          "prep %.3f ms\n",
-                         selectMs, selected.candidateCount, shadowFar, prepMs);
+                         ticketMs, selectMs, selected.candidateCount, shadowFar, prepMs);
         }
     }
 }

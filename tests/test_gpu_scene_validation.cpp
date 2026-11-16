@@ -2,12 +2,15 @@
 // SPDX-License-Identifier: MIT
 // Headless GPU Scene validation: view-space parity and struct ABI.
 #include <Engine/Renderer/gpu_scene_raster.h>
-#include <Engine/Renderer/gpu_scene_validation.h>
 #include <Engine/Renderer/gpu_scene_render_view_bridge.h>
+#include <Engine/Renderer/gpu_scene_validation.h>
+#include <Engine/Renderer/gpu_visibility_frame.h>
 
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <limits>
+#include <type_traits>
 // House test convention (AGENTS.md): the CHECK macro ALWAYS evaluates its
 // condition, in every build flavor. This file originally used CHECK(),
 // whose NDEBUG no-op makes Release runs vacuous - and any side effect
@@ -410,12 +413,10 @@ void CheckGpuSceneRenderViews() {
     const glm::mat4 vp(1.0f);
     CHECK(source.AllocateMainView(vp, glm::vec2(1920, 1080)) == 0u);
     // The same per-frame view ABI supports a light VP independent of Main.
-    CHECK(source.AllocateView(vp, glm::vec2(2048, 2048),
-                              smvk::RenderViewFlagBit_ShadowCascade) == 1u);
-    CHECK(source.AllocateView(vp, glm::vec2(1024, 1024),
-                              smvk::RenderViewFlagBit_SpotShadow) == 2u);
-    CHECK(source.AllocateView(vp, glm::vec2(512, 512),
-                              smvk::RenderViewFlagBit_PointShadow) == 3u);
+    CHECK(source.AllocateView(vp, glm::vec2(2048, 2048), smvk::RenderViewFlagBit_ShadowCascade) ==
+          1u);
+    CHECK(source.AllocateView(vp, glm::vec2(1024, 1024), smvk::RenderViewFlagBit_SpotShadow) == 2u);
+    CHECK(source.AllocateView(vp, glm::vec2(512, 512), smvk::RenderViewFlagBit_PointShadow) == 3u);
     GpuSceneRenderViewSet bridge;
     CHECK(bridge.Build(source, glm::dvec3(2.0, 0.0, 0.0)));
     CHECK(bridge.count == 4u);
@@ -440,6 +441,33 @@ void CheckGpuSceneRenderViews() {
 }
 
 } // namespace
+void CheckGpuVisibilityFrameAbi() {
+    // The P0 GPU-output ABI (#372, gpu_visibility_frame.h). Sizes and
+    // offsets must stay GPU-ABI stable: these structs cross the CPU/GPU
+    // boundary by byte-copy, so any member reorder shifts the HLSL mirror.
+    CHECK(sizeof(GpuVisibilityCounters) == 16);
+    CHECK(sizeof(GpuVisibilityView) == 16);
+    CHECK(sizeof(GpuVisibilityFrame) == 16);
+    CHECK(offsetof(GpuVisibilityCounters, activeViewMask) == 0);
+    CHECK(offsetof(GpuVisibilityCounters, frontierPeak) == 4);
+    CHECK(offsetof(GpuVisibilityCounters, overflowBits) == 8);
+    CHECK(offsetof(GpuVisibilityCounters, epoch) == 12);
+    CHECK(offsetof(GpuVisibilityView, firstRange) == 0);
+    CHECK(offsetof(GpuVisibilityView, rangeCount) == 4);
+    CHECK(offsetof(GpuVisibilityView, candidateCount) == 8);
+    CHECK(offsetof(GpuVisibilityView, viewId) == 12);
+    CHECK(offsetof(GpuVisibilityFrame, epoch) == 0);
+    CHECK(offsetof(GpuVisibilityFrame, viewCount) == 4);
+    CHECK(offsetof(GpuVisibilityFrame, rangeCapacity) == 8);
+    CHECK(offsetof(GpuVisibilityFrame, candidateCapacity) == 12);
+    CHECK(GpuVisibilityMaxViews <= 32u);
+    // Trivially copyable: the structs cross the boundary by byte-copy, never
+    // through constructors or non-trivial destructors.
+    CHECK(std::is_trivially_copyable_v<GpuVisibilityCounters>);
+    CHECK(std::is_trivially_copyable_v<GpuVisibilityView>);
+    CHECK(std::is_trivially_copyable_v<GpuVisibilityFrame>);
+}
+
 int main() {
     CheckDoubleView();
     CheckGpuSceneCloseupDither();
@@ -451,6 +479,7 @@ int main() {
     CheckRasterPsoBins();
     CheckLegacyRebasing();
     CheckGpuSceneRenderViews();
+    CheckGpuVisibilityFrameAbi();
     std::printf("checks=%d failures=%d\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }
