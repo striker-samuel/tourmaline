@@ -58,12 +58,18 @@ target_compile_definitions(gltf_import PRIVATE ENGINE_VULKAN)
 option(TOURMALINE_WITH_USD "Enable native OpenUSD source importing" OFF)
 if(TOURMALINE_WITH_USD)
     find_package(pxr CONFIG REQUIRED)
-    target_sources(gltf_import PRIVATE src/usd_import.cpp)
-    target_compile_definitions(gltf_import PUBLIC TOURMALINE_WITH_USD=1)
+    # The USD adapter is a SEPARATE object library so the runtime and the
+    # cookers (which link gltf_import) stay USD-agnostic: only the Import tool
+    # and the USD tests link usd_import, so only they pull the USD runtime
+    # DLLs. OBJECT (not STATIC) so the registrar object is always fully linked
+    # — a static library's static initializer would be dead-code-eliminated
+    # because nothing references it, and the .usd dispatch pointer would stay
+    # null.
+    add_library(usd_import OBJECT src/usd_import.cpp)
     if(TARGET usdGeom AND TARGET usdShade AND TARGET usd)
-        target_link_libraries(gltf_import PRIVATE usdGeom usdShade usd)
+        target_link_libraries(usd_import PUBLIC gltf_import usdGeom usdShade usd)
     elseif(TARGET pxr::usdGeom AND TARGET pxr::usdShade AND TARGET pxr::usd)
-        target_link_libraries(gltf_import PRIVATE pxr::usdGeom pxr::usdShade pxr::usd)
+        target_link_libraries(usd_import PUBLIC gltf_import pxr::usdGeom pxr::usdShade pxr::usd)
     else()
         message(FATAL_ERROR "OpenUSD CMake package lacks supported usd/usdGeom/usdShade targets")
     endif()

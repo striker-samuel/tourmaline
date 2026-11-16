@@ -488,6 +488,14 @@ set_target_properties(SourceImportTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
 )
 
+# The USD adapter is a separate library; link it here (and in the Import
+# tool) so the runtime/cookers never pull OpenUSD. The test's USD fixtures
+# are gated on this define.
+if(TOURMALINE_WITH_USD)
+    target_link_libraries(SourceImportTests PRIVATE usd_import)
+    target_compile_definitions(SourceImportTests PRIVATE TOURMALINE_WITH_USD=1)
+endif()
+
 add_test(NAME source_import_tests COMMAND SourceImportTests)
 
 project(TourTests)

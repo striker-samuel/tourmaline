@@ -864,3 +864,15 @@ bool LoadUsdFileAsModel(tinygltf::Model& model,
     cv.blob.Finish();
     return true;
 }
+
+namespace {
+// Register the adapter with LoadModelFromSourceFile's dispatch pointer. This
+// static initializer runs only when the usd_import library is linked (the
+// Import tool + USD tests), so the runtime and cookers never load USD.
+struct UsdAdapterRegistrar {
+    UsdAdapterRegistrar() {
+        UsdFileAsModel = &LoadUsdFileAsModel;
+    }
+};
+const UsdAdapterRegistrar g_usdAdapterRegistrar;
+} // namespace

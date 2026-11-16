@@ -1016,6 +1016,14 @@ bool ExtractEmbeddedImages(tinygltf::Model& model, const std::filesystem::path& 
 
 } // namespace
 
+// The OpenUSD dispatch pointer. Null in the runtime/cookers (which never link
+// the usd_import library); the Import tool + USD tests link usd_import, whose
+// static registrar sets it to LoadUsdFileAsModel. This indirection keeps the
+// runtime USD-agnostic: gltf_import carries no USD link and no USD DLLs.
+bool (*UsdFileAsModel)(tinygltf::Model&,
+                       const std::filesystem::path&,
+                       std::vector<std::string>&) = nullptr;
+
 bool LoadModelFromSourceFile(tinygltf::Model& model,
                              const char* filename,
                              std::vector<std::string>* extraDeps) {
@@ -1033,13 +1041,12 @@ bool LoadModelFromSourceFile(tinygltf::Model& model,
     }
 
     if (ext == ".usd" || ext == ".usda" || ext == ".usdc" || ext == ".usdz") {
-#ifdef TOURMALINE_WITH_USD
-        std::vector<std::string> sink;
-        return LoadUsdFileAsModel(model, path, extraDeps ? *extraDeps : sink);
-#else
+        if (UsdFileAsModel) {
+            std::vector<std::string> sink;
+            return UsdFileAsModel(model, path, extraDeps ? *extraDeps : sink);
+        }
         std::cerr << "USD import disabled; configure -DTOURMALINE_WITH_USD=ON" << std::endl;
         return false;
-#endif
     }
 
     tinygltf::TinyGLTF loader;
@@ -1880,8 +1887,8 @@ smvk::ClusterLightHandle GltfToSceneImporter::getOrCreateLight(int gltfLightInde
 }
 
 static smvk::MeshData SurfaceDataFromGltfPrimitive(const tinygltf::Model& model,
-                                                           const tinygltf::Primitive& primitive,
-                                                           int coordFix) {
+                                                   const tinygltf::Primitive& primitive,
+                                                   int coordFix) {
     smvk::MeshData data;
     // AABB. for culling
     {
@@ -2114,8 +2121,7 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
             cfg.overdraw = false;
         smvk::MeshOptStats optStats;
         const size_t inVerts = data.vertices.size();
-        if (OptimizeMeshData(
-                data, cfg, static_cast<uint32_t>(gltfMeshIndex), &optStats, &lod)) {
+        if (OptimizeMeshData(data, cfg, static_cast<uint32_t>(gltfMeshIndex), &optStats, &lod)) {
 #ifndef NDEBUG
             std::cout << "MeshOpt mesh." << gltfMeshIndex << "/prim." << primitiveIndex
                       << ": verts " << inVerts << "->" << data.vertices.size() << " tris "
@@ -2172,7 +2178,8 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
     std::vector<uint8_t> child(model.nodes.size(), 0);
     for (const auto& n : model.nodes)
         for (int c : n.children)
-            if (c >= 0 && size_t(c) < child.size()) child[size_t(c)] = 1;
+            if (c >= 0 && size_t(c) < child.size())
+                child[size_t(c)] = 1;
     auto visit = [&](auto&& self, int idx, const glm::mat4& parent) -> void {
         if (idx < 0 || size_t(idx) >= model.nodes.size() || visited[size_t(idx)])
             return;
@@ -2180,16 +2187,19 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
         const auto& n = model.nodes[size_t(idx)];
         const glm::mat4 world = parent * GetNodeLocalTransform(n);
         if (n.mesh == gltfMeshIndex &&
-            smvk::EligibleForSpatialDerivatives(data.aabbMin, data.aabbMax,
-                                                 data.indices.size(), world, skinned))
+            smvk::EligibleForSpatialDerivatives(
+                data.aabbMin, data.aabbMax, data.indices.size(), world, skinned))
             largePlacedInstance = true;
-        for (int c : n.children) self(self, c, world);
+        for (int c : n.children)
+            self(self, c, world);
     };
     for (size_t i = 0; i < model.nodes.size(); ++i)
-        if (!child[i]) visit(visit, int(i), glm::mat4(1.0f));
+        if (!child[i])
+            visit(visit, int(i), glm::mat4(1.0f));
     // Handle orphan/cyclic malformed inputs conservatively.
     for (size_t i = 0; i < model.nodes.size(); ++i)
-        if (!visited[i]) visit(visit, int(i), glm::mat4(1.0f));
+        if (!visited[i])
+            visit(visit, int(i), glm::mat4(1.0f));
     std::vector<smvk::CookedLod> lodChain;
     if (meshOptConfig.generateLods && data.skin.empty() && !data.vertices.empty() &&
         largePlacedInstance) {
@@ -2782,9 +2792,9 @@ size_t BuildFromMeshAsset(
             const smvk::PackedVertexLightmap lmNone{};
             for (size_t v = 0; v < g.positions.size(); ++v)
                 smvk::UnpackMeshVertex(g.positions[v],
-                                         g.shading[v],
-                                         !g.lightmap.empty() ? g.lightmap[v] : lmNone,
-                                         up.vertices[v]);
+                                       g.shading[v],
+                                       !g.lightmap.empty() ? g.lightmap[v] : lmNone,
+                                       up.vertices[v]);
             up.indices = g.indices;
             up.aabbMin = g.aabbMin;
             up.aabbMax = g.aabbMax;
@@ -3562,11 +3572,11 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
             // the scene's node streams once rather than repeatedly growing
             // independent arrays for every reference. Leave command-created
             // nodes to normal capacity growth.
-            if (!preallocatedFlatScene && cluster.IsOfflineMode() && cur.depth == 0 &&
-                meshLoaded && cachedMesh && doc.references.size() >= 1024) {
+            if (!preallocatedFlatScene && cluster.IsOfflineMode() && cur.depth == 0 && meshLoaded &&
+                cachedMesh && doc.references.size() >= 1024) {
                 preallocatedFlatScene = true;
-                const bool sameSource = std::all_of(
-                    doc.references.begin(), doc.references.end(), [&](const auto& ref) {
+                const bool sameSource =
+                    std::all_of(doc.references.begin(), doc.references.end(), [&](const auto& ref) {
                         return ref.source == modelSource;
                     });
                 if (sameSource && !cachedMesh->asset.nodes.empty()) {
@@ -3679,7 +3689,8 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
                 // Avoid constructing N identical texture-source adapters.
                 if (!cachedMesh->textureSource) {
                     if (vfs)
-                        cachedMesh->textureSource = std::make_shared<VfsTextureSource>(vfs, baseDir);
+                        cachedMesh->textureSource =
+                            std::make_shared<VfsTextureSource>(vfs, baseDir);
                     else
                         cachedMesh->textureSource =
                             std::make_shared<HostTextureSource>(std::filesystem::path(baseDir));
@@ -3859,11 +3870,10 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
     }
     if (applied != 0) {
         if (successfulReferences > 1)
-            std::cout << "[References] bound " << successfulReferences
-                      << " reference(s), " << meshAssetCache.size()
-                      << " distinct geometry artifact(s), " << createdReferenceNodes
-                      << " imported nodes, geometry cache " << geometryCacheHits
-                      << " hit(s)/" << geometryCacheMisses << " load(s)\n";
+            std::cout << "[References] bound " << successfulReferences << " reference(s), "
+                      << meshAssetCache.size() << " distinct geometry artifact(s), "
+                      << createdReferenceNodes << " imported nodes, geometry cache "
+                      << geometryCacheHits << " hit(s)/" << geometryCacheMisses << " load(s)\n";
         RebuildStaticCache(cluster.scene);
         markAsChanged(cluster.scene, 0);
         recalculateGlobalTransforms(cluster.scene);
