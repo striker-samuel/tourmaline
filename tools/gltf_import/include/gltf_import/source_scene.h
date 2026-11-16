@@ -28,7 +28,7 @@ struct Vertex {
 struct Primitive {
     std::vector<Vertex> vertices;
     std::vector<uint32_t> indices;
-    uint32_t material = InvalidIndex;
+    int32_t material = -1;
     glm::vec3 aabbMin{0.0f};
     glm::vec3 aabbMax{0.0f};
     bool hasNormals = false;
@@ -50,7 +50,13 @@ struct Node {
     uint32_t parent = InvalidIndex;
     std::vector<uint32_t> children;
     glm::mat4 localTransform{1.0f};
-    uint32_t mesh = InvalidIndex;
+    int32_t mesh = -1;
+    int32_t skin = -1;
+    int32_t light = -1;
+    bool staticRoot = false;
+    bool noLightmap = false;
+    bool ditherCloseup = false;
+    bool staticLight = false;
 };
 
 struct Dependency {
