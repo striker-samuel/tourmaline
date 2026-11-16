@@ -29,6 +29,13 @@ struct GsMeshVertex {
     [[vk::location(11)]] float3 cameraRelativePos : TEXCOORD10;
 };
 
+// Per-primitive cull flag (VK_EXT_mesh_shader CullPrimitiveEXT). A member of
+// the `primitives` output struct, NOT a standalone output array: DXC rejects
+// `out bool cull[N] : SV_CullPrimitive` but accepts this shape.
+struct GsMeshPrimitive {
+    bool cull : SV_CullPrimitive;
+};
+
 // Per-INSTANCE transform frame, hoisted out of the per-vertex FetchVertex
 // loop. The basis columns + their cofactors (the inverse-transpose basis) and
 // the determinant are instance-uniform: recomputing 3 cross + 1 dot per vertex
@@ -174,13 +181,21 @@ float3 ConeHeatColor(float cutoff) {
     return float3(t, 1.0f - abs(t - 0.5f), 1.0f - t);
 }
 
+#ifdef GPU_SCENE_TRIANGLE_BACKFACE
+// Per-workgroup scratch of the transformed clip-space xyw, consumed by the
+// per-primitive backface test in mainMS. File scope (groupshared is not a
+// valid local modifier).
+groupshared float3 s_clipXYW[GS_MESH_MAX_VERTS];
+#endif
+
 [outputtopology("triangle")]
 [numthreads(32,1,1)]
 void mainMS(uint3 gid : SV_GroupID,
             uint3 tid : SV_GroupThreadID,
             in payload GsTaskPayload task,
             out vertices GsMeshVertex verts[GS_MESH_MAX_VERTS],
-            out indices uint3 tris[GS_MESH_MAX_TRIS]) {
+            out indices uint3 tris[GS_MESH_MAX_TRIS],
+            out primitives GsMeshPrimitive prims[GS_MESH_MAX_TRIS]) {
     const GsTaskMeshParams p=pc.params.Get();
     bool valid=gid.x<task.surviving && gid.x<GS_TASK_THREADS &&
         task.workSlot<p.workCount && task.workSlot<GS_MAX_WORK;
@@ -256,12 +271,43 @@ void mainMS(uint3 gid : SV_GroupID,
     for (uint v=tid.x;v<vertexCount;v+=GS_MESH_THREADS) {
         const uint globalId=p.meshletVertices.Get().id[vertexBase+v];
         verts[v]=FetchVertex(globalId,frame,p,fastNormal);
+#ifdef GPU_SCENE_TRIANGLE_BACKFACE
+        s_clipXYW[v]=verts[v].pos.xyw;
+#endif
         if (p.debugMode!=0u)
             verts[v].color=dbgColor;
     }
+#ifdef GPU_SCENE_TRIANGLE_BACKFACE
+    // Every vertex producer must finish before any triangle reads the scratch.
+    // vertexCount/triCount are group-uniform, so every lane reaches this
+    // barrier (the early return above is also uniform).
+    GroupMemoryBarrierWithGroupSync();
+#endif
     // One local triangle per lane (3 packed u8 ids).
     for (uint t=tid.x;t<triCount;t+=GS_MESH_THREADS) {
         const uint packed=p.meshletTriangles.Get().tri[triBase+t];
         tris[t]=uint3(packed&255u,(packed>>8u)&255u,(packed>>16u)&255u);
+        prims[t].cull=false;
+#ifdef GPU_SCENE_TRIANGLE_BACKFACE
+        // Brute-force per-triangle backface test (opt-in; see
+        // docs/gpu_scene_triangle_backface_proposal.md). Only single-sided
+        // raster classes (bit 0 == 0) are eligible; two-sided classes never
+        // cull. Fail OPEN for near-eye (w <= 0), nonfinite, or degenerate
+        // determinants — fixed-function culling stays authoritative there.
+        if ((pc.rasterClass & 1u) == 0u) {
+            const float3 a=s_clipXYW[tris[t].x];
+            const float3 b=s_clipXYW[tris[t].y];
+            const float3 c=s_clipXYW[tris[t].z];
+            const float area=dot(a, cross(b, c));
+            const bool safe=all(isfinite(a)) && all(isfinite(b)) && all(isfinite(c)) &&
+                a.z>1e-6f && b.z>1e-6f && c.z>1e-6f &&
+                isfinite(area) && abs(area)>1e-12f;
+            // Homogeneous screen-space determinant: negative => back-facing for
+            // the verified front-face convention. NOTE: the exact sign must be
+            // confirmed against the Vulkan viewport + frontFace raster state;
+            // this path stays default-OFF until that is validated.
+            prims[t].cull=safe && area<0.0f;
+        }
+#endif
     }
 }
