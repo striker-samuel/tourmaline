@@ -39,52 +39,10 @@
 
 namespace {
 constexpr uint32_t DEFAULT_MATERIAL_INDEX = 0;
-// Local glTF parse enum; maps to smvk::AlphaMode on material creation.
-enum class GltfAlphaMode { Opaque, Mask, Blend };
-struct GltfTextureRef {
-    int textureIndex = -1; // index into model.textures
-    int imageIndex = -1;   // index into model.images  (model.textures[textureIndex].source)
-    int samplerIndex = -1; // index into model.samplers (model.textures[textureIndex].sampler)
-    int texCoord = 0;      // which UV set
-    float scaleOrStrength = 1.0f; // normal scale or occlusion strength (when applicable)
-    bool valid() const {
-        return textureIndex >= 0 && imageIndex >= 0;
-    }
-};
-struct GltfMaterial {
-    std::string name;
-
-    // PBR Metallic-Roughness core
-    std::array<double, 4> baseColorFactor{1.0, 1.0, 1.0, 1.0};
-    double metallicFactor = 1.0;
-    double roughnessFactor = 1.0;
-
-    std::optional<GltfTextureRef> baseColorTex;
-    std::optional<GltfTextureRef> metallicRoughnessTex;
-
-    // Other PBR textures/params
-    std::optional<GltfTextureRef> normalTex;    // scale in scaleOrStrength
-    std::optional<GltfTextureRef> occlusionTex; // strength in scaleOrStrength
-    std::optional<GltfTextureRef> emissiveTex;
-    std::array<double, 3> emissiveFactor{0.0, 0.0, 0.0};
-    double emissiveStrength = 1.0;
-
-    // Extensions
-    bool unlit = false;
-
-    // Rasterization rules
-    GltfAlphaMode alphaMode = GltfAlphaMode::Opaque;
-    double alphaCutoff = 0.5;
-    bool doubleSided = false;
-
-    // SMVK_materials_shadows.castShadow (stamped by content cooks,
-    // e.g. decal overlays must not darken the geometry under them).
-    bool castsShadows = true;
-    // SMVK_materials_contactShadows.receive (default receive):
-    // materials that must not pick up the sun contact march.
-    bool receiveContactShadows = true;
-    bool clothSheen = false;
-};
+// Source material semantics live in the engine-independent source scene.
+using GltfAlphaMode = smvk::source::AlphaMode;
+using GltfTextureRef = smvk::source::TextureRef;
+using GltfMaterial = smvk::source::Material;
 bool starts_with(const std::string& s, const char* prefix) {
     return s.rfind(prefix, 0) == 0;
 }
@@ -1391,6 +1349,7 @@ static GltfMaterial ExtractMaterial(const tinygltf::Model& model, int materialIn
     return mat;
 }
 void GltfToSceneImporter::preloadTextures() {
+    prepareSourceScene();
     // Collect every image referenced by any material (dedup by imageIndex).
     // Per-material creation later hits textureCache; anything missed here
     // still loads sequentially via loadTextureForImage.
@@ -1411,23 +1370,12 @@ void GltfToSceneImporter::preloadTextures() {
                 firstTextureForImage[ref->imageIndex] = ref->textureIndex;
             }
         };
-        for (size_t mi = 0; mi < model.materials.size(); ++mi) {
-            const tinygltf::Material& m = model.materials[mi];
-            note(GltfResolveTexture(model, m.pbrMetallicRoughness.baseColorTexture));
-            note(GltfResolveTexture(model, m.pbrMetallicRoughness.metallicRoughnessTexture));
-            note(GtlfResolveNormalTexture(model, m.normalTexture));
-            note(GLtfResolveOcclusionTexture(model, m.occlusionTexture));
-            note(GltfResolveTexture(model, m.emissiveTexture));
-            // Spec-gloss diffuse fallback (see ExtractMaterial): preload so
-            // the per-material path hits the cache. specularGlossinessTexture
-            // is never sampled (its pixels are a specular color, not ORM),
-            // so only the diffuse needs preloading here.
-            if (auto it = m.extensions.find("KHR_materials_pbrSpecularGlossiness");
-                it != m.extensions.end() && it->second.IsObject()) {
-                const auto& obj = it->second.Get<tinygltf::Value::Object>();
-                note(GltfResolveTextureIndex(model,
-                                             GltfExtensionTextureIndex(obj, "diffuseTexture")));
-            }
+        for (const smvk::source::Material& mat : sourceScene_.materials) {
+            note(mat.baseColorTex);
+            note(mat.metallicRoughnessTex);
+            note(mat.normalTex);
+            note(mat.occlusionTex);
+            note(mat.emissiveTex);
         }
     }
 
@@ -1754,7 +1702,8 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
         return slot;
     }
 
-    const GltfMaterial mat = ExtractMaterial(model, gltfMaterialIndex);
+    prepareSourceScene();
+    const smvk::source::Material& mat = sourceScene_.materials[size_t(gltfMaterialIndex)];
 
     // Importer data users (see setImportImages): every (material, slot)
     // pair that references an image gets noted — loaded AND failed rows
@@ -2454,6 +2403,9 @@ void GltfToSceneImporter::prepareSourceScene() {
     for (size_t i = 0; i < scene.nodes.size(); ++i)
         if (scene.nodes[i].parent == smvk::source::InvalidIndex)
             scene.roots.push_back(uint32_t(i));
+    scene.materials.reserve(model.materials.size());
+    for (size_t mi = 0; mi < model.materials.size(); ++mi)
+        scene.materials.push_back(ExtractMaterial(model, int(mi)));
     sourceScenePrepared_ = true;
 }
 
