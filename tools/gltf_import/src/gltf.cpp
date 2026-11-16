@@ -2430,6 +2430,16 @@ void GltfToSceneImporter::prepareSourceScene() {
         }
         scene.skins.push_back(std::move(out));
     }
+    scene.images.reserve(model.images.size());
+    for (const auto& image : model.images)
+        scene.images.push_back(smvk::source::Image{image.uri});
+    scene.textures.reserve(model.textures.size());
+    for (const auto& tex : model.textures)
+        scene.textures.push_back(smvk::source::Texture{tex.source, tex.sampler});
+    scene.samplers.reserve(model.samplers.size());
+    for (const auto& sampler : model.samplers)
+        scene.samplers.push_back(smvk::source::Sampler{
+            sampler.magFilter, sampler.minFilter, sampler.wrapS, sampler.wrapT});
     sourceScenePrepared_ = true;
 }
 
