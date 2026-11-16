@@ -162,6 +162,7 @@ struct Dependency {
 struct Scene {
     std::vector<Node> nodes;
     std::vector<uint32_t> roots;
+    std::vector<uint32_t> activeRoots; // selected authored scene; empty means roots
     std::vector<Mesh> meshes;
     std::vector<Material> materials;
     std::vector<Image> images;
