@@ -124,6 +124,17 @@ struct Skin {
     int32_t skeleton = -1;
 };
 
+enum class LightType { Directional, Point, Spot };
+struct Light {
+    std::string name;
+    LightType type = LightType::Point;
+    glm::vec3 color{1.0f};
+    float intensity = 1.0f;
+    float range = 0.0f;
+    float innerConeAngle = 0.0f;
+    float outerConeAngle = 0.0f;
+};
+
 enum class AnimationChannel { Translation, Rotation, Scale, Weights };
 enum class Interpolation { Linear, Step, CubicSpline };
 
@@ -158,6 +169,7 @@ struct Scene {
     std::vector<Sampler> samplers;
     std::vector<Skin> skins;
     std::vector<Animation> animations;
+    std::vector<Light> lights;
     std::vector<Dependency> dependencies;
 };
 
