@@ -38,6 +38,18 @@ is committed at [`releases/bistro/`](bistro/README.md). To recreate:
 
 See [`bistro/README.md`](bistro/README.md) for the full flow.
 
+## Knight (Animated Knight, skinned + animated)
+
+The Intel **Animated Knight** (GPU Research Samples Library, CC BY 4.0, see
+`KNIGHT-CREDITS.md`) is a skinned, animated character demo — the GPU scene's
+skinned task/mesh lane (1 skin, 85 joints) plus a walk clip (~258 tracks,
+~12.5 s). The cooked pak is small (~5 MB), but the faithful Maya → glTF
+conversion is non-trivial, so the small *definition* — recipe + scene tour +
+glTF + identity ledger + 2 material assets (~130 KB) — is committed at
+[`releases/knight/`](knight/README.md), and the authoritative `.bin` geometry
+buffer ships with the release asset set rather than on `master`. See
+[`knight/README.md`](knight/README.md) for the build/run flow.
+
 ## Refreshing the paks
 
 ```powershell

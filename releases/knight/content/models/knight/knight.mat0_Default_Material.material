@@ -1,0 +1,18 @@
+# Tourmaline material asset v1
+guid=3fc7cc7e87f6ca1bee300fb28d96adcb
+name=Default_Material
+baseColor=0.5 0.5 0.5 1
+metallic=0
+roughness=0.552786
+emissive=0 0 0
+emissiveStrength=1
+alphaMode=opaque
+alphaCutoff=0.5
+normalScale=1
+occlusionStrength=1
+cavityStrength=1
+doubleSided=1
+castsShadows=1
+receiveContactShadows=1
+clothSheen=0
+shading=lit

@@ -1,0 +1,25 @@
+# Tourmaline Project Recipe v1
+#
+# The Animated Knight demo pak set (the demo-content GitHub release
+# asset set: knight.tapp + knight-<hash>.pak). The Intel "Animated
+# Knight" (GPU Research Samples Library, CC BY 4.0 — see
+# KNIGHT-CREDITS.md) is a skinned, animated character: ONE skin
+# (85 joints) + a walk clip. It cooks SKINNED (no setStatic) with
+# LODs OFF (single-level chain — the GPU task/mesh raster
+# eligibility shape) and meshlets ON (the import default) so the
+# scene draws through the skinned task/mesh path. The scene authors
+# no GI volumes and no cubemap captures, so the recipe-level bakes
+# stay OFF.
+
+recipe 1
+project Knight
+entry content/scenes/knight.tour
+
+import lods off
+
+bake gi off
+bake cubemaps off
+
+[pak knight]
+output knight.pak
+scene content/scenes/knight.tour

@@ -1,0 +1,10 @@
+# Tourmaline asset manifest (the derived assets of one glTF; GUIDs are stable across reimports)
+guid=a466574174aa730ccfa8622ee401c0e0
+source=knight.gltf
+sourcedigest=5df73c83f163a74d803d81a21fd3c277
+fingerprint=d7305fea43ce7a7c3793344e3b9fc29b
+stem=knight
+material.0=knight.mat0_Default_Material.material 3fc7cc7e87f6ca1bee300fb28d96adcb Default_Material
+material.1=knight.mat1_mat1.material 89609faca7b367fac0d55617c89e947b mat1
+geometry=knight.geometry ae0536cca23ce577d8ed5042e51bc96f knight
+anim.0=knight.anim0_knight_rig_root_Take_001_BaseLayer.anim 43a32c05f4e9b7de07b534274c432145 
