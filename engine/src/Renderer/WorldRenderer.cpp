@@ -15619,73 +15619,84 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             const char* e = std::getenv("TOURMALINE_GPU_SCENE_MOTION");
             return !e || std::strcmp(e, "0") != 0;
         }();
-        bool gpuSceneMotionActive = s_gpuSceneMotion && m_gpuSceneMotionProgram.shaderCount == 2 &&
-                                    m_gpuSceneRasterDrawActive &&
-                                    m_gpuSceneRasterDrawCapacity > 0 && m_prevGpuSceneViewValid &&
-                                    m_prevGpuSceneTransformCount > 0;
+        // GPU submission does not depend on previous-frame history. On the
+        // first frame or after a camera/scene reset, the motion VS emits
+        // prevClip = currClip when prevValid == 0. Do not send millions of
+        // otherwise GPU-owned static objects down the direct path just
+        // because their history has not been captured yet.
+        const bool gpuSceneMotionActive =
+            s_gpuSceneMotion && m_gpuSceneMotionProgram.shaderCount == 2 &&
+            m_gpuSceneRasterDrawActive && m_gpuSceneRasterDrawCapacity > 0;
+        bool gpuSceneMotionHistoryReady =
+            gpuSceneMotionActive && m_prevGpuSceneViewValid &&
+            m_prevGpuSceneTransformCount > 0;
         tour::gpu_scene::RasterMotionVsPush motionVsPush{};
         smvk::BufferHandle motionCommands{};
         if (gpuSceneMotionActive) {
             const uint32_t flight = fb.frameIndex;
-            const uint32_t count = m_prevGpuSceneTransformCount;
-            if (m_gpuScenePrevTransformCapacities[flight] < count ||
-                m_gpuScenePrevTransformBuffers[flight].empty()) {
-                auto buf =
-                    m_context->CreateBuffer(count * sizeof(tour::gpu_scene::GpuScenePrevTransform),
-                                            smvk::BufferType_Storage,
-                                            "GPU scene prev transforms");
-                if (!buf.empty()) {
-                    if (!m_gpuScenePrevTransformLogicals[flight].empty())
-                        m_rendergraph->FreeBuffer(m_gpuScenePrevTransformLogicals[flight]);
-                    m_gpuScenePrevTransformBuffers[flight] = std::move(buf);
-                    m_gpuScenePrevTransformLogicals[flight] = m_rendergraph->AddExternalBuffer(
-                        m_gpuScenePrevTransformBuffers[flight], "GPU scene prev transforms");
-                    m_gpuScenePrevTransformCapacities[flight] = count;
+            if (gpuSceneMotionHistoryReady) {
+                const uint32_t count = m_prevGpuSceneTransformCount;
+                if (m_gpuScenePrevTransformCapacities[flight] < count ||
+                    m_gpuScenePrevTransformBuffers[flight].empty()) {
+                    auto buf = m_context->CreateBuffer(
+                        count * sizeof(tour::gpu_scene::GpuScenePrevTransform),
+                        smvk::BufferType_Storage, "GPU scene prev transforms");
+                    if (!buf.empty()) {
+                        if (!m_gpuScenePrevTransformLogicals[flight].empty())
+                            m_rendergraph->FreeBuffer(m_gpuScenePrevTransformLogicals[flight]);
+                        m_gpuScenePrevTransformBuffers[flight] = std::move(buf);
+                        m_gpuScenePrevTransformLogicals[flight] = m_rendergraph->AddExternalBuffer(
+                            m_gpuScenePrevTransformBuffers[flight], "GPU scene prev transforms");
+                        m_gpuScenePrevTransformCapacities[flight] = count;
+                    }
+                }
+                if (m_gpuScenePrevViewBuffers[flight].empty()) {
+                    auto buf = m_context->CreateBuffer(
+                        sizeof(tour::gpu_scene::RasterViewData), smvk::BufferType_Storage,
+                        "GPU scene prev view");
+                    if (!buf.empty()) {
+                        m_gpuScenePrevViewBuffers[flight] = std::move(buf);
+                        m_gpuScenePrevViewLogicals[flight] = m_rendergraph->AddExternalBuffer(
+                            m_gpuScenePrevViewBuffers[flight], "GPU scene prev view");
+                    }
+                }
+                gpuSceneMotionHistoryReady =
+                    !m_gpuScenePrevTransformBuffers[flight].empty() &&
+                    !m_gpuScenePrevViewBuffers[flight].empty();
+                if (gpuSceneMotionHistoryReady) {
+                    m_context->UploadDataToBuffer(
+                        m_gpuScenePrevTransformBuffers[flight], m_prevGpuSceneTransforms,
+                        count * sizeof(tour::gpu_scene::GpuScenePrevTransform),
+                        smvk::PipelineStage(smvk::PipelineStageBit_Vertex),
+                        smvk::AccessFlags::ShaderRead);
+                    m_context->UploadDataToBuffer(
+                        m_gpuScenePrevViewBuffers[flight], &m_prevGpuSceneViewData,
+                        sizeof(tour::gpu_scene::RasterViewData),
+                        smvk::PipelineStage(smvk::PipelineStageBit_Vertex),
+                        smvk::AccessFlags::ShaderRead);
                 }
             }
-            if (m_gpuScenePrevViewBuffers[flight].empty()) {
-                auto buf = m_context->CreateBuffer(sizeof(tour::gpu_scene::RasterViewData),
-                                                   smvk::BufferType_Storage,
-                                                   "GPU scene prev view");
-                if (!buf.empty()) {
-                    m_gpuScenePrevViewBuffers[flight] = std::move(buf);
-                    m_gpuScenePrevViewLogicals[flight] = m_rendergraph->AddExternalBuffer(
-                        m_gpuScenePrevViewBuffers[flight], "GPU scene prev view");
-                }
-            }
-            gpuSceneMotionActive = !m_gpuScenePrevTransformBuffers[flight].empty() &&
-                                   !m_gpuScenePrevViewBuffers[flight].empty();
-            if (gpuSceneMotionActive) {
-                m_context->UploadDataToBuffer(m_gpuScenePrevTransformBuffers[flight],
-                                              m_prevGpuSceneTransforms,
-                                              count *
-                                                  sizeof(tour::gpu_scene::GpuScenePrevTransform),
-                                              smvk::PipelineStage(smvk::PipelineStageBit_Vertex),
-                                              smvk::AccessFlags::ShaderRead);
-                m_context->UploadDataToBuffer(m_gpuScenePrevViewBuffers[flight],
-                                              &m_prevGpuSceneViewData,
-                                              sizeof(tour::gpu_scene::RasterViewData),
-                                              smvk::PipelineStage(smvk::PipelineStageBit_Vertex),
-                                              smvk::AccessFlags::ShaderRead);
-                motionVsPush = tour::gpu_scene::RasterMotionVsPush{
-                    m_gpuSceneRasterWorkBda,
-                    m_gpuSceneUploader.DeviceAddresses(*m_context, flight).instances,
-                    m_gpuSceneRasterView.DeviceAddress(*m_context, flight),
-                    m_gpuSceneDatabase.instances.Size(),
-                    m_gpuSceneRasterDrawCapacity,
-                    m_context->GetBufferDeviceAddress(m_gpuScenePrevTransformBuffers[flight]),
-                    m_context->GetBufferDeviceAddress(m_gpuScenePrevViewBuffers[flight]),
-                    1u,
-                    0u,
-                };
-                motionCommands = m_gpuSceneRasterIndirect;
-            }
+            motionVsPush = tour::gpu_scene::RasterMotionVsPush{
+                m_gpuSceneRasterWorkBda,
+                m_gpuSceneUploader.DeviceAddresses(*m_context, flight).instances,
+                m_gpuSceneRasterView.DeviceAddress(*m_context, flight),
+                m_gpuSceneDatabase.instances.Size(),
+                m_gpuSceneRasterDrawCapacity,
+                gpuSceneMotionHistoryReady
+                    ? m_context->GetBufferDeviceAddress(m_gpuScenePrevTransformBuffers[flight])
+                    : 0u,
+                gpuSceneMotionHistoryReady
+                    ? m_context->GetBufferDeviceAddress(m_gpuScenePrevViewBuffers[flight])
+                    : 0u,
+                gpuSceneMotionHistoryReady ? 1u : 0u,
+                0u,
+            };
+            motionCommands = m_gpuSceneRasterIndirect;
         }
         {
             // One-time report: the batched leg is active once the previous
-            // frame's history is snapshotted (frame 2+), and silent-falls
-            // back to the direct path otherwise (first frame, missing
-            // shaders, or TOURMALINE_GPU_SCENE_MOTION=0).
+            // GPU raster draws are available (including the first frame).
+            // Motion history becomes valid independently on later frames.
             static bool s_motionReported = false;
             if (!s_motionReported && gpuSceneMotionActive) {
                 s_motionReported = true;
@@ -15703,7 +15714,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             "MotionVectors");
         // The batched leg reads the previous-transform + previous-view
         // buffers (vertex stage) alongside the shared raster streams.
-        if (gpuSceneMotionActive) {
+        if (gpuSceneMotionHistoryReady) {
             smvk::BufferSyncRequest vertRead{};
             vertRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
             vertRead.barrierMasks.stageMask = smvk::PipelineStageBit_Vertex;
