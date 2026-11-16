@@ -2090,12 +2090,13 @@ static bool PrimitiveShapeFacts(const smvk::source::Primitive& primitive,
 }
 
 void GltfToSceneImporter::prepareMeshes() {
+    prepareSourceScene();
     if (meshesPrepared_)
         return;
     meshesPrepared_ = true;
-    meshDerived_.resize(model.meshes.size());
-    for (size_t i = 0; i < model.meshes.size(); ++i)
-        meshDerived_[i].resize(model.meshes[i].primitives.size());
+    meshDerived_.resize(sourceScene_.meshes.size());
+    for (size_t i = 0; i < sourceScene_.meshes.size(); ++i)
+        meshDerived_[i].resize(sourceScene_.meshes[i].primitives.size());
 
     // Skinned + large-placed flags resolved by a SINGLE node walk (the old
     // per-mesh traversal inside getOrCreateMesh was O(meshes x nodes) — for a
@@ -2103,50 +2104,50 @@ void GltfToSceneImporter::prepareMeshes() {
     // multiplies). skinned[mesh][prim] = any node with a valid skin references
     // it; largePlaced[mesh][prim] = any instance's world transform clears the
     // LOD gate (EligibleForSpatialDerivatives).
-    std::vector<std::vector<bool>> skinned(model.meshes.size());
-    std::vector<std::vector<bool>> largePlaced(model.meshes.size());
-    for (size_t i = 0; i < model.meshes.size(); ++i) {
-        skinned[i].resize(model.meshes[i].primitives.size(), false);
-        largePlaced[i].resize(model.meshes[i].primitives.size(), false);
+    std::vector<std::vector<bool>> skinned(sourceScene_.meshes.size());
+    std::vector<std::vector<bool>> largePlaced(sourceScene_.meshes.size());
+    for (size_t i = 0; i < sourceScene_.meshes.size(); ++i) {
+        skinned[i].resize(sourceScene_.meshes[i].primitives.size(), false);
+        largePlaced[i].resize(sourceScene_.meshes[i].primitives.size(), false);
     }
     {
-        std::vector<glm::mat4> worldOf(model.nodes.size(), glm::mat4(1.0f));
-        std::vector<uint8_t> visited(model.nodes.size(), 0);
-        std::vector<uint8_t> child(model.nodes.size(), 0);
-        for (const auto& n : model.nodes)
+        std::vector<glm::mat4> worldOf(sourceScene_.nodes.size(), glm::mat4(1.0f));
+        std::vector<uint8_t> visited(sourceScene_.nodes.size(), 0);
+        std::vector<uint8_t> child(sourceScene_.nodes.size(), 0);
+        for (const auto& n : sourceScene_.nodes)
             for (int c : n.children)
                 if (c >= 0 && size_t(c) < child.size())
                     child[size_t(c)] = 1;
         auto walk = [&](auto&& self, int idx, const glm::mat4& parent) -> void {
-            if (idx < 0 || size_t(idx) >= model.nodes.size() || visited[size_t(idx)])
+            if (idx < 0 || size_t(idx) >= sourceScene_.nodes.size() || visited[size_t(idx)])
                 return;
             visited[size_t(idx)] = 1;
-            const auto& n = model.nodes[size_t(idx)];
-            worldOf[size_t(idx)] = parent * GetNodeLocalTransform(n);
+            const auto& n = sourceScene_.nodes[size_t(idx)];
+            worldOf[size_t(idx)] = parent * n.localTransform;
             for (int c : n.children)
                 self(self, c, worldOf[size_t(idx)]);
         };
-        for (size_t i = 0; i < model.nodes.size(); ++i)
+        for (size_t i = 0; i < sourceScene_.nodes.size(); ++i)
             if (!child[i])
                 walk(walk, int(i), glm::mat4(1.0f));
         // Orphan/cyclic malformed inputs, handled conservatively (same as
         // the old per-mesh traversal).
-        for (size_t i = 0; i < model.nodes.size(); ++i)
+        for (size_t i = 0; i < sourceScene_.nodes.size(); ++i)
             if (!visited[i])
                 walk(walk, int(i), glm::mat4(1.0f));
 
-        for (size_t ni = 0; ni < model.nodes.size(); ++ni) {
-            const tinygltf::Node& n = model.nodes[ni];
-            if (n.mesh < 0 || (size_t)n.mesh >= model.meshes.size())
+        for (size_t ni = 0; ni < sourceScene_.nodes.size(); ++ni) {
+            const smvk::source::Node& n = sourceScene_.nodes[ni];
+            if (n.mesh < 0 || (size_t)n.mesh >= sourceScene_.meshes.size())
                 continue;
-            const bool hasSkin = n.skin >= 0 && (size_t)n.skin < model.skins.size();
-            const tinygltf::Mesh& mesh = model.meshes[(size_t)n.mesh];
+            const bool hasSkin = n.skin >= 0 && (size_t)n.skin < sourceScene_.skins.size();
+            const smvk::source::Mesh& mesh = sourceScene_.meshes[(size_t)n.mesh];
             for (int pi = 0; pi < (int)mesh.primitives.size(); ++pi) {
                 if (hasSkin)
                     skinned[(size_t)n.mesh][(size_t)pi] = true;
                 glm::vec3 mn, mx;
                 size_t idxCount = 0;
-                if (!PrimitiveShapeFacts(model, mesh.primitives[(size_t)pi], &mn, &mx, &idxCount))
+                if (!PrimitiveShapeFacts(mesh.primitives[(size_t)pi], &mn, &mx, &idxCount))
                     continue;
                 if (smvk::EligibleForSpatialDerivatives(mn, mx, idxCount, worldOf[ni], hasSkin))
                     largePlaced[(size_t)n.mesh][(size_t)pi] = true;
@@ -2164,9 +2165,9 @@ void GltfToSceneImporter::prepareMeshes() {
         bool largePlaced;
     };
     std::vector<Work> work;
-    work.reserve(model.meshes.size());
-    for (size_t m = 0; m < model.meshes.size(); ++m)
-        for (size_t p = 0; p < model.meshes[m].primitives.size(); ++p)
+    work.reserve(sourceScene_.meshes.size());
+    for (size_t m = 0; m < sourceScene_.meshes.size(); ++m)
+        for (size_t p = 0; p < sourceScene_.meshes[m].primitives.size(); ++p)
             work.push_back(Work{int(m), int(p), skinned[m][p], largePlaced[m][p]});
     if (work.empty())
         return;
@@ -2202,10 +2203,10 @@ GltfToSceneImporter::DerivedMesh GltfToSceneImporter::deriveMesh(int gltfMeshInd
                                                                  bool skinned,
                                                                  bool largePlaced) const {
     DerivedMesh out;
-    const tinygltf::Primitive& primitive =
-        model.meshes[(size_t)gltfMeshIndex].primitives[(size_t)primitiveIndex];
+    const smvk::source::Primitive& primitive =
+        sourceScene_.meshes[(size_t)gltfMeshIndex].primitives[(size_t)primitiveIndex];
 
-    out.data = SurfaceDataFromGltfPrimitive(model, primitive, coordFix_);
+    out.data = SourcePrimitiveToMeshData(primitive);
 
     // Attach the skin stream BEFORE the meshopt pass so the weld +
     // vertex-fetch remaps carry it in lockstep with `out.data.vertices`
@@ -2214,7 +2215,7 @@ GltfToSceneImporter::DerivedMesh GltfToSceneImporter::deriveMesh(int gltfMeshInd
     // vertices are reordered - bind-pose masks it (all joints = bind) but
     // animation scatters the weights into spikes.
     if (skinned)
-        PackVertexSkinStream(model, primitive, out.data.skin);
+        PackSourceSkinStream(primitive, out.data.skin);
 
     // Cook-time meshoptimizer pass (off by default; the cooker enables it
     // via setMeshOptConfig). Overdraw optimization is gated off for
@@ -2222,9 +2223,9 @@ GltfToSceneImporter::DerivedMesh GltfToSceneImporter::deriveMesh(int gltfMeshInd
     out.lod.groupId = static_cast<uint32_t>(gltfMeshIndex);
     if (meshOptConfig.enabled && !out.data.vertices.empty() && !out.data.indices.empty()) {
         bool opaque = true;
-        if (primitive.material >= 0 && primitive.material < (int)model.materials.size()) {
-            const std::string& am = model.materials[primitive.material].alphaMode;
-            opaque = am.empty() || am == "OPAQUE";
+        if (primitive.material >= 0 && primitive.material < (int)sourceScene_.materials.size()) {
+            const smvk::source::AlphaMode am = sourceScene_.materials[size_t(primitive.material)].alphaMode;
+            opaque = (am == smvk::source::AlphaMode::Opaque);
         }
         smvk::MeshOptConfig cfg = meshOptConfig;
         if (!opaque)
@@ -2292,9 +2293,9 @@ GltfToSceneImporter::DerivedMesh GltfToSceneImporter::deriveMesh(int gltfMeshInd
         // quad borders and stretches UVs, flashing background through the
         // leaves on every LOD switch. Use the coverage-preserving path.
         bool preserveCoverage = false;
-        if (primitive.material >= 0 && primitive.material < (int)model.materials.size()) {
-            const std::string& am = model.materials[primitive.material].alphaMode;
-            preserveCoverage = (am == "MASK" || am == "BLEND");
+        if (primitive.material >= 0 && primitive.material < (int)sourceScene_.materials.size()) {
+            const smvk::source::AlphaMode am = sourceScene_.materials[size_t(primitive.material)].alphaMode;
+            preserveCoverage = (am != smvk::source::AlphaMode::Opaque);
         }
         if (smvk::BuildLodChainForUpload(out.data, meshOptConfig, out.lodChain, preserveCoverage)) {
 #ifndef NDEBUG
@@ -2313,9 +2314,9 @@ GltfToSceneImporter::DerivedMesh GltfToSceneImporter::deriveMesh(int gltfMeshInd
 smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshIndex,
                                                                    int primitiveIndex) {
     assert(gltfMeshIndex >= 0);
-    assert(static_cast<size_t>(gltfMeshIndex) < model.meshes.size());
+    assert(static_cast<size_t>(gltfMeshIndex) < sourceScene_.meshes.size());
     assert(primitiveIndex >= 0);
-    assert(static_cast<size_t>(primitiveIndex) < model.meshes[gltfMeshIndex].primitives.size());
+    assert(static_cast<size_t>(primitiveIndex) < sourceScene_.meshes[gltfMeshIndex].primitives.size());
 
     auto& slot = meshCache[gltfMeshIndex][primitiveIndex];
     if (!slot.empty()) {
