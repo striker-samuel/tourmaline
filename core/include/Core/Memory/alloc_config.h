@@ -55,7 +55,13 @@ inline constexpr size_t kFrameArenaBlock = 1 * kMiB;
 // Windows. Reservation costs address space only — physical pages commit
 // on demand in kCommitQuantum chunks.
 inline constexpr size_t kProcessReserve = 4 * kGiB;
-inline constexpr size_t kFrameReserve = 256 * kMiB;
+// Per-frame scratch reservation. 128 GiB of VIRTUAL address space (no
+// physical commit): the frame arena is a bump allocator sized by the
+// largest stress scene (the bistro grid32's 9.1M-node per-frame data blew
+// past the old 256 MiB), and reserving far more than any real frame uses
+// means the LinearAllocator never OOMs on a legitimately large frame while
+// still failing loudly on a runaway allocation (see the OOM policy).
+inline constexpr size_t kFrameReserve = 128 * kGiB;
 // Independent virtual reservation per GPU in-flight slot (lazy init).
 inline constexpr size_t kFlightReserve = 64 * kMiB;
 inline constexpr size_t kTransientReserve = 1 * kGiB;
