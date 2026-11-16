@@ -1261,7 +1261,7 @@ bool LoadMeshAssetBytes(const uint8_t* data, size_t size, MeshAsset& out, std::s
 // Derivation
 // ---------------------------------------------------------------------------
 
-bool DeriveNativeAssets(const tinygltf::Model& model,
+bool DeriveNativeAssets(const smvk::source::Scene& native,
                         const std::filesystem::path& gltfPath,
                         const std::string& gltfGuid,
                         const AssetManifest* prevIdentity,
@@ -1295,9 +1295,8 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
     auto cluster = std::make_unique<smvk::Cluster>(nullptr);
     cluster->SetOfflineMode(true);
     std::vector<int> gltfNodeMap;
-    smvk::source::Scene native;
     {
-        GltfToSceneImporter importer{*cluster, model, gltfPath};
+        SourceSceneImporter importer{*cluster, native, gltfPath};
         importer.setMeshOptConfig(meshOpt);
         // Meshlets bake INTO THE .GEOMETRY (the artifact owns the cooked
         // sets — pak assembly reads them, never re-decides). The old
@@ -1322,30 +1321,15 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
         const int root = addNode(cluster->scene, -1, 0);
         cluster->scene.localTransform[size_t(root)] = glm::mat4(1.0f);
         cluster->scene.globalTransform[size_t(root)] = glm::mat4(1.0f);
-        std::vector<int> gltfRoots;
-        if (model.defaultScene >= 0 && model.defaultScene < int(model.scenes.size())) {
-            gltfRoots = model.scenes[size_t(model.defaultScene)].nodes;
-        } else if (!model.scenes.empty()) {
-            gltfRoots = model.scenes.front().nodes;
-        } else {
-            std::vector<bool> referenced(model.nodes.size());
-            for (const auto& n : model.nodes)
-                for (int c : n.children)
-                    if (c >= 0 && c < int(model.nodes.size()))
-                        referenced[size_t(c)] = true;
-            for (int i = 0; i < int(model.nodes.size()); ++i)
-                if (!referenced[size_t(i)])
-                    gltfRoots.push_back(i);
-        }
+        const auto& roots = native.activeRoots.empty() ? native.roots : native.activeRoots;
         importer.preloadTextures();
-        for (int gltfNode : gltfRoots)
-            importer.import(gltfNode);
+        for (uint32_t sourceNode : roots)
+            importer.import(int(sourceNode));
         // SKIN post pass (the Northlight data path): build the cluster
         // Skeleton + patch the recorded (mesh, skin) pairs' PackedSkinInfluences
         // streams (the gltfNodeMap is fully populated now - the same
         // post-pass contract as GltfToCluster's inline flow).
         importer.BuildSkinData();
-        native = importer.releaseSourceScene();
         RebuildStaticCache(cluster->scene);
         recalculateGlobalTransforms(cluster->scene);
         gltfNodeMap = importer.gltfNodeMap();
@@ -1733,7 +1717,7 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
                 const size_t at = u.rfind("#mat.");
                 if (at != std::string::npos) {
                     const int mi = std::atoi(u.c_str() + at + 5);
-                    if (mi >= 0 && mi < int(model.materials.size()))
+                    if (mi >= 0 && mi < int(native.materials.size()))
                         inst.materialGuid = guidFor(AssetKind::Material,
                                                     mi,
                                                     materialName(mi)); // idempotent:
