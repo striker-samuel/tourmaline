@@ -30,13 +30,20 @@ not a per-point mesh copy or a GPUScene node. The output cardinality can
 change; a zero-length result is valid. Nodes carry no accumulated state and
 evaluating the same program with the same input yields the same output.
 
+The compiler reuses the existing engine graph infrastructure in
+`Engine/Graph/graph.h` (`tour::graph::Document`, typed `point_array` ports,
+`tour::graph::Validate`, and stable topological order). It does **not**
+introduce a competing graph topology or node-connection validator.
+The point-array domain owns only operation semantics and CPU evaluation;
+the existing editor graph canvas can consume the common graph document.
+
 `Engine/Placement/point_array_graph.h` provides:
 
 - `Graph`: node IDs, one upstream input per operator, and a selected
   output. Multiple alternative output paths can share an input.
-- `Compile`: validates node identity, references, cycles, operator
-  parameters and one reachable Input, then walks dependencies in
-  deterministic order, removing unrelated branches.
+- `Compile`: lowers nodes and links through the shared engine graph
+  validator, checks domain-specific parameters and one reachable Input,
+  then retains only the chosen output's upstream operations.
 - `Program`: backend-neutral sequence of array operations.
 - `Evaluate`: CPU reference backend, retaining input data and replacing
   output only on success.
