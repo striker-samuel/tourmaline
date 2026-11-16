@@ -2583,6 +2583,24 @@ void GltfToSceneImporter::prepareSourceScene() {
         }
         scene.animations.push_back(std::move(out));
     }
+    scene.lights.reserve(model.lights.size());
+    for (const auto& light : model.lights) {
+        smvk::source::Light out{};
+        out.name = light.name;
+        if (light.color.size() >= 3)
+            out.color = glm::vec3(float(light.color[0]), float(light.color[1]),
+                                  float(light.color[2]));
+        out.intensity = float(light.intensity);
+        out.range = float(light.range);
+        if (light.type == "directional")
+            out.type = smvk::source::LightType::Directional;
+        else if (light.type == "spot") {
+            out.type = smvk::source::LightType::Spot;
+            out.innerConeAngle = float(light.spot.innerConeAngle);
+            out.outerConeAngle = float(light.spot.outerConeAngle);
+        }
+        scene.lights.push_back(out);
+    }
     sourceScenePrepared_ = true;
 }
 
