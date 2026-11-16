@@ -57,6 +57,7 @@
 #include <Engine/Renderer/gpu_scene_static.h>
 #include <Engine/Renderer/gpu_scene_task_mesh_runtime.h>
 #include <Engine/Renderer/gpu_scene_validation.h>
+#include <Engine/Renderer/gpu_scene_render_view_bridge.h>
 #include <Engine/Renderer/gpu_scene_world.h>
 #include <Engine/Renderer/ray_tracing_debug.h>
 #include <Engine/Renderer/renderview.h>
@@ -2528,6 +2529,24 @@ class WorldRenderer : public IRenderer {
     smvk::ShaderProgram m_gpuSceneRasterMaskedGbufferProgram{};
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneRasterMaskedA2cFsModule{};
     smvk::ShaderProgram m_gpuSceneRasterMaskedA2cProgram{};
+    // Independent per-RenderView GPU visibility and indirect shadow work.
+    // The main-camera visible list is NOT valid for shadow caster raster.
+    std::array<tour::gpu_scene::CandidateValidator, smvk::kMaxCascades>
+        m_gpuSceneCascadeValidators{};
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneShadowVsModule{};
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneShadowFsModule{};
+    smvk::ShaderProgram m_gpuSceneShadowDepthProgram{};
+    smvk::ShaderProgram m_gpuSceneShadowMaskedProgram{};
+    struct GpuSceneCascadeFlight {
+        smvk::Holder<smvk::BufferHandle> viewBuffer{};
+        smvk::LogicalBufferHandle viewLogical{};
+        smvk::BufferHandle indirectBacking{};
+        smvk::LogicalBufferHandle indirectLogical{};
+        smvk::BufferHandle workBacking{};
+        smvk::LogicalBufferHandle workLogical{};
+    };
+    std::array<std::array<GpuSceneCascadeFlight, smvk::limits::MaxFramesInFlight>,
+               smvk::kMaxCascades> m_gpuSceneCascadeFlights{};
     // Batched GPU-scene motion vectors: reuses the indexed raster work/
     // instance/indirect streams with a motion VS + FS. The previous-frame
     // transforms + camera-relative view are snapshotted at the end of each
@@ -3769,7 +3788,8 @@ class WorldRenderer : public IRenderer {
                                    const IRenderer::PushConstants& pc,
                                    uint32_t casterViewIndex,
                                    bool skipFiltered,
-                                   const smvk::MSAASettings& msaa = smvk::MSAASettings{});
+                                   const smvk::MSAASettings& msaa = smvk::MSAASettings{},
+                                   bool skipGpuSceneOwned = false);
     // The coarse VOLUMETRIC shadow tile's caster recorder (the fog
     // god-ray pass): ONLY the CastVolumetricShadow-marked items (the
     // scene flag's prefiltered walk - large occluders by design, never
