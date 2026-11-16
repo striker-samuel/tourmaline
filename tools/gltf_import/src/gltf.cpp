@@ -1817,6 +1817,8 @@ smvk::ClusterLightHandle SourceSceneImporter::getOrCreateLight(int gltfLightInde
 
     SceneLight dst;
     const smvk::source::Light& src = sourceScene_.lights[size_t(gltfLightIndex)];
+    if (src.type == smvk::source::LightType::Unknown)
+        return {};
     dst.name = src.name;
     dst.color = src.color;
     dst.intensity = src.intensity;
@@ -2596,6 +2598,8 @@ bool DecodeGltfSourceScene(const tinygltf::Model& model,
         out.range = float(light.range);
         if (light.type == "directional")
             out.type = smvk::source::LightType::Directional;
+        else if (light.type == "point")
+            out.type = smvk::source::LightType::Point;
         else if (light.type == "spot") {
             out.type = smvk::source::LightType::Spot;
             out.innerConeAngle = float(light.spot.innerConeAngle);
