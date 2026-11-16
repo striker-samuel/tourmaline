@@ -302,10 +302,15 @@ void mainMS(uint3 gid : SV_GroupID,
             const bool safe=all(isfinite(a)) && all(isfinite(b)) && all(isfinite(c)) &&
                 a.z>1e-6f && b.z>1e-6f && c.z>1e-6f &&
                 isfinite(area) && abs(area)>1e-12f;
-            // Homogeneous screen-space determinant: negative => back-facing for
-            // the verified front-face convention. NOTE: the exact sign must be
-            // confirmed against the Vulkan viewport + frontFace raster state;
-            // this path stays default-OFF until that is validated.
+            // Homogeneous screen-space determinant sign: area < 0 is taken as
+            // back-facing. UNVERIFIED: the sign (and thus which triangles get
+            // culled) depends on the Vulkan viewport Y-flip, the frontFace
+            // raster state and the reversed-Z projection, and has NOT been
+            // confirmed with a visual GPU A/B. Do not trust `area < 0` as the
+            // correct orientation until a pixel-parity comparison (cull on vs
+            // off) confirms no geometry disappears. This path stays default-OFF
+            // (the base shader always sets cull=false); the .bf variant is a
+            // compile-time experiment only.
             prims[t].cull=safe && area<0.0f;
         }
 #endif
