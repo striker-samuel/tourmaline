@@ -1261,7 +1261,7 @@ bool LoadMeshAssetBytes(const uint8_t* data, size_t size, MeshAsset& out, std::s
 // Derivation
 // ---------------------------------------------------------------------------
 
-bool DeriveNativeAssets(const tinygltf::Model& model,
+bool DeriveNativeAssets(const smvk::source::Scene& native,
                         const std::filesystem::path& gltfPath,
                         const std::string& gltfGuid,
                         const AssetManifest* prevIdentity,
@@ -1296,7 +1296,7 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
     cluster->SetOfflineMode(true);
     std::vector<int> gltfNodeMap;
     {
-        GltfToSceneImporter importer{*cluster, model, gltfPath};
+        SourceSceneImporter importer{*cluster, native, gltfPath};
         importer.setMeshOptConfig(meshOpt);
         // Meshlets bake INTO THE .GEOMETRY (the artifact owns the cooked
         // sets — pak assembly reads them, never re-decides). The old
@@ -1321,24 +1321,10 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
         const int root = addNode(cluster->scene, -1, 0);
         cluster->scene.localTransform[size_t(root)] = glm::mat4(1.0f);
         cluster->scene.globalTransform[size_t(root)] = glm::mat4(1.0f);
-        std::vector<int> gltfRoots;
-        if (model.defaultScene >= 0 && model.defaultScene < int(model.scenes.size())) {
-            gltfRoots = model.scenes[size_t(model.defaultScene)].nodes;
-        } else if (!model.scenes.empty()) {
-            gltfRoots = model.scenes.front().nodes;
-        } else {
-            std::vector<bool> referenced(model.nodes.size());
-            for (const auto& n : model.nodes)
-                for (int c : n.children)
-                    if (c >= 0 && c < int(model.nodes.size()))
-                        referenced[size_t(c)] = true;
-            for (int i = 0; i < int(model.nodes.size()); ++i)
-                if (!referenced[size_t(i)])
-                    gltfRoots.push_back(i);
-        }
+        const auto& roots = native.activeRoots.empty() ? native.roots : native.activeRoots;
         importer.preloadTextures();
-        for (int gltfNode : gltfRoots)
-            importer.import(gltfNode);
+        for (uint32_t sourceNode : roots)
+            importer.import(int(sourceNode));
         // SKIN post pass (the Northlight data path): build the cluster
         // Skeleton + patch the recorded (mesh, skin) pairs' PackedSkinInfluences
         // streams (the gltfNodeMap is fully populated now - the same
@@ -1429,11 +1415,11 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
     // rows) are unkeyable and skip the ledger entirely (fresh mints,
     // no ambiguity failure against them).
     const auto materialName = [&](int mi) -> std::string {
-        const tinygltf::Material& gm = model.materials[size_t(mi)];
+        const smvk::source::Material& gm = native.materials[size_t(mi)];
         return gm.name.empty() ? ("mat" + std::to_string(mi)) : gm.name;
     };
     const auto animName = [&](int ai) -> std::string {
-        const tinygltf::Animation& ga = model.animations[size_t(ai)];
+        const smvk::source::Animation& ga = native.animations[size_t(ai)];
         return ga.name.empty() ? ("anim" + std::to_string(ai)) : ga.name;
     };
     std::map<std::pair<int, std::string>, int> prevCounts;
@@ -1442,9 +1428,9 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
             if (!e.name.empty())
                 ++prevCounts[{int(e.kind), e.name}];
     std::map<std::pair<int, std::string>, int> newCounts;
-    for (int mi = 0; mi < int(model.materials.size()); ++mi)
+    for (int mi = 0; mi < int(native.materials.size()); ++mi)
         ++newCounts[{int(AssetKind::Material), materialName(mi)}];
-    for (int ai = 0; ai < int(model.animations.size()); ++ai)
+    for (int ai = 0; ai < int(native.animations.size()); ++ai)
         ++newCounts[{int(AssetKind::Anim), animName(ai)}];
     ++newCounts[{int(AssetKind::Geometry), stem}];
     for (const auto& [group, newCount] : newCounts) {
@@ -1511,143 +1497,56 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
         return guid;
     };
 
-    // 3) Material assets (straight from the glTF model: the PBR values
-    // + texture refs (as-authored image URIs; sRGB = baseColor/emissive,
-    // the importer's inferSrgb convention)).
-    for (int mi = 0; mi < int(model.materials.size()); ++mi) {
-        const tinygltf::Material& gm = model.materials[size_t(mi)];
+    // 3) Material artifacts use already-decoded native material values.
+    // glTF extensions and fallbacks were resolved by the source adapter,
+    // so all downstream PBR consumers agree on the effective semantics.
+    for (int mi = 0; mi < int(native.materials.size()); ++mi) {
+        const smvk::source::Material& mat = native.materials[size_t(mi)];
         MaterialAsset m{};
-        // The NAME resolves the identity (the ledger's logical key) —
-        // computed BEFORE the guid ask, then the guid asks with it.
         m.name = materialName(mi);
         m.guid = guidFor(AssetKind::Material, mi, m.name);
-        // The .material record must carry the SAME effective PBR values the
-        // runtime importer derives (gltf.cpp ExtractMaterial): the raw core
-        // block is NOT authoritative for spec-gloss / transmission /
-        // spec-default materials. Convert here so the cooked record matches
-        // the live cluster material (Bistro: 234 KHR_materials_pbrSpecular-
-        // Glossiness materials that would otherwise bake in as metallic=1).
-        std::vector<double> baseColorFactor = gm.pbrMetallicRoughness.baseColorFactor;
-        double metallicFactor = gm.pbrMetallicRoughness.metallicFactor;
-        double roughnessFactor = gm.pbrMetallicRoughness.roughnessFactor;
-        int baseColorTexIndex = gm.pbrMetallicRoughness.baseColorTexture.index;
-        const int metallicRoughnessTexIndex =
-            gm.pbrMetallicRoughness.metallicRoughnessTexture.index;
-        std::string alphaMode = gm.alphaMode;
-        bool doubleSided = gm.doubleSided;
-        // KHR_materials_pbrSpecularGlossiness fallback (FBX2glTF assets):
-        // diffuseTexture/diffuseFactor -> baseColor; glossinessFactor ->
-        // roughness (metallic forced dielectric). The specularGlossiness-
-        // Texture is intentionally skipped — its pixels are a specular
-        // COLOR, not an ORM packing.
-        if (auto it = gm.extensions.find("KHR_materials_pbrSpecularGlossiness");
-            it != gm.extensions.end() && it->second.IsObject()) {
-            const auto& obj = it->second.Get<tinygltf::Value::Object>();
-            int diffuseIdx = -1;
-            if (auto f = obj.find("diffuseTexture"); f != obj.end() && f->second.IsObject()) {
-                const auto& t = f->second.Get<tinygltf::Value::Object>();
-                if (auto fi = t.find("index"); fi != t.end() && fi->second.IsNumber())
-                    diffuseIdx = static_cast<int>(fi->second.GetNumberAsDouble());
-            }
-            if (baseColorTexIndex < 0)
-                baseColorTexIndex = diffuseIdx;
-            if (auto f = obj.find("diffuseFactor"); f != obj.end() && f->second.IsArray()) {
-                const auto& arr = f->second.Get<tinygltf::Value::Array>();
-                // tinygltf defaults baseColorFactor to [1,1,1,1]; a "white"
-                // core factor can never distinguish omitted from authored,
-                // so only apply the diffuse color when no PBR color exists.
-                const bool coreFactorDefault =
-                    baseColorFactor.size() < 4 ||
-                    (baseColorFactor[0] == 1.0 && baseColorFactor[1] == 1.0 &&
-                     baseColorFactor[2] == 1.0 && baseColorFactor[3] == 1.0);
-                const bool hasPbrColor = baseColorTexIndex >= 0 || !coreFactorDefault;
-                if (!hasPbrColor && arr.size() >= 3) {
-                    for (int k = 0; k < 3 && k < int(arr.size()); ++k)
-                        if (arr[k].IsNumber())
-                            baseColorFactor[k] = arr[k].GetNumberAsDouble();
-                    if (arr.size() >= 4 && arr[3].IsNumber())
-                        baseColorFactor[3] = arr[3].GetNumberAsDouble();
-                }
-            }
-            if (metallicFactor == 1.0 && roughnessFactor == 1.0) {
-                metallicFactor = 0.0;
-                if (auto f = obj.find("glossinessFactor"); f != obj.end() && f->second.IsNumber()) {
-                    const double gloss = f->second.GetNumberAsDouble();
-                    roughnessFactor = std::clamp(1.0 - gloss, 0.05, 1.0);
-                } else {
-                    roughnessFactor = 0.6;
-                }
-            }
-        }
-        // Explicit Tourmaline cloth extension; leave ordinary glTF PBR untouched.
-        if (auto it = gm.extensions.find("SMVK_materials_clothSheen");
-            it != gm.extensions.end() && it->second.IsObject()) {
-            const auto& obj = it->second.Get<tinygltf::Value::Object>();
-            if (auto f = obj.find("enabled"); f != obj.end() && f->second.IsBool())
-                m.info.clothSheen = f->second.Get<bool>();
-        }
-
-        // KHR_materials_transmission -> BLEND glass (the engine has no
-        // transmission path). Metallic forced dielectric; alpha derives
-        // from (1 - transmissionFactor); double-sided so panes read from
-        // both sides.
-        if (auto it = gm.extensions.find("KHR_materials_transmission");
-            it != gm.extensions.end() && it->second.IsObject()) {
-            const auto& obj = it->second.Get<tinygltf::Value::Object>();
-            double transmissionFactor = 0.0;
-            if (auto f = obj.find("transmissionFactor"); f != obj.end() && f->second.IsNumber())
-                transmissionFactor = f->second.GetNumberAsDouble();
-            if (transmissionFactor > 0.001) {
-                alphaMode = "BLEND";
-                metallicFactor = 0.0;
-                if (baseColorFactor.size() >= 4 && baseColorFactor[3] >= 0.999)
-                    baseColorFactor[3] = std::clamp(1.0 - transmissionFactor, 0.05, 1.0);
-                doubleSided = true;
-            }
-        }
-        // Untouched core PBR block (no MR texture, spec-default
-        // metallic=1/roughness=1): the spec default prints every such mesh
-        // as metal. Force dielectric, mirroring ExtractMaterial's final gate.
-        if (metallicRoughnessTexIndex < 0 && metallicFactor == 1.0 && roughnessFactor == 1.0)
-            metallicFactor = 0.0;
-        m.info.baseColorFactor = glm::vec4(float(baseColorFactor[0]),
-                                           float(baseColorFactor[1]),
-                                           float(baseColorFactor[2]),
-                                           float(baseColorFactor[3]));
-        m.info.metallicFactor = float(metallicFactor);
-        m.info.roughnessFactor = float(roughnessFactor);
+        m.info.baseColorFactor = glm::vec4(
+            float(mat.baseColorFactor[0]), float(mat.baseColorFactor[1]),
+            float(mat.baseColorFactor[2]), float(mat.baseColorFactor[3]));
+        m.info.metallicFactor = float(mat.metallicFactor);
+        m.info.roughnessFactor = float(mat.roughnessFactor);
         m.info.emissiveFactor = glm::vec3(
-            float(gm.emissiveFactor[0]), float(gm.emissiveFactor[1]), float(gm.emissiveFactor[2]));
-        m.info.alphaMode = (alphaMode == "MASK")    ? smvk::AlphaMode::Mask
-                           : (alphaMode == "BLEND") ? smvk::AlphaMode::Blend
-                                                    : smvk::AlphaMode::Opaque;
-        // Derive the shading model like the direct glTF import does: MASK
-        // -> Masked (the lit FS's cutout gates on ShadingModel::Masked; a
-        // lost flag killed the alpha test and masked foliage rendered
-        // fully opaque - the round-trip used to write shading=lit for
-        // alphaMode=mask).
-        m.info.shadingModel = (m.info.alphaMode == smvk::AlphaMode::Mask)
+            float(mat.emissiveFactor[0]), float(mat.emissiveFactor[1]),
+            float(mat.emissiveFactor[2]));
+        m.info.emissiveStrength = float(mat.emissiveStrength);
+        m.info.alphaMode = (mat.alphaMode == smvk::source::AlphaMode::Mask)
+                               ? smvk::AlphaMode::Mask
+                           : (mat.alphaMode == smvk::source::AlphaMode::Blend)
+                               ? smvk::AlphaMode::Blend
+                               : smvk::AlphaMode::Opaque;
+        m.info.shadingModel = mat.unlit
+                                  ? smvk::ShadingModel::Unlit
+                              : (m.info.alphaMode == smvk::AlphaMode::Mask)
                                   ? smvk::ShadingModel::Masked
                                   : smvk::ShadingModel::DefaultLit;
-        m.info.alphaCutoff = float(gm.alphaCutoff);
-        m.info.doubleSided = doubleSided;
-        auto texRef = [&](int texIndex, bool srgb) {
-            MaterialAsset::TexRef r;
-            r.srgb = srgb;
-            if (texIndex < 0 || texIndex >= int(model.textures.size()))
-                return r;
-            const int img = model.textures[size_t(texIndex)].source;
-            if (img < 0 || img >= int(model.images.size()))
-                return r;
-            r.path = model.images[size_t(img)].uri;
-            return r;
+        m.info.alphaCutoff = float(mat.alphaCutoff);
+        m.info.doubleSided = mat.doubleSided;
+        m.info.castsShadows = mat.castsShadows;
+        m.info.receiveContactShadows = mat.receiveContactShadows;
+        m.info.clothSheen = mat.clothSheen;
+        m.info.normalScale = mat.normalTex ? mat.normalTex->scaleOrStrength : 1.0f;
+        m.info.occlusionStrength = mat.occlusionTex ? mat.occlusionTex->scaleOrStrength : 1.0f;
+
+        auto texRef = [&](const std::optional<smvk::source::TextureRef>& ref, bool srgb) {
+            MaterialAsset::TexRef out{};
+            out.srgb = srgb;
+            if (!ref || ref->imageIndex < 0 ||
+                size_t(ref->imageIndex) >= native.images.size())
+                return out;
+            out.path = native.images[size_t(ref->imageIndex)].uri;
+            return out;
         };
-        m.baseColor = texRef(baseColorTexIndex, true);
-        m.metallicRoughness = texRef(metallicRoughnessTexIndex, false);
-        m.normalTex = texRef(gm.normalTexture.index, false);
-        m.occlusion = texRef(gm.occlusionTexture.index, false);
-        m.emissiveTex = texRef(gm.emissiveTexture.index, true);
-        // Manifest entry (file + name) + the file write.
+        m.baseColor = texRef(mat.baseColorTex, true);
+        m.metallicRoughness = texRef(mat.metallicRoughnessTex, false);
+        m.normalTex = texRef(mat.normalTex, false);
+        m.occlusion = texRef(mat.occlusionTex, false);
+        m.emissiveTex = texRef(mat.emissiveTex, true);
+
         const std::string file = MaterialFileName(stem, mi, m.name);
         for (AssetEntry& e : manifest.entries)
             if (e.kind == AssetKind::Material && e.sourceIndex == mi) {
@@ -1818,7 +1717,7 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
                 const size_t at = u.rfind("#mat.");
                 if (at != std::string::npos) {
                     const int mi = std::atoi(u.c_str() + at + 5);
-                    if (mi >= 0 && mi < int(model.materials.size()))
+                    if (mi >= 0 && mi < int(native.materials.size()))
                         inst.materialGuid = guidFor(AssetKind::Material,
                                                     mi,
                                                     materialName(mi)); // idempotent:
@@ -1871,8 +1770,8 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
 
     // 5) Animation assets (the .tourAnim format; tracks retargeted onto
     // the .geometry's node ids via the import's gltf node map).
-    for (int ai = 0; ai < int(model.animations.size()); ++ai) {
-        const tinygltf::Animation& ga = model.animations[size_t(ai)];
+    for (int ai = 0; ai < int(native.animations.size()); ++ai) {
+        const smvk::source::Animation& ga = native.animations[size_t(ai)];
         smvk::touranim::AnimDoc doc{};
         doc.source = std::filesystem::path(gltfPath).filename().string();
         smvk::touranim::Clip clip{};
@@ -1895,42 +1794,22 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
         // local = parent_world_bind^-1 * parent_world(t) * raw. This runs on
         // the RAW glTF values, before the coordFix conjugation below, so both
         // share the same (raw, cm) frame.
-        std::vector<int> parentOf(model.nodes.size(), -1);
-        for (size_t n = 0; n < model.nodes.size(); ++n)
-            for (int c : model.nodes[n].children)
+        std::vector<int> parentOf(native.nodes.size(), -1);
+        for (size_t n = 0; n < native.nodes.size(); ++n)
+            for (int c : native.nodes[n].children)
                 if (c >= 0 && c < int(parentOf.size()) && parentOf[size_t(c)] < 0)
                     parentOf[size_t(c)] = int(n);
         std::map<int, std::map<int, std::vector<smvk::touranim::Key>>> rawByNode;
-        for (const tinygltf::AnimationChannel& rch : ga.channels) {
-            if (rch.sampler < 0 || rch.sampler >= int(ga.samplers.size()) || rch.target_node < 0 ||
-                rch.target_node >= int(model.nodes.size()))
+        for (const smvk::source::AnimationTrack& track : ga.tracks) {
+            if (track.node >= native.nodes.size())
                 continue;
-            const tinygltf::AnimationSampler& rs = ga.samplers[size_t(rch.sampler)];
-            if (rs.output < 0 || rs.output >= int(model.accessors.size()))
-                continue;
-            const tinygltf::Accessor& ro = model.accessors[size_t(rs.output)];
-            const tinygltf::Accessor& ri = (rs.input >= 0 && rs.input < int(model.accessors.size()))
-                                               ? model.accessors[size_t(rs.input)]
-                                               : tinygltf::Accessor{};
-            const size_t kc = std::min(size_t(ro.count), size_t(ri.count));
-            const int chan = (rch.target_path == "rotation") ? 1
-                             : (rch.target_path == "scale")  ? 2
-                                                             : 0;
-            auto& dst = rawByNode[rch.target_node][chan];
-            for (size_t k = 0; k < kc; ++k) {
-                double t = 0.0;
-                double val[4] = {};
-                if (!AnimReadValue(model, ri, k, &t, 1))
-                    break;
-                const int comp = (chan == 1) ? 4 : 3;
-                if (!AnimReadValue(model, ro, k, val, comp))
-                    break;
+            const int chan = track.channel == smvk::source::AnimationChannel::Rotation ? 1
+                             : track.channel == smvk::source::AnimationChannel::Scale ? 2 : 0;
+            auto& dst = rawByNode[int(track.node)][chan];
+            for (const auto& value : track.keys) {
                 smvk::touranim::Key key{};
-                key.t = t;
-                key.v = glm::vec4(float(val[0]),
-                                  float(val[1]),
-                                  float(val[2]),
-                                  (comp == 4) ? float(val[3]) : 1.0f);
+                key.t = value.time;
+                key.v = value.value;
                 dst.push_back(key);
             }
         }
@@ -1950,7 +1829,7 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
             return ks.back().v;
         };
         auto rawLocal = [&](int g, double t) -> glm::mat4 {
-            const glm::mat4 base = GetNodeLocalTransform(model.nodes[size_t(g)]);
+            const glm::mat4 base = native.nodes[size_t(g)].localTransform;
             const glm::vec3 T0(base[3]);
             const glm::mat3 R3(base);
             const glm::vec3 S0(glm::length(glm::vec3(R3[0])),
@@ -1986,41 +1865,30 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
             return w;
         };
         auto rawBindWorld = [&](auto&& self, int g) -> glm::mat4 {
-            glm::mat4 w = GetNodeLocalTransform(model.nodes[size_t(g)]);
+            glm::mat4 w = native.nodes[size_t(g)].localTransform;
             if (parentOf[size_t(g)] >= 0)
                 w = self(self, parentOf[size_t(g)]) * w;
             return w;
         };
         // The raw keys and the world sampler both live in the raw glTF frame
         // (cm; the root's cm->m scale cancels in the bind^-1 * world product).
-        for (const tinygltf::AnimationChannel& ch : ga.channels) {
-            if (ch.sampler < 0 || ch.sampler >= int(ga.samplers.size()))
-                continue;
-            const int target = ch.target_node;
+        for (const smvk::source::AnimationTrack& ch : ga.tracks) {
+            const int target = int(ch.node);
             if (target < 0 || target >= int(gltfNodeMap.size()))
                 continue;
             const int joint = gltfNodeMap[size_t(target)];
-            if (joint < 0)
-                continue;
-            const tinygltf::AnimationSampler& s = ga.samplers[size_t(ch.sampler)];
-            // Output values: a VEC3 (translate/scale) or a quat (rotate).
-            if (s.output < 0 || s.output >= int(model.accessors.size()))
-                continue;
-            const tinygltf::Accessor& out = model.accessors[size_t(s.output)];
-            const tinygltf::Accessor& in = (s.input >= 0 && s.input < int(model.accessors.size()))
-                                               ? model.accessors[size_t(s.input)]
-                                               : tinygltf::Accessor{};
-            const size_t keys = std::min(size_t(out.count), size_t(in.count));
-            if (keys == 0)
+            if (joint < 0 || ch.keys.empty())
                 continue;
             smvk::touranim::Track t{};
             t.joint = uint32_t(joint);
-            t.name = (target >= 0 && target < int(model.nodes.size()))
-                         ? model.nodes[size_t(target)].name
+            t.name = (target >= 0 && target < int(native.nodes.size()))
+                         ? native.nodes[size_t(target)].name
                          : std::string();
-            t.channel = (ch.target_path == "rotation") ? smvk::touranim::Channel::Rotate
-                        : (ch.target_path == "scale")  ? smvk::touranim::Channel::Scale
-                                                       : smvk::touranim::Channel::Translate;
+            t.channel = ch.channel == smvk::source::AnimationChannel::Rotation
+                            ? smvk::touranim::Channel::Rotate
+                        : ch.channel == smvk::source::AnimationChannel::Scale
+                            ? smvk::touranim::Channel::Scale
+                            : smvk::touranim::Channel::Translate;
             // RUNTIME-convention keys: the track REPLACES the node's
             // whole channel in the RUNTIME's local space, and the
             // import conjugates each CHAIN TOP node's local by the
@@ -2038,7 +1906,7 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
             glm::mat4 basis(1.0f);
             glm::vec3 basisScale(1.0f);
             {
-                const glm::mat4 rawLocal = GetNodeLocalTransform(model.nodes[size_t(target)]);
+                const glm::mat4 rawLocal = native.nodes[size_t(target)].localTransform;
                 if (joint < int(cluster->scene.localTransform.size())) {
                     basis = cluster->scene.localTransform[size_t(joint)] * glm::inverse(rawLocal);
                     basisScale = glm::vec3(glm::length(glm::vec3(basis[0])),
@@ -2068,9 +1936,11 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
                 glm::abs(basis[0].y) + glm::abs(basis[0].z) + glm::abs(basis[1].x) +
                         glm::abs(basis[1].z) + glm::abs(basis[2].x) + glm::abs(basis[2].y) <
                     1e-6f;
-            t.spline = (s.interpolation == "STEP")          ? smvk::touranim::Spline::Step
-                       : (s.interpolation == "CUBICSPLINE") ? smvk::touranim::Spline::CatmullRom
-                                                            : smvk::touranim::Spline::Linear;
+            t.spline = ch.interpolation == smvk::source::Interpolation::Step
+                           ? smvk::touranim::Spline::Step
+                       : ch.interpolation == smvk::source::Interpolation::CubicSpline
+                           ? smvk::touranim::Spline::CatmullRom
+                           : smvk::touranim::Spline::Linear;
             // World-space translation detection: a bone whose raw local
             // translation keeps its WORLD frozen (barely moves) while its
             // parent chain moves significantly was authored in WORLD space
@@ -2097,28 +1967,13 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
                     }
                 }
             }
-            for (size_t k = 0; k < keys; ++k) {
+            for (const smvk::source::AnimationKey& srcKey : ch.keys) {
                 smvk::touranim::Key key{};
-                // Component-type-aware reads (AnimReadValue): the raw
-                // AnimAccessorPtr<double> reinterpreted FLOAT accessor
-                // data as doubles - the knight's tracks came out as
-                // 2.67e+13 translates and 4e-10 key times.
-                if (!AnimReadValue(model, in, k, &key.t, 1))
-                    break;
+                key.t = srcKey.time;
                 lastT = std::max(lastT, key.t);
                 if (t.channel == smvk::touranim::Channel::Rotate) {
-                    double q[4] = {};
-                    if (!AnimReadValue(model, out, k, q, 4))
-                        break;
-                    // glTF stores rotate keys as unit quats (x, y, z,
-                    // w) - EXACTLY the .tourAnim contract (touranim.h:
-                    // "4 for rotate (UNIT QUATERNION xyzw)"). No glm
-                    // quat-ctor-order (w,x,y,z) swizzle here: key.v is a
-                    // plain vec4 the runtime reads componentwise as
-                    // xyzw (SampleAnimation's quat(v.w, v.x, v.y, v.z)
-                    // ctor); the earlier w-first swizzle permuted every
-                    // channel of every rotate key into garbage poses.
-                    glm::quat rot{float(q[3]), float(q[0]), float(q[1]), float(q[2])};
+                    const glm::vec4 q = srcKey.value; // glTF xyzw ordering preserved by adapter
+                    glm::quat rot{q.w, q.x, q.y, q.z};
                     if (!identityBasis) {
                         // The runtime composes the local as T * R * S
                         // and the true animated top local is
@@ -2136,10 +1991,7 @@ bool DeriveNativeAssets(const tinygltf::Model& model,
                     }
                     key.v = glm::vec4(rot.x, rot.y, rot.z, rot.w);
                 } else {
-                    double v3[3] = {};
-                    if (!AnimReadValue(model, out, k, v3, 3))
-                        break;
-                    glm::vec3 val{float(v3[0]), float(v3[1]), float(v3[2])};
+                    glm::vec3 val(srcKey.value);
                     // World->local translation: subtract the parent chain's
                     // world-translation delta so a rigid child keeps its
                     // constant local offset (see the fix block above).
@@ -2215,8 +2067,12 @@ bool ImportMeshSource(const std::filesystem::path& gltfPath,
     std::vector<std::string> extraDeps;
     if (!LoadModelFromSourceFile(model, gltfPath.string().c_str(), &extraDeps))
         return giveUp("source parse failed: " + gltfPath.generic_string());
+    smvk::source::Scene scene;
+    std::string conversionError;
+    if (!DecodeGltfSourceScene(model, scene, &conversionError))
+        return giveUp(conversionError);
     return DeriveNativeAssets(
-        model, gltfPath, gltfGuid, prevIdentity, config, outManifest, outStats, err, extraDeps);
+        scene, gltfPath, gltfGuid, prevIdentity, config, outManifest, outStats, err, extraDeps);
 }
 
 std::string SourceAssetGuid(const std::filesystem::path& gltfPath) {
@@ -2290,6 +2146,59 @@ std::string SourceContentDigest(const std::filesystem::path& gltfPath,
             // Missing/unreadable/remote: the URI is the identity (a
             // deleted texture re-derives — the digest can never match a
             // recorded bytes-digest; a remote pin is content-constant).
+            const std::string mark = ":missing:" + uri;
+            all.insert(all.end(), mark.begin(), mark.end());
+        }
+    }
+    return GuidHexFromBytes(all.data(), all.size());
+}
+
+// Native digest path used by the real derive entry. All source readers
+// record their file dependency set in SourceScene, with non-format-specific
+// sidecars supplied by the parser adapter as extraSourceDeps.
+std::string SourceContentDigest(const std::filesystem::path& sourcePath,
+                                const smvk::source::Scene& scene,
+                                const std::vector<std::string>& extraSourceDeps) {
+    namespace fs = std::filesystem;
+    std::vector<uint8_t> seed;
+    {
+        std::ifstream in(sourcePath, std::ios::binary);
+        if (in)
+            seed.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    }
+    if (seed.empty()) {
+        const std::string p = sourcePath.generic_string();
+        seed.assign(p.begin(), p.end());
+    }
+    std::set<std::string> uris;
+    auto collect = [&](const std::string& uri) {
+        if (!uri.empty() && uri.rfind("data:", 0) != 0)
+            uris.insert(uri);
+    };
+    for (const auto& dependency : scene.dependencies)
+        collect(dependency.relativePath);
+    for (const std::string& dep : extraSourceDeps)
+        collect(dep);
+    std::vector<uint8_t> all = std::move(seed);
+    for (const auto& uri : uris) {
+        all.push_back(0);
+        all.insert(all.end(), uri.begin(), uri.end());
+        all.push_back(0);
+        const bool remote = uri.rfind("http://", 0) == 0 || uri.rfind("https://", 0) == 0;
+        bool hashed = false;
+        if (!remote) {
+            const fs::path full = fs::path(uri).is_absolute()
+                                      ? fs::path(uri)
+                                      : sourcePath.parent_path() / fs::path(uri);
+            std::ifstream in(full, std::ios::binary);
+            if (in) {
+                const std::vector<uint8_t> bytes((std::istreambuf_iterator<char>(in)),
+                                                 std::istreambuf_iterator<char>());
+                all.insert(all.end(), bytes.begin(), bytes.end());
+                hashed = true;
+            }
+        }
+        if (!hashed) {
             const std::string mark = ":missing:" + uri;
             all.insert(all.end(), mark.begin(), mark.end());
         }

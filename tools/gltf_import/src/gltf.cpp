@@ -13,6 +13,7 @@
 #include <Engine/core.h>
 #include <gltf_import/asset_export.h>
 #include <gltf_import/gltf.h>
+#include <gltf_import/source_scene.h>
 #include <ktx.h>
 
 #include <algorithm>
@@ -38,52 +39,10 @@
 
 namespace {
 constexpr uint32_t DEFAULT_MATERIAL_INDEX = 0;
-// Local glTF parse enum; maps to smvk::AlphaMode on material creation.
-enum class GltfAlphaMode { Opaque, Mask, Blend };
-struct GltfTextureRef {
-    int textureIndex = -1; // index into model.textures
-    int imageIndex = -1;   // index into model.images  (model.textures[textureIndex].source)
-    int samplerIndex = -1; // index into model.samplers (model.textures[textureIndex].sampler)
-    int texCoord = 0;      // which UV set
-    float scaleOrStrength = 1.0f; // normal scale or occlusion strength (when applicable)
-    bool valid() const {
-        return textureIndex >= 0 && imageIndex >= 0;
-    }
-};
-struct GltfMaterial {
-    std::string name;
-
-    // PBR Metallic-Roughness core
-    std::array<double, 4> baseColorFactor{1.0, 1.0, 1.0, 1.0};
-    double metallicFactor = 1.0;
-    double roughnessFactor = 1.0;
-
-    std::optional<GltfTextureRef> baseColorTex;
-    std::optional<GltfTextureRef> metallicRoughnessTex;
-
-    // Other PBR textures/params
-    std::optional<GltfTextureRef> normalTex;    // scale in scaleOrStrength
-    std::optional<GltfTextureRef> occlusionTex; // strength in scaleOrStrength
-    std::optional<GltfTextureRef> emissiveTex;
-    std::array<double, 3> emissiveFactor{0.0, 0.0, 0.0};
-    double emissiveStrength = 1.0;
-
-    // Extensions
-    bool unlit = false;
-
-    // Rasterization rules
-    GltfAlphaMode alphaMode = GltfAlphaMode::Opaque;
-    double alphaCutoff = 0.5;
-    bool doubleSided = false;
-
-    // SMVK_materials_shadows.castShadow (stamped by content cooks,
-    // e.g. decal overlays must not darken the geometry under them).
-    bool castsShadows = true;
-    // SMVK_materials_contactShadows.receive (default receive):
-    // materials that must not pick up the sun contact march.
-    bool receiveContactShadows = true;
-    bool clothSheen = false;
-};
+// Source material semantics live in the engine-independent source scene.
+using GltfAlphaMode = smvk::source::AlphaMode;
+using GltfTextureRef = smvk::source::TextureRef;
+using GltfMaterial = smvk::source::Material;
 bool starts_with(const std::string& s, const char* prefix) {
     return s.rfind(prefix, 0) == 0;
 }
@@ -334,44 +293,43 @@ inline void ApplyFileNodeSampler(smvk::TextureSamplerDesc& samp, const smvk::tou
 }
 }; // namespace
 
-GltfToSceneImporter::GltfToSceneImporter(smvk::Cluster& inCluster,
-                                         const tinygltf::Model& inModel,
+SourceSceneImporter::SourceSceneImporter(smvk::Cluster& inCluster,
+                                         const smvk::source::Scene& inScene,
                                          std::filesystem::path inGltfModelPath)
-    : cluster(inCluster), model(inModel), gltfModelPath(std::move(inGltfModelPath)),
+    : cluster(inCluster), sourceScene_(inScene), gltfModelPath(std::move(inGltfModelPath)),
       textureSource(std::make_shared<HostTextureSource>(gltfModelPath.parent_path())),
       modelUriBase(ResolveUriBase(gltfModelPath.generic_string())),
-      materialCache(inModel.materials.size()) {
-    meshCache.resize(inModel.meshes.size());
-    for (size_t i = 0; i < inModel.meshes.size(); ++i) {
-        meshCache[i].resize(inModel.meshes[i].primitives.size());
-    }
-    lightCache.resize(inModel.lights.size());
+      materialCache(inScene.materials.size()) {
+    meshCache.resize(inScene.meshes.size());
+    for (size_t i = 0; i < inScene.meshes.size(); ++i)
+        meshCache[i].resize(inScene.meshes[i].primitives.size());
+    lightCache.resize(inScene.lights.size());
 }
 
-void GltfToSceneImporter::setTextureSource(std::shared_ptr<TextureSource> source) {
+void SourceSceneImporter::setTextureSource(std::shared_ptr<TextureSource> source) {
     if (source)
         textureSource = std::move(source);
 }
 
-void GltfToSceneImporter::setModelUriBase(const std::string& vfsPath) {
+void SourceSceneImporter::setModelUriBase(const std::string& vfsPath) {
     const std::string base = ResolveUriBase(vfsPath);
     if (!base.empty())
         modelUriBase = base;
 }
 
-void GltfToSceneImporter::setMeshOptConfig(const smvk::MeshOptConfig& config) {
+void SourceSceneImporter::setMeshOptConfig(const smvk::MeshOptConfig& config) {
     meshOptConfig = config;
 }
 
-void GltfToSceneImporter::setMeshletConfig(const smvk::MeshletConfig& config) {
+void SourceSceneImporter::setMeshletConfig(const smvk::MeshletConfig& config) {
     meshletConfig = config;
 }
 
-void GltfToSceneImporter::setFileNodes(const std::vector<smvk::tour::FileNode>& nodes) {
+void SourceSceneImporter::setFileNodes(const std::vector<smvk::tour::FileNode>& nodes) {
     fileNodes_ = nodes;
 }
 
-const smvk::tour::FileNode* GltfToSceneImporter::matchFileNode(const std::string& imageUri) const {
+const smvk::tour::FileNode* SourceSceneImporter::matchFileNode(const std::string& imageUri) const {
     if (fileNodes_.empty() || imageUri.empty())
         return nullptr;
     const std::string base = BaseNameOf(imageUri);
@@ -389,23 +347,18 @@ const smvk::tour::FileNode* GltfToSceneImporter::matchFileNode(const std::string
     return nullptr;
 }
 
-bool GltfToSceneImporter::inferSrgb(int imageIndex) const {
+bool SourceSceneImporter::inferSrgb(int imageIndex) const {
     if (imageIndex < 0)
         return false;
-    auto uses = [&](int texIdx) {
-        return texIdx >= 0 && texIdx < int(model.textures.size()) &&
-               model.textures[size_t(texIdx)].source == imageIndex;
-    };
-    for (const auto& m : model.materials) {
-        if (uses(m.pbrMetallicRoughness.baseColorTexture.index))
-            return true;
-        if (uses(m.emissiveTexture.index))
+    for (const auto& material : sourceScene_.materials) {
+        if ((material.baseColorTex && material.baseColorTex->imageIndex == imageIndex) ||
+            (material.emissiveTex && material.emissiveTex->imageIndex == imageIndex))
             return true;
     }
-    return false; // data maps (and unknown uses) stay linear
+    return false;
 }
 
-bool GltfToSceneImporter::resolveKtxBytes(const std::string& imageUri,
+bool SourceSceneImporter::resolveKtxBytes(const std::string& imageUri,
                                           std::vector<uint8_t> srcBytes,
                                           int imageIndex,
                                           std::vector<uint8_t>& out,
@@ -560,35 +513,6 @@ bool GltfExtrasStatic(const tinygltf::Value& extras) {
 // FIRST instance's flag wins when several nodes reference the same
 // light definition with different extras.
 // Returns false for unknown types (caller skips the node link).
-bool GltfLightToSceneLight(const tinygltf::Light& src, bool staticLight, SceneLight& dst) {
-    dst.name = src.name;
-    dst.color = glm::vec3(1.0f);
-    if (src.color.size() >= 3) {
-        dst.color = glm::vec3(static_cast<float>(src.color[0]),
-                              static_cast<float>(src.color[1]),
-                              static_cast<float>(src.color[2]));
-    }
-    dst.intensity = static_cast<float>(src.intensity);
-    dst.range = static_cast<float>(src.range); // 0 = infinite
-    dst.innerConeAngle = 0.0f;
-    dst.outerConeAngle = 0.0f;
-    dst.flags = 0;
-    if (staticLight || (!src.name.empty() && src.name.rfind("STATIC_", 0) == 0))
-        dst.flags |= SceneLight::kSceneLightFlag_Static;
-    if (src.type == "directional") {
-        dst.type = SceneLight::Type::Directional;
-    } else if (src.type == "point") {
-        dst.type = SceneLight::Type::Point;
-    } else if (src.type == "spot") {
-        dst.type = SceneLight::Type::Spot;
-        dst.innerConeAngle = static_cast<float>(src.spot.innerConeAngle);
-        dst.outerConeAngle = static_cast<float>(src.spot.outerConeAngle);
-    } else {
-        return false;
-    }
-    return true;
-}
-
 // A glTF light node opts its light INTO the static bake set via
 // authoring extras (checked in importNodeRecursive; the light NAME
 // prefix "STATIC_" is handled in GltfLightToSceneLight):
@@ -728,13 +652,13 @@ bool GltfExtrasDitherCloseup(const tinygltf::Value& extras) {
 // fake handles (Handle::Mint ids) that only feed MaterialValues slots and
 // the serializer's slot->uri remap. Either way the asset URI, sampler
 // params and source bytes are registered/stashed on the Cluster.
-smvk::TextureHandle GltfToSceneImporter::loadTextureForImage(int imageIndex, int textureIndex) {
+smvk::TextureHandle SourceSceneImporter::loadTextureForImage(int imageIndex, int textureIndex) {
     auto cached = textureCache.find(imageIndex);
     if (cached != textureCache.end())
         return cached->second;
-    if (imageIndex < 0 || imageIndex >= (int)model.images.size())
+    if (imageIndex < 0 || imageIndex >= (int)sourceScene_.images.size())
         return {};
-    const tinygltf::Image& img = model.images[imageIndex];
+    const smvk::source::Image& img = sourceScene_.images[imageIndex];
     // LoadModelFromSourceFile EXTRACTS embedded images (data: URIs, GLB
     // bufferView payloads) to sidecar files and rewrites their uris, so
     // an empty/data uri here means a model that bypassed the loader —
@@ -824,10 +748,10 @@ smvk::TextureHandle GltfToSceneImporter::loadTextureForImage(int imageIndex, int
         // Persist authoring sampler (renderer still uses its default;
         // the desc travels into paks for a future sampler pass).
         smvk::TextureSamplerDesc samp;
-        if (textureIndex >= 0 && textureIndex < (int)model.textures.size()) {
-            const int s = model.textures[textureIndex].sampler;
-            if (s >= 0 && s < (int)model.samplers.size()) {
-                const auto& ts = model.samplers[s];
+        if (textureIndex >= 0 && textureIndex < (int)sourceScene_.textures.size()) {
+            const int s = sourceScene_.textures[textureIndex].sampler;
+            if (s >= 0 && s < (int)sourceScene_.samplers.size()) {
+                const auto& ts = sourceScene_.samplers[s];
                 samp.magFilter = ts.magFilter;
                 samp.minFilter = ts.minFilter;
                 samp.wrapS = ts.wrapS;
@@ -849,28 +773,28 @@ smvk::TextureHandle GltfToSceneImporter::loadTextureForImage(int imageIndex, int
 }
 
 // ---- importer data rows (see setImportImages) --------------------------
-GltfImportImage* GltfToSceneImporter::importImageRow(int imageIndex) {
-    if (!importImages_ || imageIndex < 0 || imageIndex >= (int)model.images.size())
+GltfImportImage* SourceSceneImporter::importImageRow(int imageIndex) {
+    if (!importImages_ || imageIndex < 0 || imageIndex >= (int)sourceScene_.images.size())
         return nullptr;
     auto it = importImageRows_.find(imageIndex);
     if (it != importImageRows_.end())
         return &(*importImages_)[it->second];
     GltfImportImage row{};
     row.source = gltfModelPath.generic_string();
-    row.uri = model.images[size_t(imageIndex)].uri;
+    row.uri = sourceScene_.images[size_t(imageIndex)].uri;
     importImages_->push_back(std::move(row));
     importImageRows_[imageIndex] = importImages_->size() - 1;
     return &importImages_->back();
 }
 
-void GltfToSceneImporter::noteImage(int imageIndex, const std::string& identity, bool loaded) {
+void SourceSceneImporter::noteImage(int imageIndex, const std::string& identity, bool loaded) {
     if (GltfImportImage* row = importImageRow(imageIndex)) {
         row->identity = identity;
         row->loaded = loaded;
     }
 }
 
-void GltfToSceneImporter::noteImageUser(int imageIndex,
+void SourceSceneImporter::noteImageUser(int imageIndex,
                                         const std::string& materialUri,
                                         const char* slot) {
     if (GltfImportImage* row = importImageRow(imageIndex)) {
@@ -1389,7 +1313,7 @@ static GltfMaterial ExtractMaterial(const tinygltf::Model& model, int materialIn
 
     return mat;
 }
-void GltfToSceneImporter::preloadTextures() {
+void SourceSceneImporter::preloadTextures() {
     // Collect every image referenced by any material (dedup by imageIndex).
     // Per-material creation later hits textureCache; anything missed here
     // still loads sequentially via loadTextureForImage.
@@ -1397,12 +1321,12 @@ void GltfToSceneImporter::preloadTextures() {
     // decoded/uploaded in parallel from memory; registration (URI, sampler,
     // source stash) mirrors loadTextureForImage so both paths agree.
     std::vector<int> imageIndices;
-    imageIndices.reserve(model.images.size());
+    imageIndices.reserve(sourceScene_.images.size());
     std::unordered_map<int, int> firstTextureForImage; // imageIndex -> textureIndex (sampler)
     {
-        std::vector<bool> seen(model.images.size(), false);
+        std::vector<bool> seen(sourceScene_.images.size(), false);
         auto note = [&](const std::optional<GltfTextureRef>& ref) {
-            if (!ref || ref->imageIndex < 0 || ref->imageIndex >= (int)model.images.size())
+            if (!ref || ref->imageIndex < 0 || ref->imageIndex >= (int)sourceScene_.images.size())
                 return;
             if (!seen[ref->imageIndex]) {
                 seen[ref->imageIndex] = true;
@@ -1410,23 +1334,12 @@ void GltfToSceneImporter::preloadTextures() {
                 firstTextureForImage[ref->imageIndex] = ref->textureIndex;
             }
         };
-        for (size_t mi = 0; mi < model.materials.size(); ++mi) {
-            const tinygltf::Material& m = model.materials[mi];
-            note(GltfResolveTexture(model, m.pbrMetallicRoughness.baseColorTexture));
-            note(GltfResolveTexture(model, m.pbrMetallicRoughness.metallicRoughnessTexture));
-            note(GtlfResolveNormalTexture(model, m.normalTexture));
-            note(GLtfResolveOcclusionTexture(model, m.occlusionTexture));
-            note(GltfResolveTexture(model, m.emissiveTexture));
-            // Spec-gloss diffuse fallback (see ExtractMaterial): preload so
-            // the per-material path hits the cache. specularGlossinessTexture
-            // is never sampled (its pixels are a specular color, not ORM),
-            // so only the diffuse needs preloading here.
-            if (auto it = m.extensions.find("KHR_materials_pbrSpecularGlossiness");
-                it != m.extensions.end() && it->second.IsObject()) {
-                const auto& obj = it->second.Get<tinygltf::Value::Object>();
-                note(GltfResolveTextureIndex(model,
-                                             GltfExtensionTextureIndex(obj, "diffuseTexture")));
-            }
+        for (const smvk::source::Material& mat : sourceScene_.materials) {
+            note(mat.baseColorTex);
+            note(mat.metallicRoughnessTex);
+            note(mat.normalTex);
+            note(mat.occlusionTex);
+            note(mat.emissiveTex);
         }
     }
 
@@ -1445,7 +1358,7 @@ void GltfToSceneImporter::preloadTextures() {
     for (int imageIndex : imageIndices) {
         if (textureCache.find(imageIndex) != textureCache.end())
             continue;
-        const tinygltf::Image& img = model.images[imageIndex];
+        const smvk::source::Image& img = sourceScene_.images[imageIndex];
         // Embedded / data-URI images are EXTRACTED to sidecar files by
         // LoadModelFromSourceFile (uri rewritten), so an empty/data uri
         // here means a model that bypassed the loader — same policy as
@@ -1504,10 +1417,10 @@ void GltfToSceneImporter::preloadTextures() {
             if (!p.identity.empty()) {
                 cluster.RegisterTextureUri(p.identity, h);
                 smvk::TextureSamplerDesc samp;
-                if (p.textureIndex >= 0 && p.textureIndex < (int)model.textures.size()) {
-                    const int s = model.textures[p.textureIndex].sampler;
-                    if (s >= 0 && s < (int)model.samplers.size()) {
-                        const auto& ts = model.samplers[s];
+                if (p.textureIndex >= 0 && p.textureIndex < (int)sourceScene_.textures.size()) {
+                    const int s = sourceScene_.textures[p.textureIndex].sampler;
+                    if (s >= 0 && s < (int)sourceScene_.samplers.size()) {
+                        const auto& ts = sourceScene_.samplers[s];
                         samp.magFilter = ts.magFilter;
                         samp.minFilter = ts.minFilter;
                         samp.wrapS = ts.wrapS;
@@ -1577,10 +1490,10 @@ void GltfToSceneImporter::preloadTextures() {
                     if (!p.identity.empty()) {
                         cluster.RegisterTextureUri(p.identity, h);
                         smvk::TextureSamplerDesc samp;
-                        if (p.textureIndex >= 0 && p.textureIndex < (int)model.textures.size()) {
-                            const int s = model.textures[p.textureIndex].sampler;
-                            if (s >= 0 && s < (int)model.samplers.size()) {
-                                const auto& ts = model.samplers[s];
+                        if (p.textureIndex >= 0 && p.textureIndex < (int)sourceScene_.textures.size()) {
+                            const int s = sourceScene_.textures[p.textureIndex].sampler;
+                            if (s >= 0 && s < (int)sourceScene_.samplers.size()) {
+                                const auto& ts = sourceScene_.samplers[s];
                                 samp.magFilter = ts.magFilter;
                                 samp.minFilter = ts.minFilter;
                                 samp.wrapS = ts.wrapS;
@@ -1636,10 +1549,10 @@ void GltfToSceneImporter::preloadTextures() {
         if (!p.identity.empty()) {
             cluster.RegisterTextureUri(p.identity, h);
             smvk::TextureSamplerDesc samp;
-            if (p.textureIndex >= 0 && p.textureIndex < (int)model.textures.size()) {
-                const int s = model.textures[p.textureIndex].sampler;
-                if (s >= 0 && s < (int)model.samplers.size()) {
-                    const auto& ts = model.samplers[s];
+            if (p.textureIndex >= 0 && p.textureIndex < (int)sourceScene_.textures.size()) {
+                const int s = sourceScene_.textures[p.textureIndex].sampler;
+                if (s >= 0 && s < (int)sourceScene_.samplers.size()) {
+                    const auto& ts = sourceScene_.samplers[s];
                     samp.magFilter = ts.magFilter;
                     samp.minFilter = ts.minFilter;
                     samp.wrapS = ts.wrapS;
@@ -1722,7 +1635,7 @@ std::string TextureConversionHash(const void* data, size_t size, bool srgb) {
 // it too and an out-of-line definition here made every engine consumer
 // order-dependent on linking gltf_import; see the header note.)
 
-smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMaterialIndex) {
+smvk::ClusterMaterialHandle SourceSceneImporter::getOrCreateMaterial(int gltfMaterialIndex) {
     if (gltfMaterialIndex < 0) {
         if (!defaultMaterialHandle.empty())
             return defaultMaterialHandle;
@@ -1753,7 +1666,7 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
         return slot;
     }
 
-    const GltfMaterial mat = ExtractMaterial(model, gltfMaterialIndex);
+    const smvk::source::Material& mat = sourceScene_.materials[size_t(gltfMaterialIndex)];
 
     // Importer data users (see setImportImages): every (material, slot)
     // pair that references an image gets noted — loaded AND failed rows
@@ -1777,7 +1690,7 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
             // fills the preloaded case.
             noteImage(ref->imageIndex,
                       textureSource ? textureSource->ResolveIdentity(
-                                          model.images[size_t(ref->imageIndex)].uri)
+                                          sourceScene_.images[size_t(ref->imageIndex)].uri)
                                     : std::string(),
                       true);
         }
@@ -1863,10 +1776,10 @@ smvk::ClusterMaterialHandle GltfToSceneImporter::getOrCreateMaterial(int gltfMat
     return slot;
 }
 
-smvk::ClusterLightHandle GltfToSceneImporter::getOrCreateLight(int gltfLightIndex,
+smvk::ClusterLightHandle SourceSceneImporter::getOrCreateLight(int gltfLightIndex,
                                                                bool staticLight) {
     assert(gltfLightIndex >= 0);
-    assert(static_cast<size_t>(gltfLightIndex) < model.lights.size());
+    assert(static_cast<size_t>(gltfLightIndex) < sourceScene_.lights.size());
 
     auto& slot = lightCache[gltfLightIndex];
     if (!slot.empty()) {
@@ -1874,8 +1787,21 @@ smvk::ClusterLightHandle GltfToSceneImporter::getOrCreateLight(int gltfLightInde
     }
 
     SceneLight dst;
-    if (!GltfLightToSceneLight(model.lights[gltfLightIndex], staticLight, dst))
-        return {}; // unknown type: skip the node link
+    const smvk::source::Light& src = sourceScene_.lights[size_t(gltfLightIndex)];
+    if (src.type == smvk::source::LightType::Unknown)
+        return {};
+    dst.name = src.name;
+    dst.color = src.color;
+    dst.intensity = src.intensity;
+    dst.range = src.range;
+    dst.innerConeAngle = src.innerConeAngle;
+    dst.outerConeAngle = src.outerConeAngle;
+    dst.flags = (staticLight || src.name.rfind("STATIC_", 0) == 0)
+                    ? SceneLight::kSceneLightFlag_Static : 0u;
+    dst.type = src.type == smvk::source::LightType::Directional
+                   ? SceneLight::Type::Directional
+               : src.type == smvk::source::LightType::Spot
+                   ? SceneLight::Type::Spot : SceneLight::Type::Point; // unknown type: skip the node link
 
     slot = cluster.CreateLight(std::move(dst));
     if (!slot.valid())
@@ -1886,122 +1812,137 @@ smvk::ClusterLightHandle GltfToSceneImporter::getOrCreateLight(int gltfLightInde
     return slot;
 }
 
-static smvk::MeshData SurfaceDataFromGltfPrimitive(const tinygltf::Model& model,
-                                                   const tinygltf::Primitive& primitive,
-                                                   int coordFix) {
-    smvk::MeshData data;
-    // AABB. for culling
-    {
-        auto it = primitive.attributes.find("POSITION");
-        if (it == primitive.attributes.end())
-            return data;
+// glTF decoding stops at the owned source representation. The downstream
+// mesh optimization/packing path consumes decoded Tourmaline attributes.
+static smvk::source::Primitive DecodeGltfPrimitive(const tinygltf::Model& model,
+                                                    const tinygltf::Primitive& primitive) {
+    smvk::source::Primitive raw{};
+    raw.material = primitive.material;
+    const auto positionIt = primitive.attributes.find("POSITION");
+    if (positionIt == primitive.attributes.end())
+        return raw;
 
-        int accessorIndex = it->second;
-        const tinygltf::Accessor& accessor = model.accessors[accessorIndex];
-
-        if (accessor.minValues.size() >= 3 && accessor.maxValues.size() >= 3) {
-
-            // glTF stores AABB in the accessor; RAW as authored (the
-            // coordFix basis rides the chain top, never the geometry).
-            const std::vector<double>& min = accessor.minValues;
-            const std::vector<double>& max = accessor.maxValues;
-
-            data.aabbMin = glm::vec3(min[0], min[1], min[2]);
-            data.aabbMax = glm::vec3(max[0], max[1], max[2]);
-        } else {
-
-            // I wont handle this. just assert and fail.
-            assert(false && "failed to get bb ");
-        }
+    const tinygltf::Accessor& pos = model.accessors[positionIt->second];
+    if (pos.minValues.size() >= 3 && pos.maxValues.size() >= 3) {
+        raw.aabbMin = glm::vec3(pos.minValues[0], pos.minValues[1], pos.minValues[2]);
+        raw.aabbMax = glm::vec3(pos.maxValues[0], pos.maxValues[1], pos.maxValues[2]);
+    } else {
+        assert(false && "failed to get bb");
     }
 
-    // Extract vertices. Presence flags decide which frames must be synthesized
-    // below: a missing NORMAL/TANGENT must never keep a placeholder, or
-    // normal-mapped lighting breaks on that primitive.
-    const bool hasUVs = primitive.attributes.find("TEXCOORD_0") != primitive.attributes.end();
-    const bool hasUV2s = primitive.attributes.find("TEXCOORD_1") != primitive.attributes.end();
-    const bool hasAuthoredTangents =
-        primitive.attributes.find("TANGENT") != primitive.attributes.end();
-    const bool hasAuthoredNormals =
-        primitive.attributes.find("NORMAL") != primitive.attributes.end();
-    const bool hasColors = primitive.attributes.find("COLOR_0") != primitive.attributes.end();
+    raw.hasUv0 = primitive.attributes.count("TEXCOORD_0") != 0;
+    raw.hasUv1 = primitive.attributes.count("TEXCOORD_1") != 0;
+    raw.hasTangents = primitive.attributes.count("TANGENT") != 0;
+    raw.hasNormals = primitive.attributes.count("NORMAL") != 0;
+    raw.hasColors = primitive.attributes.count("COLOR_0") != 0;
+    raw.vertices.resize(pos.count);
+    for (size_t i = 0; i < pos.count; ++i)
+        raw.vertices[i].position = readVec3F(model, pos, i);
 
-    auto& posAcc = model.accessors[primitive.attributes.at("POSITION")];
-    data.vertices.reserve(posAcc.count);
-    for (size_t i = 0; i < posAcc.count; ++i) {
-        smvk::MeshVertex v{};
-        v.pos = readVec3F(model, posAcc, i);
-        v.color = {1.0f, 1.0f, 1.0f, 1.0f};
-        v.texCoord = {0.0f, 0.0f};            // will fill if UVs exist
-        v.texCoord2 = {0.0f, 0.0f};           // lightmap UV (TEXCOORD_1), if present
-        v.normal = {0.0f, 1.0f, 0.0f};        // replaced below if normals provided/generated
-        v.tangent = {1.0f, 0.0f, 0.0f, 1.0f}; // replaced below if tangents provided/generated
-        data.vertices.push_back(v);
+    if (raw.hasColors) {
+        const auto& a = model.accessors[primitive.attributes.at("COLOR_0")];
+        const int components = tinygltf::GetNumComponentsInType(a.type);
+        for (size_t i = 0; i < a.count && i < raw.vertices.size(); ++i)
+            raw.vertices[i].color = readColorRGBA(model, a, i, components);
     }
-
-    // Vertex colors (COLOR_0): vec3 or vec4 floats, or normalized ubyte/
-    // ushort. Carries layered-material blend weights (RGBA) or a plain
-    // albedo tint; defaults to white when absent.
-    if (hasColors) {
-        auto& colAcc = model.accessors[primitive.attributes.at("COLOR_0")];
-        const int compCount = tinygltf::GetNumComponentsInType(colAcc.type);
-        for (size_t i = 0; i < colAcc.count && i < data.vertices.size(); ++i) {
-            data.vertices[i].color = readColorRGBA(model, colAcc, i, compCount);
-        }
+    if (raw.hasUv0) {
+        const auto& a = model.accessors[primitive.attributes.at("TEXCOORD_0")];
+        for (size_t i = 0; i < a.count && i < raw.vertices.size(); ++i)
+            raw.vertices[i].uv0 = readVec2F(model, a, i);
     }
-
-    if (hasUVs) {
-        auto& uvAcc = model.accessors[primitive.attributes.at("TEXCOORD_0")];
-        for (size_t i = 0; i < uvAcc.count && i < data.vertices.size(); ++i) {
-            glm::vec2 uv = readVec2F(model, uvAcc, i);
-            data.vertices[i].texCoord = uv; // flip V if your shader expects it: uv.y = 1.0f - uv.y;
-        }
+    if (raw.hasUv1) {
+        const auto& a = model.accessors[primitive.attributes.at("TEXCOORD_1")];
+        for (size_t i = 0; i < a.count && i < raw.vertices.size(); ++i)
+            raw.vertices[i].uv1 = readVec2F(model, a, i);
     }
-
-    // Lightmap UV channel (TEXCOORD_1): authored lightmap UVs, or zeros
-    // when the scene carries none (the lightmap cook overwrites these
-    // with chart-local UVs + chart ids at bake time; the shader gates on
-    // the per-draw flag, never on the value).
-    if (hasUV2s) {
-        auto& uv2Acc = model.accessors[primitive.attributes.at("TEXCOORD_1")];
-        for (size_t i = 0; i < uv2Acc.count && i < data.vertices.size(); ++i) {
-            data.vertices[i].texCoord2 = readVec2F(model, uv2Acc, i);
-        }
+    if (raw.hasTangents) {
+        const auto& a = model.accessors[primitive.attributes.at("TANGENT")];
+        for (size_t i = 0; i < a.count && i < raw.vertices.size(); ++i)
+            raw.vertices[i].tangent = readVec4F(model, a, i);
     }
-
-    if (hasAuthoredTangents) {
-        auto& tangentAcc = model.accessors[primitive.attributes.at("TANGENT")];
-        for (size_t i = 0; i < tangentAcc.count && i < data.vertices.size(); ++i) {
-            glm::vec4 tangent = readVec4F(model, tangentAcc, i);
-            // RAW as authored (the basis rides the chain top): tangent
-            // space — including the handedness w — stays exactly as
-            // the glTF author wrote it.
-            data.vertices[i].tangent = tangent;
-        }
+    if (raw.hasNormals) {
+        const auto& a = model.accessors[primitive.attributes.at("NORMAL")];
+        for (size_t i = 0; i < a.count && i < raw.vertices.size(); ++i)
+            raw.vertices[i].normal = glm::normalize(readVec3F(model, a, i));
     }
-
-    if (hasAuthoredNormals) {
-        auto& nAcc = model.accessors[primitive.attributes.at("NORMAL")];
-        for (size_t i = 0; i < nAcc.count && i < data.vertices.size(); ++i) {
-            glm::vec3 n = readVec3F(model, nAcc, i);
-            data.vertices[i].normal = glm::normalize(n);
-        }
-    }
-
     if (primitive.indices >= 0) {
-        auto& idxAcc = model.accessors[primitive.indices];
-        for (size_t i = 0; i < idxAcc.count; ++i) {
-            data.indices.push_back(readIndex(model, idxAcc, i));
+        const auto& a = model.accessors[primitive.indices];
+        raw.indices.reserve(a.count);
+        for (size_t i = 0; i < a.count; ++i)
+            raw.indices.push_back(readIndex(model, a, i));
+    }
+    // Preserve the unquantized authoring skin stream in source vertices.
+    // Packing happens only when preparing the renderer's mesh upload.
+    const auto jt = primitive.attributes.find("JOINTS_0");
+    const auto wt = primitive.attributes.find("WEIGHTS_0");
+    if (jt != primitive.attributes.end() && wt != primitive.attributes.end() &&
+        jt->second >= 0 && wt->second >= 0 &&
+        size_t(jt->second) < model.accessors.size() &&
+        size_t(wt->second) < model.accessors.size()) {
+        const auto& jAcc = model.accessors[size_t(jt->second)];
+        const auto& wAcc = model.accessors[size_t(wt->second)];
+        if (jAcc.count == raw.vertices.size() && wAcc.count >= jAcc.count) {
+            raw.hasSkinWeights = true;
+            for (size_t i = 0; i < raw.vertices.size(); ++i) {
+                const uint8_t* jp = gltfPtr(model, jAcc, i);
+                const uint8_t* wp = gltfPtr(model, wAcc, i);
+                if (jp) {
+                    for (int k = 0; k < 4; ++k) {
+                        uint32_t index = 0;
+                        if (jAcc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE)
+                            index = jp[k];
+                        else if (jAcc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) {
+                            uint16_t v = 0;
+                            std::memcpy(&v, jp + k * sizeof(v), sizeof(v));
+                            index = v;
+                        } else if (jAcc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT) {
+                            std::memcpy(&index, jp + k * sizeof(index), sizeof(index));
+                        }
+                        raw.vertices[i].joints[k] = index;
+                    }
+                }
+                if (wp) {
+                    for (int k = 0; k < 4; ++k) {
+                        float weight = raw.vertices[i].weights[k];
+                        if (wAcc.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT) {
+                            std::memcpy(&weight, wp + k * sizeof(float), sizeof(float));
+                        } else if (wAcc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE) {
+                            weight = float(wp[k]) / 255.0f;
+                        } else if (wAcc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) {
+                            uint16_t v = 0;
+                            std::memcpy(&v, wp + k * sizeof(v), sizeof(v));
+                            weight = float(v) / 65535.0f;
+                        }
+                        raw.vertices[i].weights[k] = weight;
+                    }
+                }
+            }
         }
     }
+    return raw;
+}
 
-    if (!hasAuthoredNormals) {
+// Renderer/asset preparation sees no parser-owned types or accessor layout.
+static smvk::MeshData SourcePrimitiveToMeshData(const smvk::source::Primitive& raw) {
+    smvk::MeshData data{};
+    data.aabbMin = raw.aabbMin;
+    data.aabbMax = raw.aabbMax;
+    data.indices = raw.indices;
+    data.vertices.reserve(raw.vertices.size());
+    for (const auto& v : raw.vertices) {
+        smvk::MeshVertex out{};
+        out.pos = v.position;
+        out.normal = v.normal;
+        out.tangent = v.tangent;
+        out.texCoord = v.uv0;
+        out.texCoord2 = v.uv1;
+        out.color = v.color;
+        data.vertices.push_back(out);
+    }
+    if (!raw.hasNormals)
         smvk::ComputeSmoothNormals(data);
-    }
-    if (!hasAuthoredTangents && hasUVs) {
+    if (!raw.hasTangents && raw.hasUv0)
         smvk::GenerateTangents(data);
-    }
-
     return data;
 }
 
@@ -2011,105 +1952,49 @@ static smvk::MeshData SurfaceDataFromGltfPrimitive(const tinygltf::Model& model,
 // parallel to the mesh upload's vertices, so OptimizeMeshData can
 // keep it in lockstep through the vertex remap. Returns false for an
 // unskinned primitive (missing/invalid attributes or empty).
-static bool PackVertexSkinStream(const tinygltf::Model& model,
-                                 const tinygltf::Primitive& prim,
+// Source skin weights are authoring floats; GPU packing remains a distinct
+// derivation step, preserving the same 4-influence normalization as before.
+static bool PackSourceSkinStream(const smvk::source::Primitive& primitive,
                                  std::vector<smvk::PackedSkinInfluences>& out) {
-    auto jt = prim.attributes.find("JOINTS_0");
-    auto wt = prim.attributes.find("WEIGHTS_0");
-    if (jt == prim.attributes.end() || wt == prim.attributes.end() || jt->second < 0 ||
-        (size_t)jt->second >= model.accessors.size() || wt->second < 0 ||
-        (size_t)wt->second >= model.accessors.size())
+    if (!primitive.hasSkinWeights || primitive.vertices.empty())
         return false;
-    const tinygltf::Accessor& jAcc = model.accessors[size_t(jt->second)];
-    const tinygltf::Accessor& wAcc = model.accessors[size_t(wt->second)];
-    const size_t verts = size_t(jAcc.count);
-    if (verts == 0 || size_t(wAcc.count) < verts)
-        return false;
-    out.resize(verts);
-    for (size_t v = 0; v < verts; ++v) {
-        uint32_t j[4] = {0u, 0u, 0u, 0u};
-        float w[4] = {1.0f, 0.0f, 0.0f, 0.0f};
-        {
-            const uint8_t* p = gltfPtr(model, jAcc, v);
-            if (p) {
-                for (int k = 0; k < 4; ++k) {
-                    if (jAcc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE)
-                        j[k] = p[k];
-                    else if (jAcc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) {
-                        const uint16_t* s16 = reinterpret_cast<const uint16_t*>(p);
-                        j[k] = s16[k];
-                    } else if (jAcc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT) {
-                        const uint32_t* s32 = reinterpret_cast<const uint32_t*>(p);
-                        j[k] = s32[k];
-                    }
-                }
-            }
-        }
-        {
-            const uint8_t* p = gltfPtr(model, wAcc, v);
-            if (p) {
-                for (int k = 0; k < 4; ++k) {
-                    if (wAcc.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT)
-                        w[k] = reinterpret_cast<const float*>(p)[k];
-                    else if (wAcc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE)
-                        w[k] = float(p[k]) * (1.0f / 255.0f);
-                    else if (wAcc.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT)
-                        w[k] = float(reinterpret_cast<const uint16_t*>(p)[k]) * (1.0f / 65535.0f);
-                }
-            }
-        }
-        // Degenerate zero weights fall back to joint 0 at full weight
-        // (never a NaN normal in the shader).
-        float sum = w[0] + w[1] + w[2] + w[3];
+    out.resize(primitive.vertices.size());
+    for (size_t i = 0; i < primitive.vertices.size(); ++i) {
+        const auto& vertex = primitive.vertices[i];
+        glm::vec4 weights = vertex.weights;
+        glm::uvec4 joints = vertex.joints;
+        float sum = weights.x + weights.y + weights.z + weights.w;
         if (!(sum > 1e-6f)) {
-            j[0] = j[1] = j[2] = j[3] = 0u;
-            w[0] = 1.0f;
-            w[1] = w[2] = w[3] = 0.0f;
+            joints = glm::uvec4(0u);
+            weights = glm::vec4(1.0f, 0.0f, 0.0f, 0.0f);
             sum = 1.0f;
         }
-        out[v].joints = ((j[0] & 0xFFu)) | ((j[1] & 0xFFu) << 8) | ((j[2] & 0xFFu) << 16) |
-                        ((j[3] & 0xFFu) << 24);
-        out[v].weights =
-            glm::packUnorm4x8(glm::vec4(w[0] / sum, w[1] / sum, w[2] / sum, w[3] / sum));
+        out[i].joints = (joints.x & 0xFFu) | ((joints.y & 0xFFu) << 8u) |
+                        ((joints.z & 0xFFu) << 16u) | ((joints.w & 0xFFu) << 24u);
+        out[i].weights = glm::packUnorm4x8(weights / sum);
     }
     return true;
 }
 
-// Reads the LOD-gate shape facts (AABB + index count) for a primitive from
-// the glTF accessors WITHOUT the full vertex extract — prepareMeshes' single
-// O(nodes) walk needs them to resolve the large-placed flag for every
-// instance. Mirrors SurfaceDataFromGltfPrimitive's AABB read (the POSITION
-// accessor's authored min/max); false = no position accessor / no authored
-// bounds (treated as "never large-placed", matching the zero-AABB fallback).
-static bool PrimitiveShapeFacts(const tinygltf::Model& model,
-                                const tinygltf::Primitive& primitive,
+static bool PrimitiveShapeFacts(const smvk::source::Primitive& primitive,
                                 glm::vec3* aabbMin,
                                 glm::vec3* aabbMax,
                                 size_t* indexCount) {
-    auto it = primitive.attributes.find("POSITION");
-    if (it == primitive.attributes.end())
+    if (primitive.vertices.empty())
         return false;
-    if (it->second < 0 || (size_t)it->second >= model.accessors.size())
-        return false;
-    const tinygltf::Accessor& acc = model.accessors[(size_t)it->second];
-    if (acc.minValues.size() < 3 || acc.maxValues.size() < 3)
-        return false;
-    *aabbMin = glm::vec3((float)acc.minValues[0], (float)acc.minValues[1], (float)acc.minValues[2]);
-    *aabbMax = glm::vec3((float)acc.maxValues[0], (float)acc.maxValues[1], (float)acc.maxValues[2]);
-    if (primitive.indices >= 0 && (size_t)primitive.indices < model.accessors.size())
-        *indexCount = model.accessors[(size_t)primitive.indices].count;
-    else
-        *indexCount = acc.count;
+    *aabbMin = primitive.aabbMin;
+    *aabbMax = primitive.aabbMax;
+    *indexCount = primitive.indices.empty() ? primitive.vertices.size() : primitive.indices.size();
     return true;
 }
 
-void GltfToSceneImporter::prepareMeshes() {
+void SourceSceneImporter::prepareMeshes() {
     if (meshesPrepared_)
         return;
     meshesPrepared_ = true;
-    meshDerived_.resize(model.meshes.size());
-    for (size_t i = 0; i < model.meshes.size(); ++i)
-        meshDerived_[i].resize(model.meshes[i].primitives.size());
+    meshDerived_.resize(sourceScene_.meshes.size());
+    for (size_t i = 0; i < sourceScene_.meshes.size(); ++i)
+        meshDerived_[i].resize(sourceScene_.meshes[i].primitives.size());
 
     // Skinned + large-placed flags resolved by a SINGLE node walk (the old
     // per-mesh traversal inside getOrCreateMesh was O(meshes x nodes) — for a
@@ -2117,50 +2002,50 @@ void GltfToSceneImporter::prepareMeshes() {
     // multiplies). skinned[mesh][prim] = any node with a valid skin references
     // it; largePlaced[mesh][prim] = any instance's world transform clears the
     // LOD gate (EligibleForSpatialDerivatives).
-    std::vector<std::vector<bool>> skinned(model.meshes.size());
-    std::vector<std::vector<bool>> largePlaced(model.meshes.size());
-    for (size_t i = 0; i < model.meshes.size(); ++i) {
-        skinned[i].resize(model.meshes[i].primitives.size(), false);
-        largePlaced[i].resize(model.meshes[i].primitives.size(), false);
+    std::vector<std::vector<bool>> skinned(sourceScene_.meshes.size());
+    std::vector<std::vector<bool>> largePlaced(sourceScene_.meshes.size());
+    for (size_t i = 0; i < sourceScene_.meshes.size(); ++i) {
+        skinned[i].resize(sourceScene_.meshes[i].primitives.size(), false);
+        largePlaced[i].resize(sourceScene_.meshes[i].primitives.size(), false);
     }
     {
-        std::vector<glm::mat4> worldOf(model.nodes.size(), glm::mat4(1.0f));
-        std::vector<uint8_t> visited(model.nodes.size(), 0);
-        std::vector<uint8_t> child(model.nodes.size(), 0);
-        for (const auto& n : model.nodes)
+        std::vector<glm::mat4> worldOf(sourceScene_.nodes.size(), glm::mat4(1.0f));
+        std::vector<uint8_t> visited(sourceScene_.nodes.size(), 0);
+        std::vector<uint8_t> child(sourceScene_.nodes.size(), 0);
+        for (const auto& n : sourceScene_.nodes)
             for (int c : n.children)
                 if (c >= 0 && size_t(c) < child.size())
                     child[size_t(c)] = 1;
         auto walk = [&](auto&& self, int idx, const glm::mat4& parent) -> void {
-            if (idx < 0 || size_t(idx) >= model.nodes.size() || visited[size_t(idx)])
+            if (idx < 0 || size_t(idx) >= sourceScene_.nodes.size() || visited[size_t(idx)])
                 return;
             visited[size_t(idx)] = 1;
-            const auto& n = model.nodes[size_t(idx)];
-            worldOf[size_t(idx)] = parent * GetNodeLocalTransform(n);
+            const auto& n = sourceScene_.nodes[size_t(idx)];
+            worldOf[size_t(idx)] = parent * n.localTransform;
             for (int c : n.children)
                 self(self, c, worldOf[size_t(idx)]);
         };
-        for (size_t i = 0; i < model.nodes.size(); ++i)
+        for (size_t i = 0; i < sourceScene_.nodes.size(); ++i)
             if (!child[i])
                 walk(walk, int(i), glm::mat4(1.0f));
         // Orphan/cyclic malformed inputs, handled conservatively (same as
         // the old per-mesh traversal).
-        for (size_t i = 0; i < model.nodes.size(); ++i)
+        for (size_t i = 0; i < sourceScene_.nodes.size(); ++i)
             if (!visited[i])
                 walk(walk, int(i), glm::mat4(1.0f));
 
-        for (size_t ni = 0; ni < model.nodes.size(); ++ni) {
-            const tinygltf::Node& n = model.nodes[ni];
-            if (n.mesh < 0 || (size_t)n.mesh >= model.meshes.size())
+        for (size_t ni = 0; ni < sourceScene_.nodes.size(); ++ni) {
+            const smvk::source::Node& n = sourceScene_.nodes[ni];
+            if (n.mesh < 0 || (size_t)n.mesh >= sourceScene_.meshes.size())
                 continue;
-            const bool hasSkin = n.skin >= 0 && (size_t)n.skin < model.skins.size();
-            const tinygltf::Mesh& mesh = model.meshes[(size_t)n.mesh];
+            const bool hasSkin = n.skin >= 0 && (size_t)n.skin < sourceScene_.skins.size();
+            const smvk::source::Mesh& mesh = sourceScene_.meshes[(size_t)n.mesh];
             for (int pi = 0; pi < (int)mesh.primitives.size(); ++pi) {
                 if (hasSkin)
                     skinned[(size_t)n.mesh][(size_t)pi] = true;
                 glm::vec3 mn, mx;
                 size_t idxCount = 0;
-                if (!PrimitiveShapeFacts(model, mesh.primitives[(size_t)pi], &mn, &mx, &idxCount))
+                if (!PrimitiveShapeFacts(mesh.primitives[(size_t)pi], &mn, &mx, &idxCount))
                     continue;
                 if (smvk::EligibleForSpatialDerivatives(mn, mx, idxCount, worldOf[ni], hasSkin))
                     largePlaced[(size_t)n.mesh][(size_t)pi] = true;
@@ -2178,9 +2063,9 @@ void GltfToSceneImporter::prepareMeshes() {
         bool largePlaced;
     };
     std::vector<Work> work;
-    work.reserve(model.meshes.size());
-    for (size_t m = 0; m < model.meshes.size(); ++m)
-        for (size_t p = 0; p < model.meshes[m].primitives.size(); ++p)
+    work.reserve(sourceScene_.meshes.size());
+    for (size_t m = 0; m < sourceScene_.meshes.size(); ++m)
+        for (size_t p = 0; p < sourceScene_.meshes[m].primitives.size(); ++p)
             work.push_back(Work{int(m), int(p), skinned[m][p], largePlaced[m][p]});
     if (work.empty())
         return;
@@ -2211,15 +2096,15 @@ void GltfToSceneImporter::prepareMeshes() {
             deriveMesh(w.mesh, w.prim, w.skinned, w.largePlaced);
 }
 
-GltfToSceneImporter::DerivedMesh GltfToSceneImporter::deriveMesh(int gltfMeshIndex,
+SourceSceneImporter::DerivedMesh SourceSceneImporter::deriveMesh(int gltfMeshIndex,
                                                                  int primitiveIndex,
                                                                  bool skinned,
                                                                  bool largePlaced) const {
     DerivedMesh out;
-    const tinygltf::Primitive& primitive =
-        model.meshes[(size_t)gltfMeshIndex].primitives[(size_t)primitiveIndex];
+    const smvk::source::Primitive& primitive =
+        sourceScene_.meshes[(size_t)gltfMeshIndex].primitives[(size_t)primitiveIndex];
 
-    out.data = SurfaceDataFromGltfPrimitive(model, primitive, coordFix_);
+    out.data = SourcePrimitiveToMeshData(primitive);
 
     // Attach the skin stream BEFORE the meshopt pass so the weld +
     // vertex-fetch remaps carry it in lockstep with `out.data.vertices`
@@ -2228,7 +2113,7 @@ GltfToSceneImporter::DerivedMesh GltfToSceneImporter::deriveMesh(int gltfMeshInd
     // vertices are reordered - bind-pose masks it (all joints = bind) but
     // animation scatters the weights into spikes.
     if (skinned)
-        PackVertexSkinStream(model, primitive, out.data.skin);
+        PackSourceSkinStream(primitive, out.data.skin);
 
     // Cook-time meshoptimizer pass (off by default; the cooker enables it
     // via setMeshOptConfig). Overdraw optimization is gated off for
@@ -2236,9 +2121,9 @@ GltfToSceneImporter::DerivedMesh GltfToSceneImporter::deriveMesh(int gltfMeshInd
     out.lod.groupId = static_cast<uint32_t>(gltfMeshIndex);
     if (meshOptConfig.enabled && !out.data.vertices.empty() && !out.data.indices.empty()) {
         bool opaque = true;
-        if (primitive.material >= 0 && primitive.material < (int)model.materials.size()) {
-            const std::string& am = model.materials[primitive.material].alphaMode;
-            opaque = am.empty() || am == "OPAQUE";
+        if (primitive.material >= 0 && primitive.material < (int)sourceScene_.materials.size()) {
+            const smvk::source::AlphaMode am = sourceScene_.materials[size_t(primitive.material)].alphaMode;
+            opaque = (am == smvk::source::AlphaMode::Opaque);
         }
         smvk::MeshOptConfig cfg = meshOptConfig;
         if (!opaque)
@@ -2306,9 +2191,9 @@ GltfToSceneImporter::DerivedMesh GltfToSceneImporter::deriveMesh(int gltfMeshInd
         // quad borders and stretches UVs, flashing background through the
         // leaves on every LOD switch. Use the coverage-preserving path.
         bool preserveCoverage = false;
-        if (primitive.material >= 0 && primitive.material < (int)model.materials.size()) {
-            const std::string& am = model.materials[primitive.material].alphaMode;
-            preserveCoverage = (am == "MASK" || am == "BLEND");
+        if (primitive.material >= 0 && primitive.material < (int)sourceScene_.materials.size()) {
+            const smvk::source::AlphaMode am = sourceScene_.materials[size_t(primitive.material)].alphaMode;
+            preserveCoverage = (am != smvk::source::AlphaMode::Opaque);
         }
         if (smvk::BuildLodChainForUpload(out.data, meshOptConfig, out.lodChain, preserveCoverage)) {
 #ifndef NDEBUG
@@ -2324,12 +2209,12 @@ GltfToSceneImporter::DerivedMesh GltfToSceneImporter::deriveMesh(int gltfMeshInd
     return out;
 }
 
-smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshIndex,
+smvk::ClusterStaticMeshHandle SourceSceneImporter::getOrCreateMesh(int gltfMeshIndex,
                                                                    int primitiveIndex) {
     assert(gltfMeshIndex >= 0);
-    assert(static_cast<size_t>(gltfMeshIndex) < model.meshes.size());
+    assert(static_cast<size_t>(gltfMeshIndex) < sourceScene_.meshes.size());
     assert(primitiveIndex >= 0);
-    assert(static_cast<size_t>(primitiveIndex) < model.meshes[gltfMeshIndex].primitives.size());
+    assert(static_cast<size_t>(primitiveIndex) < sourceScene_.meshes[gltfMeshIndex].primitives.size());
 
     auto& slot = meshCache[gltfMeshIndex][primitiveIndex];
     if (!slot.empty()) {
@@ -2427,7 +2312,7 @@ smvk::ClusterStaticMeshHandle GltfToSceneImporter::getOrCreateMesh(int gltfMeshI
     return slot;
 }
 
-void GltfToSceneImporter::applyPreTransform(Scene& scene, int rootNode) {
+void SourceSceneImporter::applyPreTransform(Scene& scene, int rootNode) {
     // Identity fast path (exact float compare is fine for a default matrix).
     static const glm::mat4 kIdentity{1.0f};
     if (preTransform_ == kIdentity)
@@ -2436,22 +2321,232 @@ void GltfToSceneImporter::applyPreTransform(Scene& scene, int rootNode) {
         return;
     scene.localTransform[(size_t)rootNode] = preTransform_ * scene.localTransform[(size_t)rootNode];
 }
-void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
+// Decode authored hierarchy and import policy once into Tourmaline-owned
+// source nodes. The glTF parser remains responsible for source-format extras;
+// scene traversal consumes these normalized nodes rather than tinygltf::Node.
+bool DecodeGltfSourceScene(const tinygltf::Model& model,
+                           smvk::source::Scene& scene,
+                           std::string* error) {
+    scene = smvk::source::Scene{};
+    scene.nodes.resize(model.nodes.size());
+    scene.meshes.resize(model.meshes.size());
+    for (size_t mi = 0; mi < model.meshes.size(); ++mi) {
+        scene.meshes[mi].name = model.meshes[mi].name;
+        scene.meshes[mi].stableKey = "mesh." + std::to_string(mi);
+        auto& outMesh = scene.meshes[mi];
+        outMesh.primitives.reserve(model.meshes[mi].primitives.size());
+        for (const auto& primitive : model.meshes[mi].primitives)
+            outMesh.primitives.push_back(DecodeGltfPrimitive(model, primitive));
+    }
+    for (size_t i = 0; i < model.nodes.size(); ++i) {
+        const tinygltf::Node& in = model.nodes[i];
+        auto& out = scene.nodes[i];
+        out.name = in.name;
+        out.stableKey = "node." + std::to_string(i);
+        out.localTransform = GetNodeLocalTransform(in);
+        out.mesh = in.mesh;
+        out.skin = in.skin;
+        out.light = GltfNodeLightIndex(in);
+        out.staticRoot = GltfExtrasStatic(in.extras) ||
+                         (!in.name.empty() && in.name.rfind("STATIC_", 0) == 0);
+        out.noLightmap = GltfExtrasNoLightmap(in.extras) ||
+                         (!in.name.empty() && in.name.rfind("NOLM_", 0) == 0);
+        out.ditherCloseup = GltfExtrasDitherCloseup(in.extras) ||
+                            (!in.name.empty() && in.name.rfind("DITHER_", 0) == 0);
+        out.staticLight = GltfExtrasStaticLight(in.extras);
+        out.children.reserve(in.children.size());
+        for (int child : in.children) {
+            if (child < 0 || size_t(child) >= scene.nodes.size())
+                continue;
+            out.children.push_back(uint32_t(child));
+        }
+    }
+    for (size_t i = 0; i < scene.nodes.size(); ++i) {
+        for (uint32_t child : scene.nodes[i].children)
+            scene.nodes[child].parent = uint32_t(i);
+    }
+    for (size_t i = 0; i < scene.nodes.size(); ++i)
+        if (scene.nodes[i].parent == smvk::source::InvalidIndex)
+            scene.roots.push_back(uint32_t(i));
+    scene.materials.reserve(model.materials.size());
+    for (size_t mi = 0; mi < model.materials.size(); ++mi)
+        scene.materials.push_back(ExtractMaterial(model, int(mi)));
+    scene.skins.reserve(model.skins.size());
+    for (const auto& in : model.skins) {
+        smvk::source::Skin out{};
+        out.name = in.name;
+        out.skeleton = in.skeleton;
+        out.joints.reserve(in.joints.size());
+        for (int joint : in.joints)
+            out.joints.push_back(joint < 0 ? smvk::source::InvalidIndex : uint32_t(joint));
+        out.inverseBind.resize(in.joints.size(), glm::mat4(1.0f));
+        if (in.inverseBindMatrices >= 0 &&
+            size_t(in.inverseBindMatrices) < model.accessors.size()) {
+            const tinygltf::Accessor& accessor = model.accessors[size_t(in.inverseBindMatrices)];
+            for (size_t i = 0; i < out.inverseBind.size() && i < accessor.count; ++i) {
+                const uint8_t* raw = gltfPtr(model, accessor, i);
+                if (!raw)
+                    break;
+                const float* p = reinterpret_cast<const float*>(raw);
+                for (int c = 0; c < 4; ++c)
+                    for (int row = 0; row < 4; ++row)
+                        out.inverseBind[i][c][row] = p[c * 4 + row];
+            }
+        }
+        scene.skins.push_back(std::move(out));
+    }
+    scene.images.reserve(model.images.size());
+    for (const auto& image : model.images)
+        scene.images.push_back(smvk::source::Image{image.uri});
+    scene.textures.reserve(model.textures.size());
+    for (const auto& tex : model.textures)
+        scene.textures.push_back(smvk::source::Texture{tex.source, tex.sampler});
+    scene.samplers.reserve(model.samplers.size());
+    for (const auto& sampler : model.samplers)
+        scene.samplers.push_back(smvk::source::Sampler{
+            sampler.magFilter, sampler.minFilter, sampler.wrapS, sampler.wrapT});
+    // Decode source animation sampler payloads into owned time/value tracks.
+    // Tourmaline's .anim conversion no longer needs glTF accessor layout.
+    auto animRead = [&](const tinygltf::Accessor& acc, size_t index,
+                        double* values, size_t count) -> bool {
+        if (index >= acc.count || acc.bufferView < 0 ||
+            size_t(acc.bufferView) >= model.bufferViews.size())
+            return false;
+        const uint8_t* p = gltfPtr(model, acc, index);
+        if (!p)
+            return false;
+        for (size_t c = 0; c < count; ++c) {
+            if (acc.componentType == TINYGLTF_COMPONENT_TYPE_FLOAT) {
+                float v = 0.0f;
+                std::memcpy(&v, p + c * sizeof(float), sizeof(float));
+                values[c] = v;
+            } else if (acc.componentType == TINYGLTF_COMPONENT_TYPE_DOUBLE) {
+                double v = 0.0;
+                std::memcpy(&v, p + c * sizeof(double), sizeof(double));
+                values[c] = v;
+            } else {
+                return false;
+            }
+        }
+        return true;
+    };
+    scene.animations.reserve(model.animations.size());
+    for (const auto& animation : model.animations) {
+        smvk::source::Animation out{};
+        out.name = animation.name;
+        for (const auto& channel : animation.channels) {
+            if (channel.sampler < 0 || size_t(channel.sampler) >= animation.samplers.size() ||
+                channel.target_node < 0 || size_t(channel.target_node) >= model.nodes.size())
+                continue;
+            const auto& sampler = animation.samplers[size_t(channel.sampler)];
+            if (sampler.input < 0 || sampler.output < 0 ||
+                size_t(sampler.input) >= model.accessors.size() ||
+                size_t(sampler.output) >= model.accessors.size())
+                continue;
+            const auto& times = model.accessors[size_t(sampler.input)];
+            const auto& values = model.accessors[size_t(sampler.output)];
+            smvk::source::AnimationTrack track{};
+            track.node = uint32_t(channel.target_node);
+            track.channel = channel.target_path == "rotation"
+                                ? smvk::source::AnimationChannel::Rotation
+                            : channel.target_path == "scale"
+                                ? smvk::source::AnimationChannel::Scale
+                            : channel.target_path == "weights"
+                                ? smvk::source::AnimationChannel::Weights
+                                : smvk::source::AnimationChannel::Translation;
+            track.interpolation = sampler.interpolation == "STEP"
+                                      ? smvk::source::Interpolation::Step
+                                  : sampler.interpolation == "CUBICSPLINE"
+                                      ? smvk::source::Interpolation::CubicSpline
+                                      : smvk::source::Interpolation::Linear;
+            if (track.channel == smvk::source::AnimationChannel::Weights)
+                continue; // native .tourAnim has no morph weight channel yet
+            const size_t count = std::min(times.count, values.count);
+            const size_t components =
+                track.channel == smvk::source::AnimationChannel::Rotation ? 4u : 3u;
+            track.keys.reserve(count);
+            for (size_t k = 0; k < count; ++k) {
+                double t = 0.0;
+                double v[4] = {};
+                if (!animRead(times, k, &t, 1) ||
+                    !animRead(values, k, v, components))
+                    break;
+                smvk::source::AnimationKey key{};
+                key.time = t;
+                key.value = glm::vec4(float(v[0]), float(v[1]), float(v[2]),
+                                      components == 4 ? float(v[3]) : 1.0f);
+                track.keys.push_back(key);
+            }
+            out.tracks.push_back(std::move(track));
+        }
+        scene.animations.push_back(std::move(out));
+    }
+    scene.lights.reserve(model.lights.size());
+    for (const auto& light : model.lights) {
+        smvk::source::Light out{};
+        out.name = light.name;
+        if (light.color.size() >= 3)
+            out.color = glm::vec3(float(light.color[0]), float(light.color[1]),
+                                  float(light.color[2]));
+        out.intensity = float(light.intensity);
+        out.range = float(light.range);
+        if (light.type == "directional")
+            out.type = smvk::source::LightType::Directional;
+        else if (light.type == "point")
+            out.type = smvk::source::LightType::Point;
+        else if (light.type == "spot") {
+            out.type = smvk::source::LightType::Spot;
+            out.innerConeAngle = float(light.spot.innerConeAngle);
+            out.outerConeAngle = float(light.spot.outerConeAngle);
+        }
+        scene.lights.push_back(out);
+    }
+
+    // The default glTF scene determines the roots that become placed
+    // instances. Keep all authored nodes in the source table for animation
+    // identity and validation, including unused nodes.
+    if (model.defaultScene >= 0 && size_t(model.defaultScene) < model.scenes.size()) {
+        for (int i : model.scenes[size_t(model.defaultScene)].nodes)
+            if (i >= 0 && size_t(i) < scene.nodes.size())
+                scene.activeRoots.push_back(uint32_t(i));
+    } else if (!model.scenes.empty()) {
+        for (int i : model.scenes.front().nodes)
+            if (i >= 0 && size_t(i) < scene.nodes.size())
+                scene.activeRoots.push_back(uint32_t(i));
+    } else {
+        scene.activeRoots = scene.roots;
+    }
+    for (const auto& buffer : model.buffers)
+        if (!buffer.uri.empty() && buffer.uri.rfind("data:", 0) != 0)
+            scene.dependencies.push_back({buffer.uri});
+    for (const auto& image : scene.images)
+        if (!image.uri.empty() && image.uri.rfind("data:", 0) != 0)
+            scene.dependencies.push_back({image.uri});
+    std::string failure;
+    if (!smvk::source::Validate(scene, failure)) {
+        if (error)
+            *error = "invalid decoded source scene: " + failure;
+        return false;
+    }
+    return true;
+}
+
+void SourceSceneImporter::importNodeRecursive(int gltfNodeIndex,
                                               int parentSceneNode,
                                               int level,
                                               bool topOfImport) {
-    const tinygltf::Node& gltfNode = model.nodes[gltfNodeIndex];
+    const smvk::source::Node& sourceNode = sourceScene_.nodes[size_t(gltfNodeIndex)];
 
     // glTF node index -> cluster id map (the asset derivation retargets
     // animations/material bindings onto the deterministic cluster ids).
-    if (gltfNodeMap_.size() < model.nodes.size())
-        gltfNodeMap_.resize(model.nodes.size(), -1);
+    if (gltfNodeMap_.size() < sourceScene_.nodes.size())
+        gltfNodeMap_.resize(sourceScene_.nodes.size(), -1);
 
     // Always create a "group" node that owns name + transform and preserves hierarchy.
     const int groupNode = addNode(cluster.scene, parentSceneNode, level);
     gltfNodeMap_[size_t(gltfNodeIndex)] = groupNode;
 
-    setNodeName(cluster.scene, groupNode, gltfNode.name.empty() ? "Node" : gltfNode.name);
+    setNodeName(cluster.scene, groupNode, sourceNode.name.empty() ? "Node" : sourceNode.name);
 
     // RAW local (as authored). The TOP node of each imported chain
     // (importUnder) additionally carries the coordFix basis on the
@@ -2461,15 +2556,14 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
     // the local gizmo + the inspector read true).
     cluster.scene.localTransform[groupNode] =
         (topOfImport ? CoordFixBasis(coordFix_) : glm::mat4(1.0f)) *
-        GetNodeLocalTransform(gltfNode);
+        sourceNode.localTransform;
     cluster.scene.globalTransform[groupNode] = glm::mat4(1.0f); // resolved later
 
     // Static-subtree opt-in: authoring extras or STATIC_ name prefix.
     // Flag is stamped directly; the staticNode cache is rebuilt once at the
     // end of the import flow (see GltfToClusterFromVfs / GltfToCluster).
     {
-        const bool wantStatic = GltfExtrasStatic(gltfNode.extras) ||
-                                (!gltfNode.name.empty() && gltfNode.name.rfind("STATIC_", 0) == 0);
+        const bool wantStatic = sourceNode.staticRoot;
         if (wantStatic && (size_t)groupNode < cluster.scene.staticRoot.size())
             cluster.scene.staticRoot[(size_t)groupNode] = 1;
     }
@@ -2477,8 +2571,7 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
     // Lightmap opt-out: authoring extras or NOLM_ name prefix. Stored on
     // the group node; IsNoLightmapNode() resolves subtree membership.
     {
-        const bool wantNoLm = GltfExtrasNoLightmap(gltfNode.extras) ||
-                              (!gltfNode.name.empty() && gltfNode.name.rfind("NOLM_", 0) == 0);
+        const bool wantNoLm = sourceNode.noLightmap;
         if (wantNoLm) {
             if (cluster.scene.noLightmap.size() != cluster.scene.hierarchy.size())
                 cluster.scene.noLightmap.resize(cluster.scene.hierarchy.size(), 0);
@@ -2491,8 +2584,7 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
     // Stored on the group node; IsDitherCloseupNode() resolves subtree
     // membership. Cooked into the pak scene blob (v6 section).
     {
-        const bool wantDither = GltfExtrasDitherCloseup(gltfNode.extras) ||
-                                (!gltfNode.name.empty() && gltfNode.name.rfind("DITHER_", 0) == 0);
+        const bool wantDither = sourceNode.ditherCloseup;
         if (wantDither) {
             if (cluster.scene.ditherCloseup.size() != cluster.scene.hierarchy.size())
                 cluster.scene.ditherCloseup.resize(cluster.scene.hierarchy.size(), 0);
@@ -2511,31 +2603,31 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
     // exactly like meshes. Node extras "smvk.staticLight" (or a STATIC_
     // light name) flags the light as a bake source - first instance
     // wins when the definition is shared.
-    const int gltfNodeLight = GltfNodeLightIndex(gltfNode);
-    if (gltfNodeLight >= 0 && gltfNodeLight < (int)model.lights.size()) {
+    const int gltfNodeLight = sourceNode.light;
+    if (gltfNodeLight >= 0 && gltfNodeLight < (int)sourceScene_.lights.size()) {
         const smvk::ClusterLightHandle h =
-            getOrCreateLight(gltfNodeLight, GltfExtrasStaticLight(gltfNode.extras));
+            getOrCreateLight(gltfNodeLight, sourceNode.staticLight);
         if (h.valid())
             SetLight(cluster.scene, (uint32_t)groupNode, h.index());
     }
 
     // Unroll primitives into separate meshes (your current approach).
-    if (gltfNode.mesh >= 0) {
-        const tinygltf::Mesh& gltfMesh = model.meshes[gltfNode.mesh];
-        const bool hasSkin = gltfNode.skin >= 0 && (size_t)gltfNode.skin < model.skins.size();
+    if (sourceNode.mesh >= 0) {
+        const smvk::source::Mesh& gltfMesh = sourceScene_.meshes[sourceNode.mesh];
+        const bool hasSkin = sourceNode.skin >= 0 && (size_t)sourceNode.skin < sourceScene_.skins.size();
 
         for (int primIndex = 0; primIndex < (int)gltfMesh.primitives.size(); ++primIndex) {
-            const tinygltf::Primitive& primitive = gltfMesh.primitives[primIndex];
+            const smvk::source::Primitive& primitive = gltfMesh.primitives[primIndex];
 
             const int primNode = addNode(cluster.scene, groupNode, level + 1);
             setNodeName(cluster.scene,
                         primNode,
-                        (gltfNode.name.empty() ? "Node" : gltfNode.name) + std::string("Shape") +
+                        (sourceNode.name.empty() ? "Node" : sourceNode.name) + std::string("Shape") +
                             std::to_string(primIndex));
             cluster.scene.localTransform[primNode] = glm::mat4(1.0f);
             cluster.scene.globalTransform[primNode] = glm::mat4(1.0f);
             const smvk::ClusterStaticMeshHandle primMesh =
-                getOrCreateMesh(gltfNode.mesh, primIndex);
+                getOrCreateMesh(sourceNode.mesh, primIndex);
             SetMesh(cluster.scene, primNode, primMesh.index());
             SetMaterial(cluster.scene, primNode, getOrCreateMaterial(primitive.material).index());
             markAsChanged(cluster.scene, primNode);
@@ -2547,14 +2639,14 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
             // own attributes available (the post pass re-reads them from
             // the recorded indices).
             if (hasSkin && primMesh.valid())
-                skinRefs_.push_back(SkinRef{primMesh, gltfNode.skin, gltfNode.mesh, primIndex});
+                skinRefs_.push_back(SkinRef{primMesh, sourceNode.skin, sourceNode.mesh, primIndex});
         }
     }
 
     // Recurse children under the group node to preserve hierarchy
     // (never top-of-import: only the chain's first node carries the
     // coordFix basis).
-    for (int child : gltfNode.children) {
+    for (uint32_t child : sourceNode.children) {
         importNodeRecursive(child, groupNode, level + 1, false);
     }
 }
@@ -2576,10 +2668,10 @@ void GltfToSceneImporter::importNodeRecursive(int gltfNodeIndex,
 // imported) aborts the whole pass loudly: a half-skinned skeleton renders
 // wrong in ways nothing downstream can detect.
 // ---------------------------------------------------------------------------
-int GltfToSceneImporter::BuildSkinData() {
+int SourceSceneImporter::BuildSkinData() {
     if (skinRefs_.empty())
         return 0;
-    if (model.skins.empty()) {
+    if (sourceScene_.skins.empty()) {
         std::cerr << "[Skin] node.skin references exist but the glTF"
                      " carries no skins (skinned as static)"
                   << std::endl;
@@ -2588,7 +2680,7 @@ int GltfToSceneImporter::BuildSkinData() {
     }
     // The cluster Skeleton: the FIRST skin wins (documented above).
     if (!cluster.hasSkeleton) {
-        const tinygltf::Skin& skin = model.skins[size_t(skinRefs_[0].skinIndex)];
+        const smvk::source::Skin& skin = sourceScene_.skins[size_t(skinRefs_[0].skinIndex)];
         smvk::touranim::Skeleton& sk = cluster.skeleton;
         sk.joints.clear();
         sk.inverseBind.clear();
@@ -2600,7 +2692,7 @@ int GltfToSceneImporter::BuildSkinData() {
                 (j >= 0 && (size_t)j < gltfNodeMap_.size()) ? gltfNodeMap_[size_t(j)] : -1;
             if (clusterNode < 0) {
                 std::cerr << "[Skin] joint node " << j << " ("
-                          << (j >= 0 && (size_t)j < model.nodes.size() ? model.nodes[size_t(j)].name
+                          << (j >= 0 && (size_t)j < sourceScene_.nodes.size() ? sourceScene_.nodes[size_t(j)].name
                                                                        : "?")
                           << ") was never imported - the joint hierarchy must"
                              " be part of the scene graph (skin pass aborted,"
@@ -2611,23 +2703,8 @@ int GltfToSceneImporter::BuildSkinData() {
             }
             sk.joints.push_back(uint32_t(clusterNode));
         }
-        // inverseBindMatrices: FLOAT MAT4 accessor (column-major 16
-        // floats == glm's layout); identity when the skin omits it.
-        if (skin.inverseBindMatrices >= 0 &&
-            (size_t)skin.inverseBindMatrices < model.accessors.size()) {
-            const tinygltf::Accessor& acc = model.accessors[size_t(skin.inverseBindMatrices)];
-            for (size_t i = 0; i < sk.joints.size() && i < size_t(acc.count); ++i) {
-                const uint8_t* raw = gltfPtr(model, acc, i);
-                if (!raw)
-                    break;
-                const float* p = reinterpret_cast<const float*>(raw);
-                glm::mat4 m(1.0f);
-                for (int c = 0; c < 4; ++c)
-                    for (int r = 0; r < 4; ++r)
-                        m[c][r] = p[c * 4 + r];
-                sk.inverseBind[i] = m;
-            }
-        }
+        // Decoding is performed by the source adapter, not in the Cluster path.
+        sk.inverseBind = skin.inverseBind;
         // Skeleton root: the skin's authored `skeleton` node when
         // present; otherwise the glTF spec fallback - the joint
         // hierarchy's own root (the joint whose parent is not itself a
@@ -2643,15 +2720,15 @@ int GltfToSceneImporter::BuildSkinData() {
             // whose parent is missing or not a joint.
             std::unordered_set<int> jointSet(skin.joints.begin(), skin.joints.end());
             std::unordered_map<int, int> parentOf;
-            for (size_t ni = 0; ni < model.nodes.size(); ++ni) {
-                for (int child : model.nodes[ni].children)
+            for (size_t ni = 0; ni < sourceScene_.nodes.size(); ++ni) {
+                for (uint32_t child : sourceScene_.nodes[ni].children)
                     parentOf[child] = int(ni);
             }
             int rootGltf = -1;
-            for (int j : skin.joints) {
+            for (uint32_t j : skin.joints) {
                 const auto pit = parentOf.find(j);
                 if (pit == parentOf.end() || !jointSet.count(pit->second)) {
-                    rootGltf = j;
+                    rootGltf = int(j);
                     break;
                 }
             }
@@ -2673,13 +2750,13 @@ int GltfToSceneImporter::BuildSkinData() {
     // PackedSkinInfluences (top-4 renormalized RGBA8).
     int patched = 0;
     for (const SkinRef& r : skinRefs_) {
-        if (r.skinIndex < 0 || (size_t)r.skinIndex >= model.skins.size() || r.gltfMeshIndex < 0 ||
-            (size_t)r.gltfMeshIndex >= model.meshes.size())
+        if (r.skinIndex < 0 || (size_t)r.skinIndex >= sourceScene_.skins.size() || r.gltfMeshIndex < 0 ||
+            (size_t)r.gltfMeshIndex >= sourceScene_.meshes.size())
             continue;
-        const tinygltf::Mesh& gm = model.meshes[size_t(r.gltfMeshIndex)];
+        const smvk::source::Mesh& gm = sourceScene_.meshes[size_t(r.gltfMeshIndex)];
         if (r.primitiveIndex < 0 || (size_t)r.primitiveIndex >= gm.primitives.size())
             continue;
-        const tinygltf::Primitive& prim = gm.primitives[size_t(r.primitiveIndex)];
+        const smvk::source::Primitive& prim = gm.primitives[size_t(r.primitiveIndex)];
         // The stream attached in getOrCreateMesh (BEFORE the meshopt pass)
         // already rode OptimizeMeshData's vertex remap, so it is in
         // FINAL vertex order - prefer it. The accessor-order pack is the
@@ -2689,7 +2766,7 @@ int GltfToSceneImporter::BuildSkinData() {
                 cluster.GetRetainedSkinStream(r.mesh);
             existing && !existing->empty()) {
             stream = *existing;
-        } else if (!PackVertexSkinStream(model, prim, stream)) {
+        } else if (!PackSourceSkinStream(prim, stream)) {
             std::cerr << "[Skin] mesh '" << gm.name
                       << "' has node.skin but no JOINTS_0/WEIGHTS_0"
                          " (skinned as static)"
@@ -2896,7 +2973,7 @@ size_t BuildFromMeshAsset(
     const smvk::assets::AssetManifest& manifest,
     const std::string& meshBaseUri,
     int ph,
-    const std::shared_ptr<GltfToSceneImporter::TextureSource>& textureSource,
+    const std::shared_ptr<SourceSceneImporter::TextureSource>& textureSource,
     bool autoKtx,
     GltfArtifactCache* artifactCache,
     const std::function<std::optional<std::vector<uint8_t>>(const std::string&)>& readSibling,
@@ -3304,7 +3381,7 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
         std::string resolved;
         std::string baseDir;
         bool manifestLoaded = false;
-        std::shared_ptr<GltfToSceneImporter::TextureSource> textureSource;
+        std::shared_ptr<SourceSceneImporter::TextureSource> textureSource;
     };
     std::map<std::string, MeshAssetCacheEntry> meshAssetCache;
     size_t successfulReferences = 0;

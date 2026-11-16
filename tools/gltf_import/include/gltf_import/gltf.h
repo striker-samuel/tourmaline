@@ -12,6 +12,7 @@
 #include <vector>
 
 #include <tiny_gltf.h>
+#include <gltf_import/source_scene.h>
 
 // ---------------------------------------------------------------------------
 // Artifact-cache hook (optional): the registry store adapter the
@@ -131,9 +132,9 @@ namespace smvk {
 using ::tour::TextureStreamer;
 }
 
-struct GltfToSceneImporter {
-    GltfToSceneImporter(smvk::Cluster& inCluster,
-                        const tinygltf::Model& inModel,
+struct SourceSceneImporter {
+    SourceSceneImporter(smvk::Cluster& inCluster,
+                        const smvk::source::Scene& inScene,
                         std::filesystem::path inGltfModelPath);
     void setTextureStreamer(smvk::TextureStreamer* streamer) {
         textureStreamer_ = streamer;
@@ -303,7 +304,7 @@ struct GltfToSceneImporter {
                                                       // coordFix basis (see importUnder)
     );
     smvk::Cluster& cluster;
-    const tinygltf::Model& model;
+    const smvk::source::Scene& sourceScene_;
     std::filesystem::path gltfModelPath;
     std::shared_ptr<TextureSource> textureSource;
     std::string modelUriBase;            // normalized VFS file part for asset URIs
@@ -396,6 +397,11 @@ extern bool (*UsdFileAsModel)(tinygltf::Model&,
                               const std::filesystem::path&,
                               std::vector<std::string>&);
 
+// Source adapter boundary: tinygltf types never reach native asset derivation.
+bool DecodeGltfSourceScene(const tinygltf::Model& input,
+                           smvk::source::Scene& output,
+                           std::string* error = nullptr);
+
 bool LoadModelFromSourceFile(tinygltf::Model& model,
                              const char* filename,
                              std::vector<std::string>* extraDeps = nullptr);
@@ -446,7 +452,7 @@ glm::mat4 GetNodeLocalTransform(const tinygltf::Node& n);
 // Host-file texture source (default importer behavior): reads
 // baseDir/imageUri from the host filesystem; identity is the normalized
 // host-relative path so asset URIs match the VFS layout 1:1.
-struct HostTextureSource final : GltfToSceneImporter::TextureSource {
+struct HostTextureSource final : SourceSceneImporter::TextureSource {
     explicit HostTextureSource(std::filesystem::path baseDir);
     std::optional<std::vector<uint8_t>> ReadBytes(const std::string& imageUri) override;
     std::string ResolveIdentity(const std::string& imageUri) const override;
@@ -515,7 +521,7 @@ bool ProbeTextureSource(const uint8_t* data, size_t size, TextureSourceInfo& out
 
 // VFS texture source (cooker path): reads through an OverlayVfs mounted
 // with the content tree; identity is the VFS path itself.
-struct VfsTextureSource final : GltfToSceneImporter::TextureSource {
+struct VfsTextureSource final : SourceSceneImporter::TextureSource {
     VfsTextureSource(const smvk::OverlayVfs* vfs, std::string vfsBaseDir);
     std::optional<std::vector<uint8_t>> ReadBytes(const std::string& imageUri) override;
     std::string ResolveIdentity(const std::string& imageUri) const override;
@@ -561,7 +567,7 @@ size_t BuildFromMeshAsset(
     const smvk::assets::AssetManifest& manifest,
     const std::string& meshBaseUri,
     int ph,
-    const std::shared_ptr<GltfToSceneImporter::TextureSource>& textureSource,
+    const std::shared_ptr<SourceSceneImporter::TextureSource>& textureSource,
     bool autoKtx,
     GltfArtifactCache* artifactCache,
     const std::function<std::optional<std::vector<uint8_t>>(const std::string&)>& readSibling,
@@ -645,7 +651,11 @@ inline void GltfToCluster(
     smvk::TextureStreamer* streamer =
         nullptr, // tail-resident uploads when set (see texture_streamer.h)
     GltfArtifactCache* artifactCache = nullptr) {
-    GltfToSceneImporter importer{out, inModel, inGltfModelPath};
+    smvk::source::Scene sourceScene;
+    std::string sourceError;
+    if (!DecodeGltfSourceScene(inModel, sourceScene, &sourceError))
+        return;
+    SourceSceneImporter importer{out, sourceScene, inGltfModelPath};
     importer.setMeshOptConfig(meshOpt);
     importer.setMeshletConfig(meshlets);
     importer.setArtifactCache(artifactCache);
@@ -669,28 +679,14 @@ inline void GltfToCluster(
     out.scene.localTransform[root] = glm::mat4(1.0f);
     out.scene.globalTransform[root] = glm::mat4(1.0f);
 
-    // Collect the glTF top-level node indices.
-    std::vector<int> gltfRoots;
-    if (inModel.defaultScene >= 0 && inModel.defaultScene < (int)inModel.scenes.size()) {
-        gltfRoots = inModel.scenes[inModel.defaultScene].nodes;
-    } else if (!inModel.scenes.empty()) {
-        gltfRoots = inModel.scenes.front().nodes;
-    } else {
-        // Fallback: a node is a root if it isn't referenced as anyone's child.
-        std::vector<bool> referenced(inModel.nodes.size());
-        for (const auto& n : inModel.nodes)
-            for (int c : n.children)
-                if (c >= 0 && c < (int)inModel.nodes.size())
-                    referenced[c] = true;
-        for (int i = 0; i < (int)inModel.nodes.size(); ++i)
-            if (!referenced[i])
-                gltfRoots.push_back(i);
-    }
+    // The source adapter owns selected-scene root semantics.
+    const auto& selectedRoots =
+        sourceScene.activeRoots.empty() ? sourceScene.roots : sourceScene.activeRoots;
 
     importer.preloadTextures();
 
-    for (int gltfNode : gltfRoots)
-        importer.import(gltfNode);
+    for (uint32_t sourceNode : selectedRoots)
+        importer.import(int(sourceNode));
     // importer.importNodeRecursive(gltfNode, root, 1);
 
     // SKIN post pass (the Northlight data path): the node walk recorded

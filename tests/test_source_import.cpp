@@ -266,6 +266,18 @@ void TestGlbBinary() {
     Check(LoadModelFromSourceFile(model, glb.string().c_str()), "import.glb-binary.parse");
     Check(model.meshes.size() == 1 && model.buffers.size() == 1, "import.glb-binary.model-shape");
 
+    smvk::source::Scene source;
+    std::string conversionError;
+    Check(DecodeGltfSourceScene(model, source, &conversionError),
+          "import.glb-binary.native-scene");
+    Check(conversionError.empty() && source.nodes.size() == 1 &&
+              source.meshes.size() == 1 && source.activeRoots == std::vector<uint32_t>{0},
+          "import.glb-binary.native-hierarchy");
+    Check(source.meshes[0].primitives.size() == 1 &&
+              source.meshes[0].primitives[0].vertices.size() == 3 &&
+              source.meshes[0].primitives[0].indices.size() == 3,
+          "import.glb-binary.native-geometry");
+
     smvk::assets::AssetManifest man;
     std::string err;
     smvk::assets::DeriveConfig cfg{};

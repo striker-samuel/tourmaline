@@ -1652,3 +1652,9 @@ add_executable(GpuSceneHlodTests test_gpu_scene_hlod.cpp)
 target_include_directories(GpuSceneHlodTests PRIVATE ${CMAKE_SOURCE_DIR}/engine/include)
 set_target_properties(GpuSceneHlodTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME gpu_scene_hlod_tests COMMAND GpuSceneHlodTests)
+
+# Native source scene validation: no GPU or importer execution required.
+add_executable(SourceSceneTests test_source_scene.cpp)
+target_link_libraries(SourceSceneTests PRIVATE gltf_import)
+set_target_properties(SourceSceneTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME source_scene_tests COMMAND SourceSceneTests)

@@ -1,0 +1,182 @@
+// Copyright (c) 2026 Samuel Martin
+// SPDX-License-Identifier: MIT
+#pragma once
+
+// Format-independent, CPU-owned scene representation for source asset import.
+// Source adapters decode into this representation. SourceSceneImporter and
+// DeriveNativeAssets consume it without depending on glTF/OBJ/USD parser types.
+// Packed runtime buffers, meshlets and cooked formats remain separate.
+#include <array>
+#include <optional>
+#include <cstdint>
+#include <limits>
+#include <string>
+#include <vector>
+#include <glm/glm.hpp>
+
+namespace smvk::source {
+
+inline constexpr uint32_t InvalidIndex = std::numeric_limits<uint32_t>::max();
+
+enum class AlphaMode { Opaque, Mask, Blend };
+
+// Resolved authoring texture reference. Image and texture tables are owned by
+// the source adapter; these indices are not GPU texture handles.
+struct TextureRef {
+    int textureIndex = -1;
+    int imageIndex = -1;
+    int samplerIndex = -1;
+    int texCoord = 0;
+    float scaleOrStrength = 1.0f;
+    [[nodiscard]] bool valid() const {
+        return textureIndex >= 0 && imageIndex >= 0;
+    }
+};
+
+struct Material {
+    std::string name;
+    std::array<double, 4> baseColorFactor{1.0, 1.0, 1.0, 1.0};
+    double metallicFactor = 1.0;
+    double roughnessFactor = 1.0;
+    std::optional<TextureRef> baseColorTex;
+    std::optional<TextureRef> metallicRoughnessTex;
+    std::optional<TextureRef> normalTex;
+    std::optional<TextureRef> occlusionTex;
+    std::optional<TextureRef> emissiveTex;
+    std::array<double, 3> emissiveFactor{0.0, 0.0, 0.0};
+    double emissiveStrength = 1.0;
+    bool unlit = false;
+    AlphaMode alphaMode = AlphaMode::Opaque;
+    double alphaCutoff = 0.5;
+    bool doubleSided = false;
+    bool castsShadows = true;
+    bool receiveContactShadows = true;
+    bool clothSheen = false;
+};
+
+struct Vertex {
+    glm::vec3 position{0.0f};
+    glm::vec3 normal{0.0f, 1.0f, 0.0f};
+    glm::vec4 tangent{1.0f, 0.0f, 0.0f, 1.0f};
+    glm::vec2 uv0{0.0f};
+    glm::vec2 uv1{0.0f};
+    glm::vec4 color{1.0f};
+    glm::uvec4 joints{0u};
+    glm::vec4 weights{1.0f, 0.0f, 0.0f, 0.0f};
+};
+
+struct Primitive {
+    std::vector<Vertex> vertices;
+    std::vector<uint32_t> indices;
+    int32_t material = -1;
+    glm::vec3 aabbMin{0.0f};
+    glm::vec3 aabbMax{0.0f};
+    bool hasNormals = false;
+    bool hasTangents = false;
+    bool hasUv0 = false;
+    bool hasUv1 = false;
+    bool hasColors = false;
+    bool hasSkinWeights = false;
+};
+
+struct Mesh {
+    std::string stableKey;
+    std::string name;
+    std::vector<Primitive> primitives;
+};
+
+struct Node {
+    std::string stableKey;
+    std::string name;
+    uint32_t parent = InvalidIndex;
+    std::vector<uint32_t> children;
+    glm::mat4 localTransform{1.0f};
+    int32_t mesh = -1;
+    int32_t skin = -1;
+    int32_t light = -1;
+    bool staticRoot = false;
+    bool noLightmap = false;
+    bool ditherCloseup = false;
+    bool staticLight = false;
+};
+
+// Joint indices address Scene::nodes, not glTF accessors or runtime node IDs.
+struct Image {
+    std::string uri;
+};
+
+struct Texture {
+    int32_t image = -1;
+    int32_t sampler = -1;
+};
+
+struct Sampler {
+    int magFilter = -1;
+    int minFilter = -1;
+    int wrapS = 10497;
+    int wrapT = 10497;
+};
+
+struct Skin {
+    std::string name;
+    std::vector<uint32_t> joints;
+    std::vector<glm::mat4> inverseBind;
+    int32_t skeleton = -1;
+};
+
+enum class LightType { Unknown, Directional, Point, Spot };
+struct Light {
+    std::string name;
+    LightType type = LightType::Unknown;
+    glm::vec3 color{1.0f};
+    float intensity = 1.0f;
+    float range = 0.0f;
+    float innerConeAngle = 0.0f;
+    float outerConeAngle = 0.0f;
+};
+
+enum class AnimationChannel { Translation, Rotation, Scale, Weights };
+enum class Interpolation { Linear, Step, CubicSpline };
+
+struct AnimationKey {
+    double time = 0.0;
+    glm::vec4 value{0.0f};
+};
+
+struct AnimationTrack {
+    uint32_t node = InvalidIndex;
+    AnimationChannel channel = AnimationChannel::Translation;
+    Interpolation interpolation = Interpolation::Linear;
+    std::vector<AnimationKey> keys;
+};
+
+struct Animation {
+    std::string name;
+    std::vector<AnimationTrack> tracks;
+};
+
+struct Dependency {
+    std::string relativePath;
+};
+
+struct Scene {
+    std::vector<Node> nodes;
+    std::vector<uint32_t> roots;
+    std::vector<uint32_t> activeRoots; // selected authored scene; empty means roots
+    std::vector<Mesh> meshes;
+    std::vector<Material> materials;
+    std::vector<Image> images;
+    std::vector<Texture> textures;
+    std::vector<Sampler> samplers;
+    std::vector<Skin> skins;
+    std::vector<Animation> animations;
+    std::vector<Light> lights;
+    std::vector<Dependency> dependencies;
+};
+
+// Validation is explicit and non-mutating: adapters must not silently
+// publish truncated triangles, dangling node links or invalid indices.
+// Returns false and fills error with the first reported invariant violation.
+bool Validate(const Scene& scene, std::string& error);
+
+} // namespace smvk::source
