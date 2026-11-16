@@ -1,7 +1,7 @@
 # Fetch the Tourmaline demo content - the rolling 'demo-content' GitHub
 # release carrying the cooked sponza_10 project (the .tapp runtime
-# manifest + its content-addressed .pak) - into a build's content/paks
-# directory.
+# manifest + its content-addressed .pak) and the Animated Knight
+# (knight.pak) - into a build's content/paks directory.
 #
 # Why a release and not the git tree: the demo pak is ~100 MB of cooked
 # binary content whose CONTENT-ADDRESSED name changes on every recook.
@@ -17,7 +17,8 @@
 #   5. removes STALE sponza_10-*.pak files left by earlier fetches
 #      (recooks change the content-addressed name; leaving the old pak
 #      behind would just accumulate dead weight - the .tapp only ever
-#      names the current one).
+#      names the current one). knight.pak is a FIXED name (overwritten
+#      in place), so it needs no stale-name cleanup.
 #
 # Invoked by the CMake `demo_content` target (which passes -Dest), or
 # directly:
@@ -25,11 +26,11 @@
 #   powershell ... -Dest out\build\x64-Release\content\paks
 #
 # The demo file set is deliberately explicit (sponza_10.tapp +
-# sponza_10-*.pak): the destination also hosts engine-shaders.pak and
-# the user's own cooked paks, so the install/cleanup NEVER touches
-# files it does not own. If the demo project ever changes identity,
-# update the patterns here and in fetch_demo_content.sh alongside the
-# release.
+# sponza_10-*.pak + knight.pak): the destination also hosts
+# engine-shaders.pak and the user's own cooked paks, so the
+# install/cleanup NEVER touches files it does not own. If a demo ever
+# changes identity, update the patterns here and in fetch_demo_content.sh
+# alongside the release.
 
 param(
   [string]$Dest = "",
@@ -58,14 +59,16 @@ try {
   Fail "could not query the '$Tag' release ($releaseUrl): $($_.Exception.Message). Check the network, or browse https://github.com/$Repo/releases/tag/$Tag and download the assets manually into '$Dest'."
 }
 
-# The demo assets: the manifest + the content-addressed pak, plus the
-# checksum manifest. Anything else on the release is ignored.
+# The demo assets: the sponza manifest + content-addressed pak, the
+# Animated Knight pak, plus the checksum manifest. Anything else on the
+# release is ignored.
 $assets = @($release.assets)
 $sumsAsset = $assets | Where-Object { $_.name -eq "SHA256SUMS.txt" }
 $contentAssets = @($assets | Where-Object {
-  $_.name -eq "sponza_10.tapp" -or $_.name -like "sponza_10-*.pak"
+  $_.name -eq "sponza_10.tapp" -or $_.name -like "sponza_10-*.pak" -or
+  $_.name -eq "knight.pak"
 })
-if ($contentAssets.Count -eq 0) { Fail "the '$Tag' release carries no demo assets (sponza_10.tapp / sponza_10-*.pak)." }
+if ($contentAssets.Count -eq 0) { Fail "the '$Tag' release carries no demo assets (sponza_10.tapp / sponza_10-*.pak / knight.pak)." }
 if (-not $sumsAsset)            { Fail "the '$Tag' release carries no SHA256SUMS.txt manifest - cannot verify downloads." }
 
 Write-Host "demo-content release '$($release.name)': downloading $($contentAssets.Count) file(s) to a temp dir..."
@@ -103,14 +106,19 @@ try {
   foreach ($a in $contentAssets) {
     Copy-Item (Join-Path $tmp $a.name) (Join-Path $Dest $a.name) -Force
   }
-  # Keep the repository's model provenance/license notice alongside the
+  # Keep the repository's model provenance/license notices alongside the
   # downloaded release assets (the rolling GitHub release currently carries
-  # only the pak, manifest and checksums).
+  # only the paks, manifest and checksums).
   $creditsSource = Join-Path (Split-Path $PSScriptRoot -Parent) "SPONZA-CREDITS.md"
   if (-not (Test-Path $creditsSource -PathType Leaf)) {
     Fail "SPONZA-CREDITS.md is missing from this checkout; cannot stage demo attribution."
   }
   Copy-Item -LiteralPath $creditsSource -Destination (Join-Path $Dest "SPONZA-CREDITS.md") -Force
+  $knightCreditsSource = Join-Path (Split-Path $PSScriptRoot -Parent) "KNIGHT-CREDITS.md"
+  if (-not (Test-Path $knightCreditsSource -PathType Leaf)) {
+    Fail "KNIGHT-CREDITS.md is missing from this checkout; cannot stage demo attribution."
+  }
+  Copy-Item -LiteralPath $knightCreditsSource -Destination (Join-Path $Dest "KNIGHT-CREDITS.md") -Force
   foreach ($stale in (Get-ChildItem $Dest -Filter "sponza_10-*.pak" -File)) {
     if ($keep -notcontains $stale.Name) {
       Write-Host "  removing stale demo pak: $($stale.Name)"
@@ -119,16 +127,19 @@ try {
   }
 
   $tapp = $contentAssets | Where-Object { $_.name -like "*.tapp" } | Select-Object -First 1
+  $knight = $contentAssets | Where-Object { $_.name -eq "knight.pak" } | Select-Object -First 1
   Write-Host ""
-  Write-Host "demo content installed into ${Dest} (credits: SPONZA-CREDITS.md):"
+  Write-Host "demo content installed into ${Dest} (credits: SPONZA-CREDITS.md + KNIGHT-CREDITS.md):"
   foreach ($a in $contentAssets) {
     Write-Host ("  {0}  ({1:N1} MB)" -f $a.name, ($a.size / 1MB))
   }
   if ($tapp) {
-    $relDest = [System.IO.Path]::GetFullPath($Dest)
     Write-Host ""
     Write-Host "run it from the build directory:"
     Write-Host "  App --project content/paks/$($tapp.name)"
+  }
+  if ($knight) {
+    Write-Host "  App --pak content/paks/knight.pak"
   }
 } finally {
   Remove-Item $tmp -Recurse -Force -ErrorAction SilentlyContinue

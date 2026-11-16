@@ -608,11 +608,13 @@ if(TOURMALINE_IS_TOP_LEVEL)
   add_subdirectory(tools/reference_scene) # CPU Embree reference scene renderer for Material Lab
   # Demo content fetch: downloads the rolling 'demo-content' GitHub
   # release (the cooked sponza_10 project - .tapp manifest + its
-  # content-addressed pak, SHA-256 verified, stale paks cleaned up)
-  # into THIS build's content/paks so the viewer can launch the demo
-  # scene right after a fresh checkout + build:
+  # content-addressed pak - and the Animated Knight's knight.pak,
+  # SHA-256 verified, stale paks cleaned up) into THIS build's
+  # content/paks so the viewer can launch the demos right after a fresh
+  # checkout + build:
   #   cmake --build <build-dir> --target demo_content
   #   App --project content/paks/sponza_10.tapp   (from the build dir)
+  #   App --pak content/paks/knight.pak
   # The ~100 MB cooked pak lives in the release, not the git tree (its
   # content-addressed name changes on every recook anyway - see
   # tools/fetch_demo_content.ps1 / .sh for the download + verify logic).
