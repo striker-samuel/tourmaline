@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-// Format-independent, CPU-owned source scene. Source adapters decode into this
-// representation; no glTF/OBJ/USD parser types or packed GPU structures live here.
-// Phase 1: the live glTF geometry path consumes Primitive through ToMeshData.
-// Materials, animation and source dispatch migrate in follow-up changes.
+// Format-independent, CPU-owned scene representation for source asset import.
+// Source adapters decode into this representation. SourceSceneImporter and
+// DeriveNativeAssets consume it without depending on glTF/OBJ/USD parser types.
+// Packed runtime buffers, meshlets and cooked formats remain separate.
 #include <array>
 #include <optional>
 #include <cstdint>
