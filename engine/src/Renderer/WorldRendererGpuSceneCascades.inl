@@ -69,6 +69,36 @@ if (s_gpuSceneShadows && m_gpuSceneRasterEnabled && m_gpuSceneDatabaseReady &&
         // have copied the entire compute push data.
         const auto tickets = m_gpuSceneSync.LeafTicketsFrame(m_gpuSceneDatabase);
         const glm::dvec3 origin(m_cameraPositioner.cameraPosition_);
+        // SHARED COARSE SELECTION (one pass, not four). A conservative union
+        // of the cascade frusta: the CSM boxes all sit within the split far
+        // of the shared origin, so a bounding box with that half-extent admits
+        // every caster any cascade can reach while still rejecting the distant
+        // leaves no cascade sees. The union only gates which leaves reach the
+        // GPU at all — each cascade keeps its own frustum test below, so
+        // off-camera casters survive the per-view cull.
+        float shadowFar = m_cascadeSplitsDbg[NUM_CASCADES];
+        if (!(shadowFar > 0.0f) || !std::isfinite(shadowFar))
+            shadowFar = CascadeFar();
+        const double cascadeRadius = double(shadowFar);
+        const tour::gpu_scene::RelativeFrustum unionFrustum{
+            origin,
+            {glm::dvec4(1.0, 0.0, 0.0, cascadeRadius),
+             glm::dvec4(-1.0, 0.0, 0.0, cascadeRadius),
+             glm::dvec4(0.0, 1.0, 0.0, cascadeRadius),
+             glm::dvec4(0.0, -1.0, 0.0, cascadeRadius),
+             glm::dvec4(0.0, 0.0, 1.0, cascadeRadius),
+             glm::dvec4(0.0, 0.0, -1.0, cascadeRadius)}};
+        const auto selectStart = std::chrono::steady_clock::now();
+        const auto selected = tour::gpu_scene::SelectPassedInstanceRangesFrame(
+            m_gpuSceneDatabase, tickets, unionFrustum,
+            tour::gpu_scene::CandidateMode::Frustum, 65536u, 1048560u);
+        const double selectMs =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - selectStart)
+                .count();
+        const auto prepStart = std::chrono::steady_clock::now();
+        // Capacity overflow is *never* clamped: use the proven direct
+        // path instead, so shadow coverage remains complete.
+        if (selected.Valid() && selected.candidateCount > 0) {
         for (uint32_t ci = 0; ci < NUM_CASCADES; ++ci) {
             const uint32_t sourceView = cascadeViewBase + ci;
             if (sourceView >= m_renderViews.Count())
@@ -79,13 +109,6 @@ if (s_gpuSceneShadows && m_gpuSceneRasterEnabled && m_gpuSceneDatabaseReady &&
                 continue;
             const auto frustum = tour::gpu_scene::LegacyRelativeFrustum(
                 m_renderViews.Get(sourceView), origin);
-            const auto selected = tour::gpu_scene::SelectPassedInstanceRangesFrame(
-                m_gpuSceneDatabase, tickets, frustum,
-                tour::gpu_scene::CandidateMode::Frustum, 65536u, 1048560u);
-            // Capacity overflow is *never* clamped: use the proven direct
-            // path instead, so shadow coverage remains complete.
-            if (!selected.Valid() || selected.candidateCount == 0)
-                continue;
             auto& validator = m_gpuSceneCascadeValidators[ci];
             tour::gpu_scene::InstanceCullGpuPush cull{};
             tour::gpu_scene::CompactCountPush count{};
@@ -248,6 +271,16 @@ if (s_gpuSceneShadows && m_gpuSceneRasterEnabled && m_gpuSceneDatabaseReady &&
                     cmd.Dispatch((raster.commandCapacity + 127u) / 128u, 1, 1);
                 });
             validator.MarkDispatched(flight);
+        }
+        }
+        const double prepMs =
+            std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - prepStart)
+                .count();
+        if (m_frameCounter % 60 == 0) {
+            std::fprintf(stderr,
+                         "[GpuSceneShadow] coarse %.3f ms (%u candidates, radius %.1f m) | "
+                         "prep %.3f ms\n",
+                         selectMs, selected.candidateCount, shadowFar, prepMs);
         }
     }
 }
