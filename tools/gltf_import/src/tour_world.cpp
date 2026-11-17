@@ -33,6 +33,8 @@ std::unique_ptr<BuiltWorld> BuildWorldFromDoc(const smvk::tour::Doc& doc,
     cluster->SetOfflineMode(true);
     addNode(cluster->scene, -1, 0); // empty scene root
     size_t refsApplied = 0;
+    std::vector<std::unique_ptr<smvk::Cluster>> partClusters;
+    std::vector<std::string> partNames;
     if (!doc.references.empty()) {
         const std::string ownerBase = smvk::vfs::BaseDir(doc.references[0].source);
         refsApplied = ApplySceneReferences(*cluster,
@@ -54,9 +56,13 @@ std::unique_ptr<BuiltWorld> BuildWorldFromDoc(const smvk::tour::Doc& doc,
                                            nullptr /* outImages */,
                                            opt.contentDir /* contentRoot — project-relative
                                                              sources resolve against the project
-                                                             tree, not the tool's own CWD copy */);
+                                                             tree, not the tool's own CWD copy */
+                                           ,
+                                           &partClusters,
+                                           &partNames);
         tool::out() << "Definition: bound " << refsApplied << " reference subtree(s) ("
-                    << doc.references.size() << " top-level)\n";
+                    << doc.references.size() << " top-level, " << partClusters.size()
+                    << " partitioned part cluster(s))\n";
     }
     // Texture-asset POOL imports (ordered; see the tour's textureAsset
     // records): replayed BEFORE the material records (a material tex
@@ -141,6 +147,12 @@ std::unique_ptr<BuiltWorld> BuildWorldFromDoc(const smvk::tour::Doc& doc,
     built->refsApplied = refsApplied;
     built->refsTopLevel = doc.references.size();
     world->RegisterCluster(std::move(cluster));
+    // Partitioned-family part clusters (P1): registered BESIDE the main
+    // cluster; the world folds them into one merged scene. The parts'
+    // names ride the partNames vector (parallel) but the World merge does
+    // not need them (registration order is the scene order).
+    for (auto& part : partClusters)
+        world->RegisterCluster(std::move(part));
     built->world = std::move(world);
     tool::out() << "Tour replayed: " << built->commands << " commands\n";
     return built;

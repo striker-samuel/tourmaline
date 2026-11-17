@@ -654,7 +654,16 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
                             // dir carries one — instead of the project's cooked .geometry:
                             // meshlets/LOD siblings went missing and every tour pak shipped a
                             // stale scene). Absolute sources and the vfs mode are unaffected.
-                            const std::string& contentRoot = std::string());
+                            const std::string& contentRoot = std::string(),
+                            // PARTITIONED-FAMILY OUTPUT (P1): a reference whose manifest is a
+                            // partitioned family (geometry.<part> rows) builds each part into
+                            // its OWN bounded cluster instead of the caller's cluster. Those
+                            // clusters are APPENDED here (parallel with outPartSceneNames) for
+                            // the caller to serialize/register beside the main cluster — the
+                            // authoring layer stays agnostic of the parts. Null = the legacy
+                            // single-cluster behavior (every reference lands in `cluster`).
+                            std::vector<std::unique_ptr<smvk::Cluster>>* outPartClusters = nullptr,
+                            std::vector<std::string>* outPartSceneNames = nullptr);
 
 inline void GltfToCluster(
     smvk::ResourceManager& ctx,

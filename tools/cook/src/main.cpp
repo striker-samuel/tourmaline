@@ -4509,6 +4509,10 @@ int Run(const CookArgs& c) {
             auto cluster = std::make_unique<smvk::Cluster>(nullptr);
             cluster->SetOfflineMode(true);
             addNode(cluster->scene, -1, 0); // empty scene root
+            // Partitioned-family part clusters (P1): appended beside the main
+            // cluster; write-back stamps a .cooked marker per part artifact.
+            std::vector<std::unique_ptr<smvk::Cluster>> partClusters;
+            std::vector<std::string> partNames;
             if (!tour.references.empty()) {
                 const std::string ownerBase = smvk::vfs::BaseDir(tour.references[0].source);
                 const size_t applied =
@@ -4529,9 +4533,12 @@ int Run(const CookArgs& c) {
                                          artifactCache,
                                          nullptr,
                                          nullptr,
-                                         /*contentRoot=*/args.contentDir);
+                                         /*contentRoot=*/args.contentDir,
+                                         &partClusters,
+                                         &partNames);
                 tool::out() << "Definition: bound " << applied << " reference subtree(s) ("
-                            << tour.references.size() << " top-level)\n";
+                            << tour.references.size() << " top-level, " << partClusters.size()
+                            << " partitioned part cluster(s))\n";
             }
             // Texture-asset POOL imports (ordered; see the tour's
             // textureAsset records): replayed BEFORE the material records
@@ -4624,6 +4631,11 @@ int Run(const CookArgs& c) {
                         << args.tour << "\n";
             sceneNames.push_back("scene");
             sceneClusters.push_back(std::move(cluster));
+            for (size_t pi = 0; pi < partClusters.size(); ++pi) {
+                sceneNames.push_back(pi < partNames.size() ? partNames[pi]
+                                                           : ("scene_part" + std::to_string(pi)));
+                sceneClusters.push_back(std::move(partClusters[pi]));
+            }
         }
     } else {
         // No tour: ARTIFACT cook — the POSITIONAL artifact list (the

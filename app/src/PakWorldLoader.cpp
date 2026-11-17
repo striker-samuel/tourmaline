@@ -474,15 +474,22 @@ tour::mem::LinearPtr<tour::World> LoadProjectWorld(std::vector<PakPreload> prelo
     {
         SMVK_PROFILE_IO("ProjectWorld_LoadCluster");
         try {
-            world->LoadClusterFromPak(
-                ctx, reader, uint32_t(entryIdx), sceneStreamer, entry.image, &resolver);
+            // Load EVERY scene in the entry pak: the entry scene (the main
+            // cluster) + any partitioned-family part scenes. Each scene is
+            // one cluster; PostLoadTail's ResolveAndFixup_clusters folds
+            // them into the single merged world scene. The authoring layer
+            // never sees the partition (the parts resolve here at load).
+            for (size_t i = 0; i < scenes.size(); ++i) {
+                world->LoadClusterFromPak(
+                    ctx, reader, uint32_t(i), sceneStreamer, entry.image, &resolver);
+            }
         } catch (const std::exception& e) {
             std::cerr << "[App] project pak load failed: " << e.what() << "\n";
             ctx.WaitForUploads();
             return nullptr;
         }
     }
-    std::cerr << "[App] project cluster loaded\n";
+    std::cerr << "[App] project clusters loaded (" << scenes.size() << " scene(s))\n";
     PostLoadTail(*world, StemOf(entry.scenePak), *session);
     return world;
 }

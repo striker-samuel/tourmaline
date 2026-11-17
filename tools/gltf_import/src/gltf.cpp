@@ -3375,7 +3375,9 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
                             GltfArtifactCache* artifactCache,
                             GltfGuidResolver* guidResolver,
                             std::vector<GltfImportImage>* outImages,
-                            const std::string& contentRoot) {
+                            const std::string& contentRoot,
+                            std::vector<std::unique_ptr<smvk::Cluster>>* outPartClusters,
+                            std::vector<std::string>* outPartSceneNames) {
     (void)ctx;
     auto issue = [&](const std::string& msg) {
         if (outIssues)
@@ -3487,6 +3489,70 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
             bool haveRefTour = false;
             std::string refTourDir;
             std::string modelSource = r.source;
+            // PARTITIONED-FAMILY state (P1): when the referenced .geometry
+            // is a partitioned family (its manifest carries geometry.<part>
+            // rows), the parts are built into SEPARATE clusters (outPart
+            // Clusters) instead of the caller's cluster. Empty = unsplit.
+            std::vector<std::string> partFiles;
+            std::string partitionDir; // the resolved district dir (manifest home)
+            smvk::assets::AssetManifest partitionManifest; // the shared family manifest
+            bool partitioned = false;
+            // Resolve the SOURCE-IDENTITY manifest sidecar (<stem>.<ext>.meta)
+            // for a .geometry reference — the partition detection + the shared
+            // material table. Tries the known source extensions (USD first)
+            // under the same candidate base dirs as the .geometry resolution.
+            auto loadFamilyManifest = [&](const std::string& source)
+                -> std::optional<std::pair<smvk::assets::AssetManifest, std::string>> {
+                std::string stem = fileNameOf(source);
+                const size_t gdot = stem.rfind(".geometry");
+                const size_t mdot = stem.rfind(".mesh");
+                if (gdot != std::string::npos)
+                    stem = stem.substr(0, gdot);
+                else if (mdot != std::string::npos)
+                    stem = stem.substr(0, mdot);
+                std::vector<std::string> dirs;
+                const std::string srcDir = baseDirOf(source);
+                if (!srcDir.empty())
+                    dirs.push_back(srcDir);
+                if (!contentRoot.empty() && std::filesystem::path(source).is_relative())
+                    dirs.push_back((std::filesystem::path(contentRoot) / source)
+                                       .parent_path()
+                                       .generic_string());
+                if (!cur.baseDir.empty() && cur.baseDir != srcDir)
+                    dirs.push_back(cur.baseDir);
+                if (!refTourDir.empty() && refTourDir != cur.baseDir)
+                    dirs.push_back(refTourDir);
+                static const char* kMetaExts[] = {
+                    ".usd", ".usda", ".usdc", ".usdz", ".gltf", ".glb", ".obj"};
+                for (const std::string& dir : dirs) {
+                    if (dir.empty())
+                        continue;
+                    for (const char* ext : kMetaExts) {
+                        const std::string metaRel = stem + ext + ".meta";
+                        std::optional<std::vector<uint8_t>> metaBytes;
+                        if (vfs) {
+                            const std::string mp = smvk::vfs::Join(dir, metaRel);
+                            if (vfs->Exists(mp))
+                                metaBytes = vfs->TryRead(mp);
+                        } else {
+                            std::ifstream in(std::filesystem::path(dir) / metaRel,
+                                             std::ios::binary);
+                            if (in)
+                                metaBytes =
+                                    std::vector<uint8_t>((std::istreambuf_iterator<char>(in)),
+                                                         std::istreambuf_iterator<char>());
+                        }
+                        if (metaBytes && !metaBytes->empty()) {
+                            smvk::assets::AssetManifest m;
+                            std::string merr;
+                            smvk::assets::LoadAssetManifestText(
+                                std::string(metaBytes->begin(), metaBytes->end()), m, merr);
+                            return std::make_pair(std::move(m), dir);
+                        }
+                    }
+                }
+                return std::nullopt;
+            };
             // GUID-FIRST resolution (asset identity survives moves/
             // renames): the injected resolver maps the source file's
             // .meta GUID to its CURRENT path. Unknown/invalid GUID or
@@ -3732,7 +3798,31 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
                             ++geometryCacheMisses;
                         }
                     }
-                    if (!meshLoaded) {
+                    // PARTITIONED-FAMILY detection (P1): the logical .geometry
+                    // is ABSENT (only <stem>_partN.geometry files exist beside
+                    // a <stem>.usd.meta manifest). Detect via the manifest
+                    // sidecar; the parts build into SEPARATE clusters below.
+                    if (!meshLoaded && meshResolved.empty() && isGeometry && outPartClusters) {
+                        if (auto fam = loadFamilyManifest(modelSource)) {
+                            partitionManifest = std::move(fam->first);
+                            const std::string famDir = fam->second;
+                            if (smvk::assets::IsPartitionedFamily(partitionManifest)) {
+                                partFiles = smvk::assets::GeometryPartFiles(partitionManifest);
+                                if (!partFiles.empty()) {
+                                    partitioned = true;
+                                    partitionDir = famDir;
+                                    // The district dir stands in for the (absent)
+                                    // .geometry: the cycle guard + resolved-source
+                                    // record stay unique per district.
+                                    resolved = partitionDir;
+                                    baseDir = partitionDir;
+                                    ok = true;
+                                    noteResolved(partitionDir);
+                                }
+                            }
+                        }
+                    }
+                    if (!meshLoaded && !partitioned) {
                         // LOUD skip — never a glTF fallback (the glTF is
                         // import-only; see the header note above): a
                         // missing/corrupt .geometry means the source was
@@ -3819,30 +3909,38 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
             // Placeholder group node under the recorded parent (level-space
             // parent resolved to owner space above). Root references
             // anchor at the scene root instead (ph stays 0 — the
-            // subtree offset math below keeps working).
+            // subtree offset math below keeps working). A PARTITIONED
+            // reference builds its parts into separate clusters, so its
+            // placeholder + transform move to each part cluster's root.
             const int parentNode =
                 isRoot ? 0 : ((pRaw < uint64_t(cluster.scene.hierarchy.size())) ? int(pRaw) : 0);
             const int level = cluster.scene.hierarchy[size_t(parentNode)].level + 1;
             int ph = 0; // root anchor: the scene root node
+            glm::mat4 refTransform(1.0f);
             std::string name =
                 r.name.empty() ? std::filesystem::path(resolved).stem().string() : r.name;
             if (!isRoot) {
-                ph = addNode(cluster.scene, parentNode, level);
-                setNodeName(cluster.scene, ph, "REF " + name, /*dedupe=*/false);
                 if (r.hasTranslate || r.hasRotate || r.hasScale) {
-                    // Each occurrence gets its OWN placeholder frame. The
-                    // referenced scene's local transforms remain unchanged.
-                    glm::mat4 m(1.0f);
+                    // Each occurrence gets its OWN frame. The referenced
+                    // scene's local transforms remain unchanged.
                     if (r.hasTranslate)
-                        m = glm::translate(m, r.translate);
+                        refTransform = glm::translate(refTransform, r.translate);
                     if (r.hasRotate) {
-                        m = glm::rotate(m, glm::radians(r.rotate.x), glm::vec3(1, 0, 0));
-                        m = glm::rotate(m, glm::radians(r.rotate.y), glm::vec3(0, 1, 0));
-                        m = glm::rotate(m, glm::radians(r.rotate.z), glm::vec3(0, 0, 1));
+                        refTransform =
+                            glm::rotate(refTransform, glm::radians(r.rotate.x), glm::vec3(1, 0, 0));
+                        refTransform =
+                            glm::rotate(refTransform, glm::radians(r.rotate.y), glm::vec3(0, 1, 0));
+                        refTransform =
+                            glm::rotate(refTransform, glm::radians(r.rotate.z), glm::vec3(0, 0, 1));
                     }
                     if (r.hasScale)
-                        m = glm::scale(m, r.scale);
-                    cluster.scene.localTransform[size_t(ph)] = m;
+                        refTransform = glm::scale(refTransform, r.scale);
+                }
+                if (!partitioned) {
+                    ph = addNode(cluster.scene, parentNode, level);
+                    setNodeName(cluster.scene, ph, "REF " + name, /*dedupe=*/false);
+                    if (r.hasTranslate || r.hasRotate || r.hasScale)
+                        cluster.scene.localTransform[size_t(ph)] = refTransform;
                 }
             }
             if (cur.depth == 0 && outPlaceholderNodes)
@@ -3872,18 +3970,31 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
                     else if (mdotLegacy != std::string::npos)
                         stem = stem.substr(0, mdotLegacy);
                     const std::string meshDir = baseDirOf(resolved);
-                    const std::string metaRel = stem + ".gltf.meta";
+                    // The manifest is the SOURCE's identity ledger
+                    // (<stem>.<ext>.meta); the resolution only knows the
+                    // .geometry stem, so try the known source extensions
+                    // (USD first, then glTF/GLB/OBJ).
+                    static const char* kMetaExts[] = {
+                        ".usd", ".usda", ".usdc", ".usdz", ".gltf", ".glb", ".obj"};
                     std::optional<std::vector<uint8_t>> metaBytes;
-                    if (vfs) {
-                        const std::string mp = smvk::vfs::Join(meshDir, metaRel);
-                        if (vfs->Exists(mp))
-                            metaBytes = vfs->TryRead(mp);
-                    } else {
-                        std::ifstream in(std::filesystem::path(meshDir) / metaRel,
-                                         std::ios::binary);
-                        if (in)
-                            metaBytes = std::vector<uint8_t>((std::istreambuf_iterator<char>(in)),
-                                                             std::istreambuf_iterator<char>());
+                    for (const char* ext : kMetaExts) {
+                        const std::string metaRel = stem + ext + ".meta";
+                        if (vfs) {
+                            const std::string mp = smvk::vfs::Join(meshDir, metaRel);
+                            if (vfs->Exists(mp)) {
+                                metaBytes = vfs->TryRead(mp);
+                                break;
+                            }
+                        } else {
+                            std::ifstream in(std::filesystem::path(meshDir) / metaRel,
+                                             std::ios::binary);
+                            if (in) {
+                                metaBytes =
+                                    std::vector<uint8_t>((std::istreambuf_iterator<char>(in)),
+                                                         std::istreambuf_iterator<char>());
+                                break;
+                            }
+                        }
                     }
                     if (metaBytes && !metaBytes->empty()) {
                         std::string merr;
@@ -3948,6 +4059,113 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
                     builtFromMesh = true;
                     createdReferenceNodes += built;
                 }
+            } else if (partitioned) {
+                // PARTITIONED-FAMILY build (P1): each part imports into its OWN
+                // bounded cluster (the per-cluster mesh bound is a hard
+                // invariant). The parts share the family manifest (materials)
+                // and the district's texture/material sidecars; the caller
+                // serializes/registers them beside the main cluster.
+                const std::string relPartDir =
+                    std::filesystem::path(modelSource).parent_path().generic_string();
+                std::shared_ptr<SourceSceneImporter::TextureSource> texSrc;
+                if (vfs)
+                    texSrc = std::make_shared<VfsTextureSource>(vfs, partitionDir);
+                else
+                    texSrc =
+                        std::make_shared<HostTextureSource>(std::filesystem::path(partitionDir));
+                auto readSibling =
+                    [&](const std::string& file) -> std::optional<std::vector<uint8_t>> {
+                    if (vfs) {
+                        const std::string p = smvk::vfs::Join(partitionDir, file);
+                        if (vfs->Exists(p))
+                            return vfs->TryRead(p);
+                        return std::nullopt;
+                    }
+                    std::ifstream in(std::filesystem::path(partitionDir) / file, std::ios::binary);
+                    if (!in)
+                        return std::nullopt;
+                    return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)),
+                                                std::istreambuf_iterator<char>());
+                };
+                bool anyPartBuilt = false;
+                for (size_t pi = 0; pi < partFiles.size(); ++pi) {
+                    const std::string& partFile = partFiles[pi];
+                    std::optional<std::vector<uint8_t>> partBytes;
+                    std::string partResolved;
+                    if (vfs) {
+                        const std::string p = smvk::vfs::Join(partitionDir, partFile);
+                        if (vfs->Exists(p)) {
+                            partBytes = vfs->TryRead(p);
+                            partResolved = p;
+                        }
+                    } else {
+                        std::filesystem::path hp = std::filesystem::path(partitionDir) / partFile;
+                        std::ifstream in(hp, std::ios::binary);
+                        if (in) {
+                            partBytes = std::vector<uint8_t>((std::istreambuf_iterator<char>(in)),
+                                                             std::istreambuf_iterator<char>());
+                            partResolved = hp.generic_string();
+                        }
+                    }
+                    if (!partBytes || partBytes->empty()) {
+                        const std::string m =
+                            "[References] partitioned part '" + partFile + "' missing (skipped)";
+                        std::cerr << m << "\n";
+                        issue(m);
+                        ++warnings;
+                        continue;
+                    }
+                    smvk::assets::MeshAsset partAsset;
+                    std::string partErr;
+                    if (!smvk::assets::LoadMeshAssetBytes(
+                            partBytes->data(), partBytes->size(), partAsset, partErr)) {
+                        const std::string m = "[References] partitioned part '" + partFile +
+                                              "' unparseable: " + partErr + " (skipped)";
+                        std::cerr << m << "\n";
+                        issue(m);
+                        ++warnings;
+                        continue;
+                    }
+                    auto partCluster = std::make_unique<smvk::Cluster>(nullptr);
+                    partCluster->SetOfflineMode(true);
+                    partCluster->scene.namesStripped = cluster.scene.namesStripped;
+                    addNode(partCluster->scene, -1, 0); // part scene root
+                    // The reference frame (identity for root references)
+                    // anchors the part's whole subtree.
+                    partCluster->scene.localTransform[0] = refTransform;
+                    const std::string partBaseUri =
+                        (relPartDir.empty() ? partFile : relPartDir + "/" + partFile);
+                    const size_t built = BuildFromMeshAsset(*partCluster,
+                                                            streamer,
+                                                            partAsset,
+                                                            partitionManifest,
+                                                            partBaseUri,
+                                                            0 /* ph = part root */,
+                                                            texSrc,
+                                                            autoKtx,
+                                                            artifactCache,
+                                                            readSibling,
+                                                            nullptr /* no cross-part reuse */,
+                                                            partResolved);
+                    if (built == 0) {
+                        const std::string m = "[References] partitioned part '" + partFile +
+                                              "' built 0 nodes (skipped)";
+                        std::cerr << m << "\n";
+                        issue(m);
+                        ++warnings;
+                        continue;
+                    }
+                    anyPartBuilt = true;
+                    createdReferenceNodes += built;
+                    // Finalize like the main cluster's tail pass.
+                    RebuildStaticCache(partCluster->scene);
+                    recalculateGlobalTransforms(partCluster->scene);
+                    if (outPartClusters)
+                        outPartClusters->push_back(std::move(partCluster));
+                    if (outPartSceneNames)
+                        outPartSceneNames->push_back(name + "_part" + std::to_string(pi));
+                }
+                builtFromMesh = anyPartBuilt;
             }
             if (!builtFromMesh) {
                 // The ONLY path is the artifact build (above): a zero node
@@ -4024,7 +4242,7 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
             // 'outer:inner:name'. Runs AFTER the source tour's replay: its
             // verify-names and its own wide overrides matched the
             // un-prefixed names.
-            if (!isRoot && !cluster.scene.namesStripped) {
+            if (!isRoot && !partitioned && !cluster.scene.namesStripped) {
                 const std::string ns =
                     cur.nsPrefix + (r.nameSpace.empty() ? name : r.nameSpace) + ":";
                 std::vector<uint32_t> stack;
@@ -4061,7 +4279,7 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
             smvk::tour::Doc siblingTour;
             if (haveRefTour) {
                 nestedDoc = &refTour;
-            } else if (!isRoot) {
+            } else if (!isRoot && !partitioned) {
                 const std::string tourPath = ReferenceTourPathFor(std::filesystem::path(resolved));
                 std::string tourText;
                 if (ReadTourTextAt(tourPath, vfs, tourText)) {
