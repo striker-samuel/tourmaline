@@ -18,16 +18,6 @@
 #include "gfxfilter.hlsli"
 #include "gpu_platform.hlsli"
 
-// The ordinary direct VS contains no optional lightmap heap reference.
-// Compile a separate opt-in variant for static baked geometry only.
-#if defined(DIRECT_LIGHTMAP_PASS)
-#include "lightmap_pull.hlsli"
-#ifndef TOURMALINE_DXIL
-[[vk::binding(7, 0)]] ByteAddressBuffer g_vertexLightmapHeap;
-#endif
-#define DIRECT_LM_PULL_MAGIC 0x4C4D5055u
-#endif
-
 struct DefaultVsPush
 {
     float4x4 model;
@@ -54,11 +44,11 @@ struct DefaultVsPush
     GPU_PTR_READ(RenderViewBuffer) renderViews;
     uint mainRenderView;
     uint renderViewIndex;
-    // Per-mesh chart tail (pushed at byte 192 per mesh; hasXforms == 0,
-    // the zeroed-scratch default, selects the passthrough below).
-    uint hasXforms;
-    uint chartOffset;
-    GPU_PTR_READ(GfxChartXforms) lmXforms;
+    // Reserved chart tail (lightmaps retired; pushed at byte 192, always
+    // zero). Kept for layout identity with the scene push.
+    uint reservedHasXforms;
+    uint reservedChartOffset;
+    uint64_t reservedLmXforms;
     // Byte 240 = PushConstants::padEnd_.x (the per-draw overlay scratch's
     // last word; the motion tail 192..240 stops short of it): the DIRECT
     // legs' per-draw dither-on-closeup flag (Scene::ditherCloseup — the
@@ -72,14 +62,7 @@ struct DefaultVsPush
     uint skinned;      // 208: 1 = fetch from the deformed heap
     uint deformedBase; // 212: the skinned span's heap-id base
     GPU_PTR_READ(GfxSkinDeformedHeap) vsDeformed; // 216: the frame's deformed heap
-#if defined(DIRECT_LIGHTMAP_PASS)
-    uint lmDelta;      // 224: wrapping optional-stream offset
-    uint lmChunk;      // 228: cooked SG lobe class
-    uint lmMagic;      // 232: 'LMPU' validity check
-    uint lmPad;        // 236
-#else
-    uint4 _padSkin;    // 224..240: unchanged ordinary direct VS
-#endif
+    uint4 _padSkin;    // 224..240 (lightmaps retired: was the DIRECT_LIGHTMAP_PASS tail)
     uint ditherCloseup; // 240
     // Byte 244 = PushConstants::padEnd_.y: the DIRECT legs' per-draw
     // RESOLVED material userdata (docs/shader_library_design.md Phase A
@@ -201,23 +184,10 @@ VSOut mainVS(VSIn IN)
     // material carries layerMaterials (see default_lit.frag.hlsl).
     OUT.color = IN.color;
     OUT.uv = IN.uv;
-    // Ordinary direct VS has zero chart-related fetches/branches;
-    // the opt-in static lightmap variant alone evaluates this path.
+    // Lightmaps retired: the FS lightmap paths gate off on the sentinel.
     OUT.lightmapUv = float2(0.0f, 0.0f);
     OUT.lmChunk = 0xFFFFFFFFu;
     OUT.meshMaterial = pcDB.materialId;
-#if defined(DIRECT_LIGHTMAP_PASS) && !defined(TOURMALINE_DXIL)
-    if (pcDB.skinned == 0u && pcDB.hasXforms != 0u
-        && pcDB.lmMagic == DIRECT_LM_PULL_MAGIC
-        && pcDB.lmChunk != LM_PULL_NO_LOBES) {
-        const uint2 words = LightmapPullLoadWords(g_vertexLightmapHeap,
-            IN.vertexID, pcDB.lmDelta);
-        const LightmapPullVertex chart = DecodeLightmapPullVertex(words);
-        OUT.lightmapUv = GfxLightmapUv(chart.chartUv, chart.chartId,
-            pcDB.chartOffset, pcDB.lmXforms);
-        OUT.lmChunk = pcDB.lmChunk;
-    }
-#endif
 
     // Dither-on-closeup per-draw flag (byte 240 of this push — see the
     // struct tail above; the direct legs push it per draw).

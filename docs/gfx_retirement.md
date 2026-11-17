@@ -269,14 +269,28 @@ Commit subjects follow the plan; the deltas are marked.
     draw + buffer-hint wiring in WorldRenderer. Normal-cone culling
     data (`gfxskinbounds`, `ClusterConstants` cones, the meshlet-debug
     heat mode) is preserved.
-  - **Record (lightmaps — pending)**: the lightmap surface
-    (`Draw::lmChunk/lmChartOffset/lmDelta`, `LmChartXform`,
-    `UvFlatVsPushTail`/`DirectLightmapPullTail`, `GfxRenderer::
-    EnsureChartXforms`, `default_lightmap.vert.hlsl`,
-    `GI/lightmap.h`, `test_lightmap_pull.cpp`, editor lm-export) is the
-    next deletion in this epoch.
-  - **Gates**: 7-test GFX subset green + `App` links (after the
-    cone-debug removal).
+  - **Record (lightmaps — done)**: deleted the runtime lightmap surface
+    end-to-end — `default_lightmap.vert.hlsl`, `lightmap_pull.hlsli` and
+    `lightmap_pull.h` (plus the `DIRECT_LIGHTMAP_PASS` blocks and the
+    lightmap-pull fetch in `default.vert.hlsl`), the `GfxChartXforms`/
+    `GfxLightmapHeap`/`GfxLightmapUv` HLSL types, the pure-lightmap push
+    types (`LmChartXform`, `UvFlatVsPushTail`, `DirectLightmapPullTail`
+    + the `kUvFlatVsPushOffset`/`kDirectLightmapPull*` constants), the
+    `GfxRenderer::EnsureChartXforms` chart-transform upload, the
+    WorldRenderer direct-LM path (`vertLightmapShader`,
+    `directLmEligible`/`directLmProgram`/`withLightmap`), the editor
+    chart-xform upload + `chartTail` param, and `test_lightmap_pull.cpp`
+    + the `contract.uvflat`/`contract.tail-lmxforms` pins. The in-layout
+    lightmap words (`Draw::reservedMiscW/reservedMisc2X/reservedMisc2W`,
+    `FilteredVsPush::reservedLmXforms`, `GfxMeshParams::reservedLightmap/
+    reservedLmXforms`, `MaterialRange::reserved`, and their HLSL mirrors)
+    are kept as reserved stride padding to preserve the pinned
+    112/48/240-byte layouts. The cook/import `StaticMesh::lmChunk` +
+    `World::lmChartTable` data remains serialized as a retired no-op
+    (loading already drops it), pending a follow-up magic bump.
+  - **Gates**: 8-test subset green (architecture/rendergraph-contract/
+    gpu_scene_{world,lod,candidates,validation}/asset/world-entity);
+    text integrity 8/8; engine + shaders + Editor + App link clean.
 - 07 — `refactor(gfx): direct/skinned rendering isolation` — skinned
   direct path independent of GfxFilter; uses shared visibility.
 - 08 — `refactor(gfx): delete legacy GeometryFX architecture` —

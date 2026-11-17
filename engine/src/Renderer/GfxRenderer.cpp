@@ -550,38 +550,6 @@ static void DumpCullBaseline(smvk::gfx::State& s,
     std::fprintf(stderr, "[CullDump] wrote %s (%u draws, %u visible)\n", name, drawCount, visible);
 }
 
-uint64_t GfxRenderer::EnsureChartXforms(smvk::World& world, smvk::ResourceManager& ctx) {
-    // A new world can have the same revision as an older one. Never
-    // reuse chart data uploaded for a different scene.
-    const bool tableChanged = lmXformsWorld_ != &world || world.lmChartVersion != lmXformsVersion_;
-    if (!tableChanged && !lmXformsBuf_.empty())
-        return lmXformsAddr_;
-    lmXformsWorld_ = &world;
-    lmXformsVersion_ = world.lmChartVersion;
-    const size_t count = std::max<size_t>(world.lmChartTable.size(), 1);
-    const size_t bytes = count * sizeof(glm::vec4);
-    // Allocate a fresh buffer when chart data changes. In-place uploads
-    // can overwrite transforms still read by in-flight GPU frames.
-    // The prior holder retires through the resource manager.
-    if (tableChanged || lmXformsBuf_.empty() || lmXformsCap_ < bytes) {
-        lmXformsBuf_ = ctx.CreateBuffer(bytes, smvk::BufferType_Storage, "lm chart xforms");
-        lmXformsCap_ = bytes;
-    }
-    if (lmXformsBuf_.empty()) {
-        lmXformsAddr_ = 0;
-        return 0;
-    }
-    if (!world.lmChartTable.empty()) {
-        ctx.UploadDataToBuffer(lmXformsBuf_,
-                               world.lmChartTable.data(),
-                               bytes,
-                               smvk::PipelineStage(smvk::PipelineStageBit_Vertex),
-                               smvk::AccessFlags::ShaderRead);
-    }
-    lmXformsAddr_ = ctx.GetBufferDeviceAddress(lmXformsBuf_);
-    return lmXformsAddr_;
-}
-
 void GfxRenderer::DumpHzb(smvk::ResourceManager& ctx, uint32_t slot) {
     smvk::gfx::DumpHzb(gfx, ctx, slot);
 }

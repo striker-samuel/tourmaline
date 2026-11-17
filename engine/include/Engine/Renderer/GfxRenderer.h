@@ -553,14 +553,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
     [[nodiscard]] bool DebugProgramsValid() const {
         return meshDebugProgram.shaderCount == 2 && lineProgram.shaderCount == 2;
     }
-    // Scene-wide lightmap chart transform table (see World::lmChartTable):
-    // uploaded once per scene version; the filtered VS indexes it via
-    // each draw's chart offset. Returns the buffer BDA (0 when the scene
-    // carries no lightmaps — draws gate on lmChunk, so it is never read).
-    uint64_t EnsureChartXforms(smvk::World& world, smvk::ResourceManager& ctx);
-    [[nodiscard]] uint64_t ChartXformsAddress() const {
-        return lmXformsAddr_;
-    }
     // Stable saturated color per cluster (debug view). mode 0 = hash hue,
     // mode 1 = cone-cutoff heat (red = degenerate/useless cone).
     static void DebugClusterColor(uint32_t cluster, float coneCutoff, int mode, float outRgba[4]);
@@ -592,14 +584,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
     smvk::ShaderModuleHandle projectFragStd_{};
     smvk::ShaderModuleHandle projectLitFragGiStdModules_[4]{};
     std::function<bool(uint32_t)> materialProjectLit_{};
-    // Lightmap chart transform GPU mirror (see EnsureChartXforms).
-    smvk::Holder<smvk::BufferHandle> lmXformsBuf_;
-    uint64_t lmXformsAddr_ = 0;
-    // Cache keyed by both world identity and process-unique revision.
-    // The pointer is only compared, never dereferenced.
-    const smvk::World* lmXformsWorld_ = nullptr;
-    uint64_t lmXformsVersion_ = ~uint64_t(0);
-    size_t lmXformsCap_ = 0;
 };
 
 } // namespace engine

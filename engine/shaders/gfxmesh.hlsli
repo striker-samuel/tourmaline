@@ -36,13 +36,8 @@
 
 // Positions heap as uint words (same GfxPositions view as the filter).
 // Shading heap as uint words (4 per vertex: color, uv, normal, tangent —
-// see PackedVertexShading in Engine/Renderer/mesh.h). The lightmap words
-// (chartUv, chartId) moved OUT to the OPTIONAL PackedVertexLightmap
-// stream (2 words per vertex, its own heap): unlightmapped meshes don't
-// carry it at all, so the fetch is guarded by the per-draw delta
-// (GfxDraw.misc2.w = lightmapBase - meshVertexBase, 0xFFFFFFFF = none).
+// see PackedVertexShading in Engine/Renderer/mesh.h).
 struct GfxShadingHeap { uint words[GFX_MAX_VERTICES * 4]; };
-struct GfxLightmapHeap { uint words[GFX_MAX_VERTICES * 2]; };
 // Compacted eligible batch indices for one variant dispatch. Declared at
 // the candidate-slot capacity (the runtime mesh batch list buffer is
 // candidate-sized — grown with the dynamic cutover; the old
@@ -82,14 +77,12 @@ struct GfxMeshParamsData
     GPU_PTR_READ(GfxBatches) batches;
     GPU_PTR_READ(GfxPositions) positions;
     GPU_PTR_READ(GfxShadingHeap) shading;
-    // The OPTIONAL lightmap stream (PackedVertexLightmap, 2 words/vertex,
-    // INDEPENDENTLY packed windows): fetched as
-    //   lm words[(vi + draw.misc2.w) * 2]
-    // where misc2.w carries the per-draw additive delta (lightmapBase -
-    // meshVertexBase; 0xFFFFFFFF = the draw's mesh carries no lightmap).
-    GPU_PTR_READ(GfxLightmapHeap) lightmap;
+    // Reserved (lightmaps retired): the packed-vertex-lightmap stream BDA,
+    // always 0. Kept to preserve the 240-byte GfxMeshParamsData layout.
+    uint64_t reservedLightmap;
     GPU_PTR_READ(GfxIndices) indices;
-    GPU_PTR_READ(GfxChartXforms) lmXforms;
+    // Reserved (lightmaps retired): the chart-transform BDA, always 0.
+    uint64_t reservedLmXforms;
     GPU_PTR_READ(GfxMeshBatchList) batchList;
     // This flight's indirect command array (written by the filter CS this
     // frame, before Main): cmds[batch].indexCount == 0 marks a cluster the

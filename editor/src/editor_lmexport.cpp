@@ -205,13 +205,6 @@ void EditorApp::RecordLightmapExportPass(uint32_t flight) {
                               sizeof(matId),
                               &matId,
                               smvk::ShaderStage::All);
-            // Per-mesh chart tail (same unpack as the flat panel).
-            smvk::gfx::UvFlatVsPushTail tail{};
-            tail.hasXforms = 1;
-            tail.chartOffset = m_world->ChartOffsetFor(item.mesh, 0);
-            tail.lmXforms = EnsureChartXforms();
-            cmd.PushConstants(
-                smvk::gfx::kUvFlatVsPushOffset, sizeof(tail), &tail, smvk::ShaderStage::All);
             for (const auto& s : mesh->geometry.surfaces)
                 cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
         });

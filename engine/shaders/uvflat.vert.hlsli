@@ -37,11 +37,11 @@ struct UvFlatVsPush
     float4x4 model; // 0..64: 2D pan/zoom (mirrors scene pc.model)
     float4x4 _pad0; // 64..128
     float4x4 _pad1; // 128..192
-    // Per-mesh chart tail (pushed at byte 192 per mesh; zeroed scratch
-    // reads hasXforms == 0 and falls back to raw chart uvs).
+    // Per-mesh chart tail (pushed at byte 192 per mesh; lightmaps retired
+    // — these stay declared for layout identity with the C++ mirror).
     uint hasXforms;
     uint chartOffset;
-    GPU_PTR_READ(GfxChartXforms) lmXforms;
+    uint64_t reservedLmXforms;
 };
 GPU_PUSH(UvFlatVsPush, pcUV);
 #endif

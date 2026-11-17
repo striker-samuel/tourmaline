@@ -318,8 +318,6 @@ int main() {
     Check(sizeof(smvk::gfx::MeshTailPush) == 16, "contract.meshtail-size-16");
     Check(smvk::gfx::kMeshTailPushOffset + sizeof(smvk::gfx::MeshTailPush) <= kScratchEnd,
           "contract.meshtail-fits-scratch");
-    Check(smvk::gfx::kUvFlatVsPushOffset == kScratchStart, "contract.uvflat-offset-192");
-    Check(sizeof(smvk::gfx::UvFlatVsPushTail) == 16, "contract.uvflat-size-16");
     Check(smvk::placement::kPlacementVsPushOffset == kScratchStart,
           "contract.placement-offset-192");
     Check(sizeof(smvk::placement::PlacementVsPush) == 32, "contract.placement-size-32");
@@ -382,9 +380,10 @@ int main() {
     Check(offsetof(smvk::gfx::FilteredVsPush, draws) == 0, "contract.tail-draws-0");
     Check(offsetof(smvk::gfx::FilteredVsPush, renderViews) == 8, "contract.tail-renderviews-8");
     Check(offsetof(smvk::gfx::FilteredVsPush, renderViewIndex) == 16, "contract.tail-viewindex-16");
-    // lmXforms rides the trailing word (216..224) the motion VS overwrites
-    // with its FrameUniforms BDA — same offset, intentional alias.
-    Check(offsetof(smvk::gfx::FilteredVsPush, lmXforms) == 24, "contract.tail-lmxforms-24");
+    // reservedLmXforms still rides bytes 216..224 (lightmaps retired) the
+    // motion VS overwrites with its FrameUniforms BDA — same offset.
+    Check(offsetof(smvk::gfx::FilteredVsPush, reservedLmXforms) == 24,
+          "contract.tail-lmxforms-24");
 
     // Scratch invariant anchor: shared fields end exactly at 192.
     Check(offsetof(PC, prevModel) == kScratchStart, "contract.scratch-starts-192");

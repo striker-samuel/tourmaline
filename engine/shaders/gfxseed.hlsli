@@ -40,7 +40,7 @@ struct SeedVsMainPush
     // paramsValid (byte 212): 1 = vsDeformed is live (the same null-check
     // flag the filtered VS reads - the skinned fetch gates on it).
     uint paramsValid;
-    GPU_PTR_READ(GfxChartXforms) lmXforms;
+    uint64_t reservedLmXforms; // lightmaps retired (was GfxChartXforms BDA)
     // The frame's DEFORMED heap (the skinning pass output): skinned draws
     // fetch pos at (vertexID - vsDeformedBase) * 5 so the depth legs write
     // the ANIMATED pose (not the bind pose) - the depth/Main parity the

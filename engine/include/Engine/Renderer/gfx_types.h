@@ -189,29 +189,16 @@ static constexpr uint32_t kMaxViews = 64; // mirrors kMaxRenderViews
 // GPU cluster entry (4x uvec4) moved to gpu_scene_static.h as
 // tour::gfx::ClusterConstants.
 
-// Chart atlas transform: xy = scale, zw = offset, so atlasUv =
-// chartUv * xy + zw. One entry per (mesh chart), concatenated scene-wide
-// sorted by mesh then chart; each draw's lmChartOffset is its mesh's base.
-struct LmChartXform {
-    glm::vec4 scaleOffset{0.0f}; // xy scale, zw offset
-};
-static_assert(sizeof(LmChartXform) == 16);
-
 // Per-draw frame entry. Must match HLSL GfxDraw (112 bytes).
 struct alignas(16) Draw {
     glm::mat4 model{};
     uint32_t mesh = 0;
     uint32_t flags = 0;                   // DrawFlags (bit 2 = skinned, bit 1 = dither-closeup)
     uint32_t drawSet = DrawSetBit_Opaque; // DrawSetBits bucket (seed PSO select)
-    // Lightmap chunk (HLSL GfxDraw.misc.w; 0xFFFFFFFF = none). Cooked per
-    // mesh with --lightmap; the filtered VS passes it flat to the lit
-    // fragment (static/dynamic GI separation).
-    uint32_t lmChunk = 0xFFFFFFFFu;
-    // Base offset into the scene-wide chart transform buffer for this
-    // draw's mesh (HLSL GfxDraw.misc2.x). The filtered VS resolves the
-    // atlas UV as chartUv * xform[lmChartOffset + chartId].xy/zw.
-    // 0 when the mesh carries no lightmap.
-    uint32_t lmChartOffset = 0;
+    // Lightmaps retired: misc.w / misc2.x / misc2.w are reserved stride
+    // words (kept to preserve the 112-byte HLSL GfxDraw layout).
+    uint32_t reservedMiscW = 0xFFFFFFFFu;
+    uint32_t reservedMisc2X = 0;
     // Material id (HLSL GfxDraw.misc2.y). The designated publisher group
     // resolves the draw's 5 texture slots through the materials buffer
     // with it (PublishDrawDemand); no other stage reads it.
@@ -221,14 +208,7 @@ struct alignas(16) Draw {
     // 0xFFFFFFFF = the build dropped the draw (cap). 0 in the CPU-cull
     // legacy path (which never reads it).
     uint32_t candidateBase = 0xFFFFFFFFu;
-    // HLSL misc2.w: the ADDITIVE lightmap-heap delta (lightmapBase -
-    // meshVertexBase, both vertex units — the lightmap stream packs
-    // INDEPENDENTLY of the pos/shading windows). The mesh-shader leg
-    // fetches the chart words at (vi + lmDelta) * 2; 0xFFFFFFFF = the
-    // mesh carries no lightmap stream. Unused by the indexed-raster legs
-    // (the classic filtered VS binds the lightmapped layout per mesh
-    // when lightmaps return).
-    uint32_t lmDelta = 0xFFFFFFFFu;
+    uint32_t reservedMisc2W = 0xFFFFFFFFu;
     // HLSL misc3.x: the RESOLVED per-draw material userdata (Phase A of
     // docs/shader_library_design.md): the material instance's override
     // or the base material's default, resolved by the CPU draw producer
@@ -324,12 +304,12 @@ struct FilteredVsPush {
     // it - a plain "params != 0" compare is illegal on a
     // vk::BufferPointer, so the flag word carries the null check).
     uint32_t paramsValid = 0;
-    // BDA of the chart transform buffer (0 = none). Trailing so the
-    // 24B prefix stays byte-identical to the motion VS tail
-    // (FilteredMotionPush reads draws/renderViews/renderViewIndex from
-    // 192..216 and its own FrameUniforms BDA at 216, which simply
-    // overwrites this field the motion VS never declares).
-    uint64_t lmXforms = 0;
+    // Reserved (lightmaps retired): bytes 216..224. Kept so the 24B
+    // prefix stays byte-identical to the motion VS tail (FilteredMotionPush
+    // reads draws/renderViews/renderViewIndex from 192..216 and its own
+    // FrameUniforms BDA at 216, which simply overwrites this field the
+    // motion VS never declares). Always 0.
+    uint64_t reservedLmXforms = 0;
     // VS-leg SKIN input, carried DIRECTLY (bytes 224..240 - the free
     // scratch; the mesh dispatch's MeshTailPush re-pushes 224..240 with
     // its own paramsAddress/list fields, harmless because the mesh legs
@@ -385,12 +365,12 @@ struct GfxMeshParams {
     uint64_t batches = 0;
     uint64_t positions = 0;
     uint64_t shading = 0;
-    // The OPTIONAL lightmap stream (PackedVertexLightmap): fetched via the
-    // per-draw additive delta (GfxDraw.misc2.w = lightmapBase -
-    // meshVertexBase); 0 when no scene mesh carries chart data at all.
-    uint64_t lightmap = 0;
+    // Reserved (lightmaps retired): the packed-vertex-lightmap stream BDA,
+    // always 0. Kept to preserve the 240-byte HLSL GfxMeshParamsData layout.
+    uint64_t reservedLightmap = 0;
     uint64_t indices = 0;
-    uint64_t lmXforms = 0;
+    // Reserved (lightmaps retired): the chart-transform BDA, always 0.
+    uint64_t reservedLmXforms = 0;
     uint64_t batchList = 0;
     // This flight's indirect commands (the filter's per-batch decisions —
     // the mesh gates fully-dropped clusters on indexCount == 0).
@@ -433,46 +413,14 @@ inline bool MeshDrawEligible(uint32_t drawSet, uint32_t drawFlags) {
     return true;
 }
 
-// Per-mesh chart tail for direct-path vertex shaders (uvflat1.vert.hlsl,
-// default.vert.hlsl — 16 bytes). Pushed at kUvFlatVsPushOffset (the scene
-// push's unused prevModel scratch, bytes 192..208) per mesh. Zeroed
-// scratch reads hasXforms == 0 and selects the raw chart-uv passthrough,
-// so passes that never push a tail need no handling; chartOffset is the
-// mesh's base into the lmXforms table. Must match the HLSL tail structs.
-static constexpr uint32_t kUvFlatVsPushOffset = 192;
-struct UvFlatVsPushTail {
-    uint32_t hasXforms = 0;
-    uint32_t chartOffset = 0;
-    uint64_t lmXforms = 0;
-};
-static_assert(sizeof(UvFlatVsPushTail) == 16);
-
-// DIRECT static-geometry LM metadata at bytes 224..240. This overlaps
-// the 16-byte unused padding of DepthSkinTail (208..240). The Main
-// direct draw publishes this AFTER the per-draw skin tail. A magic word
-// makes existing non-main uses of the same vertex module fail closed.
-static constexpr uint32_t kDirectLightmapPullOffset = 224;
-static constexpr uint32_t kDirectLightmapPullMagic = 0x4C4D5055u; // 'LMPU'
-struct DirectLightmapPullTail {
-    uint32_t delta = 0;
-    uint32_t lobeCount = 0xFFFFFFFFu;
-    uint32_t magic = 0;
-    uint32_t reserved = 0;
-};
-static_assert(sizeof(DirectLightmapPullTail) == 16);
-
-// One indirect command range per (material, lightmap lobe class)
-// (commands sorted by both keys): a single multi-draw per range, and
-// the Main filtered leg binds the matching lit program (the generic
-// one, or the SG_LM_LOBE_COUNT-specialized twin for uniform-lobe
-// ranges) exactly once per range.
+// One indirect command range per material (commands sorted by material):
+// a single multi-draw per range, and the Main filtered leg binds the
+// matching lit program exactly once per range.
 struct MaterialRange {
     uint32_t material = 0;
     uint32_t firstCommand = 0;
     uint32_t commandCount = 0;
-    // Cooked SG-lightmap lobe count shared by every draw in the range
-    // (5/6/9/12; 0xFFFFFFFFu = mixed/none — bind the generic lit FS).
-    uint32_t lobeCount = 0xFFFFFFFFu;
+    uint32_t reserved = 0xFFFFFFFFu;
 };
 
 struct Stats {
@@ -493,11 +441,6 @@ struct DrawRequest {
     glm::mat4 model{1.0f};
     DrawFlags flags = 0;
     DrawSetMask drawSet = DrawSetBit_Opaque;
-    uint32_t lmChunk = 0xFFFFFFFFu; // rides the draw ring (misc.w)
-    uint32_t lmChartOffset = 0;     // base into the chart transform buffer (misc2.x)
-    // The per-draw additive lightmap-heap delta (HLSL misc2.w; see the
-    // Draw field). 0xFFFFFFFF = the mesh carries no lightmap stream.
-    uint32_t lmDelta = 0xFFFFFFFFu;
     // The RESOLVED per-draw material userdata (HLSL misc3.x — the
     // material instance override or the base material default, resolved
     // by the caller from the World's runtime state at frame build; see

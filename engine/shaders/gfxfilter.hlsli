@@ -211,25 +211,6 @@ struct GfxDraw
 };
 struct GfxDraws { GfxDraw draws[GFX_MAX_DRAWS]; };
 
-// Scene-wide lightmap chart atlas transforms (one float4 per mesh chart:
-// xy = scale, zw = offset; atlasUv = chartUv * xy + zw). Concatenated
-// sorted by mesh then chart; each draw's misc2.x is its mesh's base.
-// Sized generously: the runtime uploads exactly the cooked count.
-#define GFX_MAX_CHART_XFORMS 1048576
-struct GfxChartXforms { float4 xform[GFX_MAX_CHART_XFORMS]; };
-
-// Resolves the atlas-space lightmap UV for one vertex. chartId ==
-// 0xFFFFFFFF (uncharted) yields 0 — the fragment gates on the draw's
-// lobe count anyway, so the sample lands in the atlas margin.
-float2 GfxLightmapUv(float2 chartUv, uint chartId, uint chartOffset,
-    GPU_PTR(GfxChartXforms) xforms)
-{
-    if (chartId == 0xFFFFFFFFu)
-        return float2(0.0f, 0.0f);
-    float4 xf = xforms.Get().xform[chartOffset + chartId];
-    return chartUv * xf.xy + xf.zw;
-}
-
 struct GfxFiltered { uint idx[GFX_MAX_FILTERED]; };
 
 struct GfxIndirectCmd

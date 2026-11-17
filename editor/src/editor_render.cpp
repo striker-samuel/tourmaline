@@ -967,8 +967,7 @@ void EditorApp::DrawWorldNodes(smvk::CommandBuffer& cmd,
                                bool maskedPhase,
                                bool selectedOnly,
                                bool shadowPass,
-                               bool bakedOnly,
-                               bool chartTail) {
+                               bool bakedOnly) {
     (void)basePc;
     if (!m_world)
         return;
@@ -1028,16 +1027,6 @@ void EditorApp::DrawWorldNodes(smvk::CommandBuffer& cmd,
                           sizeof(objPc.padEnd_[1]) * 2,
                           &objPc.padEnd_[1],
                           smvk::ShaderStage::All);
-        if (chartTail) {
-            // Per-mesh chart tail: the direct VS unpacks chart uvs to
-            // atlas space for views that sample lightmaps (F8/Uv1).
-            smvk::gfx::UvFlatVsPushTail tail{};
-            tail.hasXforms = 1;
-            tail.chartOffset = m_world->ChartOffsetFor(item.mesh, 0);
-            tail.lmXforms = EnsureChartXforms();
-            cmd.PushConstants(
-                smvk::gfx::kUvFlatVsPushOffset, sizeof(tail), &tail, smvk::ShaderStage::All);
-        }
         for (const auto& s : mesh->geometry.surfaces)
             cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
     });
@@ -1070,33 +1059,6 @@ smvk::ShaderProgram& EditorApp::FlatUvProgram(ViewMode m) {
 
 smvk::ShaderProgram& EditorApp::FlatUvCoordProgram() {
     return m_flatUvCoordProgram;
-}
-
-uint64_t EditorApp::EnsureChartXforms() {
-    if (!m_world || !m_context)
-        return 0;
-    if (m_world->lmChartVersion == m_lmXformsVersion && !m_lmXformsBuf.empty())
-        return m_lmXformsAddr;
-    m_lmXformsVersion = m_world->lmChartVersion;
-    const size_t count = std::max<size_t>(m_world->lmChartTable.size(), 1);
-    const size_t bytes = count * sizeof(glm::vec4);
-    if (m_lmXformsBuf.empty() || m_lmXformsCap < bytes) {
-        m_lmXformsBuf = m_context->CreateBuffer(bytes, smvk::BufferType_Storage, "lm chart xforms");
-        m_lmXformsCap = bytes;
-    }
-    if (m_lmXformsBuf.empty()) {
-        m_lmXformsAddr = 0;
-        return 0;
-    }
-    if (!m_world->lmChartTable.empty()) {
-        m_context->UploadDataToBuffer(m_lmXformsBuf,
-                                      m_world->lmChartTable.data(),
-                                      bytes,
-                                      smvk::PipelineStage(smvk::PipelineStageBit_Vertex),
-                                      smvk::AccessFlags::ShaderRead);
-    }
-    m_lmXformsAddr = m_context->GetBufferDeviceAddress(m_lmXformsBuf);
-    return m_lmXformsAddr;
 }
 
 void EditorApp::DrawFlatUvNodes(smvk::CommandBuffer& cmd,
@@ -1148,24 +1110,11 @@ void EditorApp::DrawFlatUvNodes(smvk::CommandBuffer& cmd,
         const smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
         if (!mesh)
             return;
-        // Lightmap layout: baked meshes only (like the F8 view).
-        if (mode == ViewMode::FlatUv1 && mesh->lmChunk == 0xFFFFFFFFu)
-            return;
         uint32_t matId = item.material;
         cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, materialId),
                           sizeof(matId),
                           &matId,
                           smvk::ShaderStage::All);
-        if (mode == ViewMode::FlatUv1) {
-            // Per-mesh chart tail: the flat VS unpacks chart uvs to
-            // atlas space itself (no draw ring on the direct path).
-            smvk::gfx::UvFlatVsPushTail tail{};
-            tail.hasXforms = 1;
-            tail.chartOffset = m_world->ChartOffsetFor(item.mesh, 0);
-            tail.lmXforms = EnsureChartXforms();
-            cmd.PushConstants(
-                smvk::gfx::kUvFlatVsPushOffset, sizeof(tail), &tail, smvk::ShaderStage::All);
-        }
         for (const auto& s : mesh->geometry.surfaces)
             cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
     });
@@ -1701,7 +1650,7 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView,
                                                                   : smvk::CullMode::Back});
             cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
             DrawWorldNodes(
-                cmd, pc, maskedPhase, false, false, bakedOnly, bakedOnly || mode == ViewMode::Uv1);
+                cmd, pc, maskedPhase, false, false, bakedOnly);
         }
         // Transparent leg (alpha blend, no depth write).
         {
