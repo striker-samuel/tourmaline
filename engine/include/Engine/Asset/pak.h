@@ -767,7 +767,6 @@ using ::tour::asset::BuildTexturePayloadV4;
 using ::tour::asset::kPakFooterMagic;
 using ::tour::asset::kPakMagic;
 using ::tour::asset::kPakMeshPlanPath;
-using ::tour::asset::kPakWorldManifestPath;
 using ::tour::asset::PakAppendInfo;
 using ::tour::asset::PakAssetKind;
 using ::tour::asset::PakBackend;
@@ -789,9 +788,5 @@ using ::tour::asset::ParseMeshPlanBlob;
 using ::tour::asset::ParseTextureDigest;
 using ::tour::asset::ParseTexturePayload;
 using ::tour::asset::ParseTexturePayloadV4;
-using ::tour::asset::ReadWorldManifest;
-using ::tour::asset::WorldManifestRow;
-using ::tour::asset::WorldManifestView;
 using ::tour::asset::WriteMeshPlanBlob;
-using ::tour::asset::WriteWorldManifestBlob;
 } // namespace smvk

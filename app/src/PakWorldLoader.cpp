@@ -344,9 +344,10 @@ tour::mem::LinearPtr<tour::World> LoadPakWorld(PakPreload pre,
     // check input). Read once into a directly-addressable view (borrowed
     // bytes — no std::vector/string copy).
     std::string wmErr;
-    const std::optional<smvk::WorldManifestView> manifestOpt =
-        smvk::ReadWorldManifest(reader, &wmErr);
-    const smvk::WorldManifestView manifest = manifestOpt.value_or(smvk::WorldManifestView{});
+    const std::optional<tour::asset::WorldManifestView> manifestOpt =
+        tour::asset::ReadWorldManifest(reader, &wmErr);
+    const tour::asset::WorldManifestView manifest =
+        manifestOpt.value_or(tour::asset::WorldManifestView{});
     std::cerr << "[App] world manifest: " << manifest.sceneCount << " scene(s)"
               << (wmErr.empty() ? "" : " (" + wmErr + ")") << "\n";
     {
@@ -504,9 +505,10 @@ tour::mem::LinearPtr<tour::World> LoadProjectWorld(std::vector<PakPreload> prelo
     // check input). Read once into a directly-addressable view (borrowed
     // bytes — no std::vector/string copy).
     std::string wmErr;
-    const std::optional<smvk::WorldManifestView> manifestOpt =
-        smvk::ReadWorldManifest(reader, &wmErr);
-    const smvk::WorldManifestView manifest = manifestOpt.value_or(smvk::WorldManifestView{});
+    const std::optional<tour::asset::WorldManifestView> manifestOpt =
+        tour::asset::ReadWorldManifest(reader, &wmErr);
+    const tour::asset::WorldManifestView manifest =
+        manifestOpt.value_or(tour::asset::WorldManifestView{});
     std::cerr << "[App] project: world manifest: " << manifest.sceneCount << " scene(s)"
               << (wmErr.empty() ? "" : " (" + wmErr + ")") << "\n";
     {
