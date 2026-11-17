@@ -20,6 +20,7 @@
 #include <cpuid.h> // __get_cpuid / __get_cpuid_count (the GCC cpuid path)
 #endif
 
+#include <Engine/App/scene_page_streamer.h>
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/pak.h>
@@ -53,6 +54,12 @@ WorldPage& World::LoadPage(ResourceManager& ctx) {
     WorldPage& ref = *cluster;
     RegisterPage(std::move(cluster));
     return ref;
+}
+
+bool World::StreamPages(glm::vec3 cameraPos) {
+    if (!pageStreamer)
+        return false;
+    return pageStreamer->Tick(cameraPos);
 }
 
 WorldPage& World::LoadPageFromPak(ResourceManager& ctx,

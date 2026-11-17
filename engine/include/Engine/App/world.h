@@ -127,6 +127,7 @@ typedef uint32_t IteratorFlags;
 //   registry exposes every merged ROOT as an ownership boundary. Removing
 //   a parent never deletes cluster-owned nodes; unloading a cluster
 //   removes exactly its nodes and resources through the resolve.
+class ScenePageStreamer; // camera-driven page streaming (scene_page_streamer.h)
 struct World {
     explicit World() {};
     // Must be set before loading/registering pages or first resolve.
@@ -344,6 +345,10 @@ struct World {
     mutable bool dirtyCull = true;
     std::vector<IteratorFlags> flags; // indexed by node
     std::vector<std::unique_ptr<WorldPage>> pages;
+    // The camera-driven page streamer (see scene_page_streamer.h): set by
+    // the host loader after the entry scene loads; null = streaming
+    // disabled (every page is resident, the legacy load-everything model).
+    std::shared_ptr<ScenePageStreamer> pageStreamer;
     // RETAINED pages (the shared-asset bridge, WorldPage::assetRefs):
     // pages PARKED by UnloadCluster while asset-side references
     // were live. A parked cluster is OUT of the merged fold + every
@@ -588,6 +593,18 @@ struct World {
                                TextureStreamer* streamer = nullptr,
                                std::shared_ptr<const std::vector<uint8_t>> imagePin = {},
                                const smvk::ExternalTextureResolver* externalTexture = nullptr);
+    // The camera-driven page streamer (null until the host loader installs
+    // one; see scene_page_streamer.h). The renderer ticks it once per frame.
+    ScenePageStreamer* PageStreamer() {
+        return pageStreamer.get();
+    }
+    void SetPageStreamer(std::shared_ptr<ScenePageStreamer> s) {
+        pageStreamer = std::move(s);
+    }
+    // Forwards the camera position to the page streamer (a no-op when
+    // streaming is disabled). Returns true when the page set changed (the
+    // merged scene was rebuilt + uploads flushed by the streamer).
+    bool StreamPages(glm::vec3 cameraPos);
     // Harvests the pak's Terrain blobs (terrain/meta + 16x H + 256x S)
     // into terrainSource (byte copies; the reader may die after). Also
     // called by LoadPageFromPak (non-fatal: scene loads even when

@@ -4910,6 +4910,12 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
     auto viewProj = proj * view;
     FrameUniforms data{};
     data.cameraPos = m_cameraPositioner.cameraPosition_;
+    // Camera-driven page streaming (partitioned-family worlds): load/unload
+    // scene pages by camera distance BEFORE the scene is read this frame.
+    // No-op when the world has no streamer (the legacy load-everything
+    // shape). The streamer rebuilds the merged scene + flushes uploads.
+    if (m_world)
+        m_world->StreamPages(data.cameraPos);
 
     data.view = view;
     data.proj = proj;
