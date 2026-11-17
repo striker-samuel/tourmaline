@@ -134,18 +134,14 @@ function(compile_shaders SOURCE_DIR BINARY_DIR TARGET_NAME)
   #   set(HLSL_FORCE_O3_FILES "foo.cs.hlsl;bar.frag.hlsl")
   # before including this file to extend it. Defaults below cover shaders
   # whose UNOPTIMIZED (-Od) SPIR-V crashes a real driver compiler:
-  #   - gfxfilter.cs.hlsl: the -Od blob (~155KB, heavy vk::BufferPointer
-  #     traffic) AVs nvgpucomp64.dll inside vkCreateComputePipelines
-  #     (Debug-only; the -O3 blob ~44KB compiles clean and Release runs
-  #     fine). Pinned to the exact proven Release flags (-O3
-  #     -Qstrip_debug), so this one shader is not RenderDoc-debuggable in
-  #     Debug trees until the driver bug is fixed / worked around in-shader.
-  #   - gfxbatchcull.cs.hlsl / gfxdrawcull.cs.hlsl: the GPU cull chain —
-  #     the same BDA-heavy vk::BufferPointer traffic class (the batch cull
-  #     also shares gfxfilter.hlsli's big struct bounds), pinned
-  #     preemptively.
+  #   - gfxskinbounds.cs.hlsl: the deformed-cluster-bounds pass — the same
+  #     BDA-heavy vk::BufferPointer traffic class that AV'd nvgpucomp64.dll
+  #     for the retired filter/batch-cull chain (the -Od blob is huge; the
+  #     -O3 blob compiles clean). Pinned to the exact proven Release flags
+  #     (-O3 -Qstrip_debug), so this one shader is not RenderDoc-debuggable
+  #     in Debug trees until the driver bug is fixed / worked around.
   if (NOT DEFINED HLSL_FORCE_O3_FILES)
-    set(HLSL_FORCE_O3_FILES "gfxfilter.cs.hlsl;gfxbatchcull.cs.hlsl;gfxdrawcull.cs.hlsl;gfxskinbounds.cs.hlsl")
+    set(HLSL_FORCE_O3_FILES "gfxskinbounds.cs.hlsl")
   endif()
   # Unpin escape hatch for driver re-tests: -DTOURMALINE_SHADER_OD_RETRY=ON
   # clears the -O3 pin so CI (tools/shader_od_retry.py) can retry the -Od

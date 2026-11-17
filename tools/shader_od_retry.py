@@ -23,7 +23,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-PINNED = ["gfxfilter.cs.hlsl", "gfxbatchcull.cs.hlsl", "gfxdrawcull.cs.hlsl"]
+PINNED = ["gfxskinbounds.cs.hlsl"]
 
 COMMON = [
     "-spirv",

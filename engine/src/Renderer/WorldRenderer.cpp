@@ -258,9 +258,10 @@ bool WorldRenderer::LiveSwapCovers(std::string_view spvPath) {
         return true;
     if (spvPath.starts_with("content/shaders/project_lit"))
         return true;
-    // The GPU-driven legs: the filtered VS, the task/mesh mesh MS, and both
+    // The GPU-driven legs: the filtered VS (now gpu_scene_raster.vert, the
+    // renamed gfxfiltered.vert), the task/mesh mesh MS, and both
     // mesh FS families (stock + project twins, every .sg/.gi/.std variant).
-    if (spvPath == "content/shaders/gfxfiltered.vert.hlsl.spv")
+    if (spvPath == "content/shaders/gpu_scene_raster.vert.hlsl.spv")
         return true;
     if (spvPath == "content/shaders/gpu_scene_meshlet.mesh.hlsl.spv")
         return true;
@@ -338,7 +339,7 @@ bool WorldRenderer::ReloadLitShaders(const std::vector<std::string>& recompiled)
     for (const std::string& p : recompiled) {
         if (!LiveSwapCovers(p))
             continue;
-        if (p == "content/shaders/gfxfiltered.vert.hlsl.spv")
+        if (p == "content/shaders/gpu_scene_raster.vert.hlsl.spv")
             filteredVs = true;
         else
             litSet = true;
@@ -440,13 +441,12 @@ bool WorldRenderer::ReloadLitShaders(const std::vector<std::string>& recompiled)
         FeedGfxRendererShaderModules();
         m_gfxRenderer.InvalidateDerivedPrograms();
         if (!m_gfxRenderer.Ensure(*m_context, *m_rendergraph)) {
-            // Latch the filter leg OFF (the direct draws cover the
-            // frame — the same graceful degradation as an attach-time
-            // Ensure failure; an empty filteredProgram must never
-            // reach a bind).
+            // A failed Ensure leaves every filtered program empty; the
+            // direct draws cover the frame (the same graceful degradation
+            // as an attach-time Ensure failure — an empty filteredProgram
+            // must never reach a bind).
             std::cerr << "[shader-reload] GfxFilter Ensure failed"
                          " after the swap - direct draws cover the frame\n";
-            m_gfxFilterAvailable = false;
         }
     }
     // Retirement: the shared tail (pipeline eviction + deferred
@@ -2697,7 +2697,6 @@ bool WorldRenderer::onAttach() {
             m_gfxRenderer.ConfigureWireFrag(m_resources.fragWireShader);
         if (!m_gfxRenderer.Ensure(*m_context, *m_rendergraph)) {
             std::cerr << "[WorldRenderer] GfxFilter unavailable - direct draws\n";
-            m_gfxFilterAvailable = false;
         }
         // Static geometry is GPU-scene raster's physical publisher, even
         // when the retired filter has no valid program or initial clusters.
@@ -2736,7 +2735,6 @@ bool WorldRenderer::onAttach() {
                       << std::endl;
             if (smvk::gfx::ClusterCount(m_gfxRenderer.State()) == 0) {
                 std::cerr << "[WorldRenderer] GfxFilter: no clusters - direct draws\n";
-                m_gfxFilterAvailable = false;
             }
         }
     }

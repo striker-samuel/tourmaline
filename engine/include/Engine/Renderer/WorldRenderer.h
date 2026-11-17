@@ -3752,12 +3752,6 @@ class WorldRenderer : public IRenderer {
     // 0 is invalid/uninitialized. Transient game debug streams bypass cache.
     tour::mem::ArenaFlatArray<uint64_t> m_debugDrawGpuRevisions;
 
-    // The filtered main view is ALWAYS ON - the runtime A/B toggle (false =
-    // legacy direct draws) is gone. This latch is setup-time availability
-    // ONLY (onAttach): Ensure failure or an empty cluster heap drops the
-    // filter leg for the session (gfxSlot stays invalid; everything draws
-    // direct - graceful skip, never fatal). Never user-toggled.
-    bool m_gfxFilterAvailable = true;
     // ProjectLit family fallback diagnostic (see MaterialUsesProjectLit):
     // the "family modules not loaded" report fires once per session, not
     // per material per frame.

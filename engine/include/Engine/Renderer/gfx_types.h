@@ -811,8 +811,8 @@ struct State : StaticGeometry {
 // The gfx-filter shader passes (gfxfilter.cs / gfxfiltered.vert) were
 // hard-deleted with the renderer; the GPU-scene raster shaders are their
 // replacements. These paths feed GfxRenderer::Ensure, which must NOT fail:
-// a deleted path here collapses the whole GPU-scene sync (m_gfxFilterAvailable
-// -> false -> no mesh registration -> the task/mesh path never activates).
+// a deleted path here collapses the whole GPU-scene sync (no filter program
+// -> no mesh registration -> the task/mesh path never activates).
 inline constexpr const char* kGfxFilterCsPath =
     "content/shaders/gpu_scene_raster_drawbuild.cs.hlsl.spv";
 inline constexpr const char* kGfxFilteredVsPath = "content/shaders/gpu_scene_raster.vert.hlsl.spv";

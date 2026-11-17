@@ -190,6 +190,21 @@ Commit subjects follow the plan; the deltas are marked.
   GPU-scene renders static geometry even when legacy GfxFilter
   initialization is absent; remove the dependency on
   `GfxRenderer::Ensure` + `m_gfxFilterAvailable`.
+  - **Record**: the GPU-scene raster programs were already built by a
+    separate lazy-init path (not `GfxRenderer::Ensure`), so the
+    remaining independence work was dead-coupling removal: deleted the
+    write-only `m_gfxFilterAvailable` latch (declaration + three writes
+    — never read), deleted the four dead seed-VS path constants
+    (`kGfxSeedVsPath`/`kGfxSeedMaskedVsPath`/`kGfxShadowSeedVsPath`/
+    `kGfxShadowSeedMaskedVsPath`), dropped the three deleted filter
+    shaders from `HLSL_FORCE_O3_FILES` and `tools/shader_od_retry.py`
+    `PINNED`, and corrected the stale `gfxfiltered.vert.hlsl.spv`
+    hot-swap path to `gpu_scene_raster.vert.hlsl.spv` (with a new
+    `swap.cover-filtered-vs` pin). The genuine remaining
+    `GfxRenderer::Ensure` coupling is static registration (→ Epoch 03)
+    and the HZB programs (→ Epoch 05).
+  - **Gates**: `architecture_tests`, `rendergraph_contract_tests`,
+    `shader_hot_reload_tests` green; engine lib recompiles clean.
 - 03 — `refactor(gfx): canonical static geometry ownership` —
   registration/upload/LOD/lookup no longer depend on GfxRenderer or
   `gfx::State`; consolidate into the GPU-scene-owned geometry registry.

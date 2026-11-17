@@ -28,11 +28,6 @@
 
 namespace engine {
 
-static constexpr const char* kGfxSeedVsPath = "content/shaders/gfxseed.vert.hlsl.spv";
-static constexpr const char* kGfxSeedMaskedVsPath = "content/shaders/gfxseedmasked.vert.hlsl.spv";
-static constexpr const char* kGfxShadowSeedVsPath = "content/shaders/gfxshadowseed.vert.hlsl.spv";
-static constexpr const char* kGfxShadowSeedMaskedVsPath =
-    "content/shaders/gfxshadowseedmasked.vert.hlsl.spv";
 static constexpr const char* kMeshDebugVsPath = "content/shaders/meshdebug.vert.hlsl.spv";
 static constexpr const char* kMeshDebugFragPath = "content/shaders/meshdebug.frag.hlsl.spv";
 static constexpr const char* kLineVsPath = "content/shaders/debugline.vert.hlsl.spv";
