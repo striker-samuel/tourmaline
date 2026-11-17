@@ -131,6 +131,45 @@ int main() {
         fs::remove_all(odir, ec);
     }
 
+    // PARTITION: 8193 meshes at a 4096-record planning limit -> 3 parts, no
+    // mesh lost, no mesh duplicated, every instance preserved (P1 + P3).
+    {
+        smvk::source::Scene src;
+        src.roots.reserve(8193);
+        src.activeRoots.reserve(8193);
+        src.nodes.reserve(8193);
+        src.meshes.resize(8193);
+        for (int i = 0; i < 8193; ++i) {
+            smvk::source::Node n;
+            n.name = "m" + std::to_string(i);
+            n.mesh = i;
+            n.parent = InvalidIndex;
+            src.nodes.push_back(n);
+            src.roots.push_back(uint32_t(i));
+            src.activeRoots.push_back(uint32_t(i));
+            auto& prim = src.meshes[size_t(i)].primitives.emplace_back();
+            prim.vertices.resize(3);
+            prim.vertices[0].position = {float(i), 0.0f, 0.0f};
+            prim.vertices[1].position = {float(i) + 1.0f, 0.0f, 0.0f};
+            prim.vertices[2].position = {float(i), 1.0f, 0.0f};
+            prim.indices = {0, 1, 2};
+            prim.aabbMin = {float(i), 0.0f, 0.0f};
+            prim.aabbMax = {float(i) + 1.0f, 1.0f, 0.0f};
+        }
+        Require(Validate(src, error));
+        const smvk::source::ScenePartition part = smvk::source::PartitionScene(src, 4096, 256.0f);
+        Require(part.parts.size() == 3);
+        size_t totalMeshes = 0, totalInstances = 0;
+        for (const auto& p : part.parts) {
+            Require(p.meshes.size() <= 4096);
+            Require(Validate(p, error));
+            totalMeshes += p.meshes.size();
+            totalInstances += p.nodes.size() - 1; // minus the synthetic root
+        }
+        Require(totalMeshes == 8193);
+        Require(totalInstances == 8193);
+    }
+
     fs::remove_all(dir, ec);
     return 0;
 }

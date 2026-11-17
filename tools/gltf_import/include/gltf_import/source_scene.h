@@ -7,12 +7,12 @@
 // DeriveNativeAssets consume it without depending on glTF/OBJ/USD parser types.
 // Packed runtime buffers, meshlets and cooked formats remain separate.
 #include <array>
-#include <optional>
 #include <cstdint>
+#include <glm/glm.hpp>
 #include <limits>
+#include <optional>
 #include <string>
 #include <vector>
-#include <glm/glm.hpp>
 
 namespace smvk::source {
 
@@ -178,5 +178,27 @@ struct Scene {
 // publish truncated triangles, dangling node links or invalid indices.
 // Returns false and fills error with the first reported invariant violation.
 bool Validate(const Scene& scene, std::string& error);
+
+// Bounded-cluster partitioning (P1): split a scene whose unique mesh count
+// exceeds the per-cluster bound into a list of sub-scenes, each owning at most
+// `maxMeshes` meshes. Meshes are binned by the WORLD cell of their AABB center
+// (cellSizeMeters grid) so each part is spatially coherent, then chunked to
+// the capacity bound. NO mesh is duplicated: every mesh appears in exactly one
+// part, and instances (nodes referencing a mesh) are flattened under that
+// part's root with their WORLD transform, preserving instancing — the shared
+// mesh geometry is owned once, referenced per placement.
+//
+// The shared tables (materials/images/textures/samplers/skins/animations/
+// lights/dependencies) are copied VERBATIM into every part, so their indices
+// (material on a primitive, texture/image/sampler on a material) are stable
+// across parts — only mesh and node indices are remapped per part.
+struct ScenePartition {
+    std::vector<Scene> parts;
+    // True when the input was already within the bound (parts.size() == 1 and
+    // parts[0] is the input).
+    bool unchanged = false;
+};
+
+ScenePartition PartitionScene(const Scene& scene, size_t maxMeshesPerPart, float cellSizeMeters);
 
 } // namespace smvk::source
