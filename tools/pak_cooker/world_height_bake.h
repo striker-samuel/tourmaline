@@ -24,7 +24,7 @@ namespace terraincook {
 inline uint64_t RasterPlacedHeight(const smvk::terrain::TerrainMeta& meta,
                                    uint32_t tx,
                                    uint32_t tz,
-                                   const std::vector<const smvk::Cluster*>& scenes,
+                                   const std::vector<const smvk::WorldPage*>& scenes,
                                    std::vector<uint8_t>& pixels) {
     const int res = int(meta.hRes);
     if (res <= 0 || pixels.size() != size_t(res) * size_t(res) * 4)
@@ -33,7 +33,7 @@ inline uint64_t RasterPlacedHeight(const smvk::terrain::TerrainMeta& meta,
     const float minX = meta.originX + float(tx) * meta.hTileSize;
     const float minZ = meta.originZ + float(tz) * meta.hTileSize;
     uint64_t raised = 0;
-    for (const smvk::Cluster* cluster : scenes) {
+    for (const smvk::WorldPage* cluster : scenes) {
         if (!cluster)
             continue;
         const auto& scene = cluster->scene;

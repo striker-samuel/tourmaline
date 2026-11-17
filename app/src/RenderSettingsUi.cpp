@@ -3641,7 +3641,7 @@ void WorldRenderer::DrawAppDebugUi(const DebugUiFrame& frame) {
                     uint64_t geoBytes = 0;
                     size_t meshCount = 0;
                     std::unordered_map<const void*, size_t> clusterIdx;
-                    std::vector<const smvk::Cluster*> clusterPtrs;
+                    std::vector<const smvk::WorldPage*> clusterPtrs;
                     if (m_world) {
                         std::set<std::pair<const void*, uint32_t>> seenMesh;
                         std::set<uint32_t> seenTex;
@@ -3983,7 +3983,7 @@ void WorldRenderer::DrawAppDebugUi(const DebugUiFrame& frame) {
                         }
                     }
                     // ---- Ownership rows + stacked color bar ----
-                    // Cluster rows are TreeNodes: expanding one
+                    // WorldPage rows are TreeNodes: expanding one
                     // drills into ITS top textures (exact) +
                     // meshes (formula).
                     if (!owners.empty()) {

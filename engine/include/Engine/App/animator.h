@@ -24,7 +24,7 @@
 // the v1 single-skeleton-per-cluster contract). World::Update(dt)
 // advances every animator and flushes the FIRST-ALIVE animator's pose
 // into its target cluster's scene (the cluster-wide pose the existing
-// skinning path consumes; Cluster::poseExternallyDriven tells the
+// skinning path consumes; WorldPage::poseExternallyDriven tells the
 // renderer the cluster is animator-driven — it stops its own clip
 // advance). Independent playback STATE for every entity is exact;
 // independent RENDERING is the v1 limit (one pose per cluster — the
@@ -47,7 +47,7 @@
 #include <Engine/Scene/entity_handle.h>
 
 namespace tour {
-struct Cluster;
+struct WorldPage;
 }
 
 namespace tour {
@@ -84,7 +84,7 @@ struct AnimatorState {
     // The binding: the mesh entity + its skeleton's owning cluster +
     // the captured rest pose (per skeleton joint, cluster node order).
     smvk::MeshEntityHandle mesh{};
-    Cluster* target = nullptr;
+    WorldPage* target = nullptr;
     std::vector<glm::mat4> restLocals;
     // The evaluated pose (joint LOCALS, skeleton joint order — the
     // flush writes these into the target cluster's scene).

@@ -480,7 +480,7 @@ int main(int argc, char** argv) {
                                   smvk::TextureStreamer* streamer,
                                   std::shared_ptr<const std::vector<uint8_t>> imagePin,
                                   const smvk::ExternalTextureResolver* externalTexture,
-                                  std::string& loadErr) -> smvk::Cluster* {
+                                  std::string& loadErr) -> smvk::WorldPage* {
             (void)ctx;
             (void)reader;
             (void)sceneIndex;
@@ -488,11 +488,11 @@ int main(int argc, char** argv) {
             (void)imagePin;
             (void)externalTexture;
             (void)loadErr;
-            auto c = std::make_unique<smvk::Cluster>(nullptr);
+            auto c = std::make_unique<smvk::WorldPage>(nullptr);
             const int node = addNode(c->scene, -1, 0);
             (void)node; // one root node: the fold witness
-            smvk::Cluster* raw = c.get();
-            world.RegisterCluster(std::move(c));
+            smvk::WorldPage* raw = c.get();
+            world.RegisterPage(std::move(c));
             return raw;
         };
         smvk::World world;

@@ -3,7 +3,7 @@
 #pragma once
 // Map tile page adapter for the existing SMP8 archive. Tile identity is
 // logical; one pak can store any number of tiles. Pages are individually
-// checksummed/seekable by the PakReader, not loaded as one Cluster.
+// checksummed/seekable by the PakReader, not loaded as one WorldPage.
 #include <Engine/Asset/pak.h>
 #include <Engine/WorldPartition/SceneTileProvider.h>
 #include <Engine/WorldPartition/map_tile_codec.h>

@@ -4,7 +4,7 @@
 // test_knight_anim: end-to-end knight walk-clip diagnostic on the REAL
 // derived assets (F:/content/demo/knight_only): the .geometry rebuild
 // (BuildFromMeshAsset — the exact path the pak cluster went through) +
-// the .anim0_* clip attach + the Cluster pose driver, then:
+// the .anim0_* clip attach + the WorldPage pose driver, then:
 //   1. the runtime node-id contract (the .anim's -joint ids are the
 //      derivation cluster ids; the names must resolve to the SAME ids),
 //   2. the joint HIERARCHY under the pelvis (the hip-flap chain must
@@ -92,7 +92,7 @@ int main() {
               << " blobs, skeleton " << (asset.hasSkeleton ? "yes" : "no") << " ("
               << asset.skeleton.joints.size() << " joints, root asset-node " << asset.skeleton.root
               << ")\n";
-    auto c = std::make_unique<smvk::Cluster>(nullptr);
+    auto c = std::make_unique<smvk::WorldPage>(nullptr);
     c->SetOfflineMode(true);
     // The COOK's definition-build shape (cook main: "empty scene root,
     // then the reference bind"): node 0 exists BEFORE BuildFromMeshAsset

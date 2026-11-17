@@ -114,7 +114,7 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base, bool fallbackO
 
     // ---- CPU frustum culling for the prepass ----
     // Static nodes: single ::tour::frustumCullBVH walk over the World's cached
-    // static tree (built once in ResolveAndFixup_clusters from frozen
+    // static tree (built once in ResolveAndFixup_pages from frozen
     // static-subtree globals, LOD-union bounds). Dynamic nodes: per-item
     // sphere test below (they never enter the static tree).
     // Both tests are conservative (guarded main-view planes + LOD-union

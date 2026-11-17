@@ -82,7 +82,7 @@ int main() {
             std::vector<tour::CookedMapPlacement> decoded;
             Check(tour::mapcook::ReadMapTile(*reader, {map.id, {-2, 2}}, decoded) &&
                       decoded.size() == 1 && decoded[0].mapNodeId == 20,
-                  "tile fetched by logical cell without Cluster");
+                  "tile fetched by logical cell without WorldPage");
             Check(!tour::mapcook::ReadMapTile(*reader, {map.id, {9, 9}}, decoded) &&
                       decoded.size() == 1,
                   "missing tile leaves output unchanged");

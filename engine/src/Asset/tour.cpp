@@ -3543,8 +3543,8 @@ void TourReparent(Scene& scene, uint32_t node, uint32_t newParent) {
     }
 }
 
-static Material* CookMaterial(Cluster& cluster, uint32_t poolIdx) {
-    const ClusterMaterialHandle h = cluster.materials.getHandle(poolIdx);
+static Material* CookMaterial(WorldPage& cluster, uint32_t poolIdx) {
+    const WorldPageMaterialHandle h = cluster.materials.getHandle(poolIdx);
     if (!h.valid())
         return nullptr;
     return cluster.materials.get(h);
@@ -3560,7 +3560,7 @@ static Material* CookMaterial(Cluster& cluster, uint32_t poolIdx) {
 // tool (Cook / GiBaker / PakCooker bootstraps) produces the IDENTICAL
 // pool entry — the bake-input material fold stays consistent and the
 // pak gate never sees tool-dependent hashes.
-static ClusterMaterialHandle EnsureErrorMaterial(Cluster& cluster) {
+static WorldPageMaterialHandle EnsureErrorMaterial(WorldPage& cluster) {
     if (auto hit = cluster.FindMaterialByUri("error://material"))
         return *hit;
     // The pink payload: the engine's error-texture convention (the
@@ -3590,7 +3590,7 @@ static ClusterMaterialHandle EnsureErrorMaterial(Cluster& cluster) {
     info.roughnessFactor = 1.0f;
     info.baseColorTexture = tex;
     info.diffuse = tex; // legacy alias
-    const ClusterMaterialHandle h = cluster.CreateMaterial(info);
+    const WorldPageMaterialHandle h = cluster.CreateMaterial(info);
     if (!h.empty())
         cluster.RegisterMaterialUri("error://material", h);
     return h;
@@ -3634,7 +3634,7 @@ static void ApplyMatAttr(Material& mat, const Command& c) {
     else if (at == "farNormalMap")
         mat.shaderLod.farQuality.normalMap = (c.number != 0.0);
     else if (at == "layers") {
-        // Cluster-local pool ids (the cook domain, pre-merge): x/y/z =
+        // WorldPage-local pool ids (the cook domain, pre-merge): x/y/z =
         // layers 1..3 (-1 none), w = active layer count (0 = legacy).
         mat.values.layerMaterials =
             glm::ivec4(int(c.vec4.x), int(c.vec4.y), int(c.vec4.z), int(c.vec4.w));
@@ -3917,7 +3917,7 @@ TourEnvBlocks ParseTourEnvBlocks(const Doc& doc) {
 }
 } // namespace
 
-bool ApplyTourToCluster(Cluster& cluster,
+bool ApplyTourToCluster(WorldPage& cluster,
                         const Doc& doc,
                         std::vector<std::string>* warnings,
                         std::string* err,
@@ -4918,7 +4918,7 @@ bool ApplyTourToCluster(Cluster& cluster,
                 // time, not in a shipped pak.
                 warn("tour: createTerrain material out of range: " + std::to_string(c.material) +
                      " — binding the bright-pink ERROR material");
-                const ClusterMaterialHandle eh = EnsureErrorMaterial(cluster);
+                const WorldPageMaterialHandle eh = EnsureErrorMaterial(cluster);
                 if (eh.empty()) {
                     if (err)
                         *err = "tour: createTerrain error material"
@@ -5455,7 +5455,7 @@ bool ApplyTourToCluster(Cluster& cluster,
                          std::to_string(tz) + ")");
                     continue;
                 }
-                const ClusterStaticMeshHandle mh = cluster.UploadMesh(upload);
+                const WorldPageStaticMeshHandle mh = cluster.UploadMesh(upload);
                 if (!mh.valid()) {
                     if (strict) {
                         if (err)

@@ -71,7 +71,7 @@
 #include <cstring>
 #include <vector>
 
-// MeshData / CookedMeshlets forward decls and the Cluster/Mesh/
+// MeshData / CookedMeshlets forward decls and the WorldPage/Mesh/
 // ClusterConstants + StaticGeometry registration surface now live in
 // gpu_scene_static.h (included above); this header keeps the render-side
 // types (flags, draws, batches, views, the temporal/Hi-Z sidecar, State)
@@ -83,7 +83,7 @@
 // (Holder/BufferHandle/ShaderProgram/RenderGraph/limits) stay smvk::
 // and are spelled FULLY QUALIFIED here — no broad using-directive: a
 // public one is R6-gated, and its transitive lookup collides this
-// namespace's own Cluster with tour::Cluster for every
+// namespace's own WorldPage with tour::WorldPage for every
 // using-namespace-gfx consumer (the ambiguity that decided this shape).
 // The smvk::gfx namespace ALIAS at the bottom keeps every
 // smvk::gfx::* spelling resolving.
@@ -533,7 +533,7 @@ struct DrawRequest {
     uint32_t lightLayerMask = 0xffffffffu;
 };
 
-// Cluster / Mesh moved to gpu_scene_static.h (tour::gfx::Cluster /
+// WorldPage / Mesh moved to gpu_scene_static.h (tour::gfx::Cluster /
 // tour::gfx::Mesh) — the render sidecar references them from StaticGeometry.
 
 struct View {
@@ -897,7 +897,7 @@ uint32_t BeginView(State& s,
                    CullFlags cullFlags,
                    uint32_t width,
                    uint32_t height);
-// Cone fit result (the object-space fields feed Cluster's cone tail exactly):
+// Cone fit result (the object-space fields feed WorldPage's cone tail exactly):
 // degenerate = true keeps the keep-cone (axis 0 -> GfxConeCulled's len2 <
 // 1e-12 keep; the value the cluster fields must hold in that case).
 struct DeformedConeFit {

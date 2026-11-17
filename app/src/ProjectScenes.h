@@ -10,7 +10,7 @@
 //
 //   1. SCENE INSTANCES — LoadScene/LoadSceneAdditive/RemoveScene over
 //      a live tour::World. A load deserializes the scene's pak blob
-//      into a NEW registered Cluster (World::LoadClusterFromPak's
+//      into a NEW registered WorldPage (World::LoadPageFromPak's
 //      path) and runs the same post-load tail the apphost's entry
 //      load runs (anim attach, cooked static flags, the resolve that
 //      folds the cluster into the merged world scene). RemoveScene
@@ -75,7 +75,7 @@
 
 namespace tour {
 struct World;
-struct Cluster;
+struct WorldPage;
 class TextureStreamer;
 } // namespace tour
 namespace tour::asset {
@@ -126,20 +126,20 @@ class ProjectScenes {
     };
 
     // The pak -> cluster step. The default mirrors World::
-    // LoadClusterFromPak (DeserializeCluster + RegisterCluster) and
+    // LoadPageFromPak (DeserializeCluster + RegisterPage) and
     // needs a live ResourceManager (a null ctx is the GPU-less test
     // seam and refuses); the GPU-less tests replace it with a
     // hand-built offline cluster. Returns the registered cluster
     // (the WORLD owns it) or null + err.
-    using ClusterLoader =
-        std::function<tour::Cluster*(tour::World& world,
-                                     smvk::ResourceManager* ctx,
-                                     const tour::asset::PakReader& reader,
-                                     uint32_t sceneIndex,
-                                     tour::TextureStreamer* streamer,
-                                     std::shared_ptr<const std::vector<uint8_t>> imagePin,
-                                     const smvk::ExternalTextureResolver* externalTexture,
-                                     std::string& err)>;
+    using PageLoader =
+        std::function<tour::WorldPage*(tour::World& world,
+                                       smvk::ResourceManager* ctx,
+                                       const tour::asset::PakReader& reader,
+                                       uint32_t sceneIndex,
+                                       tour::TextureStreamer* streamer,
+                                       std::shared_ptr<const std::vector<uint8_t>> imagePin,
+                                       const smvk::ExternalTextureResolver* externalTexture,
+                                       std::string& err)>;
 
     explicit ProjectScenes(ProjectRuntime& runtime, smvk::OverlayVfs& contentVfs);
 
@@ -264,7 +264,7 @@ class ProjectScenes {
     // The cluster a loaded instance created (nullptr on a bad handle;
     // DEAD after RemoveScene — the world owned it, the unload erased
     // it). Lets scene-aware layers (audio) reach the owning cluster.
-    [[nodiscard]] tour::Cluster* SceneCluster(SceneHandle scene) const;
+    [[nodiscard]] tour::WorldPage* SceneCluster(SceneHandle scene) const;
 
     // ---- ownership-aware prefetch ----
     // Warms the asset's pak (the background preload + open — the
@@ -292,9 +292,9 @@ class ProjectScenes {
     // same bookkeeping.
     [[nodiscard]] std::vector<uint64_t> SceneReleaseAssets(SceneHandle scene);
 
-    // The replaceable pak->cluster seam (see ClusterLoader). Public by
+    // The replaceable pak->cluster seam (see PageLoader). Public by
     // design: the GPU-less tests substitute a hand-built cluster.
-    ClusterLoader clusterLoader;
+    PageLoader clusterLoader;
 
   private:
     struct SceneInstance {
@@ -304,7 +304,7 @@ class ProjectScenes {
         std::string pak;
         std::string sceneName;
         uint32_t sceneIndex = 0;
-        tour::Cluster* cluster = nullptr; // dead after RemoveScene
+        tour::WorldPage* cluster = nullptr; // dead after RemoveScene
         std::vector<uint64_t> ownedAssets;
         struct ShapeAttachment {
             tour::renderer::ShapeInstanceHandle handle;

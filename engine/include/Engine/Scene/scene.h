@@ -47,7 +47,7 @@ struct Hierarchy {
 
 // NodeId: engine/include/Engine/Scene/scene_node_id.h (included above)
 // Cooked punctual light (KHR_lights_punctual import). Definitions live in
-// the owning Cluster's lights pool (like meshes); the definition itself is
+// the owning WorldPage's lights pool (like meshes); the definition itself is
 // node-local (color/intensity/range/cones) and world position/direction
 // resolve from the node's global transform at use time so coordFix and
 // parent transforms apply exactly like meshes.
@@ -103,7 +103,7 @@ struct SceneLight {
 
 // Authored camera (editor camera node / tour createCamera): a DAG
 // transform (position + orientation, engine space) + a node-local lens
-// definition. The lens lives in the owning Cluster's cameras pool when
+// definition. The lens lives in the owning WorldPage's cameras pool when
 // pool-backed (cook path, like SceneLight) or in the editor world's
 // cameraLocations; the pose always resolves from the node's global
 // transform at use time. Forward = node -Z in world.
@@ -119,7 +119,7 @@ struct SceneCamera {
 
 // Authored/runtime decal (tiled projected splat; see smvk::ForwardPlusDecal
 // + forwardplus.cs.hlsl). Pool asset like SceneLight: the definition lives
-// in the owning Cluster's decals pool, the SHAPE rides the node's transform
+// in the owning WorldPage's decals pool, the SHAPE rides the node's transform
 // — translation = projector center, rotation = projection frame (local -Z
 // points INTO the receiving surface, local +Y is the texture V direction),
 // scale = half extents (x, y in-plane, z depth reach). This struct carries
@@ -249,7 +249,7 @@ struct Scene {
     // Live writers must use SetLocalTransform(NodeHandle) or explicitly
     // MarkAllRootsChanged + recalculateGlobalTransforms after a bulk rewrite.
     // A World-level mesh/visibility binding change additionally requires
-    // ResolveAndFixup_clusters (rebuild drawItems + topology revision).
+    // ResolveAndFixup_pages (rebuild drawItems + topology revision).
     // Direct writes to globalTransform bypass the GPU publication journal.
     tour::mem::ArenaFlatArray<mat4> localTransform;  // indexed by node
     tour::mem::ArenaFlatArray<mat4> globalTransform; // indexed by node
@@ -375,7 +375,7 @@ struct Scene {
     // editorSettings camera.default -> cook -> pak v10): the authored
     // camera node the runtime App spawns at/looks through instead of the
     // generic bounds framing (editors orbit freely; the App honors the
-    // author's framing). Cluster-space in cooked paks, world-space in
+    // author's framing). WorldPage-space in cooked paks, world-space in
     // the live World scene (ResolveAndFixup remaps). UINT32_MAX = none
     // (generic framing stands). Not to be confused with the per-viewport
     // editor look-through binding (view state, never persisted).
@@ -383,7 +383,7 @@ struct Scene {
     // ACTIVE ENVIRONMENT (tour editorSettings env.current -> cook -> pak
     // v12): the selected env block node. The UI edits the live world's
     // resolved environment directly; scenes may carry MANY env blocks
-    // (envForNode) and this id says which one is active. Cluster-space in
+    // (envForNode) and this id says which one is active. WorldPage-space in
     // cooked paks, world-space in the live World scene (ResolveAndFixup
     // remaps). UINT32_MAX = none (the default block renders). First valid
     // id across merged scenes wins (first scene loaded into the world

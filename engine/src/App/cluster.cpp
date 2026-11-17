@@ -20,9 +20,9 @@ using namespace ::smvk;
 // contract they implement.
 } // namespace tour
 
-smvk::Cluster::~Cluster() {
+smvk::WorldPage::~WorldPage() {
 
-    staticMeshes.forEachHandle([&](ClusterStaticMeshHandle han) { DestroyMesh(han); });
+    staticMeshes.forEachHandle([&](WorldPageStaticMeshHandle han) { DestroyMesh(han); });
 
     assert(meshAllocations_.empty());
 
@@ -33,7 +33,7 @@ smvk::Cluster::~Cluster() {
     textures.clear();
 }
 
-smvk::ClusterStaticMeshHandle smvk::Cluster::UploadMesh(const MeshData& data) {
+smvk::WorldPageStaticMeshHandle smvk::WorldPage::UploadMesh(const MeshData& data) {
     const uint32_t vertexCount = static_cast<uint32_t>(data.vertices.size());
 
     const uint32_t indexCount = static_cast<uint32_t>(data.indices.size());
@@ -56,7 +56,7 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadMesh(const MeshData& data) {
         surface.indexCount = indexCount;
         surface.baseVertex = 0;
         mesh.geometry.surfaces.push_back(surface);
-        const ClusterStaticMeshHandle handle = staticMeshes.create(std::move(mesh));
+        const WorldPageStaticMeshHandle handle = staticMeshes.create(std::move(mesh));
         if (handle.empty()) {
             // STRICT OVERFLOW: the static-mesh pool is a bounded per-cluster
             // resource (see Pool::kMaxSize). A full pool must never silently
@@ -64,7 +64,7 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadMesh(const MeshData& data) {
             // importer can fail loudly and partition the content into bounded
             // clusters instead.
             std::fprintf(stderr,
-                         "[Cluster] static mesh pool overflow at %u meshes; "
+                         "[WorldPage] static mesh pool overflow at %u meshes; "
                          "the cluster is full (partition the content into "
                          "bounded clusters)\n",
                          staticMeshes.capacity());
@@ -254,7 +254,7 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadMesh(const MeshData& data) {
     mesh.lightmapBase =
         alloc.lightmapAllocation ? static_cast<uint32_t>(alloc.lightmapBase) : 0xFFFFFFFFu;
 
-    const ClusterStaticMeshHandle handle = staticMeshes.create(std::move(result));
+    const WorldPageStaticMeshHandle handle = staticMeshes.create(std::move(result));
 
     if (handle.empty()) {
         // The UploadDataToBuffer calls above were already staged into
@@ -279,8 +279,8 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadMesh(const MeshData& data) {
     return handle;
 }
 
-void smvk::Cluster::PatchRetainedSkinStream(ClusterStaticMeshHandle handle,
-                                            std::vector<PackedSkinInfluences>&& stream) {
+void smvk::WorldPage::PatchRetainedSkinStream(WorldPageStaticMeshHandle handle,
+                                              std::vector<PackedSkinInfluences>&& stream) {
     if (handle.empty() || stream.empty())
         return;
     // The skin stream ALWAYS lands the runtime-side map (the draw path's
@@ -290,7 +290,7 @@ void smvk::Cluster::PatchRetainedSkinStream(ClusterStaticMeshHandle handle,
     auto it = retainedUploads_.find(handle.index());
     if (it == retainedUploads_.end())
         std::fprintf(stderr,
-                     "[Cluster] PatchRetainedSkinStream: mesh slot %u has no"
+                     "[WorldPage] PatchRetainedSkinStream: mesh slot %u has no"
                      " retained upload (the cook path loses the stream; the"
                      " runtime map keeps it)\n",
                      handle.index());
@@ -301,23 +301,23 @@ void smvk::Cluster::PatchRetainedSkinStream(ClusterStaticMeshHandle handle,
         mesh->skinned = true;
 }
 
-void smvk::Cluster::SetMeshSkinned(ClusterStaticMeshHandle handle, bool skinned) {
+void smvk::WorldPage::SetMeshSkinned(WorldPageStaticMeshHandle handle, bool skinned) {
     if (handle.empty())
         return;
     if (StaticMesh* mesh = staticMeshes.get(handle))
         mesh->skinned = skinned;
 }
 
-const std::vector<smvk::PackedSkinInfluences>* smvk::Cluster::GetMeshSkinStream(
-    ClusterStaticMeshHandle handle) const {
+const std::vector<smvk::PackedSkinInfluences>* smvk::WorldPage::GetMeshSkinStream(
+    WorldPageStaticMeshHandle handle) const {
     if (handle.empty())
         return nullptr;
     auto it = skinStreams_.find(handle.index());
     return it == skinStreams_.end() ? nullptr : &it->second;
 }
 
-const std::vector<smvk::PackedSkinInfluences>* smvk::Cluster::GetRetainedSkinStream(
-    ClusterStaticMeshHandle handle) const {
+const std::vector<smvk::PackedSkinInfluences>* smvk::WorldPage::GetRetainedSkinStream(
+    WorldPageStaticMeshHandle handle) const {
     if (handle.empty())
         return nullptr;
     auto it = retainedUploads_.find(handle.index());
@@ -326,8 +326,8 @@ const std::vector<smvk::PackedSkinInfluences>* smvk::Cluster::GetRetainedSkinStr
     return &it->second.skin;
 }
 
-void smvk::Cluster::SetMeshSkinStream(ClusterStaticMeshHandle handle,
-                                      std::vector<smvk::PackedSkinInfluences>&& stream) {
+void smvk::WorldPage::SetMeshSkinStream(WorldPageStaticMeshHandle handle,
+                                        std::vector<smvk::PackedSkinInfluences>&& stream) {
     if (handle.empty() || stream.empty())
         return;
     skinStreams_[handle.index()] = std::move(stream);
@@ -344,7 +344,7 @@ void smvk::Cluster::SetMeshSkinStream(ClusterStaticMeshHandle handle,
 // 20B) + the ranges table ((heapBase, count, skinBase) per range, static).
 // The heaps stay the BIND POSE (the pass's input).
 // ---------------------------------------------------------------------------
-bool smvk::Cluster::EnsureSkinnedGpuData(ResourceManager& ctx) {
+bool smvk::WorldPage::EnsureSkinnedGpuData(ResourceManager& ctx) {
     if (skinnedGpuValid_)
         return !skinnedRanges_.empty();
     if (skinStreams_.empty() || !ctx_) {
@@ -382,11 +382,11 @@ bool smvk::Cluster::EnsureSkinnedGpuData(ResourceManager& ctx) {
             // No heap range (offline clusters call this never): a stream
             // without an allocation writes nothing - the flag must not
             // survive either (the admission contract above).
-            if (StaticMesh* m = staticMeshes.get(ClusterStaticMeshHandle::Mint(poolIdx)))
+            if (StaticMesh* m = staticMeshes.get(WorldPageStaticMeshHandle::Mint(poolIdx)))
                 m->skinned = false;
             continue;
         }
-        StaticMesh* m = staticMeshes.get(ClusterStaticMeshHandle::Mint(poolIdx));
+        StaticMesh* m = staticMeshes.get(WorldPageStaticMeshHandle::Mint(poolIdx));
         if (!m)
             continue;
         if (stream.size() != m->geometry.vertexCount) {
@@ -401,7 +401,7 @@ bool smvk::Cluster::EnsureSkinnedGpuData(ResourceManager& ctx) {
             continue;
         }
         SkinnedMeshRange r{};
-        r.mesh = ClusterStaticMeshHandle::Mint(poolIdx);
+        r.mesh = WorldPageStaticMeshHandle::Mint(poolIdx);
         r.vertexCount = m->geometry.vertexCount;
         r.heapVertexBase = uint32_t(it->second->vertexBase);
         r.skinBase = uint32_t(streamData.size());
@@ -516,12 +516,12 @@ bool smvk::Cluster::EnsureSkinnedGpuData(ResourceManager& ctx) {
 // keep the loaded value - the repeated-sample round trip is exact for
 // glTF TRS-authored locals).
 // ---------------------------------------------------------------------------
-void smvk::Cluster::SetAnimClip(touranim::Clip clip) {
+void smvk::WorldPage::SetAnimClip(touranim::Clip clip) {
     animClip_ = std::move(clip);
     animTime_ = 0.0;
 }
 
-bool smvk::Cluster::SampleAnimationPose(float dt) {
+bool smvk::WorldPage::SampleAnimationPose(float dt) {
     if (!hasSkeleton || !animClip_ || skeleton.Count() == 0)
         return false;
     const touranim::Clip& clip = *animClip_;
@@ -577,23 +577,23 @@ bool smvk::Cluster::SampleAnimationPose(float dt) {
     return true;
 }
 
-bool smvk::Cluster::SampleAnimation(float dt, std::vector<glm::mat4>& outPalette) {
+bool smvk::WorldPage::SampleAnimation(float dt, std::vector<glm::mat4>& outPalette) {
     if (!SampleAnimationPose(dt))
         return false;
     touranim::BuildSkinPalette(scene, skeleton, outPalette);
     return true;
 }
 
-bool smvk::Cluster::SampleAnimation(float dt, tour::mem::FrameVector<glm::mat4>& outPalette) {
+bool smvk::WorldPage::SampleAnimation(float dt, tour::mem::FrameVector<glm::mat4>& outPalette) {
     if (!SampleAnimationPose(dt))
         return false;
     touranim::BuildSkinPalette(scene, skeleton, outPalette);
     return true;
 }
 
-std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadMeshes(
+std::vector<smvk::WorldPageStaticMeshHandle> smvk::WorldPage::UploadMeshes(
     std::span<const MeshData> uploads) {
-    std::vector<ClusterStaticMeshHandle> handles;
+    std::vector<WorldPageStaticMeshHandle> handles;
     if (uploads.empty())
         return handles;
 
@@ -815,10 +815,10 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadMeshes(
     return handles;
 }
 
-std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshesDirect(
+std::vector<smvk::WorldPageStaticMeshHandle> smvk::WorldPage::UploadStaticMeshesDirect(
     const void* content,
     std::span<const StaticGeometrySource> sources) {
-    std::vector<ClusterStaticMeshHandle> handles;
+    std::vector<WorldPageStaticMeshHandle> handles;
     if (!content || sources.empty())
         return handles;
     assert(!offlineMode_ && "UploadStaticMeshesDirect is a GPU-context fast path");
@@ -871,7 +871,7 @@ std::vector<smvk::ClusterStaticMeshHandle> smvk::Cluster::UploadStaticMeshesDire
 // sibling is indistinguishable from a load-time one.
 // -----------------------------------------------------------------------------
 
-uint64_t smvk::Cluster::DeferMeshLod(DeferredMeshLod&& d) {
+uint64_t smvk::WorldPage::DeferMeshLod(DeferredMeshLod&& d) {
     // Payload accounting: the pos + shading streams are interleaved in
     // the vertex block (VERTEX units - the arena counts vertices, the
     // bytes are the physical cost) + the index bytes. Both matter to
@@ -884,14 +884,15 @@ uint64_t smvk::Cluster::DeferMeshLod(DeferredMeshLod&& d) {
     return vertexBytes + indexBytes;
 }
 
-const smvk::Cluster::DeferredMeshLod* smvk::Cluster::FindDeferredMeshLod(StringViewT uri) const {
+const smvk::WorldPage::DeferredMeshLod* smvk::WorldPage::FindDeferredMeshLod(
+    StringViewT uri) const {
     for (const DeferredMeshLod& d : deferredLods_)
         if (uri == d.uri)
             return &d;
     return nullptr;
 }
 
-size_t smvk::Cluster::DeferredLodCount() const {
+size_t smvk::WorldPage::DeferredLodCount() const {
     size_t n = 0;
     for (const DeferredMeshLod& d : deferredLods_)
         if (!d.promotedHandle.valid())
@@ -899,7 +900,7 @@ size_t smvk::Cluster::DeferredLodCount() const {
     return n;
 }
 
-uint64_t smvk::Cluster::DeferredLodBytes() const {
+uint64_t smvk::WorldPage::DeferredLodBytes() const {
     uint64_t b = 0;
     for (const DeferredMeshLod& d : deferredLods_)
         if (!d.promotedHandle.valid())
@@ -907,7 +908,8 @@ uint64_t smvk::Cluster::DeferredLodBytes() const {
     return b;
 }
 
-std::optional<smvk::Cluster::PromotedLod> smvk::Cluster::PromoteDeferredMeshLod(StringViewT uri) {
+std::optional<smvk::WorldPage::PromotedLod> smvk::WorldPage::PromoteDeferredMeshLod(
+    StringViewT uri) {
     DeferredMeshLod* rec = nullptr;
     for (DeferredMeshLod& d : deferredLods_) {
         if (uri != d.uri)
@@ -925,7 +927,7 @@ std::optional<smvk::Cluster::PromotedLod> smvk::Cluster::PromoteDeferredMeshLod(
     // batch path with a single source - fresh arena ranges, table-driven
     // copies through the RHI upload streamer).
     const StaticGeometrySource srcs[1] = {rec->src};
-    const std::vector<ClusterStaticMeshHandle> handles =
+    const std::vector<WorldPageStaticMeshHandle> handles =
         UploadStaticMeshesDirect(pakImagePin_->data(), srcs);
     if (handles.size() != 1 || !handles[0].valid())
         return std::nullopt;
@@ -939,7 +941,7 @@ std::optional<smvk::Cluster::PromotedLod> smvk::Cluster::PromoteDeferredMeshLod(
 // must fit the page (a truncated page refuses loudly, never a wild
 // upload). The caller owns the payload's lifetime through the call
 // (BulkCopyBuffer stages synchronously — release the page after).
-std::optional<smvk::Cluster::PromotedLod> smvk::Cluster::PromoteDeferredMeshLodFromPage(
+std::optional<smvk::WorldPage::PromotedLod> smvk::WorldPage::PromoteDeferredMeshLodFromPage(
     StringViewT uri,
     const uint8_t* entryPayload,
     size_t entryBytes) {
@@ -974,7 +976,7 @@ std::optional<smvk::Cluster::PromotedLod> smvk::Cluster::PromoteDeferredMeshLodF
         (src.lmSrc && !fits(src.lmSrc, lmBytes)) || !fits(src.idxSrc, idxBytes))
         return std::nullopt; // the page does not carry the blob whole
     const StaticGeometrySource srcs[1] = {src};
-    const std::vector<ClusterStaticMeshHandle> handles =
+    const std::vector<WorldPageStaticMeshHandle> handles =
         UploadStaticMeshesDirect(entryPayload, srcs);
     if (handles.size() != 1 || !handles[0].valid())
         return std::nullopt;
@@ -984,9 +986,9 @@ std::optional<smvk::Cluster::PromotedLod> smvk::Cluster::PromoteDeferredMeshLodF
 // The shared promote tail (both payload lanes): the meta re-attach +
 // the registration + the record's promotedHandle — verbatim the old
 // inline block (cluster_serializer.cpp's post-upload sequence).
-std::optional<smvk::Cluster::PromotedLod> smvk::Cluster::FinishPromoteDeferred(
+std::optional<smvk::WorldPage::PromotedLod> smvk::WorldPage::FinishPromoteDeferred(
     DeferredMeshLod* rec,
-    ClusterStaticMeshHandle h) {
+    WorldPageStaticMeshHandle h) {
 
     // The deserializer's meta re-attach (cluster_serializer.cpp's
     // post-upload block, verbatim): sphere + lightmap chunk/xforms +
@@ -1017,7 +1019,7 @@ std::optional<smvk::Cluster::PromotedLod> smvk::Cluster::FinishPromoteDeferred(
     return PromotedLod{h, rec->payloadBytes};
 }
 
-uint64_t smvk::Cluster::EvictMeshLod(StringViewT uri) {
+uint64_t smvk::WorldPage::EvictMeshLod(StringViewT uri) {
     DeferredMeshLod* rec = nullptr;
     for (DeferredMeshLod& d : deferredLods_) {
         if (uri != d.uri)
@@ -1028,7 +1030,7 @@ uint64_t smvk::Cluster::EvictMeshLod(StringViewT uri) {
     }
     if (rec == nullptr)
         return 0;
-    const ClusterStaticMeshHandle h = rec->promotedHandle;
+    const WorldPageStaticMeshHandle h = rec->promotedHandle;
 
     // Move the mesh's runtime fields back into the record BEFORE the
     // destroy (the pool entry dies with them otherwise) - a re-promote
@@ -1064,7 +1066,7 @@ uint64_t smvk::Cluster::EvictMeshLod(StringViewT uri) {
 // Mesh destruction
 // -----------------------------------------------------------------------------
 
-void smvk::Cluster::DestroyMesh(smvk::ClusterStaticMeshHandle handle) {
+void smvk::WorldPage::DestroyMesh(smvk::WorldPageStaticMeshHandle handle) {
     if (handle.empty())
         return;
 
@@ -1100,14 +1102,14 @@ void smvk::Cluster::DestroyMesh(smvk::ClusterStaticMeshHandle handle) {
 // Material
 // -----------------------------------------------------------------------------
 
-smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterial(smvk::TextureHandle diffuse) {
+smvk::WorldPageMaterialHandle smvk::WorldPage::CreateMaterial(smvk::TextureHandle diffuse) {
     MaterialCreateInfo ci{};
     ci.diffuse = diffuse;
     ci.baseColorTexture = diffuse;
     return CreateMaterial(ci);
 }
 
-smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterial(const MaterialCreateInfo& info) {
+smvk::WorldPageMaterialHandle smvk::WorldPage::CreateMaterial(const MaterialCreateInfo& info) {
     // Resolve baseColor texture – prefer baseColorTexture, fall back to legacy diffuse
     TextureHandle baseTex = !info.baseColorTexture.empty() ? info.baseColorTexture : info.diffuse;
 
@@ -1163,14 +1165,15 @@ smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterial(const MaterialCreateIn
                                     info.farQuality);
 }
 
-smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterialFromValues(const MaterialValues& values,
-                                                                    ShadingModel shadingModel,
-                                                                    AlphaMode alphaMode,
-                                                                    float alphaCutoff,
-                                                                    bool doubleSided,
-                                                                    bool castsShadows,
-                                                                    bool allowFarVertexLit,
-                                                                    ShaderLodQuality farQuality) {
+smvk::WorldPageMaterialHandle smvk::WorldPage::CreateMaterialFromValues(
+    const MaterialValues& values,
+    ShadingModel shadingModel,
+    AlphaMode alphaMode,
+    float alphaCutoff,
+    bool doubleSided,
+    bool castsShadows,
+    bool allowFarVertexLit,
+    ShaderLodQuality farQuality) {
     smvk::Material material{};
     material.values = values;
     // Authoritative alphaMode mirror for the shader (params2.w): Blend
@@ -1190,6 +1193,6 @@ smvk::ClusterMaterialHandle smvk::Cluster::CreateMaterialFromValues(const Materi
     return materials.create(std::move(material));
 }
 
-void smvk::Cluster::DestroyMaterial(smvk::ClusterMaterialHandle handle) {
+void smvk::WorldPage::DestroyMaterial(smvk::WorldPageMaterialHandle handle) {
     materials.destroy(handle);
 }

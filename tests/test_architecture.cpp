@@ -729,7 +729,7 @@ int main() {
             {"App/cluster.h", 9, 0},
             {"App/world.h", 18, 0},
             {"Asset/asset_plan.h", 3, 0},
-            // 3 = Cluster + GiBinding + TextureStreamer (the streamer moved
+            // 3 = WorldPage + GiBinding + TextureStreamer (the streamer moved
             // to tour, audit finding 3; the smvk:: serializer surface
             // forward-uses it through the compat using-declaration).
             {"Asset/cluster_serializer.h", 3, 0},

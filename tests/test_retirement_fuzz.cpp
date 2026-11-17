@@ -6,7 +6,7 @@
 // Vulkan context - no swapchain, no presentation.
 //
 // What is fuzzed (the three retirement legs + the drain):
-//   * Cluster mesh heap ranges: UploadMesh / UploadMeshes /
+//   * WorldPage mesh heap ranges: UploadMesh / UploadMeshes /
 //     UploadStaticMeshesDirect (incl. degenerate entries -> the all-or-nothing
 //     carve-loop rollback) + DestroyMesh, whose virtual-block frees must be
 //     RETIREMENT-ORDERED (DeferDestroy), never in place.
@@ -90,7 +90,7 @@ bool Overlaps(const RangeRow& a, const RangeRow& b) {
 // One live mesh: the handle + the EXACT rows it owns (no row matching at
 // destroy time - the rows ride with the entry).
 struct MeshEntry {
-    smvk::ClusterStaticMeshHandle handle;
+    smvk::WorldPageStaticMeshHandle handle;
     RangeRow vertex;
     RangeRow index; // size 0 = index-free mesh
 };
@@ -326,8 +326,8 @@ int main() {
     // HEAP-allocated: the cluster carries several inline-storage pools and
     // is far too large for the default stack (the engine always owns
     // clusters by pointer too).
-    std::printf("[fuzz] stage: Cluster ctor...\n");
-    auto cluster = std::make_unique<smvk::Cluster>(&rm);
+    std::printf("[fuzz] stage: WorldPage ctor...\n");
+    auto cluster = std::make_unique<smvk::WorldPage>(&rm);
     auto* vctx = static_cast<smvk::VulkanResourceManager*>(rm.GetVulkanOpaque());
     const VkDevice dev = vctx->VkDeviceHandle();
 
@@ -373,7 +373,7 @@ int main() {
 
     // Reads the returned handle's surface rows into the model (the draw args
     // ARE the heap ranges: absolute baseVertex / firstIndex).
-    const auto addMesh = [&](smvk::ClusterStaticMeshHandle h, uint32_t vc, uint32_t ic) {
+    const auto addMesh = [&](smvk::WorldPageStaticMeshHandle h, uint32_t vc, uint32_t ic) {
         const smvk::StaticMesh* mesh = cluster->staticMeshes.get(h);
         if (!mesh || mesh->geometry.surfaces.empty())
             Fail("upload shape", 0, "addMesh", "returned handle has no surface");
@@ -577,9 +577,8 @@ int main() {
             op = "uploadSingle*";
             smvk::MeshData up;
             fillUpload(up, randVerts(), randIdx());
-            addMesh(cluster->UploadMesh(up),
-                    uint32_t(up.vertices.size()),
-                    uint32_t(up.indices.size()));
+            addMesh(
+                cluster->UploadMesh(up), uint32_t(up.vertices.size()), uint32_t(up.indices.size()));
         }
 
         CheckBlocks(iter, op);

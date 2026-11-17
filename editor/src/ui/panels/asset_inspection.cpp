@@ -184,8 +184,8 @@ void EditorApp::DrawAssetGenericPage() {
             size_t previewCluster = 0;
             bool hasSkeleton = false;
             if (m_prefab.world) {
-                for (size_t i = 0; i < m_prefab.world->clusters.size(); ++i) {
-                    if (m_prefab.world->clusters[i]->hasSkeleton) {
+                for (size_t i = 0; i < m_prefab.world->pages.size(); ++i) {
+                    if (m_prefab.world->pages[i]->hasSkeleton) {
                         previewCluster = i;
                         hasSkeleton = true;
                         break;
@@ -197,14 +197,14 @@ void EditorApp::DrawAssetGenericPage() {
                 // prefab locals so switching and scrubbing remain pure.
                 if (!m_prefabAnimationPreview || m_prefabAnimationClusterIndex != previewCluster)
                     m_prefabAnimationRest =
-                        m_prefab.world->clusters[previewCluster]->scene.localTransform;
+                        m_prefab.world->pages[previewCluster]->scene.localTransform;
                 m_prefabAnimationClusterIndex = previewCluster;
                 m_prefabAnimationClip = clip;
                 m_prefabAnimationSource = path.string();
                 m_prefabAnimationTime = 0.0f;
                 m_prefabAnimationPlaying = true;
                 m_prefabAnimationPreview = true;
-                m_prefab.world->clusters[previewCluster]->SetAnimClip(clip);
+                m_prefab.world->pages[previewCluster]->SetAnimClip(clip);
                 m_showPrefabWindow = true;
             } else {
                 ImGui::OpenPopup("##animationPreviewHelp");

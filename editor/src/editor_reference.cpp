@@ -60,7 +60,7 @@ void EditorApp::StartReferenceRender() {
     opts.excludeDecalOverlays = false;
     // Decode the same source KTX data as the GI baker: texture samples
     // are evaluated at camera hits, not reduced to flat material factors.
-    for (const auto& cluster : m_world->clusters) {
+    for (const auto& cluster : m_world->pages) {
         if (!cluster)
             continue;
         for (const auto& [uri, handle] : cluster->ListTextureUris()) {

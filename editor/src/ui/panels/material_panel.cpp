@@ -221,7 +221,7 @@ void EditorApp::DrawMaterialBody(uint32_t mat) {
         ImGui::TextDisabled("Material resolve failed.");
         return;
     }
-    tour::Cluster* cl = m_world->clusters.empty() ? nullptr : m_world->clusters[0].get();
+    tour::WorldPage* cl = m_world->pages.empty() ? nullptr : m_world->pages[0].get();
 
     // ---- Preview + the ball sidecar --------------------------------
     ImGui::Separator();

@@ -1392,7 +1392,7 @@ void EditorApp::SaveEnvToDoc(smvk::tour::Doc& doc) const {
 void EditorApp::LoadEnvFromDoc(const smvk::tour::Doc& doc) {
     // Tour env applies into the LIVE scene (cluster-space ids remap to
     // world ids like every other tour id). Runs post-build (the replay
-    // needs ClusterToWorld + the hierarchy); without a world there is
+    // needs PageToWorld + the hierarchy); without a world there is
     // no scene to seed.
     if (!m_world)
         return;
@@ -1631,12 +1631,12 @@ void EditorApp::LoadEnvFromDoc(const smvk::tour::Doc& doc) {
         scene.hasRenderSettings = true;
     }
     for (const auto& [cn, env] : nodeEnvs) {
-        const uint32_t wn = ClusterToWorld(cn);
+        const uint32_t wn = PageToWorld(cn);
         if (wn != UINT32_MAX && wn < scene.hierarchy.size())
             SetEnv(scene, wn, env);
     }
     for (const auto& entry : nodeVols) {
-        const uint32_t wn = ClusterToWorld(entry.node);
+        const uint32_t wn = PageToWorld(entry.node);
         if (wn == UINT32_MAX || wn >= scene.hierarchy.size())
             continue; // dangling volume: drop (never fatal)
         EnvVolume vol = entry.vol;
@@ -1646,7 +1646,7 @@ void EditorApp::LoadEnvFromDoc(const smvk::tour::Doc& doc) {
         SetEnvVolume(scene, wn, vol);
     }
     if (haveCurrent) {
-        const uint32_t wn = ClusterToWorld(currentCluster);
+        const uint32_t wn = PageToWorld(currentCluster);
         if (wn != UINT32_MAX && FindEnv(scene, wn))
             m_envCurrent = wn;
     }
@@ -1711,7 +1711,7 @@ void EditorApp::LoadDefaultCameraFromDoc(const smvk::tour::Doc& doc) {
                 Log("tour: camera.default unparsable: '" + val + "' (none stands).");
                 continue;
             }
-            target = ClusterToWorld(cn);
+            target = PageToWorld(cn);
         }
         if (target == UINT32_MAX || target >= scene.hierarchy.size() ||
             !(FindCamera(scene, target) != nullptr)) {

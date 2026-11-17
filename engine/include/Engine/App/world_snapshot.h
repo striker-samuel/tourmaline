@@ -278,11 +278,11 @@ inline Json WorldState(const tour::World& world,
     // Generational slot metadata and free-list order matter for the
     // determinism of the NEXT Spawn/Destroy operation. Raw pointers,
     // transient GPU handles and arbitrary gameplay objects are omitted.
-    const auto ownerId = [&world](const tour::Cluster* owner) -> uint64_t {
+    const auto ownerId = [&world](const tour::WorldPage* owner) -> uint64_t {
         if (!owner)
             return 0;
-        const auto it = world.gpuSceneClusterIds.find(owner);
-        return it == world.gpuSceneClusterIds.end() ? 0 : it->second;
+        const auto it = world.gpuScenePageIds.find(owner);
+        return it == world.gpuScenePageIds.end() ? 0 : it->second;
     };
     Json entities = {{"audio", Json::array()},
                      {"meshes", Json::array()},
@@ -294,7 +294,7 @@ inline Json WorldState(const tour::World& world,
                      {"animator_free", world.animatorFree},
                      {"material_user_data", world.materialUserData},
                      {"material_shader_family", world.materialShaderFamily},
-                     {"next_gpu_scene_cluster_id", world.nextGpuSceneClusterId}};
+                     {"next_gpu_scene_cluster_id", world.nextGpuScenePageId}};
     for (const auto& entity : world.audioEntities) {
         entities["audio"].push_back({{"alive", entity.alive},
                                      {"generation", entity.generation},

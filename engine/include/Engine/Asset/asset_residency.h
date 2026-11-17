@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 #pragma once
-// Device/host-owned asset residency independent of a Scene, Cluster or pak.
+// Device/host-owned asset residency independent of a Scene, WorldPage or pak.
 // A lease pins one resource backing by durable content ID. The last holder
 // releases it; stale weak cache entries do not keep physical assets alive.
 // This is a CPU-side ownership primitive; the loader is responsible for

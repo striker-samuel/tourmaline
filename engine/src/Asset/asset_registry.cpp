@@ -28,7 +28,7 @@ using namespace ::smvk;
 } // namespace tour
 namespace smvk {
 // (smvk-scope: the asset-registry free functions stay in smvk - the
-// header declares them there; only the Cluster members are tour::.)
+// header declares them there; only the WorldPage members are tour::.)
 // NOTE: the UNQUALIFIED function name - GCC 14 rejects a qualified-id
 // in a declaration here ("explicit qualification in declaration")
 // while MSVC accepts it; the unqualified form defines the same
@@ -103,12 +103,12 @@ namespace tour {
 using namespace ::smvk;
 
 // ---------------------------------------------------------------------------
-// Cluster URI registry: registration normalizes into the cluster-owned
+// WorldPage URI registry: registration normalizes into the cluster-owned
 // arena (keys stay valid until the cluster dies); lookups normalize into
 // the frame arena (fast path: zero allocation) and probe the UriMap.
 // ---------------------------------------------------------------------------
 
-bool Cluster::RegisterMeshUri(StringViewT uri, ClusterStaticMeshHandle handle) {
+bool WorldPage::RegisterMeshUri(StringViewT uri, WorldPageStaticMeshHandle handle) {
     const StringViewT n = NormalizeAssetUri(uri, uriArena_);
     if (n.empty() || !handle.valid())
         return false;
@@ -118,7 +118,7 @@ bool Cluster::RegisterMeshUri(StringViewT uri, ClusterStaticMeshHandle handle) {
     return true;
 }
 
-bool Cluster::RegisterMaterialUri(StringViewT uri, ClusterMaterialHandle handle) {
+bool WorldPage::RegisterMaterialUri(StringViewT uri, WorldPageMaterialHandle handle) {
     const StringViewT n = NormalizeAssetUri(uri, uriArena_);
     if (n.empty() || !handle.valid())
         return false;
@@ -128,7 +128,7 @@ bool Cluster::RegisterMaterialUri(StringViewT uri, ClusterMaterialHandle handle)
     return true;
 }
 
-bool Cluster::RegisterLightUri(StringViewT uri, ClusterLightHandle handle) {
+bool WorldPage::RegisterLightUri(StringViewT uri, WorldPageLightHandle handle) {
     const StringViewT n = NormalizeAssetUri(uri, uriArena_);
     if (n.empty() || !handle.valid())
         return false;
@@ -138,7 +138,7 @@ bool Cluster::RegisterLightUri(StringViewT uri, ClusterLightHandle handle) {
     return true;
 }
 
-bool Cluster::RegisterCameraUri(StringViewT uri, ClusterCameraHandle handle) {
+bool WorldPage::RegisterCameraUri(StringViewT uri, WorldPageCameraHandle handle) {
     const StringViewT n = NormalizeAssetUri(uri, uriArena_);
     if (n.empty() || !handle.valid())
         return false;
@@ -148,7 +148,7 @@ bool Cluster::RegisterCameraUri(StringViewT uri, ClusterCameraHandle handle) {
     return true;
 }
 
-bool Cluster::RegisterDecalUri(StringViewT uri, ClusterDecalHandle handle) {
+bool WorldPage::RegisterDecalUri(StringViewT uri, WorldPageDecalHandle handle) {
     const StringViewT n = NormalizeAssetUri(uri, uriArena_);
     if (n.empty() || !handle.valid())
         return false;
@@ -158,12 +158,12 @@ bool Cluster::RegisterDecalUri(StringViewT uri, ClusterDecalHandle handle) {
     return true;
 }
 
-void Cluster::RegisterGiBinding(GiBinding::Kind kind, const std::string& name) {
+void WorldPage::RegisterGiBinding(GiBinding::Kind kind, const std::string& name) {
     if (!name.empty())
         giBindings.push_back(GiBinding{kind, name});
 }
 
-void Cluster::AddBakePayload(const std::string& vfsPath, std::vector<uint8_t> bytes) {
+void WorldPage::AddBakePayload(const std::string& vfsPath, std::vector<uint8_t> bytes) {
     if (vfsPath.empty() || bytes.empty())
         return;
     BakePayload p;
@@ -171,7 +171,7 @@ void Cluster::AddBakePayload(const std::string& vfsPath, std::vector<uint8_t> by
     bakePayloads_[vfsPath] = std::move(p);
 }
 
-void Cluster::AddBakePayloadBorrowed(const std::string& vfsPath, std::span<const uint8_t> bytes) {
+void WorldPage::AddBakePayloadBorrowed(const std::string& vfsPath, std::span<const uint8_t> bytes) {
     if (vfsPath.empty() || bytes.empty())
         return;
     BakePayload p;
@@ -179,14 +179,14 @@ void Cluster::AddBakePayloadBorrowed(const std::string& vfsPath, std::span<const
     bakePayloads_[vfsPath] = std::move(p);
 }
 
-const Cluster::BakePayload* Cluster::FindBakePayload(const std::string& vfsPath) const {
+const WorldPage::BakePayload* WorldPage::FindBakePayload(const std::string& vfsPath) const {
     const auto it = bakePayloads_.find(vfsPath);
     if (it == bakePayloads_.end())
         return nullptr;
     return &it->second;
 }
 
-bool Cluster::RegisterTextureUri(StringViewT uri, TextureHandle handle) {
+bool WorldPage::RegisterTextureUri(StringViewT uri, TextureHandle handle) {
     const StringViewT n = NormalizeAssetUri(uri, uriArena_);
     if (n.empty() || !handle.valid())
         return false;
@@ -194,7 +194,7 @@ bool Cluster::RegisterTextureUri(StringViewT uri, TextureHandle handle) {
     return true;
 }
 
-void Cluster::UnregisterUri(StringViewT uri) {
+void WorldPage::UnregisterUri(StringViewT uri) {
     const StringViewT n = NormalizeAssetUri(uri);
     if (n.empty())
         return;
@@ -210,57 +210,57 @@ void Cluster::UnregisterUri(StringViewT uri) {
     meshMeshlets_.Erase(n);
 }
 
-std::optional<ClusterStaticMeshHandle> Cluster::FindMeshByUri(StringViewT uri) const {
+std::optional<WorldPageStaticMeshHandle> WorldPage::FindMeshByUri(StringViewT uri) const {
     const StringViewT n = NormalizeAssetUri(uri);
     if (n.empty())
         return std::nullopt;
-    const ClusterStaticMeshHandle* hit = meshByUri_.Find(n);
+    const WorldPageStaticMeshHandle* hit = meshByUri_.Find(n);
     if (!hit)
         return std::nullopt;
     return *hit;
 }
 
-std::optional<ClusterMaterialHandle> Cluster::FindMaterialByUri(StringViewT uri) const {
+std::optional<WorldPageMaterialHandle> WorldPage::FindMaterialByUri(StringViewT uri) const {
     const StringViewT n = NormalizeAssetUri(uri);
     if (n.empty())
         return std::nullopt;
-    const ClusterMaterialHandle* hit = materialByUri_.Find(n);
+    const WorldPageMaterialHandle* hit = materialByUri_.Find(n);
     if (!hit)
         return std::nullopt;
     return *hit;
 }
 
-std::optional<ClusterLightHandle> Cluster::FindLightByUri(StringViewT uri) const {
+std::optional<WorldPageLightHandle> WorldPage::FindLightByUri(StringViewT uri) const {
     const StringViewT n = NormalizeAssetUri(uri);
     if (n.empty())
         return std::nullopt;
-    const ClusterLightHandle* hit = lightByUri_.Find(n);
+    const WorldPageLightHandle* hit = lightByUri_.Find(n);
     if (!hit)
         return std::nullopt;
     return *hit;
 }
 
-std::optional<ClusterCameraHandle> Cluster::FindCameraByUri(StringViewT uri) const {
+std::optional<WorldPageCameraHandle> WorldPage::FindCameraByUri(StringViewT uri) const {
     const StringViewT n = NormalizeAssetUri(uri);
     if (n.empty())
         return std::nullopt;
-    const ClusterCameraHandle* hit = cameraByUri_.Find(n);
+    const WorldPageCameraHandle* hit = cameraByUri_.Find(n);
     if (!hit)
         return std::nullopt;
     return *hit;
 }
 
-std::optional<ClusterDecalHandle> Cluster::FindDecalByUri(StringViewT uri) const {
+std::optional<WorldPageDecalHandle> WorldPage::FindDecalByUri(StringViewT uri) const {
     const StringViewT n = NormalizeAssetUri(uri);
     if (n.empty())
         return std::nullopt;
-    const ClusterDecalHandle* hit = decalByUri_.Find(n);
+    const WorldPageDecalHandle* hit = decalByUri_.Find(n);
     if (!hit)
         return std::nullopt;
     return *hit;
 }
 
-std::optional<TextureHandle> Cluster::FindTextureByUri(StringViewT uri) const {
+std::optional<TextureHandle> WorldPage::FindTextureByUri(StringViewT uri) const {
     const StringViewT n = NormalizeAssetUri(uri);
     if (n.empty())
         return std::nullopt;
@@ -270,7 +270,7 @@ std::optional<TextureHandle> Cluster::FindTextureByUri(StringViewT uri) const {
     return *hit;
 }
 
-StringViewT Cluster::GetMeshUri(ClusterStaticMeshHandle handle) const {
+StringViewT WorldPage::GetMeshUri(WorldPageStaticMeshHandle handle) const {
     if (!handle.valid())
         return {};
     // Ledger newest-first (see meshUriLedger_): the forward map keeps
@@ -282,7 +282,7 @@ StringViewT Cluster::GetMeshUri(ClusterStaticMeshHandle handle) const {
     return {};
 }
 
-StringViewT Cluster::GetMaterialUri(ClusterMaterialHandle handle) const {
+StringViewT WorldPage::GetMaterialUri(WorldPageMaterialHandle handle) const {
     if (!handle.valid())
         return {};
     for (auto it = materialUriLedger_.rbegin(); it != materialUriLedger_.rend(); ++it)
@@ -291,7 +291,7 @@ StringViewT Cluster::GetMaterialUri(ClusterMaterialHandle handle) const {
     return {};
 }
 
-StringViewT Cluster::GetLightUri(ClusterLightHandle handle) const {
+StringViewT WorldPage::GetLightUri(WorldPageLightHandle handle) const {
     if (!handle.valid())
         return {};
     for (auto it = lightUriLedger_.rbegin(); it != lightUriLedger_.rend(); ++it)
@@ -300,7 +300,7 @@ StringViewT Cluster::GetLightUri(ClusterLightHandle handle) const {
     return {};
 }
 
-StringViewT Cluster::GetCameraUri(ClusterCameraHandle handle) const {
+StringViewT WorldPage::GetCameraUri(WorldPageCameraHandle handle) const {
     if (!handle.valid())
         return {};
     for (auto it = cameraUriLedger_.rbegin(); it != cameraUriLedger_.rend(); ++it)
@@ -309,7 +309,7 @@ StringViewT Cluster::GetCameraUri(ClusterCameraHandle handle) const {
     return {};
 }
 
-StringViewT Cluster::GetDecalUri(ClusterDecalHandle handle) const {
+StringViewT WorldPage::GetDecalUri(WorldPageDecalHandle handle) const {
     if (!handle.valid())
         return {};
     for (auto it = decalUriLedger_.rbegin(); it != decalUriLedger_.rend(); ++it)
@@ -318,26 +318,26 @@ StringViewT Cluster::GetDecalUri(ClusterDecalHandle handle) const {
     return {};
 }
 
-ClusterLightHandle Cluster::CreateLight(SceneLight def) {
+WorldPageLightHandle WorldPage::CreateLight(SceneLight def) {
     return lights.create(std::move(def));
 }
 
-ClusterCameraHandle Cluster::CreateCamera(SceneCamera def) {
+WorldPageCameraHandle WorldPage::CreateCamera(SceneCamera def) {
     return cameras.create(std::move(def));
 }
 
-ClusterDecalHandle Cluster::CreateDecal(SceneDecal def) {
+WorldPageDecalHandle WorldPage::CreateDecal(SceneDecal def) {
     return decals.create(std::move(def));
 }
 
-void Cluster::RegisterTextureSampler(StringViewT uri, const TextureSamplerDesc& desc) {
+void WorldPage::RegisterTextureSampler(StringViewT uri, const TextureSamplerDesc& desc) {
     const StringViewT n = NormalizeAssetUri(uri, uriArena_);
     if (n.empty())
         return;
     textureSamplers_.Insert(uriArena_.AllocateString(n), desc);
 }
 
-std::optional<TextureSamplerDesc> Cluster::GetTextureSampler(StringViewT uri) const {
+std::optional<TextureSamplerDesc> WorldPage::GetTextureSampler(StringViewT uri) const {
     const StringViewT n = NormalizeAssetUri(uri);
     if (n.empty())
         return std::nullopt;
@@ -347,45 +347,45 @@ std::optional<TextureSamplerDesc> Cluster::GetTextureSampler(StringViewT uri) co
     return *hit;
 }
 
-void Cluster::SetTextureSource(StringViewT uri, std::vector<uint8_t> bytes) {
+void WorldPage::SetTextureSource(StringViewT uri, std::vector<uint8_t> bytes) {
     const StringViewT n = NormalizeAssetUri(uri, uriArena_);
     if (n.empty())
         return;
     textureSources_.Insert(uriArena_.AllocateString(n), std::move(bytes));
 }
 
-const std::vector<uint8_t>* Cluster::GetTextureSource(StringViewT uri) const {
+const std::vector<uint8_t>* WorldPage::GetTextureSource(StringViewT uri) const {
     const StringViewT n = NormalizeAssetUri(uri);
     if (n.empty())
         return nullptr;
     return textureSources_.Find(n);
 }
 
-void Cluster::ReleaseTextureSources() {
+void WorldPage::ReleaseTextureSources() {
     textureSources_.Clear();
 }
 
-void Cluster::PinPakImage(std::shared_ptr<const std::vector<uint8_t>> image) {
+void WorldPage::PinPakImage(std::shared_ptr<const std::vector<uint8_t>> image) {
     pakImagePin_ = std::move(image);
 }
 
-void Cluster::SetRetainUploads(bool retain) {
+void WorldPage::SetRetainUploads(bool retain) {
     retainUploads_ = retain;
     if (!retain)
         retainedUploads_.clear();
 }
 
-void Cluster::SetOfflineMode(bool offline) {
+void WorldPage::SetOfflineMode(bool offline) {
     offlineMode_ = offline;
     if (offline)
         SetRetainUploads(true);
 }
 
-uint32_t Cluster::AllocOfflineTextureId() {
+uint32_t WorldPage::AllocOfflineTextureId() {
     return offlineNextTextureId_++;
 }
 
-const MeshData* Cluster::GetRetainedUpload(ClusterStaticMeshHandle handle) const {
+const MeshData* WorldPage::GetRetainedUpload(WorldPageStaticMeshHandle handle) const {
     if (!handle.valid())
         return nullptr;
     const auto it = retainedUploads_.find(handle.index());
@@ -394,7 +394,7 @@ const MeshData* Cluster::GetRetainedUpload(ClusterStaticMeshHandle handle) const
     return &it->second;
 }
 
-uint32_t Cluster::GetMeshHeapVertexBase(ClusterStaticMeshHandle handle) const {
+uint32_t WorldPage::GetMeshHeapVertexBase(WorldPageStaticMeshHandle handle) const {
     if (!handle.valid())
         return 0xFFFFFFFFu;
     const auto it = meshAllocations_.find(handle.index());
@@ -403,14 +403,14 @@ uint32_t Cluster::GetMeshHeapVertexBase(ClusterStaticMeshHandle handle) const {
     return static_cast<uint32_t>(it->second->vertexBase);
 }
 
-void Cluster::RegisterMeshLod(StringViewT uri, const LodInfo& lod) {
+void WorldPage::RegisterMeshLod(StringViewT uri, const LodInfo& lod) {
     const StringViewT n = NormalizeAssetUri(uri, uriArena_);
     if (n.empty())
         return;
     meshLods_.Insert(uriArena_.AllocateString(n), lod);
 }
 
-std::optional<LodInfo> Cluster::GetMeshLod(StringViewT uri) const {
+std::optional<LodInfo> WorldPage::GetMeshLod(StringViewT uri) const {
     const StringViewT n = NormalizeAssetUri(uri);
     if (n.empty())
         return std::nullopt;
@@ -420,7 +420,7 @@ std::optional<LodInfo> Cluster::GetMeshLod(StringViewT uri) const {
     return *hit;
 }
 
-std::vector<std::pair<StringViewT, LodInfo>> Cluster::ListMeshLods() const {
+std::vector<std::pair<StringViewT, LodInfo>> WorldPage::ListMeshLods() const {
     std::vector<std::pair<StringViewT, LodInfo>> out;
     out.reserve(meshLods_.Size());
     meshLods_.ForEach([&](StringViewT uri, const LodInfo& lod) { out.emplace_back(uri, lod); });
@@ -429,14 +429,14 @@ std::vector<std::pair<StringViewT, LodInfo>> Cluster::ListMeshLods() const {
     return out;
 }
 
-void Cluster::RegisterMeshMeshlets(StringViewT uri, const CookedMeshlets& meshlets) {
+void WorldPage::RegisterMeshMeshlets(StringViewT uri, const CookedMeshlets& meshlets) {
     const StringViewT n = NormalizeAssetUri(uri, uriArena_);
     if (n.empty() || meshlets.empty())
         return;
     meshMeshlets_.Insert(uriArena_.AllocateString(n), meshlets);
 }
 
-std::optional<CookedMeshlets> Cluster::GetMeshMeshlets(StringViewT uri) const {
+std::optional<CookedMeshlets> WorldPage::GetMeshMeshlets(StringViewT uri) const {
     const StringViewT n = NormalizeAssetUri(uri);
     if (n.empty())
         return std::nullopt;
@@ -446,7 +446,7 @@ std::optional<CookedMeshlets> Cluster::GetMeshMeshlets(StringViewT uri) const {
     return *hit;
 }
 
-std::vector<std::pair<StringViewT, TextureHandle>> Cluster::ListTextureUris() const {
+std::vector<std::pair<StringViewT, TextureHandle>> WorldPage::ListTextureUris() const {
     std::vector<std::pair<StringViewT, TextureHandle>> out;
     out.reserve(textureByUri_.Size());
     textureByUri_.ForEach(

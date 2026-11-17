@@ -224,7 +224,7 @@ bool EditorApp::LoadPrefabWorld(const std::string& path) {
         return false;
     }
     auto newWorld = tour::mem::MakeProcess<tour::World>();
-    tour::Cluster& cluster = newWorld->LoadCluster(*m_context);
+    tour::WorldPage& cluster = newWorld->LoadPage(*m_context);
     cluster.SetRetainUploads(true);
     addNode(cluster.scene, -1, 0);
     std::vector<std::string> issues;
@@ -257,7 +257,7 @@ bool EditorApp::LoadPrefabWorld(const std::string& path) {
         return false;
     }
     m_context->FlushUploads();
-    newWorld->ResolveAndFixup_clusters();
+    newWorld->ResolveAndFixup_pages();
     if (newWorld->scene.hierarchy.size() < 2) {
         m_prefab.error = "Prefab has no drawable or editable scene nodes.";
         return false;
@@ -532,9 +532,9 @@ bool EditorApp::SavePrefab() {
         std::string uuid;
     };
     std::vector<MintedUuid> minted;
-    if (m_prefab.world->clusters.size() == 1 && m_prefab.world->clusterMergedNodes.size() == 1) {
+    if (m_prefab.world->pages.size() == 1 && m_prefab.world->pageMergedNodes.size() == 1) {
         const Scene& scene = m_prefab.world->scene;
-        const auto& mapping = m_prefab.world->clusterMergedNodes[0];
+        const auto& mapping = m_prefab.world->pageMergedNodes[0];
         const auto missing = prefab_sync::LegacyIdentityCandidates(mapping, [&](uint32_t n) {
             return n != 0 && IsLiveSlot(scene, n) && GetNodeUuid(scene, n).empty();
         });
@@ -580,7 +580,7 @@ bool EditorApp::SavePrefab() {
     // identities into both copies of this session's Scene metadata.
     if (!minted.empty()) {
         Scene& merged = m_prefab.world->scene;
-        Scene& local = m_prefab.world->clusters[0]->scene;
+        Scene& local = m_prefab.world->pages[0]->scene;
         for (const auto& id : minted) {
             SetNodeUuidRaw(merged, id.mergedNode, id.uuid);
             SetNodeUuidRaw(local, id.clusterNode, id.uuid);
@@ -664,9 +664,8 @@ void EditorApp::UpdatePrefabBoundary(float dt) {
     m_prefabRenderer->CameraPositioner().lookAt(eye, m_prefab.focus, glm::vec3(0, 1, 0));
     m_prefabRenderer->SetSceneFovY(45.0f);
     m_prefabRenderer->SetSelectedNode(m_prefab.selected);
-    if (m_prefabAnimationPreview &&
-        m_prefabAnimationClusterIndex < m_prefab.world->clusters.size()) {
-        auto& cluster = *m_prefab.world->clusters[m_prefabAnimationClusterIndex];
+    if (m_prefabAnimationPreview && m_prefabAnimationClusterIndex < m_prefab.world->pages.size()) {
+        auto& cluster = *m_prefab.world->pages[m_prefabAnimationClusterIndex];
         const float duration = float(std::max(0.0, m_prefabAnimationClip.duration));
         if (m_prefabAnimationPlaying && duration > 0.0f) {
             m_prefabAnimationTime += std::max(0.0f, dt) * m_prefabAnimationSpeed;
@@ -857,8 +856,8 @@ void EditorApp::DrawPrefabWindow() {
             }
             ImGui::SameLine();
             if (ImGui::Button("Stop preview##anim")) {
-                if (m_prefabAnimationClusterIndex < m_prefab.world->clusters.size()) {
-                    auto& cluster = *m_prefab.world->clusters.front();
+                if (m_prefabAnimationClusterIndex < m_prefab.world->pages.size()) {
+                    auto& cluster = *m_prefab.world->pages.front();
                     if (cluster.scene.localTransform.size() == m_prefabAnimationRest.size()) {
                         cluster.scene.localTransform = m_prefabAnimationRest;
                         recalculateGlobalTransforms(cluster.scene);

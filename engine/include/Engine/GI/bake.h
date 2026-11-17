@@ -16,7 +16,7 @@
 //
 // Pipeline (build the trace scene, no GPU required):
 //   1. Collect world-space opaque triangles + materials from a cook-mode
-//      Cluster (BuildTraceSceneFromCluster) and build a triangle BVH.
+//      WorldPage (BuildTraceSceneFromCluster) and build a triangle BVH.
 //   2. GiTraceScene::Finalize assembles the bake environment (sky + sun
 //      + the static-light NEE list) on top; bakes path-trace through
 //      TraceIncoming / SkyRadiance / SampleSun / the transmission +
@@ -63,13 +63,13 @@
 
 namespace tour {
 
-struct Cluster;
+struct WorldPage;
 struct World;
 
 } // namespace tour
 namespace smvk {
-using ::tour::Cluster;
 using ::tour::World;
+using ::tour::WorldPage;
 } // namespace smvk
 
 namespace tour::gi {
@@ -545,18 +545,18 @@ struct GiStaticLightCounts {
 // this internally). aimAxis is the punctual aim axis in engine
 // node-local space ((0,0,-1) = no coordFix; coordFix-0 imports use
 // (0,0,+1)). Node order is sorted for deterministic bakes.
-GiStaticLightCounts CollectStaticBakeLights(const Cluster& cluster,
+GiStaticLightCounts CollectStaticBakeLights(const WorldPage& cluster,
                                             GiTraceScene& out,
                                             const glm::vec3& aimAxis = glm::vec3(0.0f,
                                                                                  0.0f,
                                                                                  -1.0f));
 
 // Extracts world-space opaque triangles + materials from an offline-mode
-// Cluster (retained uploads; see Cluster::SetOfflineMode). Sun + static
+// WorldPage (retained uploads; see WorldPage::SetOfflineMode). Sun + static
 // spots + real materials + transmissive pass-through: see
 // GiTraceScene::TraceIncoming and GiSceneBuildOptions.
 // Non-const: global transforms are recalculated before the walk.
-void BuildTraceSceneFromCluster(Cluster& cluster,
+void BuildTraceSceneFromCluster(WorldPage& cluster,
                                 const GiSceneBuildOptions& opts,
                                 GiTraceScene& out,
                                 std::string& err);

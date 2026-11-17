@@ -558,15 +558,15 @@ bool SaveAssetManifest(const std::filesystem::path& gltfPath,
 // afterwards — editor-side state). ctx == nullptr (cook): pool + URI +
 // source registration only; no GPU work.
 // Returns the cluster material handle (empty + err on failure).
-smvk::ClusterMaterialHandle ImportMaterialAssetToCluster(smvk::Cluster& cluster,
-                                                         const std::filesystem::path& assetPath,
-                                                         smvk::ResourceManager* ctx,
-                                                         std::string& err);
+smvk::WorldPageMaterialHandle ImportMaterialAssetToCluster(smvk::WorldPage& cluster,
+                                                           const std::filesystem::path& assetPath,
+                                                           smvk::ResourceManager* ctx,
+                                                           std::string& err);
 // The editor's deterministic default-material seed ("editor://default"):
 // reuses the registered handle when one exists, else creates it (metallic
 // 0, roughness 0.9). The editor wraps this with its world materialLocations
 // bookkeeping; cooks call it directly when a tour carries the seed record.
-smvk::ClusterMaterialHandle EnsureClusterDefaultMaterial(smvk::Cluster& cluster);
+smvk::WorldPageMaterialHandle EnsureClusterDefaultMaterial(smvk::WorldPage& cluster);
 // The BUILT-IN solid-pink error texture asset ("editor://error_texture"):
 // reuses the registered handle when one exists, else mints it from the
 // standalone pink KTX2 (64x64 sRGB RGBA8 — see ktx_error_texture.h).
@@ -575,7 +575,7 @@ smvk::ClusterMaterialHandle EnsureClusterDefaultMaterial(smvk::Cluster& cluster)
 // reads as an unmistakable pink surface — reported, never invisible and
 // never fatal. Cook mode mints the pool id + stash only (the cook
 // embeds the pink payload; the runtime streams it like any texture).
-smvk::TextureHandle EnsureClusterErrorTexture(smvk::Cluster& cluster, smvk::ResourceManager* ctx);
+smvk::TextureHandle EnsureClusterErrorTexture(smvk::WorldPage& cluster, smvk::ResourceManager* ctx);
 
 // ---- shared texture-asset import (editor + cook) --------------------------
 // The SINGLE import path for .texture assets (a .texture + its source image
@@ -606,7 +606,7 @@ smvk::TextureHandle EnsureClusterErrorTexture(smvk::Cluster& cluster, smvk::Reso
 // pool indices — the caller owns the cross-cluster rewrite + its
 // pool->bindless map rebuild). Default false keeps the dedupe
 // contract everywhere else.
-smvk::TextureHandle ImportTextureAssetToCluster(smvk::Cluster& cluster,
+smvk::TextureHandle ImportTextureAssetToCluster(smvk::WorldPage& cluster,
                                                 const std::filesystem::path& assetPath,
                                                 smvk::ResourceManager* ctx,
                                                 std::string& err,

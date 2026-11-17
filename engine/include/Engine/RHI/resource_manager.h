@@ -403,7 +403,7 @@ class ResourceManager {
     // ProcessDeferredTasks after that point. Runs immediately when no
     // graphics submit was ever recorded (GPU idle by definition). Render
     // thread only, between frames — the suballocator range-free discipline
-    // (see Cluster's heap ranges / the static vertex heap).
+    // (see WorldPage's heap ranges / the static vertex heap).
     void DeferDestroyTask(std::packaged_task<void()>&& task);
 
     // For Holder destroy – expose internal pools via Impl

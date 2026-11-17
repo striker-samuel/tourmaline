@@ -58,7 +58,7 @@ namespace editor {
 const EditorApp::TexPreview& EditorApp::ResolveDiffusePreview(uint32_t matWorld) {
     TexPreview& pv = m_texPreview;
     smvk::Material* mat = m_world ? m_world->GetMaterial(matWorld) : nullptr;
-    tour::Cluster* cluster = nullptr;
+    tour::WorldPage* cluster = nullptr;
     int slot = -1;
     if (mat && matWorld < m_world->materialLocations.size()) {
         cluster = m_world->materialLocations[matWorld].cluster;

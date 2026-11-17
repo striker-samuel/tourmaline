@@ -448,7 +448,7 @@ void TestPakCorruption() {
 // skeleton.
 std::unique_ptr<smvk::World> WorldWithOneCluster(bool staticsSerialized, bool skeleton) {
     auto world = std::make_unique<smvk::World>();
-    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
     addNode(cluster->scene, -1, 0);
     addNode(cluster->scene, 0, 1);
@@ -456,12 +456,12 @@ std::unique_ptr<smvk::World> WorldWithOneCluster(bool staticsSerialized, bool sk
     cluster->scene.staticRootsSerialized = staticsSerialized;
     cluster->cookedStaticBvhPresent = staticsSerialized; // cooked paks carry both sections
     cluster->hasSkeleton = skeleton;
-    world->RegisterCluster(std::move(cluster));
+    world->RegisterPage(std::move(cluster));
     return world;
 }
 
 bool AllNodesDynamic(const smvk::World& world) {
-    const ::Scene& s = world.clusters.front()->scene;
+    const ::Scene& s = world.pages.front()->scene;
     return s.staticRoot.size() == s.hierarchy.size() &&
            std::all_of(s.staticRoot.begin(), s.staticRoot.end(), [](uint8_t v) { return v == 0; });
 }
@@ -570,7 +570,7 @@ void TestStaticFlagApplication() {
     // the marks are the cooked data).
     {
         auto world = WorldWithOneCluster(true, false);
-        ::Scene& s = world->clusters.front()->scene;
+        ::Scene& s = world->pages.front()->scene;
         MarkSubtreeStatic(s, 0);
         app::ApplyCookedStaticFlags(*world, "marked.pak");
         Check(s.staticRoot[0] == 1, "pakhost.staticflags.cooked-marks-preserved");
@@ -582,7 +582,7 @@ void TestStaticFlagApplication() {
         auto world = WorldWithOneCluster(false, false);
         world->legacyStaticFallback = true;
         app::ApplyCookedStaticFlags(*world, "legacy.pak");
-        Check(!AllNodesDynamic(*world) && world->clusters.front()->scene.staticRoot[0] == 1,
+        Check(!AllNodesDynamic(*world) && world->pages.front()->scene.staticRoot[0] == 1,
               "pakhost.staticflags.legacy-fallback-freezes");
     }
     // Skinned legacy cluster: NEVER frozen (the animation driver owns
@@ -1088,7 +1088,7 @@ void TestProjectScenes() {
                               smvk::TextureStreamer* streamer,
                               std::shared_ptr<const std::vector<uint8_t>> imagePin,
                               const smvk::ExternalTextureResolver* externalTexture,
-                              std::string& loadErr) -> smvk::Cluster* {
+                              std::string& loadErr) -> smvk::WorldPage* {
         (void)ctx;
         (void)reader;
         (void)sceneIndex;
@@ -1100,7 +1100,7 @@ void TestProjectScenes() {
         // root node + one light, registered into the world — the
         // resolve folds it into the merged scene and the light table
         // proves the fold happened.
-        auto c = std::make_unique<smvk::Cluster>(nullptr);
+        auto c = std::make_unique<smvk::WorldPage>(nullptr);
         ::SceneLight def{};
         def.type = ::SceneLight::Type::Point;
         def.intensity = 100.0f;
@@ -1108,8 +1108,8 @@ void TestProjectScenes() {
         auto handle = c->CreateLight(def);
         const int node = addNode(c->scene, -1, 0);
         SetLight(c->scene, uint32_t(node), handle.index());
-        smvk::Cluster* raw = c.get();
-        world.RegisterCluster(std::move(c));
+        smvk::WorldPage* raw = c.get();
+        world.RegisterPage(std::move(c));
         return raw;
     };
     smvk::World world;
@@ -1271,7 +1271,7 @@ void TestProjectScenes() {
                                   smvk::TextureStreamer*,
                                   std::shared_ptr<const std::vector<uint8_t>>,
                                   const smvk::ExternalTextureResolver*,
-                                  std::string& loadErr) -> smvk::Cluster* {
+                                  std::string& loadErr) -> smvk::WorldPage* {
             loadErr = "injected loader failure";
             return nullptr;
         };
@@ -1349,8 +1349,8 @@ void TestProjectScenes() {
 // GPU-less mesh-lane recipe: a pool mesh + its URI registration + a
 // scene node row so the world resolve folds it into meshLocations -
 // no GPU, no deserialize, the exact seam contract).
-std::unique_ptr<smvk::Cluster> MeshFamilyCluster(const std::string& uri) {
-    auto c = std::make_unique<smvk::Cluster>(nullptr);
+std::unique_ptr<smvk::WorldPage> MeshFamilyCluster(const std::string& uri) {
+    auto c = std::make_unique<smvk::WorldPage>(nullptr);
     smvk::StaticMesh m{};
     m.geometry.vertexCount = 3;
     m.geometry.indexCount = 3;
@@ -1595,7 +1595,7 @@ void TestAssetManager() {
                                   smvk::TextureStreamer* streamer,
                                   std::shared_ptr<const std::vector<uint8_t>> imagePin,
                                   const smvk::ExternalTextureResolver* externalTexture,
-                                  std::string& loadErr) -> smvk::Cluster* {
+                                  std::string& loadErr) -> smvk::WorldPage* {
             (void)ctx;
             (void)reader;
             (void)sceneIndex;
@@ -1604,8 +1604,8 @@ void TestAssetManager() {
             (void)externalTexture;
             (void)loadErr;
             auto c = MeshFamilyCluster("content/models/tree.geometry#mesh.0/prim.0");
-            smvk::Cluster* raw = c.get();
-            w.RegisterCluster(std::move(c));
+            smvk::WorldPage* raw = c.get();
+            w.RegisterPage(std::move(c));
             return raw;
         };
         app::SceneHandle s1 = scenes.LoadSceneAdditive(world, nullptr, nullptr, 0x1001, err);
@@ -1620,7 +1620,7 @@ void TestAssetManager() {
         assets.Store().clusterSource = [&seamRan](smvk::World&,
                                                   const smvk::PakReader&,
                                                   uint32_t,
-                                                  std::string&) -> smvk::Cluster* {
+                                                  std::string&) -> smvk::WorldPage* {
             seamRan = true;
             return nullptr;
         };
@@ -1691,7 +1691,7 @@ void TestAssetManager() {
         Check(scenes.RemoveScene(s1, world, rErr, &released) && !scenes.IsLoaded(s1) &&
                   scenes.IsLoaded(s2),
               "am.mesh-scene-gone");
-        Check(assets.MeshValid(tree) && world.retainedClusters.size() == 1,
+        Check(assets.MeshValid(tree) && world.retainedPages.size() == 1,
               "am.mesh-remove-preserves-asset");
         Check(world.meshLocations.size() == 1, "am.mesh-other-instance-unaffected");
         Check(assets.MeshWorldIndex(tree) == UINT32_MAX, "am.mesh-worldindex-stale-after-remove");
@@ -1703,22 +1703,22 @@ void TestAssetManager() {
         // A re-load shares the PARKED carrier: the same handle, no
         // fresh cluster, no re-carve of GPU ranges.
         std::string r2Err;
-        Check(assets.LoadMesh(0x3000, r2Err) == tree && world.retainedClusters.size() == 1,
+        Check(assets.LoadMesh(0x3000, r2Err) == tree && world.retainedPages.size() == 1,
               "am.mesh-reload-shared-no-recarve");
         // Unload the handle: keepResident's SESSION ref keeps the
         // parked carrier alive.
         Check(assets.UnloadMesh(tree), "am.mesh-unload");
         Check(!assets.UnloadMesh(tree), "am.mesh-stale-unload-refused");
-        Check(world.retainedClusters.size() == 1, "am.mesh-resident-survives-unload");
+        Check(world.retainedPages.size() == 1, "am.mesh-resident-survives-unload");
         // Teardown drops the session ref: the LAST reference releases
         // the parked carrier for destruction.
         assets.UnloadAllMeshes();
-        Check(world.retainedClusters.empty(), "am.mesh-last-ref-releases");
+        Check(world.retainedPages.empty(), "am.mesh-last-ref-releases");
         // The surviving scene instance still removes cleanly (nothing
         // the asset lane did pins it).
         std::string r3Err;
         std::vector<uint64_t> released2;
-        Check(scenes.RemoveScene(s2, world, r3Err, &released2) && world.retainedClusters.empty(),
+        Check(scenes.RemoveScene(s2, world, r3Err, &released2) && world.retainedPages.empty(),
               "am.mesh-other-instance-removes-clean");
     }
 
@@ -1732,14 +1732,14 @@ void TestAssetManager() {
         assets.Store().clusterSource = [&seamCalls](smvk::World& w,
                                                     const smvk::PakReader& reader,
                                                     uint32_t sceneIndex,
-                                                    std::string& seamErr) -> smvk::Cluster* {
+                                                    std::string& seamErr) -> smvk::WorldPage* {
             (void)reader;
             (void)sceneIndex;
             (void)seamErr;
             ++seamCalls;
             auto c = MeshFamilyCluster("content/models/rock.geometry#mesh.0/prim.0");
-            smvk::Cluster* raw = c.get();
-            w.RegisterCluster(std::move(c));
+            smvk::WorldPage* raw = c.get();
+            w.RegisterPage(std::move(c));
             return raw;
         };
         // A TRANSIENT acquire (keepResident=false): only the handle's
@@ -1757,7 +1757,7 @@ void TestAssetManager() {
               "am.mesh-seam-spawn-destroy");
         // The FRESH resolution: a world rebuild never stales the
         // query (the location tables are re-scanned per call).
-        world.ResolveAndFixup_clusters();
+        world.ResolveAndFixup_pages();
         Check(assets.MeshWorldIndex(rock) != UINT32_MAX, "am.mesh-worldindex-fresh-across-resolve");
         // The batch: mixed valid/unknown keys keep the batch shape
         // (failed slots read as invalid handles - per-slot
@@ -1844,10 +1844,10 @@ void TestAssetManager() {
             assets.Store().clusterSource = [](smvk::World& w,
                                               const smvk::PakReader&,
                                               uint32_t,
-                                              std::string&) -> smvk::Cluster* {
+                                              std::string&) -> smvk::WorldPage* {
                 auto c = MeshFamilyCluster("content/models/tree.geometry#mesh.0/prim.0");
-                smvk::Cluster* raw = c.get();
-                w.RegisterCluster(std::move(c));
+                smvk::WorldPage* raw = c.get();
+                w.RegisterPage(std::move(c));
                 return raw;
             };
             const smvk::MeshPlanRef treePlan{0u, treeBaseSlot, treeFamily.c_str()};
@@ -1889,15 +1889,15 @@ void TestAssetManager() {
 }
 
 // ---------------------------------------------------------------------------
-// WORLD SHARED-ASSET RETENTION (Cluster::assetRefs + World's park/
+// WORLD SHARED-ASSET RETENTION (WorldPage::assetRefs + World's park/
 // release) - the engine primitives under the AssetStore bridge, pinned
 // directly: retain -> unload PARKS -> the last release destroys; a
-// re-parenting UnregisterCluster pulls a parked cluster back out.
+// re-parenting UnregisterPage pulls a parked cluster back out.
 // ---------------------------------------------------------------------------
 void TestWorldRetention() {
     smvk::World world;
     const auto mkCluster = [] {
-        auto c = std::make_unique<smvk::Cluster>(nullptr);
+        auto c = std::make_unique<smvk::WorldPage>(nullptr);
         ::SceneLight def{};
         def.type = ::SceneLight::Type::Point;
         def.intensity = 100.0f;
@@ -1907,48 +1907,46 @@ void TestWorldRetention() {
         SetLight(c->scene, uint32_t(node), h.index());
         return c;
     };
-    smvk::Cluster* a = nullptr;
-    smvk::Cluster* b = nullptr;
+    smvk::WorldPage* a = nullptr;
+    smvk::WorldPage* b = nullptr;
     {
         auto ca = mkCluster();
         auto cb = mkCluster();
         a = ca.get();
         b = cb.get();
-        world.RegisterCluster(std::move(ca));
-        world.RegisterCluster(std::move(cb));
+        world.RegisterPage(std::move(ca));
+        world.RegisterPage(std::move(cb));
     }
-    world.ResolveAndFixup_clusters();
+    world.ResolveAndFixup_pages();
     Check(world.lightLocations.size() == 2, "wretain.folded");
     // Two external refs on a.
-    Check(world.RetainCluster(*a) && world.RetainCluster(*a) && a->assetRefs == 2,
-          "wretain.retain");
+    Check(world.RetainPage(*a) && world.RetainPage(*a) && a->assetRefs == 2, "wretain.retain");
     // Releasing a cluster that was never retained is refused (a
     // no-op, never an underflow).
-    Check(!world.ReleaseCluster(*b) && b->assetRefs == 0, "wretain.release-unreffed-refused");
+    Check(!world.ReleasePage(*b) && b->assetRefs == 0, "wretain.release-unreffed-refused");
     // Unload with live refs PARKS: the fold loses a's light exactly
     // like a destroy (removal never resurrects scene content), the
     // cluster stays alive in the retained list.
     world.UnloadCluster(*a);
-    Check(world.clusters.size() == 1 && world.retainedClusters.size() == 1 &&
-              world.retainedClusters[0].get() == a && world.lightLocations.size() == 1,
+    Check(world.pages.size() == 1 && world.retainedPages.size() == 1 &&
+              world.retainedPages[0].get() == a && world.lightLocations.size() == 1,
           "wretain.unload-parks");
     // Retain works on a PARKED cluster too.
-    Check(world.RetainCluster(*a) && a->assetRefs == 3, "wretain.retain-parked");
-    Check(world.ReleaseCluster(*a) && world.retainedClusters.size() == 1,
+    Check(world.RetainPage(*a) && a->assetRefs == 3, "wretain.retain-parked");
+    Check(world.ReleasePage(*a) && world.retainedPages.size() == 1,
           "wretain.release-keeps-while-reffed");
-    Check(world.ReleaseCluster(*a) && world.retainedClusters.size() == 1,
+    Check(world.ReleasePage(*a) && world.retainedPages.size() == 1,
           "wretain.release-keeps-while-reffed-2");
     // The LAST release destroys the parked cluster (no resolve needed
     // - it is outside the fold).
-    Check(world.ReleaseCluster(*a) && world.retainedClusters.empty(),
-          "wretain.last-release-destroys");
-    // UnregisterCluster pulls a PARKED cluster out for re-parenting
+    Check(world.ReleasePage(*a) && world.retainedPages.empty(), "wretain.last-release-destroys");
+    // UnregisterPage pulls a PARKED cluster out for re-parenting
     // (the existing re-parenting use case, retained-list side).
-    Check(world.RetainCluster(*b) && b->assetRefs == 1, "wretain.retain-for-reparent");
+    Check(world.RetainPage(*b) && b->assetRefs == 1, "wretain.retain-for-reparent");
     world.UnloadCluster(*b);
-    Check(world.retainedClusters.size() == 1, "wretain.park-for-reparent");
-    std::unique_ptr<smvk::Cluster> detached = world.UnregisterCluster(*b);
-    Check(bool(detached) && detached.get() == b && world.retainedClusters.empty(),
+    Check(world.retainedPages.size() == 1, "wretain.park-for-reparent");
+    std::unique_ptr<smvk::WorldPage> detached = world.UnregisterPage(*b);
+    Check(bool(detached) && detached.get() == b && world.retainedPages.empty(),
           "wretain.unregister-pulled-from-retained");
     // The re-parenting holder owns the detached cluster now; its ref
     // travels with it (the count is the NEW owner's to drop).

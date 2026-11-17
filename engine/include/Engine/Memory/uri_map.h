@@ -2,11 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
-// UriMap: open-addressing (FNV-1a, linear probe) hash map for the Cluster
+// UriMap: open-addressing (FNV-1a, linear probe) hash map for the WorldPage
 // URI registries, replacing std::unordered_map<std::string, ...>.
 //
-// Keys are NON-OWNING StringViewT slices — in practice the per-Cluster
-// arena (Cluster::uriArena_), whose lifetime encloses the map's. Lookups
+// Keys are NON-OWNING StringViewT slices — in practice the per-WorldPage
+// arena (WorldPage::uriArena_), whose lifetime encloses the map's. Lookups
 // hash the caller's view directly: no key conversion, no allocation.
 // Erase uses tombstones; growth rehashes when used+dead entries exceed
 // 70% of the slot count.

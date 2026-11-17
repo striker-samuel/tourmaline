@@ -16,7 +16,7 @@
 namespace tour::placement {
 
 struct Prototype {
-    std::string assetUri;         // resolves via World::meshLocations / Cluster URIs
+    std::string assetUri;         // resolves via World::meshLocations / WorldPage URIs
     float weight = 1.0f;          // weighted-random share (must be >= 0)
     float collisionRadius = 0.5f; // runtime min-distance + physics broadphase
     glm::vec3 boundsMin{-0.5f};

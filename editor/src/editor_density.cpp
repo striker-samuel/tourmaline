@@ -89,7 +89,7 @@ void EditorApp::RefreshCubemapDensity() {
     // without a valid upload contribute nothing.
     std::vector<glm::vec3> soupPos;
     std::vector<uint32_t> soupIdx;
-    for (const auto& clusterPtr : m_world->clusters) {
+    for (const auto& clusterPtr : m_world->pages) {
         if (!clusterPtr)
             continue;
         const ::Scene& scene = clusterPtr->scene;
@@ -98,7 +98,7 @@ void EditorApp::RefreshCubemapDensity() {
             const uint32_t meshIdx = row.mesh;
             if (node >= scene.globalTransform.size())
                 continue;
-            const tour::ClusterStaticMeshHandle h = clusterPtr->staticMeshes.getHandle(meshIdx);
+            const tour::WorldPageStaticMeshHandle h = clusterPtr->staticMeshes.getHandle(meshIdx);
             if (!h.valid())
                 continue;
             const smvk::MeshData* up = clusterPtr->GetRetainedUpload(h);

@@ -4,7 +4,7 @@
 #pragma once
 
 // Static-only SDF reflection residency for the SSR compute trace.
-// TSDF mesh-local sidecars live in Cluster bake payloads; the upload
+// TSDF mesh-local sidecars live in WorldPage bake payloads; the upload
 // stage packs unique volume samples and fixed mesh instance transforms
 // into GPU storage buffers addressed by BDA. No dynamic/skinned meshes.
 

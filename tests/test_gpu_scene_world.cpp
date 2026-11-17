@@ -492,19 +492,19 @@ int main() {
         const auto topology = sync.Synchronize(world, snapshot, 2);
         CHECK(topology.topologyReconciled);
     }
-    // Gameplay-owned nodes are not in clusterMergedNodes, but must be
+    // Gameplay-owned nodes are not in pageMergedNodes, but must be
     // reconciled into GPU Scene using stable World-owned identities.
     // The fixture uses the resolved World mesh row directly; gameplay's
     // AssetManager-backed SetMesh path writes the same Scene mesh row.
     {
         smvk::World world{};
-        auto owned = std::make_unique<smvk::Cluster>(nullptr);
+        auto owned = std::make_unique<smvk::WorldPage>(nullptr);
         owned->SetOfflineMode(true);
         const int authored = addNode(owned->scene, -1, 0);
         const auto mesh = owned->staticMeshes.create(smvk::StaticMesh{});
         CHECK(SetMesh(owned->scene, uint32_t(authored), mesh.index()));
-        world.RegisterCluster(std::move(owned));
-        world.ResolveAndFixup_clusters();
+        world.RegisterPage(std::move(owned));
+        world.ResolveAndFixup_pages();
         CHECK(!world.meshLocations.empty());
         const uint32_t worldMesh = 0;
         const NodeHandle first = world.AddNode();

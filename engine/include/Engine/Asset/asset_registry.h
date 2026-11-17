@@ -9,7 +9,7 @@
 //   "textures/brick.ktx2"                      (no fragment: whole file)
 //
 // The file part is a VFS path (see Vfs::Normalize); the fragment never
-// touches the VFS, it only keys the owning Cluster's per-kind UriMaps.
+// touches the VFS, it only keys the owning WorldPage's per-kind UriMaps.
 // There are deliberately no canonical/global asset URIs: the VFS overlay
 // (mount order) is the single source of truth for which bytes back a
 // path, and URI values round-trip through paks unchanged.

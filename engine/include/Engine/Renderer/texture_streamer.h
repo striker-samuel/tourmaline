@@ -126,7 +126,7 @@ class TextureStreamer {
 
     // Decode + transcode + upload ONLY the initial tail of a KTX2 payload
     // and register it for streaming. The payload bytes must outlive the
-    // registration (the glTF path keeps them in Cluster::textureSources;
+    // registration (the glTF path keeps them in WorldPage::textureSources;
     // call ReleaseTextureSources() only after the streamer is done).
     // Returns an empty holder on failure (error already logged).
     smvk::Holder<smvk::TextureHandle> StreamTexture(const void* payload,

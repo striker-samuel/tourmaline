@@ -52,8 +52,8 @@ namespace tour::scene {
 using RowId = uint32_t;
 constexpr RowId InvalidRow = 0xFFFFFFFFu;
 
-// Node -> mesh association. `mesh` is the owning Cluster's
-// ClusterStaticMeshHandle index (cluster scene) or the world
+// Node -> mesh association. `mesh` is the owning WorldPage's
+// WorldPageStaticMeshHandle index (cluster scene) or the world
 // meshLocations index (merged world scene) — exactly what
 // meshForNode stored; the ownership model is unchanged.
 // NOTE: material is NOT folded in here. The Epoch 4 audit proved
@@ -73,20 +73,20 @@ struct MaterialRow {
     uint32_t material = 0xFFFFFFFFu;
 };
 
-// Node -> light association (the owning Cluster's lights pool index —
+// Node -> light association (the owning WorldPage's lights pool index —
 // what lightForNode stores today).
 struct LightRow {
     NodeId node = 0;
     uint32_t light = 0xFFFFFFFFu;
 };
 
-// Node -> camera association (the owning Cluster's cameras pool index).
+// Node -> camera association (the owning WorldPage's cameras pool index).
 struct CameraRow {
     NodeId node = 0;
     uint32_t camera = 0xFFFFFFFFu;
 };
 
-// Node -> decal association (the owning Cluster's decals pool index).
+// Node -> decal association (the owning WorldPage's decals pool index).
 struct DecalRow {
     NodeId node = 0;
     uint32_t decal = 0xFFFFFFFFu;

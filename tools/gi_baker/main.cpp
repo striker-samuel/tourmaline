@@ -807,12 +807,12 @@ int Run(Args& args) {
     tool::out() << "GiBaker: scene '" << sceneId << "' from " << (haveTour ? args.tour : inVfs)
                 << "\n";
 
-    // GPU-free offline-mode Cluster. --tour builds the DEFINITION (empty
+    // GPU-free offline-mode WorldPage. --tour builds the DEFINITION (empty
     // root + reference bind + command replay, host-path resolution —
     // identical to the editor / PakCooker, so authored GI volume nodes
     // land on the same deterministic ids); otherwise the legacy VFS
     // glTF import.
-    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
     smvk::tour::Doc tour;
     std::vector<uint32_t> createdGiVolumes;  // dedicated GI creates
@@ -1743,7 +1743,7 @@ int Run(Args& args) {
             const MaterialRow* matRow = FindMaterial(cluster->scene, node);
             if (!matRow)
                 continue;
-            const smvk::ClusterMaterialHandle mh = cluster->materials.getHandle(matRow->material);
+            const smvk::WorldPageMaterialHandle mh = cluster->materials.getHandle(matRow->material);
             if (!mh.valid())
                 continue;
             const smvk::Material* mat = cluster->materials.get(mh);
@@ -1751,7 +1751,7 @@ int Run(Args& args) {
                 continue;
             if (!mat->castsShadows && mat->alphaMode != smvk::AlphaMode::Mask)
                 continue;
-            const smvk::ClusterStaticMeshHandle handle = cluster->staticMeshes.getHandle(meshIdx);
+            const smvk::WorldPageStaticMeshHandle handle = cluster->staticMeshes.getHandle(meshIdx);
             const smvk::MeshData* up = cluster->GetRetainedUpload(handle);
             if (!up || up->vertices.empty())
                 continue;

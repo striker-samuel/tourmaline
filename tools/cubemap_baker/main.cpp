@@ -670,10 +670,10 @@ int main(int argc, char** argv) {
 
         std::cout << "CubemapBaker: scene '" << sceneId << "' from " << inVfs << "\n";
 
-        // GPU-free offline-mode Cluster — ARTIFACT build (glTF is IMPORT-ONLY,
+        // GPU-free offline-mode WorldPage — ARTIFACT build (glTF is IMPORT-ONLY,
         // same as GiBaker / PakCooker): --in-vfs names the DERIVED .geometry
         // (open/drop the .gltf in the editor to derive it beside the source).
-        auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+        auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
         try {
             std::string artPath = smvk::NormalizeAssetUri(inVfs).Str();

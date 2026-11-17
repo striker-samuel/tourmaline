@@ -16,18 +16,18 @@
 #include <Engine/Scene/scene.h>
 
 namespace tour {
-struct Cluster;
+struct WorldPage;
 struct GiBinding;
 class TextureStreamer;
 } // namespace tour
 namespace smvk {
-using ::tour::Cluster;
+using ::tour::WorldPage;
 
 using ::tour::GiBinding;
 using ::tour::TextureStreamer; // (moved: engine-owned streamer, tour::)
 class ResourceManager;
 
-struct ClusterSerializeStats {
+struct WorldPageSerializeStats {
     uint32_t meshes = 0;
     uint32_t materials = 0;
     uint32_t textures = 0;
@@ -37,7 +37,7 @@ struct ClusterSerializeStats {
     // textures load objects + tail without a KTX parse.
     uint32_t digestedTextures = 0;
     // Named GI bake files registered on the cooked clusters (see
-    // Cluster::giBindings), written as one PakAssetKind::Gi blob.
+    // WorldPage::giBindings), written as one PakAssetKind::Gi blob.
     uint32_t giBindings = 0;
     // Meshlet cook output (indirect-path foundation): meshes carrying a
     // meshlet section, and the total meshlet count across them.
@@ -69,7 +69,7 @@ struct ClusterSerializeStats {
     uint32_t audioRooms = 0;
     // Static-cull BVH prims baked into the Scene blob's static-cull
     // section (one per static mesh row; the World's adoption source —
-    // see Cluster::cookedStaticBvh).
+    // see WorldPage::cookedStaticBvh).
     uint32_t staticBvhPrims = 0;
 };
 
@@ -102,14 +102,14 @@ struct CookedStaticBvhOut {
 
 // Serializes clusters (scene + meshes + materials + embedded textures)
 // into writer. Mesh/material/texture/light blobs are keyed by their
-// registered asset URIs (see Cluster::GetMeshUri); assets without a
+// registered asset URIs (see WorldPage::GetMeshUri); assets without a
 // registered URI get a "<cluster-local>#..." fallback so the scene remap
 // stays lossless. Asset blobs are shared by URI: cooking several scenes
 // of one model writes each unique blob once, and every scene blob
 // references the shared ids. Scene blobs land at "<cluster-local>#scene"
 // (index 0) and "<cluster-local>#scene.<i>" with a trailing name section
 // (v5; always written, possibly empty).
-// Texture blobs embed the .ktx2 source bytes from Cluster::GetTextureSource
+// Texture blobs embed the .ktx2 source bytes from WorldPage::GetTextureSource
 // — the importer stashes them; a missing payload fails that texture with
 // an error (cooker must fail loudly, never silently drop).
 // excludeTextureVfsPaths/excludeTextureVfsCount (optional, the recipe
@@ -120,10 +120,10 @@ struct CookedStaticBvhOut {
 // Texture-kind blobs by VFS path). Null/0 = embed everything (the
 // default, byte-identical to the historical output).
 // Returns false on error (err filled).
-bool SerializeClusters(const std::vector<const Cluster*>& clusters,
+bool SerializeClusters(const std::vector<const WorldPage*>& clusters,
                        const std::vector<std::string>& sceneNames, // parallel, may be short
                        PakWriter& writer,
-                       ClusterSerializeStats* stats = nullptr,
+                       WorldPageSerializeStats* stats = nullptr,
                        std::string* err = nullptr,
                        const std::string* excludeTextureVfsPaths = nullptr,
                        size_t excludeTextureVfsCount = 0,
@@ -146,9 +146,9 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
 // Single-scene form (identical layout: index-0 scene blob). The
 // schema params forward to SerializeClusters (the pak-level
 // "#schemas" registry).
-bool SerializeCluster(const Cluster& cluster,
+bool SerializeCluster(const WorldPage& cluster,
                       PakWriter& writer,
-                      ClusterSerializeStats* stats = nullptr,
+                      WorldPageSerializeStats* stats = nullptr,
                       std::string* err = nullptr,
                       const NodeSchema* schemas = nullptr,
                       size_t schemaCount = 0);
@@ -174,11 +174,11 @@ std::vector<PakSceneInfo> ListPakScenes(const PakReader& reader, std::string* er
 // empty (the historical behavior). This is what makes pak.h's interop
 // contract — materials in one pak referencing textures stored in
 // another via plain VFS paths — true at load time.
-using ExternalTextureResolver = std::function<TextureHandle(Cluster&, const std::string& uri)>;
+using ExternalTextureResolver = std::function<TextureHandle(WorldPage&, const std::string& uri)>;
 
-// Rebuilds a Cluster from a parsed pak: textures (parallel from embedded
+// Rebuilds a WorldPage from a parsed pak: textures (parallel from embedded
 // .ktx2 bytes) -> materials (texture URIs re-resolved) -> meshes (GPU
-// upload via Cluster::UploadMesh, streamer-batched, caller issues
+// upload via WorldPage::UploadMesh, streamer-batched, caller issues
 // ctx.FlushUploads() afterwards) -> scene graph (pak-local ids remapped to
 // fresh handles, global transforms recomputed). Asset URI maps are
 // re-registered so AssetRef resolution works on the loaded cluster.
@@ -192,7 +192,7 @@ using ExternalTextureResolver = std::function<TextureHandle(Cluster&, const std:
 // the streamer==nullptr case keep today's full-resident ktx path. When
 // streamer != nullptr the per-texture SetTextureSource copies are skipped
 // (payloads are borrowed, not owned).
-std::unique_ptr<Cluster> DeserializeCluster(
+std::unique_ptr<WorldPage> DeserializeCluster(
     ResourceManager& ctx,
     const PakReader& reader,
     std::string* err = nullptr,
@@ -207,11 +207,11 @@ std::unique_ptr<Cluster> DeserializeCluster(
 // structure-only walk: links are skipped but the cursor still
 // walks + validates — the ListPakScenes + test lane).
 struct SceneLinkMaps {
-    const std::vector<ClusterStaticMeshHandle>* meshes = nullptr;
-    const std::vector<ClusterMaterialHandle>* materials = nullptr;
-    const std::vector<ClusterLightHandle>* lights = nullptr;
-    const std::vector<ClusterCameraHandle>* cameras = nullptr;
-    const std::vector<ClusterDecalHandle>* decals = nullptr;
+    const std::vector<WorldPageStaticMeshHandle>* meshes = nullptr;
+    const std::vector<WorldPageMaterialHandle>* materials = nullptr;
+    const std::vector<WorldPageLightHandle>* lights = nullptr;
+    const std::vector<WorldPageCameraHandle>* cameras = nullptr;
+    const std::vector<WorldPageDecalHandle>* decals = nullptr;
 };
 // The shared Scene-blob reader (the writer's v1..v19 sections):
 // hierarchy + transforms + node links + names + the trailing

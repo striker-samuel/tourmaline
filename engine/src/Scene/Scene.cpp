@@ -1085,7 +1085,7 @@ void loadScene(const char* fileName, Scene& scene) {
         }
     }
     // Cooked punctual lights are NOT carried in this legacy format: they
-    // are Cluster pool assets (see the light table) and round-trip
+    // are WorldPage pool assets (see the light table) and round-trip
     // through paks only.
 
     fclose(f);
@@ -1523,9 +1523,9 @@ void mergeScenes(Scene& scene,
     scene.hidden.clear();
     // The hierarchy reset above makes EVERY prior association row dead
     // (node ids no longer resolve) — clear all tables with it. Lights
-    // especially: cooked punctual lights are Cluster pool assets (pool
+    // especially: cooked punctual lights are WorldPage pool assets (pool
     // indices cannot shift across scenes here — lights merge via
-    // World::ResolveAndFixup_clusters instead).
+    // World::ResolveAndFixup_pages instead).
     scene.tables = {};
     scene.rowsForNode.clear();
     scene.metadata.clear();

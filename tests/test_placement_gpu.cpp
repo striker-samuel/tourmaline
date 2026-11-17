@@ -282,7 +282,7 @@ int main() {
     // (images/views/buffers, 8192 entries each — megabytes); a stack
     // instance overflows the default 1MB stack (the engine always owns
     // graphs by pointer; the retirement fuzzer documents the same rule
-    // for its Cluster).
+    // for its WorldPage).
     std::fprintf(stderr, "[place-gpu] stage: ResourceManager + swapchain...\n");
     smvk::ResourceManager rm(window);
     smvk::Swapchain swap(rm, window); // ctor Creates internally
@@ -2222,7 +2222,7 @@ int main() {
         using namespace smvk::terrain;
         // ---- the static-mesh heap: one quad (the retirement-fuzz path).
         smvk::AllocateStaticVertexFmt(rm);
-        auto cluster = std::make_unique<smvk::Cluster>(&rm);
+        auto cluster = std::make_unique<smvk::WorldPage>(&rm);
         smvk::MeshData up;
         up.vertices.resize(4);
         up.vertices[0].pos = glm::vec3(-0.5f, 0.0f, -0.5f);

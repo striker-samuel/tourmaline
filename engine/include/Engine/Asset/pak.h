@@ -119,7 +119,7 @@ enum class PakAssetKind : uint32_t {
     Material = 3,
     Texture = 4,
     // Cooked punctual light (KHR_lights_punctual). One blob per light,
-    // keyed by its asset URI — loaded back into the Cluster lights pool
+    // keyed by its asset URI — loaded back into the WorldPage lights pool
     // exactly like Mesh blobs (see cluster_serializer.cpp).
     Light = 5,
     // Cooked GI registry: one blob per pak naming the GI bake payloads
@@ -129,11 +129,11 @@ enum class PakAssetKind : uint32_t {
     // style discovery, never via file reads.
     Gi = 6,
     // Authored camera (editor camera node). One blob per camera, keyed
-    // by its asset URI — loaded back into the Cluster cameras pool
+    // by its asset URI — loaded back into the WorldPage cameras pool
     // exactly like Light blobs (see cluster_serializer.cpp).
     Camera = 7,
     // Authored decal (editor/app decal node). One blob per decal, keyed
-    // by its asset URI — loaded back into the Cluster decals pool
+    // by its asset URI — loaded back into the WorldPage decals pool
     // exactly like Light blobs (see cluster_serializer.cpp). The SHAPE
     // rides the node transform (scene-blob decal links), the blob carries
     // the look (texture URIs + material knobs).
@@ -183,7 +183,7 @@ enum class PakAssetKind : uint32_t {
     // each .geometry family, with LOD indices. The runtime mesh join
     // (the AssetStore's family acquire) reads the PLAN - never a TOC
     // string-prefix scan (the consolidated architecture's "resolve
-    // ambiguity while cooking; no runtime name search"). Cluster-
+    // ambiguity while cooking; no runtime name search"). WorldPage-
     // internal like Scene/Mesh: consumed through PakReader, invisible
     // to the VFS backends.
     Plan = 13,
@@ -192,7 +192,7 @@ enum class PakAssetKind : uint32_t {
     // carrying the cooked schema LAYOUTS (Engine/Scene/node_schema.h)
     // the project's scenes were authored against — the runtime + the
     // generated project::types PODs decode the scene blob's v19
-    // schema-association rows against it. Cluster-internal, invisible
+    // schema-association rows against it. WorldPage-internal, invisible
     // to the VFS backends.
     Schema = 14,
     // IDENTITY (the per-pak content-identity table): ONE blob per pak
@@ -202,7 +202,7 @@ enum class PakAssetKind : uint32_t {
     // DISCOVERY lane's metadata (the .tapp [ids] successor): a
     // session builds its record table from the paks themselves
     // (ContentRegistry::DiscoverPak — the light mount + one page
-    // read, no manifest, no whole-image load). Cluster-internal,
+    // read, no manifest, no whole-image load). WorldPage-internal,
     // invisible to the VFS backends.
     Identity = 15,
     // AUDIOGRAPH (the authored audio-graph asset kind): one blob per

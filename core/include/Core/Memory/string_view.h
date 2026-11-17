@@ -6,9 +6,9 @@
 //
 // The engine's URI hot paths (registry lookups, LOD chain probing, sibling
 // URI construction) previously round-tripped std::string through
-// NormalizeAssetUri/Cluster maps on every call. StringViewT keeps those
+// NormalizeAssetUri/WorldPage maps on every call. StringViewT keeps those
 // paths allocation-free: views slice caller memory or arena blocks, and
-// the only owned copies live in per-Cluster arenas (see Memory/arena.h).
+// the only owned copies live in per-WorldPage arenas (see Memory/arena.h).
 //
 // Boundary interop: implicit view construction from const char* and
 // std::string is allowed (importer/cook code builds URIs as std::string);

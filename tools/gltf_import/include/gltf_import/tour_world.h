@@ -18,12 +18,12 @@
 #include <Engine/Asset/meshlet.h>
 
 namespace tour {
-struct Cluster;
+struct WorldPage;
 struct World;
 } // namespace tour
 namespace smvk {
-using ::tour::Cluster;
 using ::tour::World;
+using ::tour::WorldPage;
 struct MeshletConfig;
 } // namespace smvk
 

@@ -38,29 +38,29 @@ namespace tour {
 // types unqualified; qualify as call sites migrate, then drop this.
 using namespace ::smvk;
 
-// Cluster ctor lives here so the App module owns the Cluster lifecycle
+// WorldPage ctor lives here so the App module owns the WorldPage lifecycle
 // (its Scene + resource pools). The mesh upload/destroy methods and the
 // destructor stay in mesh.cpp; this constructor just wires the resource
 // context and the back-pointer to the owning World.
-Cluster::Cluster(ResourceManager* ctx) : ctx_(ctx) {}
+WorldPage::WorldPage(ResourceManager* ctx) : ctx_(ctx) {}
 
 // ---------------------------------------------------------------------------
 // World
 // ---------------------------------------------------------------------------
 
-Cluster& World::LoadCluster(ResourceManager& ctx) {
-    auto cluster = std::make_unique<Cluster>(&ctx);
-    Cluster& ref = *cluster;
-    RegisterCluster(std::move(cluster));
+WorldPage& World::LoadPage(ResourceManager& ctx) {
+    auto cluster = std::make_unique<WorldPage>(&ctx);
+    WorldPage& ref = *cluster;
+    RegisterPage(std::move(cluster));
     return ref;
 }
 
-Cluster& World::LoadClusterFromPak(ResourceManager& ctx,
-                                   const PakReader& reader,
-                                   uint32_t sceneIndex,
-                                   ::smvk::TextureStreamer* streamer,
-                                   std::shared_ptr<const std::vector<uint8_t>> imagePin,
-                                   const ExternalTextureResolver* externalTexture) {
+WorldPage& World::LoadPageFromPak(ResourceManager& ctx,
+                                  const PakReader& reader,
+                                  uint32_t sceneIndex,
+                                  ::smvk::TextureStreamer* streamer,
+                                  std::shared_ptr<const std::vector<uint8_t>> imagePin,
+                                  const ExternalTextureResolver* externalTexture) {
     std::string err;
     auto cluster = DeserializeCluster(ctx,
                                       reader,
@@ -71,9 +71,9 @@ Cluster& World::LoadClusterFromPak(ResourceManager& ctx,
                                       externalTexture,
                                       scene.nodeSlotBudget);
     if (!cluster)
-        throw std::runtime_error("LoadClusterFromPak failed: " + err);
-    Cluster& ref = *cluster;
-    RegisterCluster(std::move(cluster));
+        throw std::runtime_error("LoadPageFromPak failed: " + err);
+    WorldPage& ref = *cluster;
+    RegisterPage(std::move(cluster));
     // Terrain rides the pak independent of scenes: harvest non-fatally
     // (a broken height tile must never fail the scene load).
     std::string terrErr;
@@ -183,19 +183,19 @@ bool World::LoadTerrainFromPak(const PakReader& reader, std::string& err) {
     return true;
 }
 
-Cluster& World::EnsureDynamicCluster(ResourceManager* ctx) {
-    for (auto& c : clusters)
+WorldPage& World::EnsureDynamicPage(ResourceManager* ctx) {
+    for (auto& c : pages)
         if (c && c->isDynamic)
             return *c;
-    auto cluster = std::make_unique<Cluster>(ctx);
+    auto cluster = std::make_unique<WorldPage>(ctx);
     cluster->isDynamic = true;
-    Cluster& ref = *cluster;
-    RegisterCluster(std::move(cluster));
+    WorldPage& ref = *cluster;
+    RegisterPage(std::move(cluster));
     return ref;
 }
 
 NodeId World::CreateDecalAt(const glm::mat4& frame, SceneDecal def) {
-    Cluster& dyn = EnsureDynamicCluster(nullptr);
+    WorldPage& dyn = EnsureDynamicPage(nullptr);
 
     // Durable home: a root node in the DYNAMIC CLUSTER's own scene.
     // ResolveAndFixup folds cluster scenes into the merged world, so
@@ -213,10 +213,10 @@ NodeId World::CreateDecalAt(const glm::mat4& frame, SceneDecal def) {
         dyn.scene.nodeNames.push_back(def.name);
         SetNodeNameIndex(dyn.scene, uint32_t(cnode), cnameId);
     }
-    const ClusterDecalHandle handle = dyn.CreateDecal(std::move(def));
+    const WorldPageDecalHandle handle = dyn.CreateDecal(std::move(def));
     if (!handle.valid())
         return UINT32_MAX;
-    // Cluster-local pool index — the resolve remap rewrites it to a
+    // WorldPage-local pool index — the resolve remap rewrites it to a
     // world decalLocations index (same as cooked links).
     SetDecal(dyn.scene, uint32_t(cnode), handle.index());
 
@@ -249,7 +249,7 @@ NodeId World::CreateDecalAt(const glm::mat4& frame, SceneDecal def) {
 AudioSourceHandle World::SpawnAudioSource(const glm::mat4& localFrame,
                                           NodeId parent,
                                           const SceneAudioSource& def) {
-    Cluster& dyn = EnsureDynamicCluster(nullptr);
+    WorldPage& dyn = EnsureDynamicPage(nullptr);
     // Durable home: the dynamic cluster's own scene (survives pak
     // unloads + resolves — the CreateDecalAt pattern). `parent`
     // (a MERGED node id) resolves to the durable side only when it
@@ -360,16 +360,16 @@ namespace {
 // through the CURRENT location tables (rebuilt per resolve —
 // look it up fresh every use, never cache it).
 uint32_t WorldIndexOfMesh(const std::vector<World::MeshLocation>& locations,
-                          const Cluster* cluster,
-                          ClusterStaticMeshHandle handle) {
+                          const WorldPage* cluster,
+                          WorldPageStaticMeshHandle handle) {
     for (uint32_t i = 0; i < locations.size(); ++i)
         if (locations[i].cluster == cluster && locations[i].handle == handle)
             return i;
     return UINT32_MAX;
 }
 uint32_t WorldIndexOfMaterial(const std::vector<World::MaterialLocation>& locations,
-                              const Cluster* cluster,
-                              ClusterMaterialHandle handle) {
+                              const WorldPage* cluster,
+                              WorldPageMaterialHandle handle) {
     for (uint32_t i = 0; i < locations.size(); ++i)
         if (locations[i].cluster == cluster && locations[i].handle == handle)
             return i;
@@ -418,15 +418,15 @@ MeshEntityHandle World::SpawnMesh(uint32_t worldMeshIndex,
 MeshEntityHandle World::SpawnMeshEntityInternal(const MeshLocation& meshLoc,
                                                 const MaterialLocation* matLoc,
                                                 const glm::mat4& frame) {
-    Cluster* meshOwner = meshLoc.cluster;
-    const ClusterStaticMeshHandle meshHandle = meshLoc.handle;
+    WorldPage* meshOwner = meshLoc.cluster;
+    const WorldPageStaticMeshHandle meshHandle = meshLoc.handle;
     if (!meshOwner)
         return {};
-    const ClusterMaterialHandle matHandle = matLoc ? matLoc->handle : ClusterMaterialHandle{};
+    const WorldPageMaterialHandle matHandle = matLoc ? matLoc->handle : WorldPageMaterialHandle{};
     // The durable transform node (the dynamic cluster's own scene —
     // the CreateDecalAt pattern; the MESH binding is cross-cluster
     // so it lives on the ENTITY, not the dyn-scene tables).
-    Cluster& dyn = EnsureDynamicCluster(nullptr);
+    WorldPage& dyn = EnsureDynamicPage(nullptr);
     const int cnode = addNode(dyn.scene, -1, 0);
     if (cnode < 0)
         return {};
@@ -738,7 +738,7 @@ Animator World::AddAnimator(MeshEntityHandle mesh, touranim::Clip initialClip) {
     // bind pose on a fresh load — attach before other writers move
     // the joints if you need exact bind; untracked joints/channels
     // keep this pose forever).
-    Cluster* target = e.meshOwner;
+    WorldPage* target = e.meshOwner;
     AnimatorState state;
     state.mesh = mesh;
     state.target = target;
@@ -838,7 +838,7 @@ void World::Update(float dt) {
     // Update — a sticky claim would freeze the driving animator's
     // own re-flush, and a dead animator's claim is re-taken by the
     // next animator on its next Update).
-    for (const auto& clusterPtr : clusters)
+    for (const auto& clusterPtr : pages)
         if (clusterPtr)
             clusterPtr->poseExternallyDriven = false;
     // Advance every animator (independent playback state — exact
@@ -851,13 +851,13 @@ void World::Update(float dt) {
         if (!a.alive || !a.state.target)
             continue;
         AdvanceAnimator(a.state, dt);
-        Cluster& c = *a.state.target;
+        WorldPage& c = *a.state.target;
         if (a.state.jointLocals.empty() || c.poseExternallyDriven)
             continue;
         // The flush: the evaluated joint locals become the
         // cluster's pose (the existing global walk + palette build
         // consume it; the renderer skips its own clip advance on
-        // driven clusters).
+        // driven pages).
         const touranim::Skeleton& sk = c.skeleton;
         for (uint32_t j = 0; j < sk.Count(); ++j) {
             if (sk.joints[j] >= c.scene.localTransform.size())
@@ -874,33 +874,33 @@ std::span<const uint8_t> World::ReadBakeBytes(const std::string& vfsPath) const 
     // Dynamic cluster FIRST: runtime injections (the editor's
     // quick-bake) override cooked pak payloads, mirroring the loose-
     // file-overrides-pak overlay rule the sidecar era had.
-    for (auto it = clusters.rbegin(); it != clusters.rend(); ++it) {
+    for (auto it = pages.rbegin(); it != pages.rend(); ++it) {
         const auto& c = *it;
         if (!c || !c->isDynamic)
             continue;
-        if (const Cluster::BakePayload* p = c->FindBakePayload(vfsPath))
+        if (const WorldPage::BakePayload* p = c->FindBakePayload(vfsPath))
             return std::span<const uint8_t>(p->data(), p->size());
     }
-    // Then pak clusters in registration order.
-    for (const auto& c : clusters) {
+    // Then pak pages in registration order.
+    for (const auto& c : pages) {
         if (!c || c->isDynamic)
             continue;
-        if (const Cluster::BakePayload* p = c->FindBakePayload(vfsPath))
+        if (const WorldPage::BakePayload* p = c->FindBakePayload(vfsPath))
             return std::span<const uint8_t>(p->data(), p->size());
     }
     return {};
 }
 
-void World::UnloadCluster(Cluster& cluster) {
+void World::UnloadCluster(WorldPage& cluster) {
     if (worldSceneInstances.Count() != 0)
-        throw std::logic_error("cannot unload Cluster during direct World instance lifetime");
+        throw std::logic_error("cannot unload WorldPage during direct World instance lifetime");
     // The dynamic cluster is runtime-created state, never pak
     // content: unloading it would drop every runtime entity — refuse.
     if (cluster.isDynamic)
         return;
-    for (auto it = clusters.begin(); it != clusters.end(); ++it) {
+    for (auto it = pages.begin(); it != pages.end(); ++it) {
         if (it->get() == &cluster) {
-            gpuSceneClusterIds.erase(&cluster);
+            gpuScenePageIds.erase(&cluster);
             // SHARED-ASSET PARKING: live external refs keep the
             // cluster's resource rows alive (an asset holder — app::
             // AssetStore — retained them). Detach instead of destroy:
@@ -908,35 +908,35 @@ void World::UnloadCluster(Cluster& cluster) {
             // into the cluster, so the full resolve rebuild runs over
             // the survivors exactly like a destroy (the scene
             // instance is GONE — no resurrection), but the cluster
-            // object parks in retainedClusters until the last
-            // ReleaseCluster destroys it.
+            // object parks in retainedPages until the last
+            // ReleasePage destroys it.
             if (cluster.assetRefs > 0) {
-                retainedClusters.push_back(std::move(*it));
-                clusters.erase(it);
-                ResolveAndFixup_clusters();
+                retainedPages.push_back(std::move(*it));
+                pages.erase(it);
+                ResolveAndFixup_pages();
                 return;
             }
-            clusters.erase(it);
+            pages.erase(it);
             // The merged scene + every location table still hold
             // pointers/indices into the destroyed cluster: rebuild
             // from the survivors. ResolveAndFixup is the only
             // rebuilder (load-time operation — not a hot path).
-            ResolveAndFixup_clusters();
+            ResolveAndFixup_pages();
             return;
         }
     }
 }
 
-bool World::RetainCluster(Cluster& cluster) {
+bool World::RetainPage(WorldPage& cluster) {
     // The dynamic cluster is runtime state, never an asset carrier.
     if (cluster.isDynamic)
         return false;
-    for (const auto& c : clusters)
+    for (const auto& c : pages)
         if (c.get() == &cluster) {
             ++cluster.assetRefs;
             return true;
         }
-    for (const auto& c : retainedClusters)
+    for (const auto& c : retainedPages)
         if (c.get() == &cluster) {
             ++cluster.assetRefs;
             return true;
@@ -944,7 +944,7 @@ bool World::RetainCluster(Cluster& cluster) {
     return false;
 }
 
-bool World::ReleaseCluster(Cluster& cluster) {
+bool World::ReleasePage(WorldPage& cluster) {
     if (cluster.assetRefs == 0)
         return false;
     if (--cluster.assetRefs > 0)
@@ -955,9 +955,9 @@ bool World::ReleaseCluster(Cluster& cluster) {
     // UnloadCluster's destroy; no resolve is needed, a parked
     // cluster is outside the fold). A still-REGISTERED cluster
     // stays with its scene owner.
-    for (auto it = retainedClusters.begin(); it != retainedClusters.end(); ++it) {
+    for (auto it = retainedPages.begin(); it != retainedPages.end(); ++it) {
         if (it->get() == &cluster) {
-            retainedClusters.erase(it);
+            retainedPages.erase(it);
             return true;
         }
     }
@@ -972,9 +972,9 @@ uint64_t World::InstantiateSceneHierarchy(const Scene& source,
                                           const tour::scene::WorldSceneResourceMap* bindings) {
     err.clear();
     // World indices must point at already-resident render resources,
-    // never source-local integer slots or expired Cluster resources.
+    // never source-local integer slots or expired WorldPage resources.
     // The future page-backed AssetStore will populate these stable
-    // locations without requiring a Cluster carrier.
+    // locations without requiring a WorldPage carrier.
     if (bindings) {
         for (const MeshRow& row : source.tables.meshes) {
             if (row.mesh >= bindings->mesh.size() || !GetMesh(bindings->mesh[row.mesh])) {
@@ -1115,45 +1115,45 @@ bool World::RetireSceneHierarchy(uint64_t instanceId) {
     return true;
 }
 
-void World::RegisterCluster(std::unique_ptr<Cluster> cluster) {
+void World::RegisterPage(std::unique_ptr<WorldPage> cluster) {
     assert(cluster != nullptr);
     if (!cluster->isDynamic && worldSceneInstances.Count() != 0)
         throw std::logic_error(
-            "cannot register content Cluster during direct World instance lifetime");
+            "cannot register content WorldPage during direct World instance lifetime");
     cluster->world = this;
-    gpuSceneClusterIds[cluster.get()] = nextGpuSceneClusterId++;
-    clusters.push_back(std::move(cluster));
+    gpuScenePageIds[cluster.get()] = nextGpuScenePageId++;
+    pages.push_back(std::move(cluster));
 }
 
-std::unique_ptr<Cluster> World::UnregisterCluster(Cluster& cluster) {
+std::unique_ptr<WorldPage> World::UnregisterPage(WorldPage& cluster) {
     if (worldSceneInstances.Count() != 0)
-        throw std::logic_error("cannot detach Cluster during direct World instance lifetime");
+        throw std::logic_error("cannot detach WorldPage during direct World instance lifetime");
     // Same refusal as UnloadCluster: the dynamic cluster is runtime
     // state and stays with its world.
     if (cluster.isDynamic)
         return nullptr;
-    for (auto it = clusters.begin(); it != clusters.end(); ++it) {
+    for (auto it = pages.begin(); it != pages.end(); ++it) {
         if (it->get() == &cluster) {
-            gpuSceneClusterIds.erase(&cluster);
-            std::unique_ptr<Cluster> detached = std::move(*it);
-            clusters.erase(it);
+            gpuScenePageIds.erase(&cluster);
+            std::unique_ptr<WorldPage> detached = std::move(*it);
+            pages.erase(it);
             detached->world = nullptr;
             // The detached cluster's nodes leave the merged scene:
             // rebuild over the survivors (same contract as
             // UnloadCluster; the detached cluster stays alive for
             // re-parenting into another world).
-            ResolveAndFixup_clusters();
+            ResolveAndFixup_pages();
             return detached;
         }
     }
-    // A PARKED cluster (retainedClusters) can be pulled out the
+    // A PARKED cluster (retainedPages) can be pulled out the
     // same way — it is already outside the fold, so no resolve is
     // needed; the asset refs stay (the cluster keeps its resource
     // rows wherever it lands next).
-    for (auto it = retainedClusters.begin(); it != retainedClusters.end(); ++it) {
+    for (auto it = retainedPages.begin(); it != retainedPages.end(); ++it) {
         if (it->get() == &cluster) {
-            std::unique_ptr<Cluster> detached = std::move(*it);
-            retainedClusters.erase(it);
+            std::unique_ptr<WorldPage> detached = std::move(*it);
+            retainedPages.erase(it);
             detached->world = nullptr;
             return detached;
         }
@@ -1162,36 +1162,36 @@ std::unique_ptr<Cluster> World::UnregisterCluster(Cluster& cluster) {
 }
 
 // Fold every registered cluster's Scene into the single World scene graph.
-// Each imported Scene keeps its resources in its owning Cluster's pools;
+// Each imported Scene keeps its resources in its owning WorldPage's pools;
 // we only flatten the hierarchy/transforms/node->resource index maps here,
 // and remap the node->mesh/material indices to world-level resolution
-// slots that point back to the owning Cluster + handle.
+// slots that point back to the owning WorldPage + handle.
 
-bool World::MarkClusterDirty(const smvk::Cluster& cluster) {
-    for (const auto& registered : clusters) {
+bool World::MarkPageDirty(const smvk::WorldPage& cluster) {
+    for (const auto& registered : pages) {
         if (registered.get() == &cluster) {
-            clustersDirty_ = true;
+            pagesDirty_ = true;
             return true;
         }
     }
     return false;
 }
 
-bool World::ResolveDirtyClusters() {
-    if (!clustersDirty_)
+bool World::ResolveDirtyPages() {
+    if (!pagesDirty_)
         return false;
-    ResolveAndFixup_clusters();
+    ResolveAndFixup_pages();
     return true;
 }
 
-void World::ResolveAndFixup_clusters() {
-    clustersDirty_ = false;
+void World::ResolveAndFixup_pages() {
+    pagesDirty_ = false;
     // Never silently discard direct World-owned nodes while rebuilding
-    // legacy Cluster copies. Complete the legacy renderer cutover before
+    // legacy WorldPage copies. Complete the legacy renderer cutover before
     // combining both paths in one active World.
     if (worldSceneInstances.Count() != 0)
         throw std::logic_error(
-            "cannot resolve Cluster scenes while direct World scene instances are active");
+            "cannot resolve WorldPage scenes while direct World scene instances are active");
     // Full legacy resolve replaces the node slots: reject stale game
     // handles after it, rather than accidentally mutating a reused slot.
     gameNodes_.clear();
@@ -1202,7 +1202,7 @@ void World::ResolveAndFixup_clusters() {
     // keyed by the STABLE (owner cluster, pool handle) pair — they
     // survive resolves and cluster load/unload reordering exactly
     // like the entity bindings.
-    std::vector<std::tuple<Cluster*, ClusterMaterialHandle, uint32_t>> oldMaterialUserData;
+    std::vector<std::tuple<WorldPage*, WorldPageMaterialHandle, uint32_t>> oldMaterialUserData;
     {
         const size_t n = std::min(materialLocations.size(), materialUserData.size());
         oldMaterialUserData.reserve(n);
@@ -1216,7 +1216,7 @@ void World::ResolveAndFixup_clusters() {
     // the Phase B family lane rides the userdata lane's capture
     // discipline; only ProjectLit rows need carrying, StandardLit is
     // the zero default).
-    std::vector<std::tuple<Cluster*, ClusterMaterialHandle, uint8_t>> oldMaterialShaderFamily;
+    std::vector<std::tuple<WorldPage*, WorldPageMaterialHandle, uint8_t>> oldMaterialShaderFamily;
     {
         const size_t n = std::min(materialLocations.size(), materialShaderFamily.size());
         oldMaterialShaderFamily.reserve(n);
@@ -1240,7 +1240,7 @@ void World::ResolveAndFixup_clusters() {
     // one slot of every scene's budget).
     if (scene.nodeSlotBudget) {
         size_t needed = 0;
-        for (const auto& c : clusters) {
+        for (const auto& c : pages) {
             needed += tour::scene::LiveNodeCount(c->scene);
             if (needed > scene.nodeSlotBudget)
                 tour::scene::CrashNodeBudget("World resolve", needed, scene.nodeSlotBudget);
@@ -1248,20 +1248,20 @@ void World::ResolveAndFixup_clusters() {
     }
     // Content-cluster identity (#228's layout-stability contract, FIXED):
     // the fast path applies when the world holds exactly ONE CONTENT
-    // cluster - DYNAMIC clusters (EnsureDynamicCluster's spawn home)
+    // cluster - DYNAMIC pages (EnsureDynamicPage's spawn home)
     // are excluded from the count and fold by APPENDING after the
     // identity-copied primary. The primary's merged node ids therefore
     // NEVER move when a mesh-entity/animator/decal/audio spawn creates
     // the dynamic cluster mid-session (the old shape flipped to the
     // legacy +1-shift merge on the first spawn, moving every primary
     // node id and breaking raw-id holders). The dynamic cluster's own
-    // ids ride clusterMergedNodes, which the entity layer already
+    // ids ride pageMergedNodes, which the entity layer already
     // survives; a second CONTENT cluster is a real topology event and
     // still takes the legacy merge.
-    const Cluster* identityPrimary = nullptr;
+    const WorldPage* identityPrimary = nullptr;
     {
         size_t contentClusters = 0;
-        for (const auto& c : clusters)
+        for (const auto& c : pages)
             if (c && !c->isDynamic) {
                 ++contentClusters;
                 identityPrimary = c.get();
@@ -1293,7 +1293,7 @@ void World::ResolveAndFixup_clusters() {
     flags.clear();
     // The retained cluster-slot -> merged-node map (stable keys for
     // the entity layers; rebuilt with the world every resolve).
-    clusterMergedNodes.assign(clusters.size(), {});
+    pageMergedNodes.assign(pages.size(), {});
     // World material dedup (see the material-table remap below).
     std::unordered_map<uint64_t, uint32_t> worldMatByClusterMat;
     uint32_t clusterOrdinal = 0;
@@ -1325,8 +1325,8 @@ void World::ResolveAndFixup_clusters() {
     // arrays (the flag tables grow with zeros), so no pre-sizing is
     // needed on the reset path either.
 
-    for (auto& clusterPtr : clusters) {
-        Cluster& cluster = *clusterPtr.get();
+    for (auto& clusterPtr : pages) {
+        WorldPage& cluster = *clusterPtr.get();
         Scene& cs = cluster.scene;
 
         // Slot-association map (Epoch 6b): cluster slot -> world
@@ -1396,11 +1396,11 @@ void World::ResolveAndFixup_clusters() {
             return (mapped != UINT32_MAX) ? int(mapped) : -1;
         };
         // Retain the map (the entity layers' stable-key -> merged
-        // node resolution; see World::clusterMergedNodes) + remap
+        // node resolution; see World::pageMergedNodes) + remap
         // the live audio-source entities' merged nodes — the
         // HANDLE stays valid across the rebuild, only its internal
         // node moves (the entity-model contract).
-        clusterMergedNodes[clusterOrdinal] = nodeMap;
+        pageMergedNodes[clusterOrdinal] = nodeMap;
         for (AudioSourceEntity& e : audioEntities)
             if (e.alive && e.owner == &cluster && e.clusterNode < nodeMap.size())
                 e.mergedNode = nodeMap[e.clusterNode];
@@ -1424,7 +1424,7 @@ void World::ResolveAndFixup_clusters() {
         // and the World is a container, not a transform node. RegionOf's
         // nearest-registered-ancestor walk resolves every node under its
         // owning root whatever its depth. This compatibility path still
-        // holds resources in Cluster pools until the asset-owner
+        // holds resources in WorldPage pools until the asset-owner
         // migration is complete. EMPTY cluster scenes (a payload-only
         // dynamic cluster, a cook cluster with assets but no nodes)
         // contribute no hierarchy: every map entry is UINT32_MAX — no
@@ -1467,7 +1467,7 @@ void World::ResolveAndFixup_clusters() {
             const uint32_t worldNode = nodeMap[row.node];
             const uint32_t worldMeshIdx = static_cast<uint32_t>(meshLocations.size());
 
-            ClusterStaticMeshHandle handle = cluster.staticMeshes.getHandle(row.mesh);
+            WorldPageStaticMeshHandle handle = cluster.staticMeshes.getHandle(row.mesh);
 
             meshLocations.push_back(MeshLocation{.cluster = &cluster, .handle = handle});
             // Cook-time LOD marker (LOD0; siblings resolve via SelectLodIndex).
@@ -1505,7 +1505,7 @@ void World::ResolveAndFixup_clusters() {
             }
             const uint32_t worldMatIdx = static_cast<uint32_t>(materialLocations.size());
 
-            ClusterMaterialHandle handle = cluster.materials.getHandle(row.material);
+            WorldPageMaterialHandle handle = cluster.materials.getHandle(row.material);
 
             materialLocations.push_back(MaterialLocation{.cluster = &cluster, .handle = handle});
             worldMatByClusterMat[matKey] = worldMatIdx;
@@ -1513,7 +1513,7 @@ void World::ResolveAndFixup_clusters() {
         }
 
         // Remap the light table: cluster-local light pool index ->
-        // world light index. lightLocations resolves back to Cluster +
+        // world light index. lightLocations resolves back to WorldPage +
         // handle exactly like meshLocations (cooked lights are pool
         // assets).
         for (const LightRow& row : cs.tables.lights) {
@@ -1522,14 +1522,14 @@ void World::ResolveAndFixup_clusters() {
             const uint32_t worldNode = nodeMap[row.node];
             const uint32_t worldLightIdx = static_cast<uint32_t>(lightLocations.size());
 
-            ClusterLightHandle handle = cluster.lights.getHandle(row.light);
+            WorldPageLightHandle handle = cluster.lights.getHandle(row.light);
 
             lightLocations.push_back(LightLocation{.cluster = &cluster, .handle = handle});
             SetLight(scene, worldNode, worldLightIdx);
         }
 
         // Remap the camera table: cluster-local camera pool index ->
-        // world camera index. cameraLocations resolves back to Cluster
+        // world camera index. cameraLocations resolves back to WorldPage
         // + handle exactly like lightLocations (authored cameras are
         // pool assets).
         for (const CameraRow& row : cs.tables.cameras) {
@@ -1538,14 +1538,14 @@ void World::ResolveAndFixup_clusters() {
             const uint32_t worldNode = nodeMap[row.node];
             const uint32_t worldCamIdx = static_cast<uint32_t>(cameraLocations.size());
 
-            ClusterCameraHandle handle = cluster.cameras.getHandle(row.camera);
+            WorldPageCameraHandle handle = cluster.cameras.getHandle(row.camera);
 
             cameraLocations.push_back(CameraLocation{.cluster = &cluster, .handle = handle});
             SetCamera(scene, worldNode, worldCamIdx);
         }
 
         // Remap the decal table: cluster-local decal pool index ->
-        // world decal index. decalLocations resolves back to Cluster +
+        // world decal index. decalLocations resolves back to WorldPage +
         // handle exactly like lightLocations (authored/runtime decals
         // are pool assets; the shape rides the node transform).
         for (const DecalRow& row : cs.tables.decals) {
@@ -1554,7 +1554,7 @@ void World::ResolveAndFixup_clusters() {
             const uint32_t worldNode = nodeMap[row.node];
             const uint32_t worldDecalIdx = static_cast<uint32_t>(decalLocations.size());
 
-            ClusterDecalHandle handle = cluster.decals.getHandle(row.decal);
+            WorldPageDecalHandle handle = cluster.decals.getHandle(row.decal);
 
             decalLocations.push_back(DecalLocation{.cluster = &cluster, .handle = handle});
             SetDecal(scene, worldNode, worldDecalIdx);
@@ -1563,7 +1563,7 @@ void World::ResolveAndFixup_clusters() {
         // Authored environment: per-node rows offset-merge like the
         // other tables (values are inline structs — direct copy);
         // the resolved look + default block ride first-wins across
-        // clusters (registration order: the owning scene first), so an
+        // pages (registration order: the owning scene first), so an
         // unauthored default never shadows another scene's authored look.
         for (const EnvRow& row : cs.tables.envs)
             if (row.node < nodeMap.size() && nodeMap[row.node] != UINT32_MAX)
@@ -1645,7 +1645,7 @@ void World::ResolveAndFixup_clusters() {
         }
         // Default camera (world settings' typed camera.default field):
         // cluster slot -> world slot through the map, first-wins
-        // across clusters like the resolved env (the owning scene's
+        // across pages like the resolved env (the owning scene's
         // default stands; UINT32_MAX = none is a no-op).
         if (!defaultCamTaken && cs.defaultCameraNode != UINT32_MAX &&
             cs.defaultCameraNode < clusterSlotCount &&
@@ -1687,12 +1687,11 @@ void World::ResolveAndFixup_clusters() {
     // each referenced layer material needs a world slot — appended here
     // when no node references it directly (the dedup loop above only
     // creates slots for node-referenced materials).
-    for (uint32_t clusterOrdinal = 0; clusterOrdinal < (uint32_t)clusters.size();
-         ++clusterOrdinal) {
-        Cluster* cluster = clusters[clusterOrdinal].get();
+    for (uint32_t clusterOrdinal = 0; clusterOrdinal < (uint32_t)pages.size(); ++clusterOrdinal) {
+        WorldPage* cluster = pages[clusterOrdinal].get();
         if (!cluster)
             continue;
-        cluster->materials.forEachHandle([&](ClusterMaterialHandle handle) {
+        cluster->materials.forEachHandle([&](WorldPageMaterialHandle handle) {
             Material* mat = cluster->materials.get(handle);
             if (!mat || mat->values.layerMaterials.w == 0)
                 return;
@@ -1707,7 +1706,7 @@ void World::ResolveAndFixup_clusters() {
                 if (hit != worldMatByClusterMat.end()) {
                     worldMatIdx = hit->second;
                 } else {
-                    ClusterMaterialHandle layerHandle =
+                    WorldPageMaterialHandle layerHandle =
                         cluster->materials.getHandle(static_cast<uint32_t>(localIdx));
                     if (layerHandle.empty())
                         continue;
@@ -1728,9 +1727,9 @@ void World::ResolveAndFixup_clusters() {
     // material. Appends a world slot on first use; a node-referenced slot
     // (or a later re-resolve) finds the existing one.
     defaultMaterialIndex = kInvalidIndex;
-    if (!clusters.empty() && clusters[0]) {
-        Cluster* cl = clusters[0].get();
-        if (const std::optional<ClusterMaterialHandle> hit =
+    if (!pages.empty() && pages[0]) {
+        WorldPage* cl = pages[0].get();
+        if (const std::optional<WorldPageMaterialHandle> hit =
                 cl->FindMaterialByUri("editor://default")) {
             const uint32_t existing = WorldIndexOfMaterial(materialLocations, cl, *hit);
             if (existing != UINT32_MAX) {
@@ -1796,10 +1795,10 @@ void World::ResolveAndFixup_clusters() {
             continue;
         e.mergedNode = UINT32_MAX;
         // The durable node's merged id (find the owner's ordinal).
-        for (size_t ci = 0; ci < clusters.size(); ++ci) {
-            if (clusters[ci].get() != e.transformOwner || ci >= clusterMergedNodes.size())
+        for (size_t ci = 0; ci < pages.size(); ++ci) {
+            if (pages[ci].get() != e.transformOwner || ci >= pageMergedNodes.size())
                 continue;
-            const auto& merged = clusterMergedNodes[ci];
+            const auto& merged = pageMergedNodes[ci];
             if (e.clusterNode < merged.size() && merged[e.clusterNode] != UINT32_MAX)
                 e.mergedNode = merged[e.clusterNode];
             break;
@@ -1828,7 +1827,7 @@ void World::ResolveAndFixup_clusters() {
         if (e.materialInstance)
             entityInstanceByNode[e.mergedNode] = e.materialInstance.value;
     }
-    // (The animators' target clusters persist through resolves —
+    // (The animators' target pages persist through resolves —
     // their rest poses + cursors stand; the next Update re-flushes
     // the pose onto the rebuilt cluster scene.)
 
@@ -1845,7 +1844,7 @@ void World::ResolveAndFixup_clusters() {
     // (The mesh entities' mirrors were re-established EARLIER in
     // this resolve — before the flags/drawItems build, so their
     // rows take part in the iterator lists; see the moved block
-    // above. The animators' target clusters persist through
+    // above. The animators' target pages persist through
     // resolves — their rest poses + cursors stand; the next Update
     // re-flushes the pose onto the rebuilt cluster scene.)
 }
@@ -1945,7 +1944,7 @@ NodeHandle World::AddNode(const glm::mat4& localFrame, NodeHandle parent) {
     const NodeHandle handle = MakeNodeHandle(scene, NodeId(node));
     gameNodes_.insert(handle);
     if (!gpuSceneGameNodeRegistration)
-        gpuSceneGameNodeRegistration = nextGpuSceneClusterId++;
+        gpuSceneGameNodeRegistration = nextGpuScenePageId++;
     (void)tour::scene::SetLocalTransform(scene, handle, localFrame);
     // Root-level nodes carry the frame as their global directly; a
     // parented node recomposes through the ordinary recalc below.
@@ -1965,7 +1964,7 @@ bool World::RemoveNode(NodeHandle handle) {
     const NodeId node = NodeHandleSlot(handle);
     // Only unowned game nodes can be removed through this entry point:
     // authored/cluster nodes are managed by their scene owners.
-    for (const auto& maps : clusterMergedNodes)
+    for (const auto& maps : pageMergedNodes)
         for (const NodeId source : maps)
             if (source == node)
                 return false;
@@ -2174,7 +2173,7 @@ const LodInfo* World::GetLodInfo(uint32_t meshIndex) const {
 }
 
 // Resolve every world mesh's cooked "/lodN" chain once (called at the
-// end of ResolveAndFixup_clusters; hot paths below only index the
+// end of ResolveAndFixup_pages; hot paths below only index the
 // cache). Sibling URIs are composed into the frame arena and consumed
 // immediately; only resolved MeshLocations + errors are stored.
 // Shader LODs are NOT stamped here: the shading program is resolved
@@ -2211,7 +2210,7 @@ void World::RebuildLodChains() {
             const StringViewT uri = LodSiblingUri(base, li);
             bool found = false;
             float err = 0.0f;
-            for (const auto& clusterPtr : clusters) {
+            for (const auto& clusterPtr : pages) {
                 if (!clusterPtr)
                     continue;
                 if (auto hit = clusterPtr->GetMeshLod(uri)) {
@@ -2234,7 +2233,7 @@ void World::RebuildLodChains() {
                 // the resident subset, the demand pass sees the
                 // full chain.
                 LodChain::Level deferred{MeshLocation{}, err, false};
-                for (const auto& clusterPtr : clusters) {
+                for (const auto& clusterPtr : pages) {
                     if (!clusterPtr)
                         continue;
                     if (const auto* record = clusterPtr->FindDeferredMeshLod(uri)) {
@@ -2596,7 +2595,7 @@ void World::RecordGpuLodFeedback(uint32_t worldMesh, uint32_t drawnLod, uint32_t
 }
 
 bool World::HasDeferredLods() const {
-    for (const auto& clusterPtr : clusters) {
+    for (const auto& clusterPtr : pages) {
         if (clusterPtr && clusterPtr->DeferredLodCount() > 0)
             return true;
     }
@@ -2604,14 +2603,15 @@ bool World::HasDeferredLods() const {
 }
 
 bool World::HasLodRecords() const {
-    for (const auto& clusterPtr : clusters) {
+    for (const auto& clusterPtr : pages) {
         if (clusterPtr && clusterPtr->HasLodRecords())
             return true;
     }
     return false;
 }
 
-std::optional<Cluster::PromotedLod> World::PromoteLodLevel(uint32_t meshIndex, uint32_t lodIndex) {
+std::optional<WorldPage::PromotedLod> World::PromoteLodLevel(uint32_t meshIndex,
+                                                             uint32_t lodIndex) {
     EnsureLodChainsCached(*this);
     if (meshIndex >= lodChains.size() || meshIndex >= meshLocations.size())
         return std::nullopt;
@@ -2638,8 +2638,8 @@ std::optional<Cluster::PromotedLod> World::PromoteLodLevel(uint32_t meshIndex, u
         uriBuf[uriLen] = '\0';
         std::optional<LodPagePin> pin = LodPageSourceRef()(uriBuf);
         if (pin && pin->data && pin->size) {
-            std::optional<Cluster::PromotedLod> r;
-            for (const auto& clusterPtr : clusters) {
+            std::optional<WorldPage::PromotedLod> r;
+            for (const auto& clusterPtr : pages) {
                 if (!clusterPtr)
                     continue;
                 r = clusterPtr->PromoteDeferredMeshLodFromPage(uriBuf, pin->data, pin->size);
@@ -2654,7 +2654,7 @@ std::optional<Cluster::PromotedLod> World::PromoteLodLevel(uint32_t meshIndex, u
     }
     // Any cluster may hold the deferred record (the overlay rule) -
     // walk in registration order like ResolveMeshAcrossClusters.
-    for (const auto& clusterPtr : clusters) {
+    for (const auto& clusterPtr : pages) {
         if (!clusterPtr)
             continue;
         if (auto r = clusterPtr->PromoteDeferredMeshLod(uri))
@@ -2681,7 +2681,7 @@ uint64_t World::EvictLodLevel(uint32_t meshIndex, uint32_t lodIndex) {
     if (base.empty())
         return 0;
     const StringViewT uri = LodSiblingUri(base, lodIndex);
-    for (const auto& clusterPtr : clusters) {
+    for (const auto& clusterPtr : pages) {
         if (!clusterPtr)
             continue;
         if (const uint64_t bytes = clusterPtr->EvictMeshLod(uri))
@@ -2740,7 +2740,7 @@ uint32_t World::ChartOffsetFor(uint32_t meshIndex, uint32_t lodIndex) const {
 }
 
 std::optional<World::MeshLocation> World::ResolveMeshAcrossClusters(StringViewT uri) const {
-    for (const auto& clusterPtr : clusters) {
+    for (const auto& clusterPtr : pages) {
         if (!clusterPtr)
             continue;
         if (auto hit = clusterPtr->FindMeshByUri(uri))
@@ -2750,7 +2750,7 @@ std::optional<World::MeshLocation> World::ResolveMeshAcrossClusters(StringViewT 
 }
 
 std::optional<World::MaterialLocation> World::ResolveMaterialAcrossClusters(StringViewT uri) const {
-    for (const auto& clusterPtr : clusters) {
+    for (const auto& clusterPtr : pages) {
         if (!clusterPtr)
             continue;
         if (auto hit = clusterPtr->FindMaterialByUri(uri))
@@ -2862,12 +2862,12 @@ bool World::AdoptCookedStaticBvh() {
     // Single contributing cluster with an UNCONSUMED cooked tree (the
     // section rides the pak's scene blob; multi-cluster/additive worlds
     // rebuild - the per-cluster trees do not merge).
-    Cluster* seed = nullptr;
+    WorldPage* seed = nullptr;
     for (const MeshLocation& loc : meshLocations) {
         if (!loc.cluster || !loc.handle.valid())
             continue;
         if (seed && loc.cluster != seed)
-            return whyNot("multiple contributing clusters");
+            return whyNot("multiple contributing pages");
         seed = loc.cluster;
     }
     if (!seed)

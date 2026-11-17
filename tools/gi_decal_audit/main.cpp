@@ -96,7 +96,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
     addNode(cluster->scene, -1, 0);
     auto readSibling = [&](const std::string& file) -> std::optional<std::vector<uint8_t>> {
@@ -136,7 +136,7 @@ int main(int argc, char** argv) {
         bool casts = true;
         std::string matName;
         if (matRow && matRow->material != 0xFFFFFFFFu) {
-            const smvk::ClusterMaterialHandle h = cluster->materials.getHandle(matRow->material);
+            const smvk::WorldPageMaterialHandle h = cluster->materials.getHandle(matRow->material);
             if (h.valid()) {
                 if (const tour::Material* m = cluster->materials.get(h)) {
                     am = m->alphaMode;
@@ -155,7 +155,7 @@ int main(int argc, char** argv) {
         // Triangle count: resolve the mesh upload the trace build would use.
         uint64_t tris = 0;
         bool stale = false;
-        const smvk::ClusterStaticMeshHandle mh = cluster->staticMeshes.getHandle(row.mesh);
+        const smvk::WorldPageStaticMeshHandle mh = cluster->staticMeshes.getHandle(row.mesh);
         if (mh.valid())
             if (const tour::MeshData* up = cluster->GetRetainedUpload(mh))
                 tris = up->indices.size() / 3;

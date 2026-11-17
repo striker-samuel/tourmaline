@@ -26,7 +26,7 @@ namespace tour::gfx {
 // the way the old enclosing-smvk lookup made them resolve; the
 // TU-LOCAL using-directive stands in for it. Deliberately NOT in the
 // header: a public using-directive is R6-gated, and its transitive
-// lookup collides gfx's own Cluster with tour::Cluster for every
+// lookup collides gfx's own WorldPage with tour::WorldPage for every
 // using-namespace-gfx consumer — the ambiguity that made the header
 // fully qualified instead.
 using namespace ::smvk;

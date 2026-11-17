@@ -5,7 +5,7 @@
 // readers for .mesh / .material / .anim + the gltf.meta manifest.
 //
 // The derivation runs the SAME deterministic GPU-free offline-mode import the
-// baker/cooker use (GltfToCluster on a null-RM Cluster), so node ids are
+// baker/cooker use (GltfToCluster on a null-RM WorldPage), so node ids are
 // identical to a live import — scenes built from the assets address the
 // same nodes a .tour replay expects. The .mesh stores the RAW TRS (the
 // coordFix basis applies at the scene root at load, the same contract as
@@ -1527,7 +1527,7 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
     // The imported cluster + node map (the single-scene case keeps them for
     // the animation post pass; the split case skips animations — its districts
     // are static).
-    std::unique_ptr<smvk::Cluster> cluster;
+    std::unique_ptr<smvk::WorldPage> cluster;
     std::vector<int> gltfNodeMap;
 
     // 4) The .geometry: import + serialize. Oversized scenes PARTITION (P1):
@@ -1537,7 +1537,7 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
     auto importAndSerialize = [&](const smvk::source::Scene& part,
                                   const std::string& geometryFile,
                                   int partIndex) -> bool {
-        auto partCluster = std::make_unique<smvk::Cluster>(nullptr);
+        auto partCluster = std::make_unique<smvk::WorldPage>(nullptr);
         partCluster->SetOfflineMode(true);
         {
             SourceSceneImporter importer{*partCluster, part, gltfPath};
@@ -1622,8 +1622,8 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
                     blob = uint32_t(mesh.geometry.size());
                     blobOf.emplace(poolIdx, blob);
                     MeshAsset::Geometry g{};
-                    const smvk::ClusterStaticMeshHandle h =
-                        smvk::ClusterStaticMeshHandle::Mint(poolIdx);
+                    const smvk::WorldPageStaticMeshHandle h =
+                        smvk::WorldPageStaticMeshHandle::Mint(poolIdx);
                     // Registry: the derivation's cluster registration (the
                     // URI fragment "<mesh>#mesh.N/prim.M" — rebuilt on the
                     // .mesh path at load so cooks address it identically)
@@ -1727,7 +1727,7 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
                 const MaterialRow* mRow = FindMaterial(scene, node);
                 if (mRow) {
                     const smvk::StringViewT uri = partCluster->GetMaterialUri(
-                        smvk::ClusterMaterialHandle::Mint(mRow->material));
+                        smvk::WorldPageMaterialHandle::Mint(mRow->material));
                     const std::string u = uri.Str();
                     const size_t at = u.rfind("#mat.");
                     if (at != std::string::npos) {
@@ -1751,7 +1751,7 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
             for (const LightRow& _row : scene.tables.lights) {
                 const NodeId node = _row.node;
                 const auto& poolIdx = _row.light;
-                if (auto* l = partCluster->lights.get(smvk::ClusterLightHandle::Mint(poolIdx))) {
+                if (auto* l = partCluster->lights.get(smvk::WorldPageLightHandle::Mint(poolIdx))) {
                     MeshAsset::LightDef d{};
                     d.node = node;
                     d.def = *l;
@@ -1795,6 +1795,14 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
             if (!importAndSerialize(parts[pi], partStem + ".geometry", int(pi)))
                 return giveUp(fail);
         }
+        // A stale single-file artifact (a PRE-partition derive) must not
+        // outlive the split: downstream resolution prefers an existing
+        // <stem>.geometry over the parts. Remove it (and the legacy .mesh
+        // twin) so the manifest's part rows are the only geometry surface.
+        std::error_code staleEc;
+        std::filesystem::remove(dir / (stem + ".geometry"), staleEc);
+        staleEc.clear();
+        std::filesystem::remove(dir / (stem + ".mesh"), staleEc);
     }
 
     // 5) Animation assets (the .tourAnim format; tracks retargeted onto
@@ -2441,10 +2449,10 @@ std::vector<std::string> GltfExternalDependencies(const std::filesystem::path& g
 // load with a cook texture-id mint (the glTF importer's cook path). See
 // asset_export.h — the SINGLE import both sides run, so pool indices match
 // across the editor session and the cook replay.
-smvk::ClusterMaterialHandle ImportMaterialAssetToCluster(smvk::Cluster& cluster,
-                                                         const std::filesystem::path& assetPath,
-                                                         smvk::ResourceManager* ctx,
-                                                         std::string& err) {
+smvk::WorldPageMaterialHandle ImportMaterialAssetToCluster(smvk::WorldPage& cluster,
+                                                           const std::filesystem::path& assetPath,
+                                                           smvk::ResourceManager* ctx,
+                                                           std::string& err) {
     err.clear();
     MaterialAsset m;
     if (!LoadMaterialAsset(assetPath, m, err))
@@ -2588,7 +2596,7 @@ smvk::ClusterMaterialHandle ImportMaterialAssetToCluster(smvk::Cluster& cluster,
     loadTex(m.cavity, info.cavityTexture);
     loadTex(m.emissiveTex, info.emissiveTexture);
     info.diffuse = info.baseColorTexture; // legacy alias
-    const smvk::ClusterMaterialHandle h = cluster.CreateMaterial(info);
+    const smvk::WorldPageMaterialHandle h = cluster.CreateMaterial(info);
     if (h.empty()) {
         err = "material creation failed for '" + assetPath.generic_string() + "'";
         return {};
@@ -2597,7 +2605,7 @@ smvk::ClusterMaterialHandle ImportMaterialAssetToCluster(smvk::Cluster& cluster,
     return h;
 }
 
-smvk::ClusterMaterialHandle EnsureClusterDefaultMaterial(smvk::Cluster& cluster) {
+smvk::WorldPageMaterialHandle EnsureClusterDefaultMaterial(smvk::WorldPage& cluster) {
     // Reuse an existing pool entry when the URI is already registered (a
     // cooked-from-tour scene may have minted one).
     if (auto hit = cluster.FindMaterialByUri("editor://default"))
@@ -2606,12 +2614,13 @@ smvk::ClusterMaterialHandle EnsureClusterDefaultMaterial(smvk::Cluster& cluster)
     def.values.params.y = 0.0f; // metallic
     def.values.params.z = 0.9f; // roughness: soft default
     def.rebuildPipeline();
-    const smvk::ClusterMaterialHandle h = cluster.materials.create(std::move(def));
+    const smvk::WorldPageMaterialHandle h = cluster.materials.create(std::move(def));
     cluster.RegisterMaterialUri("editor://default", h);
     return h;
 }
 
-smvk::TextureHandle EnsureClusterErrorTexture(smvk::Cluster& cluster, smvk::ResourceManager* ctx) {
+smvk::TextureHandle EnsureClusterErrorTexture(smvk::WorldPage& cluster,
+                                              smvk::ResourceManager* ctx) {
     // Reuse an existing pool entry when the URI is already registered
     // (a cooked-from-tour scene may have minted one) — NO pool growth
     // on repeat asks.
@@ -2669,7 +2678,7 @@ smvk::TextureHandle EnsureClusterErrorTexture(smvk::Cluster& cluster, smvk::Reso
 // format/mipLevels; KTX2 sources pass through verbatim), the sampler rows
 // ride the per-texture sampler registration, and the GPU-READY payload
 // rides the cluster source stash (the cook passthrough-embeds it).
-smvk::TextureHandle ImportTextureAssetToCluster(smvk::Cluster& cluster,
+smvk::TextureHandle ImportTextureAssetToCluster(smvk::WorldPage& cluster,
                                                 const std::filesystem::path& assetPath,
                                                 smvk::ResourceManager* ctx,
                                                 std::string& err,

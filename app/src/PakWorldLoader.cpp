@@ -72,7 +72,7 @@ std::string StemOf(const std::string& p) {
 // (the registry's provider union — overrides + paks, the SAME
 // selection every other content read uses): the host overlay
 // is no longer a content source on any runtime path.
-void AttachClips(tour::Cluster& c, const std::string& stem, app::ProjectRuntime& session) {
+void AttachClips(tour::WorldPage& c, const std::string& stem, app::ProjectRuntime& session) {
     if (c.HasAnimClip())
         return;
     std::vector<std::string> candidates;
@@ -136,8 +136,8 @@ void PostLoadTail(tour::World& world, const std::string& pakStem, app::ProjectRu
     // skeleton (ONE for now — the driver's cap).
     {
         SMVK_PROFILE_IO("PakWorld_AttachClips");
-        for (auto& clusterPtr : world.clusters) {
-            tour::Cluster* c = clusterPtr.get();
+        for (auto& clusterPtr : world.pages) {
+            tour::WorldPage* c = clusterPtr.get();
             if (!c || !c->hasSkeleton)
                 continue;
             AttachClips(*c, pakStem, session);
@@ -161,7 +161,7 @@ void PostLoadTail(tour::World& world, const std::string& pakStem, app::ProjectRu
         if (const char* lsf = std::getenv("TOURMALINE_LEGACY_STATIC_FALLBACK"))
             world.legacyStaticFallback = std::atoi(lsf) != 0;
         ApplyCookedStaticFlags(world, pakStem);
-        world.ResolveAndFixup_clusters();
+        world.ResolveAndFixup_pages();
     }
     // SSR wax (test amplification, TOURMALINE_SSR_WAX=1; the sponza
     // check scene is the target): every opaque lit material's roughness
@@ -200,7 +200,7 @@ void PostLoadTail(tour::World& world, const std::string& pakStem, app::ProjectRu
             const uint32_t meshIdx = row.mesh;
             if (meshIdx >= world.meshLocations.size())
                 continue;
-            tour::Cluster* cl = world.meshLocations[meshIdx].cluster;
+            tour::WorldPage* cl = world.meshLocations[meshIdx].cluster;
             if (!cl || !cl->hasSkeleton)
                 continue;
             const glm::mat4& g = world.scene.globalTransform[node];
@@ -228,8 +228,8 @@ void PostLoadTail(tour::World& world, const std::string& pakStem, app::ProjectRu
 // loud; skinned clusters never freeze (the animation driver owns
 // their transforms).
 void ApplyCookedStaticFlags(tour::World& world, const std::string& pakName) {
-    for (auto& clusterPtr : world.clusters) {
-        tour::Cluster* c = clusterPtr.get();
+    for (auto& clusterPtr : world.pages) {
+        tour::WorldPage* c = clusterPtr.get();
         if (!c || c->scene.hierarchy.empty())
             continue;
         if (c->hasSkeleton)
@@ -314,7 +314,7 @@ tour::mem::LinearPtr<tour::World> LoadPakWorld(PakPreload pre,
                 std::cerr << "[App] terrain harvest failed: " << terrErr << "\n";
                 return nullptr;
             }
-            world->ResolveAndFixup_clusters();
+            world->ResolveAndFixup_pages();
             contentVfs.Mount(pre.backend, 10, pre.scenePak);
             // The shared-image lane: the backend adopts into the
             // session's registry too (every later read rides the same
@@ -343,11 +343,11 @@ tour::mem::LinearPtr<tour::World> LoadPakWorld(PakPreload pre,
         // textures staged through the streamer) — the dominant
         // scene-switch cost. Load EVERY scene: a partitioned-family world
         // ships as one scene per bounded cluster; PostLoadTail's
-        // ResolveAndFixup_clusters folds them into the merged scene.
-        SMVK_PROFILE_IO("PakWorld_LoadCluster");
+        // ResolveAndFixup_pages folds them into the merged scene.
+        SMVK_PROFILE_IO("PakWorld_LoadPage");
         try {
             for (size_t i = 0; i < scenes.size(); ++i)
-                world->LoadClusterFromPak(ctx, reader, uint32_t(i), sceneStreamer, pre.image);
+                world->LoadPageFromPak(ctx, reader, uint32_t(i), sceneStreamer, pre.image);
         } catch (const std::exception& e) {
             // DeserializeCluster drains its own staged uploads on failure;
             // drain anything queued since, then fail the load.
@@ -448,7 +448,7 @@ tour::mem::LinearPtr<tour::World> LoadProjectWorld(std::vector<PakPreload> prelo
     // DEFAULT sampler (the pak-served path's payload filters stay
     // with the owning pak's own loads).
     smvk::ExternalTextureResolver resolver =
-        [&ctx, session](tour::Cluster& c, const std::string& uri) -> smvk::TextureHandle {
+        [&ctx, session](tour::WorldPage& c, const std::string& uri) -> smvk::TextureHandle {
         const std::string norm = smvk::NormalizeAssetUri(uri).Str();
         const std::string probe = norm.empty() ? uri : norm;
         std::string rErr;
@@ -476,15 +476,15 @@ tour::mem::LinearPtr<tour::World> LoadProjectWorld(std::vector<PakPreload> prelo
     auto world = tour::mem::MakeProcess<tour::World>();
     world->ConfigureSceneNodeBudget(nodeBudget);
     {
-        SMVK_PROFILE_IO("ProjectWorld_LoadCluster");
+        SMVK_PROFILE_IO("ProjectWorld_LoadPage");
         try {
             // Load EVERY scene in the entry pak: the entry scene (the main
             // cluster) + any partitioned-family part scenes. Each scene is
-            // one cluster; PostLoadTail's ResolveAndFixup_clusters folds
+            // one cluster; PostLoadTail's ResolveAndFixup_pages folds
             // them into the single merged world scene. The authoring layer
             // never sees the partition (the parts resolve here at load).
             for (size_t i = 0; i < scenes.size(); ++i) {
-                world->LoadClusterFromPak(
+                world->LoadPageFromPak(
                     ctx, reader, uint32_t(i), sceneStreamer, entry.image, &resolver);
             }
         } catch (const std::exception& e) {

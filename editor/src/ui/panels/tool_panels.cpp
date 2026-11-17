@@ -59,8 +59,8 @@ namespace editor {
 void EditorApp::DrawLightmapPanel() {
     ImGui::Text("Lightmap bake (.sglm)");
     // Registry slots from the loaded world (first per kind wins, like App).
-    if (m_world && !m_world->clusters.empty()) {
-        for (const auto& clusterPtr : m_world->clusters) {
+    if (m_world && !m_world->pages.empty()) {
+        for (const auto& clusterPtr : m_world->pages) {
             if (!clusterPtr || clusterPtr->giBindings.empty())
                 continue;
             for (const smvk::GiBinding& b : clusterPtr->giBindings) {

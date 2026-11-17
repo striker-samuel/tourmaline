@@ -38,7 +38,7 @@ namespace {
 // RemoveScenes of OTHER scenes (the contract: only the OWNED scene's
 // voices stop).
 struct EmitterKey {
-    tour::Cluster* cluster;
+    tour::WorldPage* cluster;
     uint32_t node;
     bool operator==(const EmitterKey& o) const {
         return cluster == o.cluster && node == o.node;
@@ -150,13 +150,12 @@ class AudioRuntimeElement final : public engine::IAppElement {
         // the durable rows; the dynamic cluster's spawned entities ride
         // pass 2 through their handles).
         std::unordered_set<EmitterKey, EmitterKeyHash> liveEmitters;
-        for (size_t ci = 0; ci < world->clusters.size(); ++ci) {
-            tour::Cluster* cluster = world->clusters[ci].get();
+        for (size_t ci = 0; ci < world->pages.size(); ++ci) {
+            tour::WorldPage* cluster = world->pages[ci].get();
             if (!cluster || cluster->isDynamic)
                 continue;
-            const auto& merged = ci < world->clusterMergedNodes.size()
-                                     ? world->clusterMergedNodes[ci]
-                                     : std::vector<uint32_t>{};
+            const auto& merged = ci < world->pageMergedNodes.size() ? world->pageMergedNodes[ci]
+                                                                    : std::vector<uint32_t>{};
             for (const AudioSourceRow& row : cluster->scene.tables.audioSources) {
                 const EmitterKey key{cluster, row.node};
                 liveEmitters.insert(key);
@@ -207,8 +206,8 @@ class AudioRuntimeElement final : public engine::IAppElement {
         // ProjectScenes'; this is the decoded side).
         {
             std::unordered_set<uint64_t> referenced;
-            for (size_t ci = 0; ci < world->clusters.size(); ++ci) {
-                tour::Cluster* cluster = world->clusters[ci].get();
+            for (size_t ci = 0; ci < world->pages.size(); ++ci) {
+                tour::WorldPage* cluster = world->pages[ci].get();
                 if (!cluster)
                     continue;
                 for (const AudioSourceRow& row : cluster->scene.tables.audioSources)
@@ -267,7 +266,7 @@ class AudioRuntimeElement final : public engine::IAppElement {
                                   float gain,
                                   std::string* err) {
         // Resolve the emitter: any live row whose merged node matches
-        // (authored via clusterMergedNodes, spawned via the registry).
+        // (authored via pageMergedNodes, spawned via the registry).
         const EmitterKey key = FindEmitterByMergedNode(world, mergedNode);
         if (key.cluster == nullptr) {
             if (err)
@@ -390,12 +389,12 @@ class AudioRuntimeElement final : public engine::IAppElement {
     }
 
     EmitterKey FindEmitterByMergedNode(tour::World& world, uint32_t mergedNode) const {
-        for (size_t ci = 0; ci < world.clusters.size(); ++ci) {
-            tour::Cluster* cluster = world.clusters[ci].get();
+        for (size_t ci = 0; ci < world.pages.size(); ++ci) {
+            tour::WorldPage* cluster = world.pages[ci].get();
             if (!cluster)
                 continue;
-            const auto& merged = ci < world.clusterMergedNodes.size() ? world.clusterMergedNodes[ci]
-                                                                      : std::vector<uint32_t>{};
+            const auto& merged = ci < world.pageMergedNodes.size() ? world.pageMergedNodes[ci]
+                                                                   : std::vector<uint32_t>{};
             for (const AudioSourceRow& row : cluster->scene.tables.audioSources) {
                 const uint32_t m = row.node < merged.size() ? merged[row.node] : UINT32_MAX;
                 if (m == mergedNode)
@@ -508,14 +507,14 @@ class AudioRuntimeElement final : public engine::IAppElement {
     // coefficient glide), immune to frame stalls.
     void UpdateRooms(tour::World& world, const ListenerPose& listener) {
         struct RoomRef {
-            tour::Cluster* cluster;
-            size_t clusterIndex;  // world.clusters slot (the map key)
+            tour::WorldPage* cluster;
+            size_t clusterIndex;  // world.pages slot (the map key)
             uint32_t clusterNode; // the durable (cluster, node) key
             const tour::scene::SceneAudioRoom* def;
         };
         std::vector<RoomRef> rooms;
-        for (size_t ci = 0; ci < world.clusters.size(); ++ci) {
-            tour::Cluster* cluster = world.clusters[ci].get();
+        for (size_t ci = 0; ci < world.pages.size(); ++ci) {
+            tour::WorldPage* cluster = world.pages[ci].get();
             if (!cluster || cluster->isDynamic)
                 continue; // authored rooms only (v1)
             for (const tour::scene::AudioRoomRow& row : cluster->scene.tables.audioRooms)
@@ -543,8 +542,8 @@ class AudioRuntimeElement final : public engine::IAppElement {
             // Resolve the room's shape against the MERGED transform
             // (never a cached merged id — the map is rebuilt per
             // resolve; the durable key is the cluster + its node).
-            const auto& merged = r.clusterIndex < world.clusterMergedNodes.size()
-                                     ? world.clusterMergedNodes[r.clusterIndex]
+            const auto& merged = r.clusterIndex < world.pageMergedNodes.size()
+                                     ? world.pageMergedNodes[r.clusterIndex]
                                      : std::vector<uint32_t>{};
             const uint32_t m = r.clusterNode < merged.size() ? merged[r.clusterNode] : UINT32_MAX;
             if (m == UINT32_MAX || m >= world.scene.globalTransform.size())

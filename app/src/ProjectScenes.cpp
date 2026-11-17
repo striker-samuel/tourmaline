@@ -3,7 +3,7 @@
 
 // ProjectScenes — see ProjectScenes.h. The loads ride the same
 // background-preload + PakBackend opens the apphost's world loading
-// uses; the pak->cluster step is World::LoadClusterFromPak (through
+// uses; the pak->cluster step is World::LoadPageFromPak (through
 // the replaceable clusterLoader seam), and every load runs the shared
 // PostLoadTail so an additive scene gets the entry scene's exact
 // treatment (anim attach, cooked static flags, the resolve).
@@ -63,17 +63,17 @@ std::string HexId(uint64_t id) {
     return buf;
 }
 
-// The DEFAULT pak->cluster step: World::LoadClusterFromPak verbatim
-// (DeserializeCluster + RegisterCluster; throws on failure — caught
+// The DEFAULT pak->cluster step: World::LoadPageFromPak verbatim
+// (DeserializeCluster + RegisterPage; throws on failure — caught
 // here, the staged uploads drained, surfaced as err + null).
-tour::Cluster* DefaultClusterLoader(tour::World& world,
-                                    smvk::ResourceManager* ctx,
-                                    const smvk::PakReader& reader,
-                                    uint32_t sceneIndex,
-                                    tour::TextureStreamer* streamer,
-                                    std::shared_ptr<const std::vector<uint8_t>> imagePin,
-                                    const smvk::ExternalTextureResolver* externalTexture,
-                                    std::string& err) {
+tour::WorldPage* DefaultPageLoader(tour::World& world,
+                                   smvk::ResourceManager* ctx,
+                                   const smvk::PakReader& reader,
+                                   uint32_t sceneIndex,
+                                   tour::TextureStreamer* streamer,
+                                   std::shared_ptr<const std::vector<uint8_t>> imagePin,
+                                   const smvk::ExternalTextureResolver* externalTexture,
+                                   std::string& err) {
     if (!ctx) {
         // Null ctx is the GPU-less test seam: the real deserialize
         // needs an upload context, so the DEFAULT loader refuses it —
@@ -83,7 +83,7 @@ tour::Cluster* DefaultClusterLoader(tour::World& world,
         return nullptr;
     }
     try {
-        return &world.LoadClusterFromPak(
+        return &world.LoadPageFromPak(
             *ctx, reader, sceneIndex, streamer, imagePin, externalTexture);
     } catch (const std::exception& e) {
         // DeserializeCluster drains its own staged uploads on failure;
@@ -97,7 +97,7 @@ tour::Cluster* DefaultClusterLoader(tour::World& world,
 } // namespace
 
 ProjectScenes::ProjectScenes(ProjectRuntime& runtime, smvk::OverlayVfs& contentVfs)
-    : clusterLoader(DefaultClusterLoader), m_runtime(runtime), m_vfs(contentVfs) {
+    : clusterLoader(DefaultPageLoader), m_runtime(runtime), m_vfs(contentVfs) {
     // ---- the adopt-or-open pass (every manifest pak, one image each)
     // ----
     // (a) ADOPT what the host already mounted: a --project launch
@@ -312,7 +312,7 @@ bool ProjectScenes::SetPrefabTransform(SceneHandle prefab,
             m_shapes->SetTransform(shape.handle, frame * shape.localTransform);
     tour::scene::MarkAllRootsChanged(scene);
     tour::scene::recalculateGlobalTransforms(scene);
-    world.ResolveAndFixup_clusters();
+    world.ResolveAndFixup_pages();
     return true;
 }
 
@@ -390,7 +390,7 @@ SceneHandle ProjectScenes::LoadInternal(tour::World& world,
     // deserialize that invokes it never runs without a context.
     smvk::ResourceManager* resolverCtx = ctx;
     smvk::ExternalTextureResolver resolver =
-        [resolverCtx, this](tour::Cluster& c, const std::string& uri) -> smvk::TextureHandle {
+        [resolverCtx, this](tour::WorldPage& c, const std::string& uri) -> smvk::TextureHandle {
         if (!resolverCtx) {
             std::cerr << "[Scenes] cross-pak texture unresolved (no"
                          " upload context): "
@@ -429,14 +429,14 @@ SceneHandle ProjectScenes::LoadInternal(tour::World& world,
     inst->sceneName = target->sceneName;
     inst->sceneIndex = target->sceneIndex;
     inst->owner = &world;
-    tour::Cluster* cluster = clusterLoader(world,
-                                           ctx,
-                                           backend->Reader(),
-                                           target->sceneIndex,
-                                           streamer,
-                                           backend->Image(),
-                                           &resolver,
-                                           err);
+    tour::WorldPage* cluster = clusterLoader(world,
+                                             ctx,
+                                             backend->Reader(),
+                                             target->sceneIndex,
+                                             streamer,
+                                             backend->Image(),
+                                             &resolver,
+                                             err);
     if (!cluster) {
         FreeHandle(handle);
         err = "the scene load for id " + HexId(sceneId) + " failed: " + err;
@@ -444,7 +444,7 @@ SceneHandle ProjectScenes::LoadInternal(tour::World& world,
     }
     inst->cluster = cluster;
     if (prefabFrame) {
-        // World::ResolveAndFixup_clusters() folds the FIRST live cluster
+        // World::ResolveAndFixup_pages() folds the FIRST live cluster
         // node as its independent world child. Pre-multiplying THAT
         // node (and only that node) preserves every authored child frame.
         tour::scene::Scene& source = cluster->scene;
@@ -568,7 +568,7 @@ uint64_t ProjectScenes::SceneContentId(SceneHandle scene) const {
     return inst ? inst->contentId : 0;
 }
 
-tour::Cluster* ProjectScenes::SceneCluster(SceneHandle scene) const {
+tour::WorldPage* ProjectScenes::SceneCluster(SceneHandle scene) const {
     const SceneInstance* inst = Instance(scene);
     return inst ? inst->cluster : nullptr;
 }

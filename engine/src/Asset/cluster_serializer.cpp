@@ -571,10 +571,10 @@ uint32_t SceneBlobIndex(const std::string& tocPath) {
 // Serialize
 // ---------------------------------------------------------------------------
 
-bool SerializeClusters(const std::vector<const Cluster*>& clusters,
+bool SerializeClusters(const std::vector<const WorldPage*>& clusters,
                        const std::vector<std::string>& sceneNames,
                        PakWriter& writer,
-                       ClusterSerializeStats* stats,
+                       WorldPageSerializeStats* stats,
                        std::string* err,
                        const std::string* excludeTextureVfsPaths,
                        size_t excludeTextureVfsCount,
@@ -676,7 +676,7 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
     };
     std::vector<LocalMaps> locals(clusters.size());
 
-    // COOKED STATIC-CULL BVH pre-pass (Cluster::cookedStaticBvh): every
+    // COOKED STATIC-CULL BVH pre-pass (WorldPage::cookedStaticBvh): every
     // mesh's LOCAL-space AABB by URI (from the retained uploads the blob
     // writes — the runtime StaticMesh.geometry aabb is a bit-exact copy,
     // which the adoption-guard hash depends on), the LOD-family map
@@ -695,18 +695,18 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
             return hash == std::string::npos ? uri : uri.substr(0, hash);
         };
         for (size_t bci = 0; bci < clusters.size(); ++bci) {
-            const Cluster& bcluster = *clusters[bci];
-            std::vector<ClusterStaticMeshHandle> bhandles;
+            const WorldPage& bcluster = *clusters[bci];
+            std::vector<WorldPageStaticMeshHandle> bhandles;
             // constcast: Pool::forEachHandle is non-const (historic).
-            const_cast<Cluster&>(bcluster).staticMeshes.forEachHandle(
-                [&](ClusterStaticMeshHandle h) { bhandles.push_back(h); });
+            const_cast<WorldPage&>(bcluster).staticMeshes.forEachHandle(
+                [&](WorldPageStaticMeshHandle h) { bhandles.push_back(h); });
             for (const auto h : bhandles) {
                 std::string uri = bcluster.GetMeshUri(h).Str();
                 if (uri.empty())
                     uri = "<cluster-local>#mesh." + std::to_string(h.index());
                 bvhUriByPoolIndex[bci].emplace(h.index(), uri);
                 const MeshData* upload = bcluster.GetRetainedUpload(h);
-                const StaticMesh* mesh = const_cast<Cluster&>(bcluster).staticMeshes.get(h);
+                const StaticMesh* mesh = const_cast<WorldPage&>(bcluster).staticMeshes.get(h);
                 if (!upload && !mesh)
                     continue; // stale pool entry: the mesh pass below fails loudly
                 BvhMeshAabb a;
@@ -724,16 +724,16 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
     }
 
     for (size_t ci = 0; ci < clusters.size(); ++ci) {
-        const Cluster& cluster = *clusters[ci];
+        const WorldPage& cluster = *clusters[ci];
         LocalMaps& local = locals[ci];
 
         // --- Meshes (pool index order via forEachHandle) ---------------------
-        std::vector<ClusterStaticMeshHandle> meshHandles;
+        std::vector<WorldPageStaticMeshHandle> meshHandles;
         {
             // const_cast: Pool::forEachHandle is non-const (historic). It does
             // not mutate when the functor only reads.
-            const_cast<Cluster&>(cluster).staticMeshes.forEachHandle(
-                [&](ClusterStaticMeshHandle h) { meshHandles.push_back(h); });
+            const_cast<WorldPage&>(cluster).staticMeshes.forEachHandle(
+                [&](WorldPageStaticMeshHandle h) { meshHandles.push_back(h); });
         }
         std::vector<std::string> meshUris;
         meshUris.reserve(meshHandles.size());
@@ -752,7 +752,7 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
             meshIdByUri[uri] = pakId;
             local.mesh[h.index()] = pakId;
 
-            const StaticMesh* mesh = const_cast<Cluster&>(cluster).staticMeshes.get(h);
+            const StaticMesh* mesh = const_cast<WorldPage&>(cluster).staticMeshes.get(h);
             if (!mesh)
                 return fail("stale mesh handle in pool");
             // Full vertex/index payloads only exist when the cluster was
@@ -761,7 +761,7 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
             const MeshData* upload = cluster.GetRetainedUpload(h);
             if (!upload)
                 return fail("no retained upload for mesh: " + uri +
-                            " (import with Cluster::SetRetainUploads(true) to cook paks)");
+                            " (import with WorldPage::SetRetainUploads(true) to cook paks)");
 
             std::vector<uint8_t> blob;
             PutStr(blob, uri);
@@ -937,9 +937,9 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
         }
 
         // --- Materials ---------------------------------------------------------
-        std::vector<ClusterMaterialHandle> matHandles;
-        const_cast<Cluster&>(cluster).materials.forEachHandle(
-            [&](ClusterMaterialHandle h) { matHandles.push_back(h); });
+        std::vector<WorldPageMaterialHandle> matHandles;
+        const_cast<WorldPage&>(cluster).materials.forEachHandle(
+            [&](WorldPageMaterialHandle h) { matHandles.push_back(h); });
         std::vector<std::string> matUris;
         matUris.reserve(matHandles.size());
 
@@ -976,7 +976,7 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
             matIdByUri[uri] = pakId;
             local.mat[h.index()] = pakId;
 
-            const Material* mat = const_cast<Cluster&>(cluster).materials.get(h);
+            const Material* mat = const_cast<WorldPage&>(cluster).materials.get(h);
             if (!mat)
                 return fail("stale material handle in pool");
 
@@ -1073,9 +1073,9 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
         }
 
         // --- Lights (one blob per cooked light, URI-keyed like meshes) --------
-        std::vector<ClusterLightHandle> lightHandles;
-        const_cast<Cluster&>(cluster).lights.forEachHandle(
-            [&](ClusterLightHandle h) { lightHandles.push_back(h); });
+        std::vector<WorldPageLightHandle> lightHandles;
+        const_cast<WorldPage&>(cluster).lights.forEachHandle(
+            [&](WorldPageLightHandle h) { lightHandles.push_back(h); });
         for (uint32_t k = 0; k < lightHandles.size(); ++k) {
             const auto h = lightHandles[k];
             std::string uri = cluster.GetLightUri(h).Str();
@@ -1090,7 +1090,7 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
             lightIdByUri[uri] = pakId;
             local.light[h.index()] = pakId;
 
-            const SceneLight* l = const_cast<Cluster&>(cluster).lights.get(h);
+            const SceneLight* l = const_cast<WorldPage&>(cluster).lights.get(h);
             if (!l)
                 return fail("stale light handle in pool");
 
@@ -1121,12 +1121,12 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
         }
 
         // --- Cameras (one blob per authored camera, URI-keyed like lights) --
-        std::vector<ClusterCameraHandle> cameraHandles;
+        std::vector<WorldPageCameraHandle> cameraHandles;
         {
             // const_cast: Pool::forEachHandle is non-const (historic). It does
             // not mutate when the functor only reads.
-            const_cast<Cluster&>(cluster).cameras.forEachHandle(
-                [&](ClusterCameraHandle h) { cameraHandles.push_back(h); });
+            const_cast<WorldPage&>(cluster).cameras.forEachHandle(
+                [&](WorldPageCameraHandle h) { cameraHandles.push_back(h); });
         }
         for (uint32_t k = 0; k < cameraHandles.size(); ++k) {
             const auto h = cameraHandles[k];
@@ -1142,7 +1142,7 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
             camIdByUri[uri] = pakId;
             local.camera[h.index()] = pakId;
 
-            const SceneCamera* c = const_cast<Cluster&>(cluster).cameras.get(h);
+            const SceneCamera* c = const_cast<WorldPage&>(cluster).cameras.get(h);
             if (!c)
                 return fail("stale camera handle in pool");
 
@@ -1163,10 +1163,10 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
         // lights). The look only — the shape rides the node transform and
         // travels in the Scene blob's decal links section (see below).
         {
-            std::vector<ClusterDecalHandle> decalHandles;
+            std::vector<WorldPageDecalHandle> decalHandles;
             // constcast: Pool::forEachHandle is non-const (historic).
-            const_cast<Cluster&>(cluster).decals.forEachHandle(
-                [&](ClusterDecalHandle h) { decalHandles.push_back(h); });
+            const_cast<WorldPage&>(cluster).decals.forEachHandle(
+                [&](WorldPageDecalHandle h) { decalHandles.push_back(h); });
             for (uint32_t k = 0; k < decalHandles.size(); ++k) {
                 const auto h = decalHandles[k];
                 std::string uri = cluster.GetDecalUri(h).Str();
@@ -1181,7 +1181,7 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
                 decalIdByUri[uri] = pakId;
                 local.decal[h.index()] = pakId;
 
-                const SceneDecal* d = const_cast<Cluster&>(cluster).decals.get(h);
+                const SceneDecal* d = const_cast<WorldPage&>(cluster).decals.get(h);
                 if (!d)
                     return fail("stale decal handle in pool");
 
@@ -1534,7 +1534,7 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
                     PutU32(blob, row->volume.enabled ? 1u : 0u);
                 }
             }
-            // Cluster skeleton (v14; v13 blobs end after the env-volume
+            // WorldPage skeleton (v14; v13 blobs end after the env-volume
             // settings): u32 hasSkeleton + (u32 jointCount + cluster node id
             // per joint + 16 floats per inverseBind + u32 root). Always
             // written (possibly hasSkeleton 0) so the layout is uniform; the
@@ -1771,7 +1771,7 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
                     PutU32(blob, b.sensor ? 1u : 0u);
                 }
             }
-            // STATIC-CULL BVH section (Cluster::cookedStaticBvh): the
+            // STATIC-CULL BVH section (WorldPage::cookedStaticBvh): the
             // frustum-cull tree over this scene's STATIC mesh rows, baked
             // over LOD-family-union world AABBs. The World ADOPTS it at
             // resolve time instead of rebuilding when the adoption-guard
@@ -1934,7 +1934,7 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
     // lists what the cook registered.
     {
         std::vector<GiBinding> unionBindings;
-        for (const Cluster* cp : clusters) {
+        for (const WorldPage* cp : clusters) {
             for (const GiBinding& b : cp->giBindings) {
                 if (b.name.empty())
                     continue;
@@ -1973,9 +1973,9 @@ bool SerializeClusters(const std::vector<const Cluster*>& clusters,
     return true;
 }
 
-bool SerializeCluster(const Cluster& cluster,
+bool SerializeCluster(const WorldPage& cluster,
                       PakWriter& writer,
-                      ClusterSerializeStats* stats,
+                      WorldPageSerializeStats* stats,
                       std::string* err,
                       const NodeSchema* schemas,
                       size_t schemaCount) {
@@ -2180,7 +2180,7 @@ bool ParseSceneBlob(std::span<const uint8_t> payload,
             if (maps && maps->lights) {
                 if (pakId >= maps->lights->size())
                     return fail("bad scene light mapping");
-                const ClusterLightHandle h = (*maps->lights)[pakId];
+                const WorldPageLightHandle h = (*maps->lights)[pakId];
                 if (!h.valid())
                     return fail("scene references invalid light pak id");
                 scene.tables.lights.push_back(LightRow{node, h.index()});
@@ -2239,7 +2239,7 @@ bool ParseSceneBlob(std::span<const uint8_t> payload,
                 if (maps && maps->cameras) {
                     if (pakId >= maps->cameras->size())
                         return fail("bad scene camera mapping");
-                    const ClusterCameraHandle h = (*maps->cameras)[pakId];
+                    const WorldPageCameraHandle h = (*maps->cameras)[pakId];
                     if (!h.valid())
                         return fail("scene references invalid camera pak id");
                     scene.tables.cameras.push_back(CameraRow{node, h.index()});
@@ -2315,7 +2315,7 @@ bool ParseSceneBlob(std::span<const uint8_t> payload,
                 if (maps && maps->decals) {
                     if (pakId >= maps->decals->size())
                         return fail("bad scene decal mapping");
-                    const ClusterDecalHandle h = (*maps->decals)[pakId];
+                    const WorldPageDecalHandle h = (*maps->decals)[pakId];
                     if (!h.valid())
                         return fail("scene references invalid decal pak id");
                     scene.tables.decals.push_back(DecalRow{node, h.index()});
@@ -2361,7 +2361,7 @@ bool ParseSceneBlob(std::span<const uint8_t> payload,
             if (!c.ok)
                 return fail("truncated scene env-volume section");
         }
-        // Cluster skeleton (v14; v13 blobs end after the env-volume
+        // WorldPage skeleton (v14; v13 blobs end after the env-volume
         // settings): u32 hasSkeleton + (u32 jointCount + cluster node id
         // per joint + 16 floats per inverseBind + u32 root). ABSENT =
         // a pre-skin pak (no skeleton); present must end the blob
@@ -2642,7 +2642,7 @@ bool ParseSceneBlob(std::span<const uint8_t> payload,
                 scene.tables.physicsBodies.push_back({node, b});
             }
         }
-        // STATIC-CULL BVH section (Cluster::cookedStaticBvh; the writer's
+        // STATIC-CULL BVH section (WorldPage::cookedStaticBvh; the writer's
         // mirror — see the serialize side for the framing): u32 payloadLen
         // + payload (the Engine/Utils/bvh.h wire format, prim node ids =
         // THIS scene's dense slots) + u32 bakedNodeCount + u64 stateHash
@@ -2800,7 +2800,7 @@ static std::vector<uint8_t> PeekSceneMeshPakIds(std::span<const uint8_t> payload
     return refs;
 }
 
-std::unique_ptr<Cluster> DeserializeCluster(
+std::unique_ptr<WorldPage> DeserializeCluster(
     ResourceManager& ctx,
     const PakReader& reader,
     std::string* err,
@@ -2818,7 +2818,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
     // time) while the upload is still in flight -> VUID-vkDestroyImage-
     // 01000 + a driver AV in the next submitState's vkCmdPipelineBarrier2
     // on the dead VkImage (see Bistro pak fallback crash).
-    auto fail = [&](const std::string& msg) -> std::unique_ptr<Cluster> {
+    auto fail = [&](const std::string& msg) -> std::unique_ptr<WorldPage> {
         if (err)
             *err = msg;
         std::cerr << "DeserializeCluster: " << msg << std::endl;
@@ -2828,7 +2828,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
         return nullptr;
     };
 
-    auto cluster = std::make_unique<Cluster>(&ctx);
+    auto cluster = std::make_unique<WorldPage>(&ctx);
     if (sceneNodeBudget)
         cluster->scene.ReserveNodeSlots(sceneNodeBudget);
 
@@ -2845,7 +2845,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
     // sggi/sgrv/givolume/manifests/sglm + cubemap manifests/KTX2s ALL under
     // gi/ (the canonical bake-asset home — cubemaps at gi/cubemaps/<id>.*,
     // the id-keyed capture-set paths): CLUSTER-OWNED payload bytes (the
-    // entity home — see Cluster::bakePayloads / World::ReadBakeBytes),
+    // entity home — see WorldPage::bakePayloads / World::ReadBakeBytes),
     // never RHI textures. Excluded from the texture passes below (the
     // KTX decoder would fail the non-KTX ones anyway; the
     // CubemapLibrary decodes the cubemap KTX2s itself, so the old
@@ -2865,7 +2865,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
             // LZ4 entries decompress into the READER's cache (reader
             // lifetime, not the pinned image) — and without an image pin
             // there is nothing to borrow from: own a copy either way.
-            Cluster::BakePayload bp;
+            WorldPage::BakePayload bp;
             bp.owned.assign(p.ktxBytes.begin(), p.ktxBytes.end());
             cluster->AddBakePayload(e->path, std::move(bp.owned));
         } else {
@@ -3025,7 +3025,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
 
     // --- Materials ------------------------------------------------------------
     const auto matEntries = reader.BlobsOfKind(PakAssetKind::Material);
-    std::vector<ClusterMaterialHandle> matByPakId;
+    std::vector<WorldPageMaterialHandle> matByPakId;
     matByPakId.reserve(matEntries.size());
     for (const PakTocEntry* e : matEntries) {
         Cursor c{reader.Payload(*e), 0};
@@ -3112,7 +3112,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
         values.textures2[0] = texSlot(texUris[4]);
         values.textures2[1] = texSlot(cavityUri);
 
-        const ClusterMaterialHandle h = cluster->CreateMaterialFromValues(
+        const WorldPageMaterialHandle h = cluster->CreateMaterialFromValues(
             values,
             shading <= 2 ? static_cast<ShadingModel>(shading) : ShadingModel::DefaultLit,
             alpha <= 2 ? static_cast<AlphaMode>(alpha) : AlphaMode::Opaque,
@@ -3162,7 +3162,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
     };
     std::vector<StaticGeometrySource> directs;
     std::vector<MeshMeta> meshMetas;
-    std::vector<ClusterStaticMeshHandle> meshByPakId;
+    std::vector<WorldPageStaticMeshHandle> meshByPakId;
     // Geometry-LOD streaming (geometry_streamer.h): the pak id -> uri
     // table for DEFERRED siblings (empty string where the pak id
     // uploaded). Kept pak-id-aligned with meshByPakId so the scene-link
@@ -3387,7 +3387,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
             }
         }
         std::vector<StaticGeometrySource> uploadSrcs;
-        std::vector<ClusterStaticMeshHandle> handles;
+        std::vector<WorldPageStaticMeshHandle> handles;
         uploadSrcs.reserve(meshMetas.size());
         for (size_t i = 0; i < meshMetas.size(); ++i)
             if (!defer[i] && meshReferenced[i])
@@ -3416,11 +3416,11 @@ std::unique_ptr<Cluster> DeserializeCluster(
                 // Shared-blob-pool mesh owned by another scene: no handle,
                 // no payload — keep the pak-id alignment.
                 deferredByPakId.emplace_back();
-                meshByPakId.push_back(ClusterStaticMeshHandle{});
+                meshByPakId.push_back(WorldPageStaticMeshHandle{});
                 continue;
             }
             if (defer[i]) {
-                Cluster::DeferredMeshLod d;
+                WorldPage::DeferredMeshLod d;
                 d.uri = std::move(meta.uri);
                 d.src = directs[i];
                 d.entryOffset = meta.entryOffset;
@@ -3436,11 +3436,11 @@ std::unique_ptr<Cluster> DeserializeCluster(
                 // sibling (GetMeshLod), the payload lookup does not
                 // (FindMeshByUri misses) - the deferred state, exactly.
                 cluster->RegisterMeshLod(deferredByPakId.back(), meta.lod);
-                meshByPakId.push_back(ClusterStaticMeshHandle{});
+                meshByPakId.push_back(WorldPageStaticMeshHandle{});
                 continue;
             }
             deferredByPakId.emplace_back();
-            const ClusterStaticMeshHandle h = handles[up++];
+            const WorldPageStaticMeshHandle h = handles[up++];
             // UploadMeshes fills AABB only; restore the cooked sphere
             // and the lightmap chunk (rides the draw ring to the lit
             // fragment).
@@ -3480,7 +3480,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
     // re-registered, and the scene's (node, pakId) pairs below remap to
     // fresh pool handle indices.
     const auto lightEntries = reader.BlobsOfKind(PakAssetKind::Light);
-    std::vector<ClusterLightHandle> lightByPakId;
+    std::vector<WorldPageLightHandle> lightByPakId;
     lightByPakId.reserve(lightEntries.size());
     for (const PakTocEntry* e : lightEntries) {
         Cursor c{reader.Payload(*e), 0};
@@ -3538,7 +3538,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
         l.layerMask = (c.off + 4 <= c.img.size()) ? c.u32() : 0xffffffffu;
         if (!c.ok)
             return fail("truncated light layer mask: " + e->path);
-        const ClusterLightHandle h = cluster->CreateLight(std::move(l));
+        const WorldPageLightHandle h = cluster->CreateLight(std::move(l));
         if (!h.valid())
             return fail("CreateLight failed for: " + uri);
         cluster->RegisterLightUri(uri, h);
@@ -3550,7 +3550,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
     // re-registered, and the scene's (node, pakId) pairs below remap to
     // fresh pool handle indices.
     const auto cameraEntries = reader.BlobsOfKind(PakAssetKind::Camera);
-    std::vector<ClusterCameraHandle> camByPakId;
+    std::vector<WorldPageCameraHandle> camByPakId;
     camByPakId.reserve(cameraEntries.size());
     for (const PakTocEntry* e : cameraEntries) {
         Cursor c{reader.Payload(*e), 0};
@@ -3575,7 +3575,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
         cam.nearClip = nearClip;
         cam.farClip = farClip;
         cam.name = name;
-        const ClusterCameraHandle h = cluster->CreateCamera(std::move(cam));
+        const WorldPageCameraHandle h = cluster->CreateCamera(std::move(cam));
         if (!h.valid())
             return fail("CreateCamera failed for: " + uri);
         cluster->RegisterCameraUri(uri, h);
@@ -3587,7 +3587,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
     // re-registered, and the scene's (node, pakId) pairs below remap to
     // fresh pool handle indices. The SHAPE rides the node transform.
     const auto decalEntries = reader.BlobsOfKind(PakAssetKind::Decal);
-    std::vector<ClusterDecalHandle> decalByPakId;
+    std::vector<WorldPageDecalHandle> decalByPakId;
     decalByPakId.reserve(decalEntries.size());
     for (const PakTocEntry* e : decalEntries) {
         Cursor c{reader.Payload(*e), 0};
@@ -3617,7 +3617,7 @@ std::unique_ptr<Cluster> DeserializeCluster(
         d.depthFadeStart = depthFadeStart;
         d.seed = seed;
         d.name = std::move(name);
-        const ClusterDecalHandle h = cluster->CreateDecal(std::move(d));
+        const WorldPageDecalHandle h = cluster->CreateDecal(std::move(d));
         if (!h.valid())
             return fail("CreateDecal failed for: " + uri);
         cluster->RegisterDecalUri(uri, h);

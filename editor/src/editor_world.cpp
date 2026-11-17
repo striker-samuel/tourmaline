@@ -45,7 +45,7 @@ void EditorApp::ReparentNode(uint32_t node, uint32_t newParent) {
     }
 }
 
-// Mirrors World::ResolveAndFixup_clusters flag rules for one node.
+// Mirrors World::ResolveAndFixup_pages flag rules for one node.
 void EditorApp::RefreshNodeDrawState(uint32_t node) {
     if (!m_world || node >= m_world->scene.hierarchy.size())
         return;

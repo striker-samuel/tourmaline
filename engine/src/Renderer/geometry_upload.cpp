@@ -3,7 +3,7 @@
 
 // The shared GPU geometry upload service's implementation (see
 // geometry_upload.h for the design record). Extracted VERBATIM from
-// Cluster::UploadStaticMeshesDirect's carve/copy core (the cluster
+// WorldPage::UploadStaticMeshesDirect's carve/copy core (the cluster
 // keeps a compatibility wrapper for its pool bookkeeping) — the
 // behavior contract is bit-identical: same carve order, same
 // all-or-nothing rollback, same {srcOffset, dstOffset, size} copy

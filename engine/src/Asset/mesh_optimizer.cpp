@@ -902,7 +902,7 @@ bool AuditLodLightmap(const MeshData& lod0,
 // ---------------------------------------------------------------------------
 // Post-bake LOD sibling cooking (see mesh_optimizer.h).
 // ---------------------------------------------------------------------------
-bool CookLodSiblings(Cluster& cluster,
+bool CookLodSiblings(WorldPage& cluster,
                      const MeshOptConfig& config,
                      const MeshletConfig& meshletConfig,
                      const CookLodSiblingsOptions& options) {
@@ -926,7 +926,7 @@ bool CookLodSiblings(Cluster& cluster,
 
     for (const uint32_t meshIdx : meshOrder) {
         const uint32_t node = nodeOfMesh[meshIdx];
-        const ClusterStaticMeshHandle handle = cluster.staticMeshes.getHandle(meshIdx);
+        const WorldPageStaticMeshHandle handle = cluster.staticMeshes.getHandle(meshIdx);
         if (!handle.valid())
             continue;
         const StringViewT uri = cluster.GetMeshUri(handle);
@@ -986,7 +986,7 @@ bool CookLodSiblings(Cluster& cluster,
         bool preserveCoverage = false;
         {
             if (const MaterialRow* matRow = FindMaterial(scene, node)) {
-                const ClusterMaterialHandle mh = cluster.materials.getHandle(matRow->material);
+                const WorldPageMaterialHandle mh = cluster.materials.getHandle(matRow->material);
                 if (mh.valid()) {
                     if (const Material* mat = cluster.materials.get(mh))
                         preserveCoverage = (mat->alphaMode == AlphaMode::Mask ||

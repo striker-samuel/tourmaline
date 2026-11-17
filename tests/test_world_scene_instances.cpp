@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 // No Vulkan context required. Exercise the direct World instance path,
-// non-Cluster leases, unchanged survivor node handles and failure gates.
+// non-WorldPage leases, unchanged survivor node handles and failure gates.
 #include <Engine/App/world.h>
 #include <Engine/Asset/asset_residency.h>
 #include <Engine/Scene/scene.h>
@@ -161,7 +161,7 @@ int main() {
     CHECK(world.RetireSceneHierarchy(c));
 
     // Cooked Map pages can now drive the direct World-owned instance path
-    // without allocating a Cluster or rebuilding all merged Scene nodes.
+    // without allocating a WorldPage or rebuilding all merged Scene nodes.
     {
         namespace wp = engine::worldpartition;
         tour::World mapWorld;
@@ -208,7 +208,7 @@ int main() {
             partition.SetInterests(&interest, 1);
             partition.UpdateFrame(1);
             CHECK(stream.ActiveTileCount() == 1 && mapWorld.worldSceneInstances.Count() == 2 &&
-                  resolveCalls == 2 && mapWorld.clusters.empty());
+                  resolveCalls == 2 && mapWorld.pages.empty());
             // Dropping interest removes only the tiled instance. Persistent
             // placement must survive until the explicit Map unbind.
             partition.SetInterests(nullptr, 0);
@@ -217,7 +217,7 @@ int main() {
             partition.ClearProviders();
             CHECK(stream.UnbindMap() && stream.PersistentInstanceCount() == 0 &&
                   mapWorld.worldSceneInstances.Count() == 0 && mapWorld.ActiveMapIdentity() == 0 &&
-                  mapWorld.clusters.empty());
+                  mapWorld.pages.empty());
             CHECK(stream.BindMap(*reader, 300));
             partition.AddProvider(&stream.Provider());
             partition.SetInterests(&interest, 1);
@@ -275,7 +275,7 @@ int main() {
             // tile inactive - is the pinned part).
             CHECK(stream.ActiveTileCount() == 0 && mapWorld.worldSceneInstances.Count() == 0 &&
                   stream.LastError().find("resource") != std::string::npos &&
-                  mapWorld.clusters.empty());
+                  mapWorld.pages.empty());
             partition.SetInterests(nullptr, 0);
             partition.UpdateFrame(2);
             partition.ClearProviders();

@@ -1096,10 +1096,10 @@ void EditorApp::LiveRefreshTextureAsset(const std::string& changedImagePath) {
             "beside it (nothing to refresh).");
         return;
     }
-    tour::Cluster* owner = nullptr;
+    tour::WorldPage* owner = nullptr;
     std::string ownerUri;
     const std::string exact = asset.lexically_normal().generic_string();
-    for (const auto& clusterPtr : m_world->clusters) {
+    for (const auto& clusterPtr : m_world->pages) {
         if (!clusterPtr)
             continue;
         if (clusterPtr->FindTextureByUri(exact)) {
@@ -1109,7 +1109,7 @@ void EditorApp::LiveRefreshTextureAsset(const std::string& changedImagePath) {
         }
     }
     if (!owner) {
-        for (const auto& clusterPtr : m_world->clusters) {
+        for (const auto& clusterPtr : m_world->pages) {
             if (!clusterPtr)
                 continue;
             for (const auto& [uri, h] : clusterPtr->ListTextureUris()) {
@@ -1168,7 +1168,7 @@ void EditorApp::RewireTextureSlots(uint32_t oldRhiIndex, uint32_t newRhiIndex) {
     // indices (one pool per context — BuildPoolToBindlessMap's
     // contract), so the rewire walks EVERY cluster's material pool.
     // -1 slots (no texture) never match (oldRhiIndex is a valid index).
-    for (const auto& clusterPtr : m_world->clusters) {
+    for (const auto& clusterPtr : m_world->pages) {
         if (!clusterPtr)
             continue;
         clusterPtr->materials.forEach([&](smvk::Material& mat) {

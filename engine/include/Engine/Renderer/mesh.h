@@ -60,8 +60,8 @@ struct alignas(16) MaterialValues {
     // itself is layer 0; -1 = no layer). w selects the mode: 0 = legacy
     // (vertex color is a plain albedo tint), 1..4 = layered with that
     // many active layers (weights from the vertex color RGBA channels,
-    // normalized in the shader). Cluster-local ids are remapped to
-    // world material ids by World::ResolveAndFixup_clusters, which also
+    // normalized in the shader). WorldPage-local ids are remapped to
+    // world material ids by World::ResolveAndFixup_pages, which also
     // appends slots for layer materials no node references directly.
     glm::ivec4 layerMaterials{-1, -1, -1, 0}; // 112
 };
@@ -517,7 +517,7 @@ struct MeshVertex {
 
 // One AoS import vertex -> one PackedVertexPosition + one
 // PackedVertexShading + one PackedVertexLightmap (the exact GPU
-// heap-stream layout). Shared by Cluster::UploadMesh(es)
+// heap-stream layout). Shared by WorldPage::UploadMesh(es)
 // (runtime upload) and the pak cooker's packed-SoA mesh blobs (v5;
 // cooked geometry round-trips the heap layout verbatim) — the two
 // must never diverge. The lightmap word pair packs unconditionally;

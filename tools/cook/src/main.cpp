@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 // cook.exe: offline ARTIFACT -> COOKED-ARTIFACT cooker that works
-// exclusively on the VFS and needs NO GPU (offline-mode Cluster, see
-// Cluster::SetOfflineMode). GI / cubemaps / LODs / meshlets / de-instance
+// exclusively on the VFS and needs NO GPU (offline-mode WorldPage, see
+// WorldPage::SetOfflineMode). GI / cubemaps / LODs / meshlets / de-instance
 // run here and write back into the artifacts (+ <stem>.cooked);
 // pak.exe assembles the .pak from the cooked artifacts (pure
 // serialization). Raw glTF never cooks (import.exe / the MeshImporter /
@@ -389,7 +389,7 @@ struct BakeEnv {
     float sunIntensity = 10000.0f, skyIntensity = 600.0f;
     glm::vec3 sunColor{1.0f, 0.95f, 0.90f};
 };
-BakeEnv EnvForBake(const smvk::Cluster& c, const Args& args) {
+BakeEnv EnvForBake(const smvk::WorldPage& c, const Args& args) {
     BakeEnv e{};
     if (c.scene.envAuthored) {
         const tour::scene::SceneEnv& se = c.scene.environment;
@@ -409,7 +409,7 @@ BakeEnv EnvForBake(const smvk::Cluster& c, const Args& args) {
 }
 
 // World sun: the pak's first directional is the runtime sun (the App
-// seeds its env from it, first-wins). Clusters that already carry one
+// seeds its env from it, first-wins). Pages that already carry one
 // (imported KHR punctual or tour-created/edited) are untouched; sunless
 // scenes get a "WorldSun" node synthesized from the ENV BLOCK (see
 // EnvForBake — one authored sun everywhere) so the editor's environment
@@ -424,9 +424,9 @@ BakeEnv EnvForBake(const smvk::Cluster& c, const Args& args) {
 // the old non-static choice starved every bake of the sun while
 // the 2D-lightmap double-count it feared is deprecated in-shader
 // and off in every shipped tour.
-void EnsureWorldSun(smvk::Cluster& cluster, const BakeEnv& be) {
+void EnsureWorldSun(smvk::WorldPage& cluster, const BakeEnv& be) {
     bool hasDir = false;
-    cluster.lights.forEachHandle([&](smvk::ClusterLightHandle h) {
+    cluster.lights.forEachHandle([&](smvk::WorldPageLightHandle h) {
         if (const SceneLight* l = cluster.lights.get(h))
             if (l->type == SceneLight::Type::Directional)
                 hasDir = true;
@@ -548,11 +548,11 @@ std::vector<std::string> BakeStems(const Args& args) {
 // a bake failure — the cook fails loudly (a silently missing GI
 // volume is exactly the "cooked GI volumes never reached the App"
 // bug).
-bool BakeAuthoredGiVolumes(std::vector<std::unique_ptr<smvk::Cluster>>& sceneClusters,
+bool BakeAuthoredGiVolumes(std::vector<std::unique_ptr<smvk::WorldPage>>& scenePages,
                            const Args& args,
                            std::vector<std::pair<std::string, std::vector<uint8_t>>>& out) {
     using namespace smvk::gi;
-    for (auto& sc : sceneClusters) {
+    for (auto& sc : scenePages) {
         if (!sc || sc->scene.tables.giVolumes.empty())
             continue;
         // Trace scene per cluster: bake inputs mirror the lightmap/
@@ -1350,7 +1350,7 @@ struct DumpCursor {
 };
 
 // Prints meshes/materials/textures read back from the written pak (never
-// from the in-memory Cluster, so the dump reflects the actual bytes).
+// from the in-memory WorldPage, so the dump reflects the actual bytes).
 void DumpManifestFromPak(const smvk::PakReader& reader,
                          const std::vector<uint32_t>& onlyNodes = {}) {
     tool::out() << "  manifest (pak-sourced):\n";
@@ -2138,7 +2138,7 @@ bool NodeChainMatchesKeywords(const Scene& scene,
 // Downstream stages (charts, bake, LOD siblings, meshlets, serializer)
 // treat clones as ordinary meshes. Pool overflow degrades gracefully:
 // a failed clone keeps the shared mapping (bake skips it as before).
-uint32_t DeinstanceSharedMeshes(smvk::Cluster& cluster) {
+uint32_t DeinstanceSharedMeshes(smvk::WorldPage& cluster) {
     std::map<uint32_t, std::vector<uint32_t>> refs;
     for (const MeshRow& row : cluster.scene.tables.meshes)
         refs[row.mesh].push_back(row.node);
@@ -2147,7 +2147,7 @@ uint32_t DeinstanceSharedMeshes(smvk::Cluster& cluster) {
         if (nodes.size() < 2)
             continue;
         std::sort(nodes.begin(), nodes.end());
-        const smvk::ClusterStaticMeshHandle origH = cluster.staticMeshes.getHandle(meshIdx);
+        const smvk::WorldPageStaticMeshHandle origH = cluster.staticMeshes.getHandle(meshIdx);
         const smvk::MeshData* origUp = cluster.GetRetainedUpload(origH);
         if (!origH.valid() || !origUp || origUp->vertices.empty() || origUp->indices.empty())
             continue; // degenerate: keep shared (bake skips it anyway)
@@ -2158,7 +2158,7 @@ uint32_t DeinstanceSharedMeshes(smvk::Cluster& cluster) {
             origUri.empty() ? std::nullopt : cluster.GetMeshMeshlets(smvk::StringViewT(origUri));
         for (size_t i = 1; i < nodes.size(); ++i) {
             const uint32_t node = nodes[i];
-            const smvk::ClusterStaticMeshHandle ch = cluster.UploadMesh(*origUp);
+            const smvk::WorldPageStaticMeshHandle ch = cluster.UploadMesh(*origUp);
             if (!ch.valid())
                 continue;
             SetMesh(cluster.scene, node, ch.index());
@@ -2673,7 +2673,7 @@ bool WriteCubemapKtx2ToMemory(const smvk::CubemapMipChains& chains,
 // path-tracer transport as tools/cubemap_baker: TraceIncoming on hits,
 // analytic sky on primary misses, textured albedo) and returns
 // (vfsPath, ktxBytes) pairs for pak embedding. False on error (logged).
-bool BakePreconvolvedCubemaps(smvk::Cluster& cluster,
+bool BakePreconvolvedCubemaps(smvk::WorldPage& cluster,
                               Args& args,
                               std::vector<std::pair<std::string, std::vector<uint8_t>>>& out,
                               std::string& outManifestBase) {
@@ -2728,7 +2728,7 @@ bool BakePreconvolvedCubemaps(smvk::Cluster& cluster,
         // cluster materials (what the trace soup can intern at all).
         uint32_t nOpaque = 0, nMask = 0, nBlend = 0, nNodes = 0;
         for (const MaterialRow& row : cluster.scene.tables.materials) {
-            const smvk::ClusterMaterialHandle mh = cluster.materials.getHandle(row.material);
+            const smvk::WorldPageMaterialHandle mh = cluster.materials.getHandle(row.material);
             if (!mh.valid())
                 continue;
             const smvk::Material* mat = cluster.materials.get(mh);
@@ -3854,7 +3854,7 @@ static std::string CookFlagsFingerprint(const Args& args) {
 }
 
 bool WriteCookedArtifactsBack(const Args& args,
-                              const std::vector<std::unique_ptr<smvk::Cluster>>& sceneClusters,
+                              const std::vector<std::unique_ptr<smvk::WorldPage>>& scenePages,
                               WriteBackStats& st,
                               std::string& err,
                               bool writeGeometry) {
@@ -3862,18 +3862,18 @@ bool WriteCookedArtifactsBack(const Args& args,
     // part). Base meshes come from node references; LOD siblings (never
     // node-attached) come from the LOD registry.
     struct MeshRef {
-        smvk::Cluster* cluster = nullptr;
-        smvk::ClusterStaticMeshHandle handle;
+        smvk::WorldPage* cluster = nullptr;
+        smvk::WorldPageStaticMeshHandle handle;
         smvk::LodInfo lod; // lodIndex 0 = base
     };
     std::map<std::string, std::vector<MeshRef>> byFile;
-    for (auto& sc : sceneClusters) {
-        smvk::Cluster& c = *sc;
+    for (auto& sc : scenePages) {
+        smvk::WorldPage& c = *sc;
         std::unordered_set<uint32_t> seen;
         for (const MeshRow& row : c.scene.tables.meshes) {
             if (!seen.insert(row.mesh).second)
                 continue; // still-shared: one set per upload
-            const smvk::ClusterStaticMeshHandle h = c.staticMeshes.getHandle(row.mesh);
+            const smvk::WorldPageStaticMeshHandle h = c.staticMeshes.getHandle(row.mesh);
             if (!h.valid())
                 continue;
             const smvk::StringViewT uri = c.GetMeshUri(h);
@@ -3968,7 +3968,7 @@ bool WriteCookedArtifactsBack(const Args& args,
             for (auto& chain : asset.lodChains)
                 chain.clear();
         for (const MeshRef& r : refs) {
-            smvk::Cluster& c = *r.cluster;
+            smvk::WorldPage& c = *r.cluster;
             const smvk::MeshData* up = c.GetRetainedUpload(r.handle);
             if (!up || up->vertices.empty() || up->indices.empty()) {
                 err = "cooked mesh '" + c.GetMeshUri(r.handle).Str() +
@@ -4373,7 +4373,7 @@ int Run(const CookArgs& c) {
     // source glTF, inlined under the scene root exactly like the
     // editor binds it). No source resolution, no side imports — the
     // reference machinery builds the whole scene.
-    std::vector<std::unique_ptr<smvk::Cluster>> sceneClusters;
+    std::vector<std::unique_ptr<smvk::WorldPage>> scenePages;
     std::vector<std::string> sceneNames;
     smvk::tour::Doc tour;
     bool haveTour = false;
@@ -4506,12 +4506,12 @@ int Run(const CookArgs& c) {
         // editor session that authored the tour (the cooker inherits
         // the editor's working directory).
         {
-            auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+            auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
             cluster->SetOfflineMode(true);
             addNode(cluster->scene, -1, 0); // empty scene root
             // Partitioned-family part clusters (P1): appended beside the main
             // cluster; write-back stamps a .cooked marker per part artifact.
-            std::vector<std::unique_ptr<smvk::Cluster>> partClusters;
+            std::vector<std::unique_ptr<smvk::WorldPage>> partPages;
             std::vector<std::string> partNames;
             if (!tour.references.empty()) {
                 const std::string ownerBase = smvk::vfs::BaseDir(tour.references[0].source);
@@ -4534,10 +4534,10 @@ int Run(const CookArgs& c) {
                                          nullptr,
                                          nullptr,
                                          /*contentRoot=*/args.contentDir,
-                                         &partClusters,
+                                         &partPages,
                                          &partNames);
                 tool::out() << "Definition: bound " << applied << " reference subtree(s) ("
-                            << tour.references.size() << " top-level, " << partClusters.size()
+                            << tour.references.size() << " top-level, " << partPages.size()
                             << " partitioned part cluster(s))\n";
             }
             // Texture-asset POOL imports (ordered; see the tour's
@@ -4630,11 +4630,11 @@ int Run(const CookArgs& c) {
             tool::out() << "Tour replayed: " << tour.commands.size() << " commands from "
                         << args.tour << "\n";
             sceneNames.push_back("scene");
-            sceneClusters.push_back(std::move(cluster));
-            for (size_t pi = 0; pi < partClusters.size(); ++pi) {
+            scenePages.push_back(std::move(cluster));
+            for (size_t pi = 0; pi < partPages.size(); ++pi) {
                 sceneNames.push_back(pi < partNames.size() ? partNames[pi]
                                                            : ("scene_part" + std::to_string(pi)));
-                sceneClusters.push_back(std::move(partClusters[pi]));
+                scenePages.push_back(std::move(partPages[pi]));
             }
         }
     } else {
@@ -4699,11 +4699,11 @@ int Run(const CookArgs& c) {
                     return vfs.TryRead(p);
                 return std::nullopt;
             };
-            // NOTE: heap-allocated — Cluster embeds multi-MB pool arrays
+            // NOTE: heap-allocated — WorldPage embeds multi-MB pool arrays
             // and must never live on the (1MB) thread stack. Cook mode =
             // GPU-free: CPU geometry + retained uploads only, textures
             // are minted cook ids.
-            auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+            auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
             cluster->SetOfflineMode(true);
             addNode(cluster->scene, -1, 0); // empty scene root (editor parity)
             const std::string baseDir = smvk::vfs::BaseDir(artPath);
@@ -4727,7 +4727,7 @@ int Run(const CookArgs& c) {
             }
             {
                 size_t nDir = 0, nPoint = 0, nSpot = 0;
-                cluster->lights.forEachHandle([&](smvk::ClusterLightHandle h) {
+                cluster->lights.forEachHandle([&](smvk::WorldPageLightHandle h) {
                     const SceneLight* l = cluster->lights.get(h);
                     if (!l)
                         return;
@@ -4745,7 +4745,7 @@ int Run(const CookArgs& c) {
             }
             tool::out() << "Cooking artifact: '" << inVfs << "'\n";
             sceneNames.push_back("");
-            sceneClusters.push_back(std::move(cluster));
+            scenePages.push_back(std::move(cluster));
         }
     } // close else block for the artifact path
     // ---------------------------------------------------------------------------
@@ -4762,7 +4762,7 @@ int Run(const CookArgs& c) {
         smvk::MeshletConfig noMeshlets = meshletCfg;
         noMeshlets.enabled = false;
         smvk::CookLodSiblingsOptions siblingsOpts;
-        for (auto& owner : sceneClusters) {
+        for (auto& owner : scenePages) {
             auto& scene = owner->scene;
             MarkAllRootsChanged(scene);
             recalculateGlobalTransforms(scene);
@@ -4781,7 +4781,7 @@ int Run(const CookArgs& c) {
                                                                   !upload->skin.empty()))
                     eligibleMeshes.insert(row.mesh);
             }
-            std::vector<smvk::ClusterStaticMeshHandle> unwanted;
+            std::vector<smvk::WorldPageStaticMeshHandle> unwanted;
             for (const auto& [uri, lod] : owner->ListMeshLods()) {
                 if (lod.lodIndex == 0) {
                     const auto base = owner->FindMeshByUri(uri);
@@ -4815,8 +4815,8 @@ int Run(const CookArgs& c) {
     // Missing derivations for eligible meshes remain an actionable error.
     // ---------------------------------------------------------------------------
     if (args.lods || args.meshlets) {
-        for (auto& sc : sceneClusters) {
-            smvk::Cluster& c = *sc;
+        for (auto& sc : scenePages) {
+            smvk::WorldPage& c = *sc;
             // Per-cluster: chainable base meshes (lodIndex 0 with enough
             // geometry to simplify) vs sibling entries (lodIndex >= 1);
             // meshlet-carrying meshes vs cooked sets on the registry.
@@ -4890,12 +4890,12 @@ int Run(const CookArgs& c) {
     // Single-scene alias for the tour/collapse/bake stages below (written
     // against one cluster; multi-scene loops reuse them per scene). Both
     // cluster-> and *cluster forms keep working through the pointer.
-    smvk::Cluster* cluster = sceneClusters.front().get();
+    smvk::WorldPage* cluster = scenePages.front().get();
 
     // World sun per scene (App parity: first directional wins as the
     // runtime sun). Authored directionals always survive; sunless scenes
     // synthesize one from the ENV BLOCK (EnvForBake — one authored sun).
-    for (auto& sc : sceneClusters)
+    for (auto& sc : scenePages)
         EnsureWorldSun(*sc, EnvForBake(*sc, args));
 
     // Sun of record -> the scene's look env (sun fields only): an
@@ -4905,7 +4905,7 @@ int Run(const CookArgs& c) {
     // env block is lux-native, so the light's lux copies straight in (no
     // conversion). A synthesized WorldSun already carries the env's own
     // values — the seed is a no-op there (float-exact round trip).
-    for (auto& sc : sceneClusters) {
+    for (auto& sc : scenePages) {
         if (!sc->scene.envAuthored)
             continue; // runtime seeds from the light at load
         const ::Scene& scene = sc->scene;
@@ -4928,7 +4928,7 @@ int Run(const CookArgs& c) {
             const LightRow* lit = FindLight(scene, node);
             if (!lit)
                 continue;
-            const smvk::ClusterLightHandle handle = sc->lights.getHandle(lit->light);
+            const smvk::WorldPageLightHandle handle = sc->lights.getHandle(lit->light);
             if (!handle.valid())
                 continue;
             const SceneLight* L = sc->lights.get(handle);
@@ -4986,7 +4986,7 @@ int Run(const CookArgs& c) {
     // records (the manifest round-trip is retired with the stems).
     if (args.giVolume) {
         bool anyBoundVolume = false;
-        for (const auto& sc : sceneClusters) {
+        for (const auto& sc : scenePages) {
             if (!sc)
                 continue;
             for (const GiVolumeRow& row : sc->scene.tables.giVolumes)
@@ -5001,7 +5001,7 @@ int Run(const CookArgs& c) {
             tool::out() << "GI volumes scene-bound (tour giAsset records)"
                            " — in-process bake skipped, the bound bakes embed by "
                            "binding\n";
-        } else if (!BakeAuthoredGiVolumes(sceneClusters, args, giBlobs)) {
+        } else if (!BakeAuthoredGiVolumes(scenePages, args, giBlobs)) {
             return 1;
         } else {
             // The stamp (as GiBaker does): the baked volumes bound on
@@ -5012,11 +5012,11 @@ int Run(const CookArgs& c) {
             // editor cook flow re-stamps its live doc after the
             // pipeline (the snapshot tour written here is temp), but
             // this file IS the authority in the CLI flow.
-            if (haveTour && !sceneClusters.empty()) {
+            if (haveTour && !scenePages.empty()) {
                 std::string serr;
                 std::vector<std::string> superseded;
                 if (!smvk::tour::StampGiAssets(tour,
-                                               sceneClusters.front()->scene,
+                                               scenePages.front()->scene,
                                                createdGiVolumes,
                                                &serr,
                                                &superseded,
@@ -5051,8 +5051,8 @@ int Run(const CookArgs& c) {
     // blocks (world-baked verts, identity nodes). Runs before Serialize so
     // the pak holds the collapsed scene. Per scene (shared nothing).
     if (args.collapseStatic)
-        for (auto& sc : sceneClusters) {
-            smvk::Cluster* cluster = sc.get();
+        for (auto& sc : scenePages) {
+            smvk::WorldPage* cluster = sc.get();
             smvk::StaticMergeOptions mopts;
             smvk::StaticMergeResult mr = smvk::CollapseStaticSubtrees(*cluster, mopts);
             if (!mr.ok) {
@@ -5223,12 +5223,12 @@ int Run(const CookArgs& c) {
         // cap.
         struct LmWork {
             uint32_t node = 0;
-            smvk::ClusterStaticMeshHandle handle{};
+            smvk::WorldPageStaticMeshHandle handle{};
             // Chain members that receive the layout through UV transfer
             // (every sibling level; empty when the mesh has no LOD
             // chain). The chart + bake source is always the mesh's own
             // upload (LOD0).
-            std::vector<smvk::ClusterStaticMeshHandle> transfer;
+            std::vector<smvk::WorldPageStaticMeshHandle> transfer;
             float density = 0.0f;    // chart-space density actually used
             float worldScale = 1.0f; // node world scale (chart/world unit ratio)
             float curveScale = 1.0f; // curvature density boost (>= 1)
@@ -5289,7 +5289,7 @@ int Run(const CookArgs& c) {
                 ++skipNoMat;
                 continue;
             }
-            const smvk::ClusterMaterialHandle matHandle =
+            const smvk::WorldPageMaterialHandle matHandle =
                 cluster->materials.getHandle(matRow->material);
             if (!matHandle.valid())
                 continue;
@@ -5342,7 +5342,7 @@ int Run(const CookArgs& c) {
                 ++skipNoLm;
                 continue;
             }
-            const smvk::ClusterStaticMeshHandle handle = cluster->staticMeshes.getHandle(meshIdx);
+            const smvk::WorldPageStaticMeshHandle handle = cluster->staticMeshes.getHandle(meshIdx);
             const smvk::MeshData* upload = cluster->GetRetainedUpload(handle);
             if (!upload || upload->vertices.empty() || upload->indices.empty()) {
                 ++skipNoMat;
@@ -5731,7 +5731,7 @@ int Run(const CookArgs& c) {
             sibOpts.audit = false;
             smvk::MeshletConfig noMeshlets = meshletCfg;
             noMeshlets.enabled = false;
-            for (auto& sc : sceneClusters)
+            for (auto& sc : scenePages)
                 smvk::CookLodSiblings(*sc, lodOpt, noMeshlets, sibOpts);
             // Sibling lookup: base uri -> lodIndex -> sibling uri (from
             // the markers CookLodSiblings just registered). Every
@@ -6188,7 +6188,7 @@ int Run(const CookArgs& c) {
                 // LOD-switch re-lighting. Failure keeps the level's
                 // inherited chart uvs (uncharted triangle semantics) and the
                 // shared lobe count.
-                for (const smvk::ClusterStaticMeshHandle th : w.transfer) {
+                for (const smvk::WorldPageStaticMeshHandle th : w.transfer) {
                     smvk::MeshData* up =
                         const_cast<smvk::MeshData*>(cluster->GetRetainedUpload(th));
                     if (!up || up->vertices.empty() || up->indices.empty()) {
@@ -6262,7 +6262,7 @@ int Run(const CookArgs& c) {
             std::vector<uint32_t> order(lmTexelStamped.begin(), lmTexelStamped.end());
             std::sort(order.begin(), order.end());
             for (uint32_t meshIdx : order) {
-                const smvk::ClusterStaticMeshHandle h = cluster->staticMeshes.getHandle(meshIdx);
+                const smvk::WorldPageStaticMeshHandle h = cluster->staticMeshes.getHandle(meshIdx);
                 if (!h.valid())
                     continue;
                 if (smvk::StaticMesh* m = cluster->staticMeshes.get(h)) {
@@ -6801,15 +6801,15 @@ int Run(const CookArgs& c) {
         double cutoffSum = 0.0;
         uint32_t degenerate = 0;
         uint32_t splitsSum = 0;
-        for (auto& sc : sceneClusters) {
-            smvk::Cluster& c = *sc;
+        for (auto& sc : scenePages) {
+            smvk::WorldPage& c = *sc;
             std::unordered_set<uint32_t> seen;
             seen.reserve(c.scene.tables.meshes.size() * 2);
             for (const MeshRow& row : c.scene.tables.meshes) {
                 const uint32_t meshIdx = row.mesh;
                 if (!seen.insert(meshIdx).second)
                     continue; // still-shared mesh: one meshlet set per upload
-                const smvk::ClusterStaticMeshHandle h = c.staticMeshes.getHandle(meshIdx);
+                const smvk::WorldPageStaticMeshHandle h = c.staticMeshes.getHandle(meshIdx);
                 const smvk::MeshData* up = c.GetRetainedUpload(h);
                 if (!h.valid() || !up || up->vertices.empty() || up->indices.empty())
                     continue;
@@ -6955,7 +6955,7 @@ int Run(const CookArgs& c) {
     WriteBackStats wb;
     std::string werr;
     if (!WriteCookedArtifactsBack(args,
-                                  sceneClusters,
+                                  scenePages,
                                   wb,
                                   werr,
                                   /*writeGeometry=*/args.lightmap || (haveTour && args.lods))) {
@@ -6968,7 +6968,7 @@ int Run(const CookArgs& c) {
                         ? " +" + std::to_string(args.inVfsList.size() - 1) + " more artifact(s)"
                         : (!args.tour.empty() ? " (tour definition)" : ""))
                 << " -> cooked artifacts\n"
-                << "  scenes=" << sceneClusters.size() << " artifacts=" << wb.artifacts
+                << "  scenes=" << scenePages.size() << " artifacts=" << wb.artifacts
                 << (args.lightmap
                         ? " blobs=" + std::to_string(wb.blobs) +
                               " siblings=" + std::to_string(wb.siblings) +

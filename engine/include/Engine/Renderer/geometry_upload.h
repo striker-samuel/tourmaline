@@ -6,14 +6,14 @@
 // THE SHARED GPU GEOMETRY UPLOAD SERVICE (the consolidated content
 // architecture's extraction step — docs/content_as_code.md): the
 // carve + all-or-nothing rollback + table-driven bulk-copy core that
-// used to live inside Cluster::UploadStaticMeshesDirect, lifted out
+// used to live inside WorldPage::UploadStaticMeshesDirect, lifted out
 // so the OWNERSHIP of uploaded geometry is the CALLER's, never the
 // service's and never implicitly a scene cluster's.
 //
 // Three consumers share this one seam by design (never a duplicate
 // uploader, per the architecture rule):
 //   - the CLUSTER deserializer (the compatibility wrapper
-//     Cluster::UploadStaticMeshesDirect — pool row + per-cluster
+//     WorldPage::UploadStaticMeshesDirect — pool row + per-cluster
 //     meshAllocations_ bookkeeping stay there);
 //   - the future shared mesh store (app::AssetStore's permanent
 //     model — mesh rows owned independently of any scene cluster);
@@ -40,7 +40,7 @@ namespace smvk {
 // One direct-addressed upload source: packed-SoA stream subranges of
 // ONE blob (the loaded pak image) addressed by byte offsets — the
 // upload is pure offset math, no AoS parse, no per-vertex CPU
-// conversion. (Moved out of Cluster's nested StaticMeshDirectSource —
+// conversion. (Moved out of WorldPage's nested StaticMeshDirectSource —
 // RENAMED here; the old nested name is gone, no compat alias.)
 struct StaticGeometrySource {
     uint64_t posSrc = 0; // content-relative stream offsets
@@ -56,7 +56,7 @@ struct StaticGeometrySource {
 // One uploaded mesh: the pool-ready StaticMesh VALUE (surfaces
 // resolved to absolute monoblock ranges) + the CALLER-OWNED arena
 // tokens. The caller stores the value wherever its ownership model
-// puts mesh rows (a Cluster pool today; the shared store tomorrow)
+// puts mesh rows (a WorldPage pool today; the shared store tomorrow)
 // and frees the tokens through the helpers below — the service holds
 // nothing after the call returns.
 struct StaticGeometryUpload {

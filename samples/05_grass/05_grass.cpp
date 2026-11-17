@@ -209,7 +209,7 @@ class GrassApp final : public smvk::App {
     }
 
     bool BuildBladeMesh() {
-        m_cluster = new smvk::Cluster(m_context.get());
+        m_cluster = new smvk::WorldPage(m_context.get());
         smvk::MeshData up{};
         up.vertices.resize(4);
         up.vertices[0].pos = glm::vec3(-0.085f, 0.0f, 0.0f);
@@ -462,7 +462,7 @@ class GrassApp final : public smvk::App {
     tour::placement::PlacementIndirectCmd m_seed{};
     smvk::RenderViewSet m_views{};
     smvk::LogicalBufferHandle m_viewsLogical{};
-    smvk::Cluster* m_cluster = nullptr;
+    smvk::WorldPage* m_cluster = nullptr;
     smvk::Holder<smvk::ImageHandle> m_depthImage{};
     smvk::Holder<smvk::ImageViewHandle> m_depthView{};
     smvk::LogicalImageViewHandle m_depthLogical{};

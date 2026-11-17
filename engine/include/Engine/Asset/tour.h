@@ -80,10 +80,10 @@
 #include <Engine/Scene/scene.h> // SceneExportSettings (the export-settings node payload)
 
 namespace tour {
-struct Cluster;
+struct WorldPage;
 }
 namespace smvk {
-using ::tour::Cluster;
+using ::tour::WorldPage;
 } // namespace smvk
 
 // (namespace/RHI boundary audit) the old GLOBAL `struct Scene;` fwd is
@@ -686,7 +686,7 @@ bool LoadTourFromString(const std::string& text,
                         std::string& err,
                         std::vector<std::string>* warnings = nullptr);
 
-// Replay node/material commands onto a freshly imported cook Cluster
+// Replay node/material commands onto a freshly imported cook WorldPage
 // (cluster-space ids apply directly). Runs BEFORE meshopt/LOD/bake so pool
 // indices match the import. Returns false on structural errors (bad node /
 // material ids); name mismatches only warn. strict = false (reference
@@ -698,7 +698,7 @@ bool LoadTourFromString(const std::string& text,
 // index the giAsset/GI-volume family refs address). The bake owners (GiBaker,
 // Cook.exe's in-process GI-volume bake) need it to stamp the doc's giAsset
 // records back after a bake (StampGiAssets).
-bool ApplyTourToCluster(Cluster& cluster,
+bool ApplyTourToCluster(WorldPage& cluster,
                         const Doc& doc,
                         std::vector<std::string>* warnings = nullptr,
                         std::string* err = nullptr,

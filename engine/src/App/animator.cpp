@@ -22,7 +22,7 @@ using namespace ::smvk;
 
 namespace {
 
-// Decompose a local into TRS (the Cluster::SampleAnimation convention:
+// Decompose a local into TRS (the WorldPage::SampleAnimation convention:
 // exact round trip for TRS-authored locals; a sheared local keeps its
 // shear dropped — the import path never produces those).
 struct LocalTRS {

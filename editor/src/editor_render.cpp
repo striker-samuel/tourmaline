@@ -3180,7 +3180,7 @@ void EditorApp::RenderWysiwygLayer(smvk::Framebuffer& fb, smvk::Extent2D extent)
                              100.0 * coloredN / double(n),
                              100.0 * alphaN / double(n),
                              m_world ? m_world->drawItems.size() : size_t(0),
-                             m_world ? m_world->clusters.size() : size_t(0));
+                             m_world ? m_world->pages.size() : size_t(0));
                 std::fflush(stderr);
             } else {
                 std::fprintf(stderr, "[LIVE-DUMP] download FAILED\n");

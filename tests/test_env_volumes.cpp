@@ -20,8 +20,8 @@
 #include <Engine/Asset/tour.h>
 #include <Engine/Rendergraph/envzones.h>
 #include <Engine/Scene/scene.h>
-#include <Engine/WorldPartition/WorldEnvTiles.h>
 #include <Engine/WorldPartition/WorldEnvTileProvider.h>
+#include <Engine/WorldPartition/WorldEnvTiles.h>
 #include <Engine/WorldPartition/env_tile_pak.h>
 
 namespace {
@@ -123,7 +123,7 @@ int main() {
     // from the look; dangling nodes drop; volumes-only docs leave the
     // look unauthored.
     {
-        auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+        auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
         const int root = addNode(cluster->scene, -1, 0);
         const int n1 = addNode(cluster->scene, root, 0);
@@ -154,7 +154,7 @@ int main() {
     }
     {
         // Volumes-only doc: no look blocks, no fake authoring.
-        auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+        auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
         const int root = addNode(cluster->scene, -1, 0);
         const int n1 = addNode(cluster->scene, root, 0);
@@ -176,7 +176,7 @@ int main() {
     // base zone - tour.cpp parses the key for format compatibility but
     // forces the flag true). The check pins that contract.
     {
-        auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+        auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
         addNode(cluster->scene, -1, 0);
         smvk::tour::Doc doc;
@@ -371,41 +371,39 @@ int main() {
         // three-slot approximation or largest-mass collapse.
         {
             ::Scene s;
-            (void)makeTileZone(s, glm::vec3(32,2,32), glm::vec3(32,12,32),
-                glm::vec3(1,0,0), 5.0f);
-            (void)makeTileZone(s, glm::vec3(32,2,32), glm::vec3(32,16,32),
-                glm::vec3(0,1,0), 6.0f);
-            (void)makeTileZone(s, glm::vec3(32,11,32), glm::vec3(32,29,32),
-                glm::vec3(0,0,1), 7.0f);
+            (void)makeTileZone(
+                s, glm::vec3(32, 2, 32), glm::vec3(32, 12, 32), glm::vec3(1, 0, 0), 5.0f);
+            (void)makeTileZone(
+                s, glm::vec3(32, 2, 32), glm::vec3(32, 16, 32), glm::vec3(0, 1, 0), 6.0f);
+            (void)makeTileZone(
+                s, glm::vec3(32, 11, 32), glm::vec3(32, 29, 32), glm::vec3(0, 0, 1), 7.0f);
             WorldEnvTiles tiles;
             Check(tiles.Build(s, glm::vec2(0), 1, 1, 0, 40), "envtile.stack4-build");
-            Check(tiles.At(glm::vec3(32,2,32)).record == 0, "envtile.stack4-base");
-            Check(tiles.At(glm::vec3(32,12,32)).record ==
-                recOf(tiles,glm::vec3(1,0,0)), "envtile.stack4-first");
-            Check(tiles.At(glm::vec3(32,16,32)).record ==
-                recOf(tiles,glm::vec3(0,1,0)), "envtile.stack4-second");
-            Check(tiles.At(glm::vec3(32,29,32)).record ==
-                recOf(tiles,glm::vec3(0,0,1)), "envtile.stack4-third");
+            Check(tiles.At(glm::vec3(32, 2, 32)).record == 0, "envtile.stack4-base");
+            Check(tiles.At(glm::vec3(32, 12, 32)).record == recOf(tiles, glm::vec3(1, 0, 0)),
+                  "envtile.stack4-first");
+            Check(tiles.At(glm::vec3(32, 16, 32)).record == recOf(tiles, glm::vec3(0, 1, 0)),
+                  "envtile.stack4-second");
+            Check(tiles.At(glm::vec3(32, 29, 32)).record == recOf(tiles, glm::vec3(0, 0, 1)),
+                  "envtile.stack4-third");
         }
         // A 6m interior within a 64m cell must not be lost by a missed
         // center sample, nor smeared across the tile footprint.
         {
             ::Scene s;
-            const uint32_t node = makeTileZone(s, glm::vec3(3,3,3),
-                glm::vec3(8,10,8), glm::vec3(1,0,0), 5.0f);
-            MutateEnvVolume(s,node,[](EnvVolume& v) {
+            const uint32_t node =
+                makeTileZone(s, glm::vec3(3, 3, 3), glm::vec3(8, 10, 8), glm::vec3(1, 0, 0), 5.0f);
+            MutateEnvVolume(s, node, [](EnvVolume& v) {
                 v.blendRadius = 4.0f;
                 v.blendWeight = 0.8f;
             });
             WorldEnvTiles tiles;
-            Check(tiles.Build(s,glm::vec2(0),1,1,0,30),"envtile.subtile-build");
-            const uint32_t room = recOf(tiles,glm::vec3(1,0,0));
-            Check(tiles.At(glm::vec3(8,10,8)).record == room,
-                "envtile.subtile-interior");
-            Check(tiles.At(glm::vec3(56,10,56)).record == 0,
-                "envtile.subtile-no-bleed");
-            Check(std::abs(tiles.At(glm::vec3(8,15,8)).weight - 0.4f)<1e-5f,
-                "envtile.subtile-continuous-falloff");
+            Check(tiles.Build(s, glm::vec2(0), 1, 1, 0, 30), "envtile.subtile-build");
+            const uint32_t room = recOf(tiles, glm::vec3(1, 0, 0));
+            Check(tiles.At(glm::vec3(8, 10, 8)).record == room, "envtile.subtile-interior");
+            Check(tiles.At(glm::vec3(56, 10, 56)).record == 0, "envtile.subtile-no-bleed");
+            Check(std::abs(tiles.At(glm::vec3(8, 15, 8)).weight - 0.4f) < 1e-5f,
+                  "envtile.subtile-continuous-falloff");
         }
 
         // Preserved shapes: no-split outside every zone + the underwater
@@ -558,8 +556,7 @@ int main() {
     {
         ::Scene scene;
         engine::worldpartition::WorldEnvTiles baked;
-        Check(baked.Build(scene, glm::vec2(0), 4, 1, 0, 40),
-              "envtile.stream-source-build");
+        Check(baked.Build(scene, glm::vec2(0), 4, 1, 0, 40), "envtile.stream-source-build");
         engine::worldpartition::WorldEnvTileProvider provider;
         provider.SetSource(&baked, 1);
         engine::worldpartition::WorldPartition partition;
@@ -572,22 +569,18 @@ int main() {
         partition.SetInterests(&interest, 1);
         partition.UpdateFrame(1);
         const auto first = provider.Revision();
-        Check(first != 0 && provider.CellCount() == 4 &&
-              provider.Cells()[0].candidateCount > 0 &&
-              provider.Cells()[3].candidateCount == 0,
+        Check(first != 0 && provider.CellCount() == 4 && provider.Cells()[0].candidateCount > 0 &&
+                  provider.Cells()[3].candidateCount == 0,
               "envtile.stream-near-cell-resident");
         partition.UpdateFrame(2);
-        Check(provider.Revision() == first,
-              "envtile.stream-steady-no-republish");
+        Check(provider.Revision() == first, "envtile.stream-steady-no-republish");
         interest.position.x = 224.0;
         partition.SetInterests(&interest, 1);
         partition.UpdateFrame(3);
-        Check(provider.Revision() > first &&
-              provider.Cells()[0].candidateCount == 0 &&
-              provider.Cells()[3].candidateCount > 0,
+        Check(provider.Revision() > first && provider.Cells()[0].candidateCount == 0 &&
+                  provider.Cells()[3].candidateCount > 0,
               "envtile.stream-movement-retire-and-activate");
-        Check(partition.RequestCount() > 0,
-              "envtile.stream-requested-through-partition");
+        Check(partition.RequestCount() > 0, "envtile.stream-requested-through-partition");
         partition.SetInterests(nullptr, 0);
         partition.UpdateFrame(4);
         Check(provider.ResidentCount() == 0 && provider.IndexCount() == 0,
@@ -599,8 +592,7 @@ int main() {
     {
         ::Scene scene;
         engine::worldpartition::WorldEnvTiles baked;
-        Check(baked.Build(scene, glm::vec2(0), 4, 1, 0, 40),
-              "envtile.async-source-build");
+        Check(baked.Build(scene, glm::vec2(0), 4, 1, 0, 40), "envtile.async-source-build");
         using namespace engine::worldpartition;
         WorldEnvTileProvider provider;
         provider.SetSource(&baked, 20);
@@ -623,15 +615,13 @@ int main() {
         partition.UpdateFrame(1);
         const WorldSubcellKey oldKey = requested;
         const uint64_t oldTicket = ticket;
-        Check(requestCount == 1 && provider.PendingCount() == 1 &&
-              provider.ResidentCount() == 0,
+        Check(requestCount == 1 && provider.PendingCount() == 1 && provider.ResidentCount() == 0,
               "envtile.async-one-request-in-flight");
         // A stale page should never enter a new camera window.
         interest.position.x = 224;
         partition.SetInterests(&interest, 1);
         partition.UpdateFrame(2);
-        Check(!provider.Activate(oldKey, oldTicket, {0}) &&
-              provider.ResidentCount() == 0,
+        Check(!provider.Activate(oldKey, oldTicket, {0}) && provider.ResidentCount() == 0,
               "envtile.async-stale-ticket-rejected");
         Check(ticket != oldTicket && provider.PendingCount() == 1,
               "envtile.async-new-request-after-teleport");
@@ -644,8 +634,7 @@ int main() {
               "envtile.async-publication-only-after-activation");
         const auto revision = provider.Revision();
         partition.UpdateFrame(3);
-        Check(provider.Revision() == revision,
-              "envtile.async-steady-state-does-not-publish");
+        Check(provider.Revision() == revision, "envtile.async-steady-state-does-not-publish");
         // A new bake supersedes an old page, even if the tile key matches.
         provider.SetSource(&baked, 21);
         Check(provider.ResidentCount() == 0 && provider.PendingCount() == 0,
@@ -658,8 +647,7 @@ int main() {
         using namespace engine::worldpartition;
         ::Scene scene;
         WorldEnvTiles baked;
-        Check(baked.Build(scene, glm::vec2(0), 8, 1, 0, 40),
-              "envtile.budget-source-build");
+        Check(baked.Build(scene, glm::vec2(0), 8, 1, 0, 40), "envtile.budget-source-build");
         WorldEnvTileProvider provider;
         provider.SetSource(&baked, 1);
         provider.SetMaxNewRequestsPerFrame(1);
@@ -670,7 +658,9 @@ int main() {
         uint64_t ticket = 0;
         size_t issued = 0;
         provider.SetRequestCallback([&](WorldSubcellKey subcell, uint64_t t) {
-            requested = subcell; ticket = t; ++issued;
+            requested = subcell;
+            ticket = t;
+            ++issued;
         });
         StreamingInterest interest{};
         interest.position = glm::dvec3(32, 0, 32);
@@ -686,11 +676,10 @@ int main() {
         partition.SetInterests(&interest, 1);
         partition.UpdateFrame(2);
         Check(issued == 2 && ticket != firstTicket &&
-              !provider.Activate(firstKey, firstTicket, {0}) &&
-              partition.Budgets().ReservationCount() == 1,
+                  !provider.Activate(firstKey, firstTicket, {0}) &&
+                  partition.Budgets().ReservationCount() == 1,
               "envtile.budget-teleport-recycles-credit");
-        Check(provider.Fail(requested, ticket) &&
-              partition.Budgets().ReservationCount() == 0,
+        Check(provider.Fail(requested, ticket) && partition.Budgets().ReservationCount() == 0,
               "envtile.budget-failure-releases-credit");
         partition.ClearProviders();
     }
@@ -701,40 +690,40 @@ int main() {
         ::Scene scene;
         const uint32_t large = MakeZone(scene, glm::vec3(400, 20, 400));
         const uint32_t small = MakeZone(scene, glm::vec3(4, 4, 4));
-        (void)large; (void)small;
+        (void)large;
+        (void)small;
         engine::worldpartition::WorldEnvTiles baked;
-        Check(baked.Build(scene, glm::vec2(-512), 16, 16, -50, 50),
-              "envtile.far-build");
-        Check(baked.FarCandidateCount()==2,
-              "envtile.far-large-plus-base-only");
-        Check(baked.FarCandidateCount()>=2 &&
-              baked.FarCandidates()[0]!=0 &&
-              baked.FarCandidates()[1]==0,
+        Check(baked.Build(scene, glm::vec2(-512), 16, 16, -50, 50), "envtile.far-build");
+        Check(baked.FarCandidateCount() == 2, "envtile.far-large-plus-base-only");
+        Check(baked.FarCandidateCount() >= 2 && baked.FarCandidates()[0] != 0 &&
+                  baked.FarCandidates()[1] == 0,
               "envtile.far-preserves-priority-order");
         tour::envcook::Manifest manifest{};
         manifest.world = 55;
         manifest.gridMin = baked.GridMin();
         manifest.dimX = baked.DimX();
         manifest.dimZ = baked.DimZ();
-        manifest.records.assign(baked.Records(), baked.Records()+baked.RecordCount());
-        manifest.shapes.assign(baked.Shapes(), baked.Shapes()+baked.RecordCount());
+        manifest.records.assign(baked.Records(), baked.Records() + baked.RecordCount());
+        manifest.shapes.assign(baked.Shapes(), baked.Shapes() + baked.RecordCount());
         manifest.farCandidates.assign(baked.FarCandidates(),
-                                      baked.FarCandidates()+baked.FarCandidateCount());
-        manifest.pagePresent.assign(size_t(manifest.dimX)*manifest.dimZ,0);
+                                      baked.FarCandidates() + baked.FarCandidateCount());
+        manifest.pagePresent.assign(size_t(manifest.dimX) * manifest.dimZ, 0);
         std::vector<uint8_t> bytes;
-        Check(tour::envcook::EncodeManifest(manifest,bytes),
-              "envtile.far-manifest-encode");
+        Check(tour::envcook::EncodeManifest(manifest, bytes), "envtile.far-manifest-encode");
         tour::envcook::Manifest decoded{};
-        Check(tour::envcook::DecodeManifest(bytes,55,decoded) &&
-              decoded.farCandidates==manifest.farCandidates,
+        Check(tour::envcook::DecodeManifest(bytes, 55, decoded) &&
+                  decoded.farCandidates == manifest.farCandidates,
               "envtile.far-manifest-roundtrip");
         engine::worldpartition::WorldEnvTiles loaded;
-        Check(loaded.LoadCooked(decoded.gridMin,decoded.dimX,decoded.dimZ,
-                               decoded.records.data(),decoded.shapes.data(),
-                               uint32_t(decoded.records.size())) &&
-              loaded.SetCookedFarCandidates(decoded.farCandidates.data(),
-                                            uint32_t(decoded.farCandidates.size())) &&
-              loaded.FarCandidateCount()==2,
+        Check(loaded.LoadCooked(decoded.gridMin,
+                                decoded.dimX,
+                                decoded.dimZ,
+                                decoded.records.data(),
+                                decoded.shapes.data(),
+                                uint32_t(decoded.records.size())) &&
+                  loaded.SetCookedFarCandidates(decoded.farCandidates.data(),
+                                                uint32_t(decoded.farCandidates.size())) &&
+                  loaded.FarCandidateCount() == 2,
               "envtile.far-cooked-restored");
     }
 
@@ -744,38 +733,37 @@ int main() {
         using namespace tour::envcook;
         ::Scene scene;
         engine::worldpartition::WorldEnvTiles baked;
-        Check(baked.Build(scene,glm::vec2(0),2,2,0,40),"envtile.pak-source");
+        Check(baked.Build(scene, glm::vec2(0), 2, 2, 0, 40), "envtile.pak-source");
         Manifest manifest{};
         manifest.world = 12;
         manifest.gridMin = baked.GridMin();
         manifest.dimX = baked.DimX();
         manifest.dimZ = baked.DimZ();
-        manifest.records.assign(baked.Records(),baked.Records()+baked.RecordCount());
-        manifest.shapes.assign(baked.Shapes(),baked.Shapes()+baked.RecordCount());
-        manifest.pagePresent.assign(size_t(manifest.dimX)*manifest.dimZ, uint8_t(0));
+        manifest.records.assign(baked.Records(), baked.Records() + baked.RecordCount());
+        manifest.shapes.assign(baked.Shapes(), baked.Shapes() + baked.RecordCount());
+        manifest.pagePresent.assign(size_t(manifest.dimX) * manifest.dimZ, uint8_t(0));
         std::vector<uint8_t> bytes;
-        Check(EncodeManifest(manifest,bytes),"envtile.pak-manifest-encode");
+        Check(EncodeManifest(manifest, bytes), "envtile.pak-manifest-encode");
         Manifest decoded{};
-        Check(DecodeManifest(bytes,12,decoded) && decoded.world==12 &&
-              decoded.records.size()==baked.RecordCount() &&
-              decoded.shapes.size()==baked.RecordCount() &&
-              decoded.pagePresent.size()==4 &&
-              decoded.dimX==2 && decoded.dimZ==2,"envtile.pak-manifest-roundtrip");
-        Check(!DecodeManifest(bytes,13,decoded),"envtile.pak-manifest-wrong-world");
+        Check(DecodeManifest(bytes, 12, decoded) && decoded.world == 12 &&
+                  decoded.records.size() == baked.RecordCount() &&
+                  decoded.shapes.size() == baked.RecordCount() && decoded.pagePresent.size() == 4 &&
+                  decoded.dimX == 2 && decoded.dimZ == 2,
+              "envtile.pak-manifest-roundtrip");
+        Check(!DecodeManifest(bytes, 13, decoded), "envtile.pak-manifest-wrong-world");
         bytes.pop_back();
-        Check(!DecodeManifest(bytes,12,decoded),"envtile.pak-manifest-truncated");
-        const engine::worldpartition::WorldSubcellKey key{-1,7};
+        Check(!DecodeManifest(bytes, 12, decoded), "envtile.pak-manifest-truncated");
+        const engine::worldpartition::WorldSubcellKey key{-1, 7};
         const std::vector<uint32_t> ids{0};
         bytes.clear();
-        Check(EncodePage(12,key,ids,bytes),"envtile.pak-page-encode");
+        Check(EncodePage(12, key, ids, bytes), "envtile.pak-page-encode");
         std::vector<uint32_t> read;
-        Check(DecodePage(bytes,12,key,1,read) && read==ids,
+        Check(DecodePage(bytes, 12, key, 1, read) && read == ids,
               "envtile.pak-page-roundtrip-negative-key");
-        Check(!DecodePage(bytes,12,{0,7},1,read),
-              "envtile.pak-page-mismatched-coordinates");
-        const auto corrupt = bytes.size()-1;
+        Check(!DecodePage(bytes, 12, {0, 7}, 1, read), "envtile.pak-page-mismatched-coordinates");
+        const auto corrupt = bytes.size() - 1;
         bytes[corrupt] = 0xff;
-        Check(!DecodePage(bytes,12,key,1,read) && read==ids,
+        Check(!DecodePage(bytes, 12, key, 1, read) && read == ids,
               "envtile.pak-page-invalid-record-fail-atomic");
     }
 
@@ -785,35 +773,30 @@ int main() {
         using namespace engine::worldpartition;
         ::Scene scene;
         WorldEnvTiles baked;
-        Check(baked.Build(scene, glm::vec2(0), 8, 1, 0, 40),
-              "envtile.sparse-source-build");
+        Check(baked.Build(scene, glm::vec2(0), 8, 1, 0, 40), "envtile.sparse-source-build");
         WorldEnvTileProvider provider;
         provider.SetSource(&baked, 7);
         WorldPartition partition;
         partition.AddProvider(&provider);
         StreamingInterest interest{};
-        interest.position=glm::dvec3(32,0,32);
-        interest.radiusMeters=0;
-        interest.layerMask=StreamLayerBit(StreamLayer::Environment);
-        partition.SetInterests(&interest,1);
+        interest.position = glm::dvec3(32, 0, 32);
+        interest.radiusMeters = 0;
+        interest.layerMask = StreamLayerBit(StreamLayer::Environment);
+        partition.SetInterests(&interest, 1);
         partition.UpdateFrame(1);
-        Check(provider.PageTableCount()==2 &&
-              provider.PageTable()[0]==0 &&
-              provider.PageTable()[1]==UINT32_MAX &&
-              provider.PackedCellCount()==16,
+        Check(provider.PageTableCount() == 2 && provider.PageTable()[0] == 0 &&
+                  provider.PageTable()[1] == UINT32_MAX && provider.PackedCellCount() == 16,
               "envtile.sparse-one-root-page");
-        interest.position.x=480;
-        partition.SetInterests(&interest,1);
+        interest.position.x = 480;
+        partition.SetInterests(&interest, 1);
         partition.UpdateFrame(2);
-        Check(provider.PageTable()[0]==UINT32_MAX &&
-              provider.PageTable()[1]==0 &&
-              provider.PackedCellCount()==16,
+        Check(provider.PageTable()[0] == UINT32_MAX && provider.PageTable()[1] == 0 &&
+                  provider.PackedCellCount() == 16,
               "envtile.sparse-root-page-relocation");
-        partition.SetInterests(nullptr,0);
+        partition.SetInterests(nullptr, 0);
         partition.UpdateFrame(3);
-        Check(provider.PackedCellCount()==0 &&
-              provider.PageTable()[0]==UINT32_MAX &&
-              provider.PageTable()[1]==UINT32_MAX,
+        Check(provider.PackedCellCount() == 0 && provider.PageTable()[0] == UINT32_MAX &&
+                  provider.PageTable()[1] == UINT32_MAX,
               "envtile.sparse-no-resident-all-base");
     }
 
@@ -821,32 +804,31 @@ int main() {
     // immutable OBB manifest + independently seekable candidate page.
     {
         ::Scene scene;
-        const uint32_t node = MakeZone(scene, glm::vec3(3,3,3));
-        scene.globalTransform[node] = glm::translate(glm::mat4(1),
-            glm::vec3(8,10,8))*glm::scale(glm::mat4(1),glm::vec3(3,3,3));
+        const uint32_t node = MakeZone(scene, glm::vec3(3, 3, 3));
+        scene.globalTransform[node] = glm::translate(glm::mat4(1), glm::vec3(8, 10, 8)) *
+                                      glm::scale(glm::mat4(1), glm::vec3(3, 3, 3));
         engine::worldpartition::WorldEnvTiles baked;
-        Check(baked.Build(scene,glm::vec2(0),1,1,0,40),
-              "envtile.smp8-source");
+        Check(baked.Build(scene, glm::vec2(0), 1, 1, 0, 40), "envtile.smp8-source");
         smvk::PakWriter writer;
-        constexpr auto world=uint64_t(123);
-        Check(tour::envcook::AddEnvTiles(writer,world,baked),
-              "envtile.smp8-cook-pages");
-        const std::vector<uint8_t> image=writer.Finalize();
+        constexpr auto world = uint64_t(123);
+        Check(tour::envcook::AddEnvTiles(writer, world, baked), "envtile.smp8-cook-pages");
+        const std::vector<uint8_t> image = writer.Finalize();
         std::string error;
-        auto reader=smvk::PakReader::Open(image,error);
-        Check(reader.has_value(),"envtile.smp8-reader-open");
+        auto reader = smvk::PakReader::Open(image, error);
+        Check(reader.has_value(), "envtile.smp8-reader-open");
         if (reader) {
             tour::envcook::Manifest manifest;
-            Check(tour::envcook::ReadEnvManifest(*reader,world,manifest) &&
-                  manifest.records.size()==2 && manifest.pagePresent.size()==1 &&
-                  manifest.pagePresent[0]==1,
+            Check(tour::envcook::ReadEnvManifest(*reader, world, manifest) &&
+                      manifest.records.size() == 2 && manifest.pagePresent.size() == 1 &&
+                      manifest.pagePresent[0] == 1,
                   "envtile.smp8-cooked-manifest");
             std::vector<uint32_t> ids;
-            Check(tour::envcook::ReadEnvPage(*reader,world,{0,0},
-                  uint32_t(manifest.records.size()),true,ids) &&
-                  ids.size()==2,"envtile.smp8-page-roundtrip");
-            Check(!tour::envcook::ReadEnvPage(*reader,world,{1,0},
-                  uint32_t(manifest.records.size()),true,ids),
+            Check(tour::envcook::ReadEnvPage(
+                      *reader, world, {0, 0}, uint32_t(manifest.records.size()), true, ids) &&
+                      ids.size() == 2,
+                  "envtile.smp8-page-roundtrip");
+            Check(!tour::envcook::ReadEnvPage(
+                      *reader, world, {1, 0}, uint32_t(manifest.records.size()), true, ids),
                   "envtile.smp8-missing-required-page-fails");
         }
     }

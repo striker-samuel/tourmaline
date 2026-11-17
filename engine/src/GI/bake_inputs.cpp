@@ -111,7 +111,7 @@ std::string BakeEnvHash(const Scene& scene) {
     return hs.str();
 }
 
-std::string BakeLightsHash(const Cluster& cluster) {
+std::string BakeLightsHash(const WorldPage& cluster) {
     // Every STATIC-MARKED light (the bake light set), sorted by node id:
     // the light's own fields + the node's global transform bits (the
     // position/direction ride the transform) + the cookie uri. Non-static
@@ -131,7 +131,7 @@ std::string BakeLightsHash(const Cluster& cluster) {
         const LightRow* it = FindLight(scene, node);
         if (!it)
             continue;
-        const ClusterLightHandle handle = cluster.lights.getHandle(it->light);
+        const WorldPageLightHandle handle = cluster.lights.getHandle(it->light);
         if (!handle.valid())
             continue;
         const SceneLight* L = cluster.lights.get(handle);
@@ -181,7 +181,7 @@ std::string BakeLightsHash(const Cluster& cluster) {
 // The geometry merkle
 // ---------------------------------------------------------------------------
 
-BakeCellGrid BuildBakeCellGrid(Cluster& cluster) {
+BakeCellGrid BuildBakeCellGrid(WorldPage& cluster) {
     BakeCellGrid grid;
     ::Scene& scene = cluster.scene;
     recalculateGlobalTransforms(scene);
@@ -223,7 +223,7 @@ BakeCellGrid BuildBakeCellGrid(Cluster& cluster) {
     grid.meshCount = 0;
     for (const MeshRow& row : scene.tables.meshes) {
         const NodeId node = row.node;
-        const ClusterStaticMeshHandle meshHandle = cluster.staticMeshes.getHandle(row.mesh);
+        const WorldPageStaticMeshHandle meshHandle = cluster.staticMeshes.getHandle(row.mesh);
         if (!meshHandle.valid())
             continue;
         const MeshData* upload = cluster.GetRetainedUpload(meshHandle);
@@ -232,7 +232,7 @@ BakeCellGrid BuildBakeCellGrid(Cluster& cluster) {
         const MaterialRow* matRow = FindMaterial(scene, node);
         if (!matRow)
             continue;
-        const ClusterMaterialHandle matHandle = cluster.materials.getHandle(matRow->material);
+        const WorldPageMaterialHandle matHandle = cluster.materials.getHandle(matRow->material);
         if (!matHandle.valid())
             continue;
         const Material* mat = cluster.materials.get(matHandle);
@@ -345,7 +345,7 @@ std::string BakeRegionHash(const BakeCellGrid& grid, const glm::vec3& mn, const 
 // ---------------------------------------------------------------------------
 
 std::string GiVolumeBakeUnitHash(const BakeCellGrid& grid,
-                                 const Cluster& cluster,
+                                 const WorldPage& cluster,
                                  const SceneGiVolume& def,
                                  const glm::mat4& nodeGlobal,
                                  const GiVolumeBakeConfigHashInputs& cfg) {
@@ -415,7 +415,7 @@ std::string GiVolumeBakeUnitHash(const BakeCellGrid& grid,
 }
 
 std::string CubemapBakeUnitHash(const BakeCellGrid& grid,
-                                const Cluster& cluster,
+                                const WorldPage& cluster,
                                 const glm::vec3& position,
                                 float influenceRadius,
                                 float fadeRadius,

@@ -22,10 +22,10 @@
 #include <Engine/Scene/scene.h>
 
 namespace tour {
-struct Cluster;
+struct WorldPage;
 }
 namespace smvk {
-using ::tour::Cluster;
+using ::tour::WorldPage;
 
 struct StaticMergeOptions {
     // Remove the source static nodes after baking (their geometry lives on
@@ -61,7 +61,7 @@ std::vector<uint32_t> CollectStaticRenderNodes(const ::Scene& scene);
 // SetRetainUploads(true)); fails otherwise. New block nodes are added as
 // children of node 0 with identity local transforms (vertices are
 // world-baked) and marked static.
-StaticMergeResult CollapseStaticSubtrees(Cluster& cluster,
+StaticMergeResult CollapseStaticSubtrees(WorldPage& cluster,
                                          const StaticMergeOptions& opts = StaticMergeOptions{});
 
 } // namespace smvk

@@ -18,7 +18,7 @@
 //   * The EMITTER STATES — one per authored audio source (keyed by the
 //     STABLE (owning cluster, cluster-local node) pair, so a scene
 //     rebuild never confuses emitters; positions read from the merged
-//     scene's global transforms through World::clusterMergedNodes) +
+//     scene's global transforms through World::pageMergedNodes) +
 //     one per SPAWNED source (keyed by its AudioSourceHandle — the
 //     gameplay surface, World::SpawnAudioSource/DestroyAudioSource).
 //     Every update advances each emitter: distance attenuation

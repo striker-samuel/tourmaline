@@ -27,7 +27,7 @@ std::vector<uint32_t> CollectStaticRenderNodes(const ::Scene& scene) {
     return out;
 }
 
-StaticMergeResult CollapseStaticSubtrees(Cluster& cluster, const StaticMergeOptions& opts) {
+StaticMergeResult CollapseStaticSubtrees(WorldPage& cluster, const StaticMergeOptions& opts) {
     StaticMergeResult result;
     ::Scene& scene = cluster.scene;
 
@@ -72,7 +72,7 @@ StaticMergeResult CollapseStaticSubtrees(Cluster& cluster, const StaticMergeOpti
             const MeshRow* meshRow = FindMesh(scene, n);
             if (!meshRow)
                 continue;
-            const ClusterStaticMeshHandle h = cluster.staticMeshes.getHandle(meshRow->mesh);
+            const WorldPageStaticMeshHandle h = cluster.staticMeshes.getHandle(meshRow->mesh);
             if (!h.valid()) {
                 result.err = "CollapseStaticSubtrees: stale mesh handle";
                 return result;
@@ -127,7 +127,7 @@ StaticMergeResult CollapseStaticSubtrees(Cluster& cluster, const StaticMergeOpti
     // so the new nodes use identity transforms.
     int groupIdx = 0;
     for (auto& g : baked) {
-        const ClusterStaticMeshHandle h = cluster.UploadMesh(g.upload);
+        const WorldPageStaticMeshHandle h = cluster.UploadMesh(g.upload);
         if (!h.valid()) {
             result.err = "CollapseStaticSubtrees: UploadMesh failed";
             return result;

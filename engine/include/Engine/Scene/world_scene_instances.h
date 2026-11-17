@@ -31,7 +31,7 @@
 namespace tour::scene {
 
 // Explicit local Scene -> already-resident World resource indices.
-// A direct instance does not own a Cluster or assume that source indices
+// A direct instance does not own a WorldPage or assume that source indices
 // equal World indices. A required binding that cannot be resolved fails
 // before any target node is published.
 struct WorldSceneResourceMap {
@@ -300,7 +300,7 @@ class WorldSceneInstances {
                          NodeHandleSlot(instance.sourceNodes[row.node]),
                          bindings->decal[row.decal]);
         }
-        // Only the new subtree is marked; no ResolveAndFixup_clusters(),
+        // Only the new subtree is marked; no ResolveAndFixup_pages(),
         // source Scene copy, location-table rebuild, or unrelated ID remap.
         RebuildStaticCache(target);
         markAsChanged(target, root);

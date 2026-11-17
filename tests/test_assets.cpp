@@ -225,13 +225,13 @@ void TestStringViewArena() {
 }
 
 void TestTextureSourceLifetime() {
-    // TextureStreamer retains a borrowed pointer into Cluster's source
+    // TextureStreamer retains a borrowed pointer into WorldPage's source
     // bytes. Both the initial stash and UriMap growth must preserve it.
-    // HEAP-ALLOCATE the Cluster: sizeof(Cluster) is ~6.5 MB (the embedded
+    // HEAP-ALLOCATE the WorldPage: sizeof(WorldPage) is ~6.5 MB (the embedded
     // Scene tables), and a stack instance overflows the default 1 MB
     // Windows thread stack (0xC00000FD) before the first check runs.
     // Linux's larger default stack masked this in the PR's CI lane.
-    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     std::vector<uint8_t> bytes(4096, 0xAB);
     const uint8_t* original = bytes.data();
     cluster->SetTextureSource("textures/pinned.ktx2", std::move(bytes));
@@ -1463,7 +1463,7 @@ void TestNodeSchemas() {
     // schema association cooks + reads back byte-exact (through
     // ParseSceneBlob, the GPU-less reader).
     {
-        auto c = std::make_unique<smvk::Cluster>(nullptr);
+        auto c = std::make_unique<smvk::WorldPage>(nullptr);
         c->SetOfflineMode(true);
         const int root = addNode(c->scene, -1, 0);
         const int child = addNode(c->scene, root, 1);
@@ -1476,7 +1476,7 @@ void TestNodeSchemas() {
         Check(SetSchemaAssoc(c->scene, NodeId(child), 3001, values), "schema.set-assoc");
         smvk::PakWriter w;
         std::string serr;
-        smvk::ClusterSerializeStats stats;
+        smvk::WorldPageSerializeStats stats;
         Check(smvk::SerializeCluster(*c, w, &stats, &serr, &schema, 1), "schema.serialize");
         const std::vector<uint8_t> img = w.Finalize();
         std::string oerr;
@@ -1506,7 +1506,7 @@ void TestNodeSchemas() {
         // A schema-less cluster: the v19 section is UNIFORM (zero
         // rows) — old-shape blobs still parse.
         {
-            auto bare = std::make_unique<smvk::Cluster>(nullptr);
+            auto bare = std::make_unique<smvk::WorldPage>(nullptr);
             bare->SetOfflineMode(true);
             addNode(bare->scene, -1, 0);
             smvk::PakWriter w2;
@@ -2184,7 +2184,7 @@ void TestLodSelection() {
     // World chain resolution over cooked "/lodN" siblings (headless: cook
     // cluster registered with a World, no GPU involved).
     {
-        auto cluster = std::make_unique<Cluster>(nullptr);
+        auto cluster = std::make_unique<WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
         auto q = MakeQuad();
         const auto mh = cluster->UploadMesh(q);
@@ -2226,8 +2226,8 @@ void TestLodSelection() {
         // per node.)
 
         World world;
-        world.RegisterCluster(std::move(cluster));
-        world.ResolveAndFixup_clusters();
+        world.RegisterPage(std::move(cluster));
+        world.ResolveAndFixup_pages();
         Check(world.meshLocations.size() == 1, "lod.world.meshes");
         Check(world.LodChainLength(0) == 2, "lod.world.chainlen");
         Check(world.ResolveLodMesh(0, 0).has_value(), "lod.world.lod0");
@@ -2272,7 +2272,7 @@ void TestLodSelection() {
         uint32_t shaderLodMat = UINT32_MAX;
         for (uint32_t i = 0; i < (uint32_t)world.materialLocations.size(); ++i) {
             const auto& loc = world.materialLocations[i];
-            if (loc.cluster == world.clusters.front().get() && loc.handle == shaderLodMatH)
+            if (loc.cluster == world.pages.front().get() && loc.handle == shaderLodMatH)
                 shaderLodMat = i;
         }
         Check(shaderLodMat != UINT32_MAX, "lod.shader.matwired");
@@ -2409,7 +2409,7 @@ void TestLodSelection() {
         // (World mesh indices follow unordered_map iteration order after
         // the re-resolve, so look the two meshes up by URI.)
         {
-            Cluster& c = *world.clusters.front();
+            WorldPage& c = *world.pages.front();
             const auto h2 = c.UploadMesh(q);
             const std::string uri2 = "models/q.gltf#mesh.5/prim.0";
             c.RegisterMeshUri(uri2, h2);
@@ -2417,7 +2417,7 @@ void TestLodSelection() {
             SetMesh(c.scene, uint32_t(n2), h2.index());
             markAsChanged(c.scene, 0);
             recalculateGlobalTransforms(c.scene);
-            world.ResolveAndFixup_clusters();
+            world.ResolveAndFixup_pages();
             Check(world.meshLocations.size() == 2, "lod.shader.meshes2");
             uint32_t cookedMesh = UINT32_MAX, uncookedMesh = UINT32_MAX;
             for (uint32_t i = 0; i < (uint32_t)world.meshLocations.size(); ++i) {
@@ -2432,7 +2432,7 @@ void TestLodSelection() {
             uint32_t shaderLodMat2 = UINT32_MAX;
             for (uint32_t i = 0; i < (uint32_t)world.materialLocations.size(); ++i) {
                 const auto& loc = world.materialLocations[i];
-                if (loc.cluster == world.clusters.front().get() && loc.handle == shaderLodMatH)
+                if (loc.cluster == world.pages.front().get() && loc.handle == shaderLodMatH)
                     shaderLodMat2 = i;
             }
             Check(shaderLodMat2 != UINT32_MAX, "lod.shader.matwired2");
@@ -2530,7 +2530,7 @@ void TestLodLightmapAudit() {
 
 void TestCookLodSiblingsLightmap() {
     using namespace smvk;
-    auto cluster = std::make_unique<Cluster>(nullptr);
+    auto cluster = std::make_unique<WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
     std::vector<uint32_t> chartOf;
     auto grid = MakeTwoChartGrid(chartOf);
@@ -2653,7 +2653,7 @@ void TestLightmapChartTable() {
     // Scene-wide chart transform table (headless: offline cluster
     // registered with a World, no GPU involved). Mesh A carries 2
     // charts, mesh B 1 chart, mesh C is unbaked (contributes nothing).
-    auto cluster = std::make_unique<Cluster>(nullptr);
+    auto cluster = std::make_unique<WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
     std::vector<uint32_t> chartOf;
     auto gridA = MakeTwoChartGrid(chartOf);
@@ -2687,8 +2687,8 @@ void TestLightmapChartTable() {
     recalculateGlobalTransforms(cluster->scene);
 
     World world;
-    world.RegisterCluster(std::move(cluster));
-    world.ResolveAndFixup_clusters();
+    world.RegisterPage(std::move(cluster));
+    world.ResolveAndFixup_pages();
     Check(world.meshLocations.size() == 3, "lmchart.meshes");
     // World mesh indices follow table row order — look them up by pool
     // handle.
@@ -2733,7 +2733,7 @@ void TestLightmapChartTable() {
     Check(world.ChartOffsetFor(wiA, 7) == baseA, "lmchart.lod.oob");
     Check(world.ChartOffsetFor(9999, 0) == 0, "lmchart.mesh.oob");
     const uint64_t v0 = world.lmChartVersion;
-    world.ResolveAndFixup_clusters();
+    world.ResolveAndFixup_pages();
     Check(world.lmChartVersion != v0, "lmchart.version");
     Check(world.ChartOffsetFor(wiA, 0) == baseA, "lmchart.stable");
 }
@@ -2793,13 +2793,13 @@ bool SceneTailMatchesWithBvhSection(std::span<const uint8_t> p,
 void TestClusterSerializeCook() {
     using namespace smvk;
     // GPU-free offline cluster: CPU geometry + minted texture ids only.
-    auto cluster = std::make_unique<Cluster>(nullptr);
+    auto cluster = std::make_unique<WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
     Check(cluster->IsOfflineMode(), "offline.mode.on");
 
     // Mesh (cook path retains uploads for serialization).
     auto quad = MakeQuad();
-    const ClusterStaticMeshHandle mh = cluster->UploadMesh(quad);
+    const WorldPageStaticMeshHandle mh = cluster->UploadMesh(quad);
     Check(mh.valid(), "cook.mesh.handle");
     Check(cluster->GetRetainedUpload(mh) != nullptr, "cook.mesh.retained");
     Check(cluster->GetRetainedUpload(mh)->vertices.size() == 4, "cook.mesh.retained.verts");
@@ -2832,7 +2832,7 @@ void TestClusterSerializeCook() {
     ci.alphaMode = AlphaMode::Mask;
     ci.alphaCutoff = 0.33f;
     ci.doubleSided = true;
-    const ClusterMaterialHandle math = cluster->CreateMaterial(ci);
+    const WorldPageMaterialHandle math = cluster->CreateMaterial(ci);
     Check(math.valid(), "cook.mat.handle");
     Check(cluster->RegisterMaterialUri("models/q.gltf#mat.0", math), "cook.mat.uri");
     Check(cluster->FindMaterialByUri("models/q.gltf#mat.0") == math, "cook.mat.find");
@@ -2873,7 +2873,7 @@ void TestClusterSerializeCook() {
     lightDef.outerConeAngle = glm::radians(30.0f);
     lightDef.flags = SceneLight::kSceneLightFlag_Static;
     lightDef.name = "STATIC_LampA";
-    const ClusterLightHandle lh = cluster->CreateLight(lightDef);
+    const WorldPageLightHandle lh = cluster->CreateLight(lightDef);
     Check(lh.valid(), "cook.light.handle");
     Check(cluster->RegisterLightUri("models/q.gltf#light.0", lh), "cook.light.uri");
     const int lightNode = addNode(cluster->scene, root, 1);
@@ -2881,7 +2881,7 @@ void TestClusterSerializeCook() {
     setNodeName(cluster->scene, lightNode, "LampNode");
 
     PakWriter writer;
-    ClusterSerializeStats stats;
+    WorldPageSerializeStats stats;
     std::string err;
     Check(SerializeCluster(*cluster, writer, &stats, &err), "cook.serialize.ok");
     if (!err.empty())
@@ -3519,21 +3519,21 @@ void TestVertexLayoutShaderAbi() {
 
 void TestStaticCollapse() {
     using namespace smvk;
-    auto cluster = std::make_unique<Cluster>(nullptr);
+    auto cluster = std::make_unique<WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
 
     // Two quads sharing one material; second translated +1 on X.
     auto q1 = MakeQuad();
     auto q2 = MakeQuad();
     MaterialCreateInfo ci{};
-    const ClusterMaterialHandle math = cluster->CreateMaterial(ci);
+    const WorldPageMaterialHandle math = cluster->CreateMaterial(ci);
     const uint32_t matIdx = math.index();
 
     const int root = addNode(cluster->scene, -1, 0);
     const int n1 = addNode(cluster->scene, root, 1);
     const int n2 = addNode(cluster->scene, root, 1);
-    const ClusterStaticMeshHandle h1 = cluster->UploadMesh(q1);
-    const ClusterStaticMeshHandle h2 = cluster->UploadMesh(q2);
+    const WorldPageStaticMeshHandle h1 = cluster->UploadMesh(q1);
+    const WorldPageStaticMeshHandle h2 = cluster->UploadMesh(q2);
     SetMesh(cluster->scene, uint32_t(n1), h1.index());
     SetMesh(cluster->scene, uint32_t(n2), h2.index());
     SetMaterial(cluster->scene, uint32_t(n1), matIdx);
@@ -3574,13 +3574,13 @@ void TestMultiSceneSerialize() {
     // Two offline clusters sharing one mesh URI: the shared blob must land
     // once, both scenes reference it, discovery lists both in order.
     auto makeScene = [](const char* meshUri, const char* matUri, const char* nodeName) {
-        auto cluster = std::make_unique<Cluster>(nullptr);
+        auto cluster = std::make_unique<WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
         auto quad = MakeQuad();
-        const ClusterStaticMeshHandle mh = cluster->UploadMesh(quad);
+        const WorldPageStaticMeshHandle mh = cluster->UploadMesh(quad);
         cluster->RegisterMeshUri(meshUri, mh);
         MaterialCreateInfo ci{};
-        const ClusterMaterialHandle math = cluster->CreateMaterial(ci);
+        const WorldPageMaterialHandle math = cluster->CreateMaterial(ci);
         cluster->RegisterMaterialUri(matUri, math);
         const int root = addNode(cluster->scene, -1, 0);
         const int n = addNode(cluster->scene, root, 1);
@@ -3592,9 +3592,9 @@ void TestMultiSceneSerialize() {
     auto a = makeScene("m#shared", "m#matA", "NodeA");
     auto b = makeScene("m#shared", "m#matB", "NodeB");
     PakWriter writer;
-    ClusterSerializeStats stats;
+    WorldPageSerializeStats stats;
     std::string err;
-    const std::vector<const Cluster*> clusters{a.get(), b.get()};
+    const std::vector<const WorldPage*> clusters{a.get(), b.get()};
     Check(SerializeClusters(clusters, {"Alpha", "Beta"}, writer, &stats, &err),
           "multiscene.serialize.ok");
     Check(stats.meshes == 1 && stats.materials == 2, "multiscene.stats.shared");
@@ -3685,7 +3685,7 @@ void TestMultiSceneSerialize() {
 void TestAudioSceneSection() {
     using namespace smvk;
     auto mkCluster = []() {
-        auto c = std::make_unique<smvk::Cluster>(nullptr);
+        auto c = std::make_unique<smvk::WorldPage>(nullptr);
         c->SetOfflineMode(true);
         addNode(c->scene, -1, 0);                    // root (slot 0)
         const int emitter = addNode(c->scene, 0, 1); // slot 1
@@ -3713,7 +3713,7 @@ void TestAudioSceneSection() {
         auto c = mkCluster();
         PakWriter w;
         std::string err;
-        ClusterSerializeStats stats;
+        WorldPageSerializeStats stats;
         Check(SerializeClusters({c.get()}, {"Audio"}, w, &stats, &err, nullptr, 0, paths, ids, 1),
               "audio.serialize.resolved-ok");
         Check(stats.audioSources == 1, "audio.serialize.stats");
@@ -3823,7 +3823,7 @@ void TestAudioSceneSection() {
 void TestAudioRoomSection() {
     using namespace smvk;
     auto mkCluster = []() {
-        auto c = std::make_unique<smvk::Cluster>(nullptr);
+        auto c = std::make_unique<smvk::WorldPage>(nullptr);
         c->SetOfflineMode(true);
         addNode(c->scene, -1, 0);                     // root (slot 0)
         const int roomNode = addNode(c->scene, 0, 1); // slot 1
@@ -3848,7 +3848,7 @@ void TestAudioRoomSection() {
         auto c = mkCluster();
         PakWriter w;
         std::string err;
-        ClusterSerializeStats stats;
+        WorldPageSerializeStats stats;
         Check(SerializeClusters(
                   {c.get()}, {"Room"}, w, &stats, &err, nullptr, 0, nullptr, nullptr, 0),
               "room.serialize.ok");
@@ -3954,7 +3954,7 @@ void TestAudioRoomSection() {
     }
 }
 
-// The static-cull BVH section (Cluster::cookedStaticBvh): the cook bakes
+// The static-cull BVH section (WorldPage::cookedStaticBvh): the cook bakes
 // the frustum-cull tree over the scene's STATIC mesh rows (LOD-family
 // union bounds under the node's global transform); the reader recovers
 // the tree + the adoption-guard hash. Pins the populated form, the
@@ -3964,9 +3964,9 @@ void TestAudioRoomSection() {
 void TestStaticBvhSection() {
     using namespace smvk;
     auto mkCluster = [] {
-        auto c = std::make_unique<Cluster>(nullptr);
+        auto c = std::make_unique<WorldPage>(nullptr);
         c->SetOfflineMode(true);
-        const ClusterStaticMeshHandle mh = c->UploadMesh(MakeQuad());
+        const WorldPageStaticMeshHandle mh = c->UploadMesh(MakeQuad());
         c->RegisterMeshUri("models/bvh.gltf#mesh.0", mh);
         const int root = addNode(c->scene, -1, 0);
         const int child = addNode(c->scene, root, 1);
@@ -3975,7 +3975,7 @@ void TestStaticBvhSection() {
         recalculateGlobalTransforms(c->scene);
         return c;
     };
-    auto cook = [](Cluster& c, std::vector<uint8_t>& img, ClusterSerializeStats& stats) {
+    auto cook = [](WorldPage& c, std::vector<uint8_t>& img, WorldPageSerializeStats& stats) {
         PakWriter w;
         std::string err;
         const bool ok =
@@ -4014,7 +4014,7 @@ void TestStaticBvhSection() {
         // root, the quad's world AABB under the identity transform.
         auto c = mkCluster();
         std::vector<uint8_t> img;
-        ClusterSerializeStats stats;
+        WorldPageSerializeStats stats;
         cook(*c, img, stats);
         Check(stats.staticBvhPrims == 1, "bvh.serialize.stats-prim");
         Scene scene;
@@ -4084,7 +4084,7 @@ void TestStaticBvhSection() {
         c->scene.localTransform[1] = moved;
         recalculateGlobalTransforms(c->scene);
         std::vector<uint8_t> img;
-        ClusterSerializeStats stats;
+        WorldPageSerializeStats stats;
         cook(*c, img, stats);
         Scene scene;
         CookedStaticBvhOut cooked;
@@ -4093,7 +4093,7 @@ void TestStaticBvhSection() {
             // Recomputed against the ORIGINAL fold: differs.
             auto c0 = mkCluster();
             std::vector<uint8_t> img0;
-            ClusterSerializeStats stats0;
+            WorldPageSerializeStats stats0;
             cook(*c0, img0, stats0);
             Scene scene0;
             CookedStaticBvhOut cooked0;
@@ -4113,7 +4113,7 @@ void TestNodeNameStripping() {
     {
         // (a) The WRITER strip: a named cluster cooks to zero-count name
         // sections; the structure round-trips unchanged.
-        auto c = std::make_unique<smvk::Cluster>(nullptr);
+        auto c = std::make_unique<smvk::WorldPage>(nullptr);
         c->SetOfflineMode(true);
         addNode(c->scene, -1, 0);
         const int child = addNode(c->scene, 0, 1);

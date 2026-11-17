@@ -35,12 +35,12 @@ template <typename HandleT> struct AssetRef;
 // Backend-defined record of a static mesh's renderer allocations
 // (opaque here; complete type lives in the Vulkan detail header).
 
-using ClusterStaticMeshHandle = smvk::Handle<StaticMesh>;
-using ClusterMaterialHandle = smvk::Handle<Material>;
-using ClusterTextureHandle = smvk::Handle<struct Texture>;
-using ClusterLightHandle = smvk::Handle<SceneLight>;
-using ClusterCameraHandle = smvk::Handle<SceneCamera>;
-using ClusterDecalHandle = smvk::Handle<SceneDecal>;
+using WorldPageStaticMeshHandle = smvk::Handle<StaticMesh>;
+using WorldPageMaterialHandle = smvk::Handle<Material>;
+using WorldPageTextureHandle = smvk::Handle<struct Texture>;
+using WorldPageLightHandle = smvk::Handle<SceneLight>;
+using WorldPageCameraHandle = smvk::Handle<SceneCamera>;
+using WorldPageDecalHandle = smvk::Handle<SceneDecal>;
 
 // Cooked GI binding (named bake payload): the GI payloads themselves
 // (probe volumes, lightmap atlases, manifests, cubemap captures) live
@@ -49,7 +49,7 @@ using ClusterDecalHandle = smvk::Handle<SceneDecal>;
 // a cluster's scenes were cooked against. The name is the stable
 // bake stem — guid-era paks recorded guid names (see
 // Engine/Asset/bake_asset.h for the era history), which resolve the
-// same way. See Cluster::giBindings.
+// same way. See WorldPage::giBindings.
 //
 // NEW (scene-carried giAsset bindings): Kind::GiVolume records carry
 // the FULL VFS path of ONE baked GI volume (gi/<scene>_<name>.givolume)
@@ -72,18 +72,18 @@ struct GiBinding {
     std::string name;
 };
 
-struct Cluster {
+struct WorldPage {
     // ctx may be nullptr for GPU-less offline clusters (see SetOfflineMode);
     // any GPU upload with a null context is a programming error.
-    explicit Cluster(smvk::ResourceManager* ctx);
-    ~Cluster();
-    Cluster(const Cluster&) = delete;
-    Cluster& operator=(const Cluster&) = delete;
+    explicit WorldPage(smvk::ResourceManager* ctx);
+    ~WorldPage();
+    WorldPage(const WorldPage&) = delete;
+    WorldPage& operator=(const WorldPage&) = delete;
 
     smvk::ResourceManager* ctx_ = nullptr;
     Scene scene;
     World* world = nullptr;
-    Cluster* sibling = nullptr;
+    WorldPage* sibling = nullptr;
     // linked list for import chain if multiple clusters belong to one input file.
 
     // COOKED STATIC-CULL BVH (the scene blob's static-cull section,
@@ -119,7 +119,7 @@ struct Cluster {
     smvk::Pool<SceneCamera, SceneCamera> cameras;
     smvk::Pool<SceneDecal, SceneDecal> decals;
 
-    ClusterStaticMeshHandle UploadMesh(const MeshData& data);
+    WorldPageStaticMeshHandle UploadMesh(const MeshData& data);
     // Batched UploadMesh: identical semantics per entry (heap
     // range allocation, pool entry, uri/lod registration happen at the
     // CALLER), but the AoS->SoA conversion packs ONE blob per heap and
@@ -129,7 +129,7 @@ struct Cluster {
     // Handles return in input order. All-or-nothing: {} when ANY entry
     // fails (degenerate mesh, heap full) — nothing is staged to the GPU
     // in that case. Cook mode / retainUploads mirror the single path.
-    std::vector<ClusterStaticMeshHandle> UploadMeshes(std::span<const MeshData> uploads);
+    std::vector<WorldPageStaticMeshHandle> UploadMeshes(std::span<const MeshData> uploads);
     // Direct-addressed batched upload (v4 fast-load path): the sources
     // are packed-SoA stream subranges of ONE blob (`content` — the
     // loaded pak image) addressed by byte offsets, so the upload is
@@ -150,37 +150,37 @@ struct Cluster {
     // in this cluster's pool. The source shape is the service's
     // smvk::StaticGeometrySource (the old nested StaticMeshDirectSource
     // name is GONE — call sites migrated, no compat alias).
-    std::vector<ClusterStaticMeshHandle> UploadStaticMeshesDirect(
+    std::vector<WorldPageStaticMeshHandle> UploadStaticMeshesDirect(
         const void* content,
         std::span<const smvk::StaticGeometrySource> sources);
-    ClusterMaterialHandle CreateMaterial(smvk::TextureHandle diffuse);
-    ClusterMaterialHandle CreateMaterial(const MaterialCreateInfo& info);
+    WorldPageMaterialHandle CreateMaterial(smvk::TextureHandle diffuse);
+    WorldPageMaterialHandle CreateMaterial(const MaterialCreateInfo& info);
     // Pure value assembly (no texture resolution): shared core of
     // CreateMaterial and the GPU-free offline path. textureIds use the
     // same integer domain as MaterialValues (RHI indices at runtime,
     // cook-table ids when cooking).
-    ClusterMaterialHandle CreateMaterialFromValues(const MaterialValues& values,
-                                                   ShadingModel shadingModel,
-                                                   AlphaMode alphaMode,
-                                                   float alphaCutoff,
-                                                   bool doubleSided,
-                                                   bool castsShadows = true,
-                                                   bool allowFarVertexLit = true,
-                                                   ShaderLodQuality farQuality = {});
+    WorldPageMaterialHandle CreateMaterialFromValues(const MaterialValues& values,
+                                                     ShadingModel shadingModel,
+                                                     AlphaMode alphaMode,
+                                                     float alphaCutoff,
+                                                     bool doubleSided,
+                                                     bool castsShadows = true,
+                                                     bool allowFarVertexLit = true,
+                                                     ShaderLodQuality farQuality = {});
 
     // Cooked punctual light (KHR_lights_punctual): pure value asset,
     // no GPU side. World position/direction resolve from the light
     // node's global transform at use time (see Scene::lightForNode).
-    ClusterLightHandle CreateLight(SceneLight def);
+    WorldPageLightHandle CreateLight(SceneLight def);
     // Authored camera lens (see Scene::cameraForNode): pure value
     // asset, no GPU side. The pose resolves from the camera node's
     // global transform at use time.
-    ClusterCameraHandle CreateCamera(SceneCamera def);
+    WorldPageCameraHandle CreateCamera(SceneCamera def);
     // Authored/runtime decal look (see Scene::decalForNode + SceneDecal):
     // pure value asset, no GPU side (the textures resolve through the
     // cluster pool at use). The shape resolves from the decal node's
     // global transform at use time.
-    ClusterDecalHandle CreateDecal(SceneDecal def);
+    WorldPageDecalHandle CreateDecal(SceneDecal def);
 
     // Cooked GI bindings (named bake payloads): probe volumes
     // (.sggi) and lightmap atlases (.sglm) live OUTSIDE the pak under
@@ -199,7 +199,7 @@ struct Cluster {
     // for LZ4 entries); runtime hosts (the editor's quick-bake)
     // INJECT owned bytes through AddBakePayload — typically on the
     // dynamic cluster, whose bindings/payloads override cooked ones
-    // (see World::ReadBakeBytes). Cluster-owned content: unloading
+    // (see World::ReadBakeBytes). WorldPage-owned content: unloading
     // the cluster drops it, exactly like meshes/lights/decals.
     struct BakePayload {
         // Borrowed span into the pinned pak image (uncompressed pak
@@ -232,11 +232,11 @@ struct Cluster {
 
     // Cook support: when enabled, UploadMesh keeps a CPU-side copy
     // of every upload keyed by pool index so the pak cooker can embed
-    // full vertex/index payloads (runtime Clusters never see this cost:
+    // full vertex/index payloads (runtime Pages never see this cost:
     // the default is off, and GPU pools hold no CPU vertex data after
     // upload). DestroyMesh drops the retained copy.
     void SetRetainUploads(bool retain);
-    const MeshData* GetRetainedUpload(ClusterStaticMeshHandle handle) const;
+    const MeshData* GetRetainedUpload(WorldPageStaticMeshHandle handle) const;
 
     // ------------------------------------------------------------------
     // Skeletal skin (the Northlight data path, touranim.h + mesh.h).
@@ -262,12 +262,12 @@ struct Cluster {
     // pass; also the deserializer on load). No-op when uploads are
     // not retained (the caller logs); the stream rides the upload
     // through serialize/deserialize like any other stream.
-    void PatchRetainedSkinStream(ClusterStaticMeshHandle handle,
+    void PatchRetainedSkinStream(WorldPageStaticMeshHandle handle,
                                  std::vector<PackedSkinInfluences>&& stream);
     // Marks a mesh pool entry skinned (the deserializer + the import
     // post pass; the runtime draw path gates on the retained stream,
     // this is the pool-level marker for tooling).
-    void SetMeshSkinned(ClusterStaticMeshHandle handle, bool skinned);
+    void SetMeshSkinned(WorldPageStaticMeshHandle handle, bool skinned);
     // The runtime-side per-mesh skin streams (binding-2 data), keyed
     // by mesh pool index. Filled by the import post pass (retained OR
     // runtime clusters - PatchRetainedSkinStream always stores here)
@@ -276,14 +276,14 @@ struct Cluster {
     // (slice 2); until then this is the draw path's source. Null =
     // static mesh.
     [[nodiscard]] const std::vector<PackedSkinInfluences>* GetMeshSkinStream(
-        ClusterStaticMeshHandle handle) const;
+        WorldPageStaticMeshHandle handle) const;
     // The RETAINED upload's skin stream (or null). The import post pass
     // reads it back: the stream attached before OptimizeMeshData
     // rode the vertex remap, so it is already in final vertex order.
     // Null when uploads are not retained or the mesh carries no skin.
     [[nodiscard]] const std::vector<PackedSkinInfluences>* GetRetainedSkinStream(
-        ClusterStaticMeshHandle handle) const;
-    void SetMeshSkinStream(ClusterStaticMeshHandle handle,
+        WorldPageStaticMeshHandle handle) const;
+    void SetMeshSkinStream(WorldPageStaticMeshHandle handle,
                            std::vector<PackedSkinInfluences>&& stream);
 
     // ------------------------------------------------------------------
@@ -314,7 +314,7 @@ struct Cluster {
     // tracking).
     // ------------------------------------------------------------------
     struct SkinnedMeshRange {
-        ClusterStaticMeshHandle mesh;
+        WorldPageStaticMeshHandle mesh;
         uint32_t vertexCount = 0;
         uint32_t heapVertexBase = 0; // the bind-pose heap range base (vertex units)
         uint32_t skinBase = 0;       // offset into the skinned stream buffer (vertex units)
@@ -399,7 +399,7 @@ struct Cluster {
     bool IsOfflineMode() const {
         return offlineMode_;
     }
-    // DYNAMIC cluster (see World::EnsureDynamicCluster): the World's
+    // DYNAMIC cluster (see World::EnsureDynamicPage): the World's
     // dedicated home for runtime-created entities (editor-created
     // lights/cameras, app demo content, later decals/particles) —
     // never pak content. Nothing serializes it; World::UnloadCluster
@@ -415,7 +415,7 @@ struct Cluster {
     // refs (detached from the merged fold — its nodes stop rendering,
     // exactly like an unload; scene removal never resurrects scene
     // content) but keeps it alive in the world's retained list; the
-    // last World::ReleaseCluster destroys it. The engine only
+    // last World::ReleasePage destroys it. The engine only
     // COUNTS — the retention POLICY belongs to the asset-side holder,
     // never here. Main-thread only (cluster lifetime state).
     uint32_t assetRefs = 0;
@@ -423,8 +423,8 @@ struct Cluster {
     // MaterialValues texture slots).
     uint32_t AllocOfflineTextureId();
 
-    void DestroyMesh(ClusterStaticMeshHandle handle);
-    void DestroyMaterial(ClusterMaterialHandle handle);
+    void DestroyMesh(WorldPageStaticMeshHandle handle);
+    void DestroyMaterial(WorldPageMaterialHandle handle);
 
     // ------------------------------------------------------------------
     // URI-mapped resource lookup (AssetRef backing store).
@@ -432,31 +432,31 @@ struct Cluster {
     // Identity = VFS path with optional '#'-fragment (see
     // Engine/Asset/asset_registry.h). The VFS overlay decides which
     // bytes back a path; these maps only resolve an already-loaded
-    // asset inside this Cluster. Main-thread only (Cluster pools are
+    // asset inside this WorldPage. Main-thread only (WorldPage pools are
     // externally synchronized, see Memory/pool.h).
     //
     // Storage is string-free: keys are smvk::StringViewT slices owned by the
-    // per-Cluster uriArena_ (freed wholesale with the Cluster) and the
+    // per-WorldPage uriArena_ (freed wholesale with the WorldPage) and the
     // maps are open-addressing UriMaps — lookups take caller views and
     // never allocate (the previous std::unordered_map<std::string,...>
     // round-tripped a std::string per lookup).
     // ------------------------------------------------------------------
-    bool RegisterMeshUri(smvk::StringViewT uri, ClusterStaticMeshHandle handle);
-    bool RegisterMaterialUri(smvk::StringViewT uri, ClusterMaterialHandle handle);
-    bool RegisterLightUri(smvk::StringViewT uri, ClusterLightHandle handle);
-    bool RegisterCameraUri(smvk::StringViewT uri, ClusterCameraHandle handle);
-    bool RegisterDecalUri(smvk::StringViewT uri, ClusterDecalHandle handle);
+    bool RegisterMeshUri(smvk::StringViewT uri, WorldPageStaticMeshHandle handle);
+    bool RegisterMaterialUri(smvk::StringViewT uri, WorldPageMaterialHandle handle);
+    bool RegisterLightUri(smvk::StringViewT uri, WorldPageLightHandle handle);
+    bool RegisterCameraUri(smvk::StringViewT uri, WorldPageCameraHandle handle);
+    bool RegisterDecalUri(smvk::StringViewT uri, WorldPageDecalHandle handle);
     // Textures live in the global RHI pool for binding (materials store
-    // RHI TextureHandles); the Cluster pool only owns lifetime Holders.
+    // RHI TextureHandles); the WorldPage pool only owns lifetime Holders.
     // The uri map therefore stores the RHI handle used at bind time.
     bool RegisterTextureUri(smvk::StringViewT uri, smvk::TextureHandle handle);
     void UnregisterUri(smvk::StringViewT uri);
 
-    std::optional<ClusterStaticMeshHandle> FindMeshByUri(smvk::StringViewT uri) const;
-    std::optional<ClusterMaterialHandle> FindMaterialByUri(smvk::StringViewT uri) const;
-    std::optional<ClusterLightHandle> FindLightByUri(smvk::StringViewT uri) const;
-    std::optional<ClusterCameraHandle> FindCameraByUri(smvk::StringViewT uri) const;
-    std::optional<ClusterDecalHandle> FindDecalByUri(smvk::StringViewT uri) const;
+    std::optional<WorldPageStaticMeshHandle> FindMeshByUri(smvk::StringViewT uri) const;
+    std::optional<WorldPageMaterialHandle> FindMaterialByUri(smvk::StringViewT uri) const;
+    std::optional<WorldPageLightHandle> FindLightByUri(smvk::StringViewT uri) const;
+    std::optional<WorldPageCameraHandle> FindCameraByUri(smvk::StringViewT uri) const;
+    std::optional<WorldPageDecalHandle> FindDecalByUri(smvk::StringViewT uri) const;
     std::optional<smvk::TextureHandle> FindTextureByUri(smvk::StringViewT uri) const;
 
     // Resolves an AssetRef in place: keeps ref.uri, fills cluster/handle
@@ -469,17 +469,17 @@ struct Cluster {
     // assigns a "<cluster-local>#..." fallback uri. The view points
     // into the cluster's uri arena and stays valid for the cluster's
     // lifetime.
-    smvk::StringViewT GetMeshUri(ClusterStaticMeshHandle handle) const;
+    smvk::StringViewT GetMeshUri(WorldPageStaticMeshHandle handle) const;
     // The mesh's vertexBase into the STATIC pos/shading heaps (vertex
     // units — the global vertex ids the cluster-ordered index streams
     // carry). 0xFFFFFFFF when the handle is empty/unknown. Consumers
     // derive per-draw window deltas from it (the lightmap stream's
     // independently-packed windows — the draw ring's GfxDraw.misc2.w).
-    [[nodiscard]] uint32_t GetMeshHeapVertexBase(ClusterStaticMeshHandle handle) const;
-    smvk::StringViewT GetMaterialUri(ClusterMaterialHandle handle) const;
-    smvk::StringViewT GetLightUri(ClusterLightHandle handle) const;
-    smvk::StringViewT GetCameraUri(ClusterCameraHandle handle) const;
-    smvk::StringViewT GetDecalUri(ClusterDecalHandle handle) const;
+    [[nodiscard]] uint32_t GetMeshHeapVertexBase(WorldPageStaticMeshHandle handle) const;
+    smvk::StringViewT GetMaterialUri(WorldPageMaterialHandle handle) const;
+    smvk::StringViewT GetLightUri(WorldPageLightHandle handle) const;
+    smvk::StringViewT GetCameraUri(WorldPageCameraHandle handle) const;
+    smvk::StringViewT GetDecalUri(WorldPageDecalHandle handle) const;
 
     // Per-mesh LOD marker (see Asset/mesh_optimizer.h). Stored into
     // MeshBlobs; the renderer does not branch on it. simplifyError is
@@ -560,7 +560,7 @@ struct Cluster {
         // Valid while the sibling is PROMOTED (resident): the pool
         // handle EvictMeshLod destroys. The record's payload fields are
         // MOVED OUT on promote and MOVED BACK on evict.
-        ClusterStaticMeshHandle promotedHandle{};
+        WorldPageStaticMeshHandle promotedHandle{};
     };
     // Park a sibling as deferred (the deserializer's streaming path).
     // Returns the accounted payload bytes (the load census).
@@ -573,7 +573,7 @@ struct Cluster {
     // streamer's budget accounting) or nullopt (not deferred / no
     // pinned image / upload failed). Render thread, between frames.
     struct PromotedLod {
-        ClusterStaticMeshHandle handle{};
+        WorldPageStaticMeshHandle handle{};
         uint64_t payloadBytes = 0;
     };
     [[nodiscard]] std::optional<PromotedLod> PromoteDeferredMeshLod(smvk::StringViewT uri);
@@ -592,7 +592,7 @@ struct Cluster {
     // path and the Stage-6 page path): meta re-attach + registration
     // + the record's promotedHandle.
     std::optional<PromotedLod> FinishPromoteDeferred(DeferredMeshLod* rec,
-                                                     ClusterStaticMeshHandle h);
+                                                     WorldPageStaticMeshHandle h);
     // Evict: the inverse of promote - the promoted sibling's runtime
     // fields move back into its record, the pool mesh + heap ranges
     // retire (DestroyMesh - the range frees ride DeferDestroyTask, so
@@ -613,13 +613,13 @@ struct Cluster {
 
   private:
     // Owned URI key storage for all maps below; freed wholesale with
-    // the Cluster (see asset_registry.cpp registration flow).
+    // the WorldPage (see asset_registry.cpp registration flow).
     smvk::Arena uriArena_;
-    smvk::UriMap<ClusterStaticMeshHandle> meshByUri_;
-    smvk::UriMap<ClusterMaterialHandle> materialByUri_;
-    smvk::UriMap<ClusterLightHandle> lightByUri_;
-    smvk::UriMap<ClusterCameraHandle> cameraByUri_;
-    smvk::UriMap<ClusterDecalHandle> decalByUri_;
+    smvk::UriMap<WorldPageStaticMeshHandle> meshByUri_;
+    smvk::UriMap<WorldPageMaterialHandle> materialByUri_;
+    smvk::UriMap<WorldPageLightHandle> lightByUri_;
+    smvk::UriMap<WorldPageCameraHandle> cameraByUri_;
+    smvk::UriMap<WorldPageDecalHandle> decalByUri_;
     smvk::UriMap<smvk::TextureHandle> textureByUri_;
     smvk::UriMap<smvk::TextureSamplerDesc> textureSamplers_;
     smvk::UriMap<std::vector<uint8_t>> textureSources_;
@@ -640,13 +640,13 @@ struct Cluster {
     // reports its latest one. The ledgers are never pruned
     // (UnregisterUri only drops the FORWARD entry — same liveness
     // contract the forward map always had: a destroyed handle's
-    // reverse row is unreachable garbage until the Cluster dies
+    // reverse row is unreachable garbage until the WorldPage dies
     // with its arena).
-    std::vector<std::pair<ClusterStaticMeshHandle, smvk::StringViewT>> meshUriLedger_;
-    std::vector<std::pair<ClusterMaterialHandle, smvk::StringViewT>> materialUriLedger_;
-    std::vector<std::pair<ClusterLightHandle, smvk::StringViewT>> lightUriLedger_;
-    std::vector<std::pair<ClusterCameraHandle, smvk::StringViewT>> cameraUriLedger_;
-    std::vector<std::pair<ClusterDecalHandle, smvk::StringViewT>> decalUriLedger_;
+    std::vector<std::pair<WorldPageStaticMeshHandle, smvk::StringViewT>> meshUriLedger_;
+    std::vector<std::pair<WorldPageMaterialHandle, smvk::StringViewT>> materialUriLedger_;
+    std::vector<std::pair<WorldPageLightHandle, smvk::StringViewT>> lightUriLedger_;
+    std::vector<std::pair<WorldPageCameraHandle, smvk::StringViewT>> cameraUriLedger_;
+    std::vector<std::pair<WorldPageDecalHandle, smvk::StringViewT>> decalUriLedger_;
     bool retainUploads_ = false;
     std::unordered_map<uint32_t, MeshData> retainedUploads_;
     // Pak-image pin for borrowed texture payloads (see PinPakImage).
@@ -656,7 +656,7 @@ struct Cluster {
     // runtime injections.
     std::unordered_map<std::string, BakePayload> bakePayloads_;
     // Per-cluster static mesh allocations keyed by the local staticMeshes
-    // pool index (pool indices are only unique within one Cluster).
+    // pool index (pool indices are only unique within one WorldPage).
     std::unordered_map<uint32_t, smvk::StaticMeshAllocation*> meshAllocations_;
     // Geometry-LOD streaming: deferred siblings by uri (see the
     // public block). Linear scan - the promote path touches one per
@@ -690,7 +690,7 @@ struct Cluster {
 template <typename HandleT> struct AssetRef {
     smvk::StringViewT uri;
 
-    Cluster* cluster = nullptr;
+    WorldPage* cluster = nullptr;
     HandleT handle{};
 
     bool resolved() const {
@@ -705,14 +705,14 @@ template <typename HandleT> struct AssetRef {
 
 // ResolveAssetRef specializations (defined here; the generic template
 // is intentionally undefined for unsupported handle types).
-template <typename HandleT> bool Cluster::ResolveAssetRef(AssetRef<HandleT>& ref) {
+template <typename HandleT> bool WorldPage::ResolveAssetRef(AssetRef<HandleT>& ref) {
     static_assert(!sizeof(HandleT*), "ResolveAssetRef: unsupported handle type");
     return false;
 }
 
 template <>
-inline bool Cluster::ResolveAssetRef<ClusterStaticMeshHandle>(
-    AssetRef<ClusterStaticMeshHandle>& ref) {
+inline bool WorldPage::ResolveAssetRef<WorldPageStaticMeshHandle>(
+    AssetRef<WorldPageStaticMeshHandle>& ref) {
     auto hit = FindMeshByUri(ref.uri);
     if (!hit) {
         ref.clearResolution();
@@ -724,7 +724,8 @@ inline bool Cluster::ResolveAssetRef<ClusterStaticMeshHandle>(
 }
 
 template <>
-inline bool Cluster::ResolveAssetRef<ClusterMaterialHandle>(AssetRef<ClusterMaterialHandle>& ref) {
+inline bool WorldPage::ResolveAssetRef<WorldPageMaterialHandle>(
+    AssetRef<WorldPageMaterialHandle>& ref) {
     auto hit = FindMaterialByUri(ref.uri);
     if (!hit) {
         ref.clearResolution();
@@ -736,24 +737,25 @@ inline bool Cluster::ResolveAssetRef<ClusterMaterialHandle>(AssetRef<ClusterMate
 }
 
 template <>
-inline bool Cluster::ResolveAssetRef<ClusterTextureHandle>(AssetRef<ClusterTextureHandle>& ref) {
-    // Cluster pool holders are lifetime-only; resolution by RHI handle
+inline bool WorldPage::ResolveAssetRef<WorldPageTextureHandle>(
+    AssetRef<WorldPageTextureHandle>& ref) {
+    // WorldPage pool holders are lifetime-only; resolution by RHI handle
     // is served through FindTextureByUri (see asset_registry.cpp).
     (void)ref;
     return false;
 }
 } // namespace tour
-// COMPAT (the namespace/RHI boundary audit, todo item 8.4): the Cluster is
+// COMPAT (the namespace/RHI boundary audit, todo item 8.4): the WorldPage is
 // ENGINE-OWNED and lives in tour; the smvk aliases keep the existing
 // call sites compiling through the consumer migration.
 namespace smvk {
 using ::tour::AssetRef;
-using ::tour::Cluster;
-using ::tour::ClusterCameraHandle;
-using ::tour::ClusterDecalHandle;
-using ::tour::ClusterLightHandle;
-using ::tour::ClusterMaterialHandle;
-using ::tour::ClusterStaticMeshHandle;
-using ::tour::ClusterTextureHandle;
 using ::tour::GiBinding;
+using ::tour::WorldPage;
+using ::tour::WorldPageCameraHandle;
+using ::tour::WorldPageDecalHandle;
+using ::tour::WorldPageLightHandle;
+using ::tour::WorldPageMaterialHandle;
+using ::tour::WorldPageStaticMeshHandle;
+using ::tour::WorldPageTextureHandle;
 } // namespace smvk

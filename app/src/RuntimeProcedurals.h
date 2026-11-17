@@ -43,21 +43,21 @@ class RuntimeProcedurals final : public engine::IAppElement {
     float m_runtimeProcWaveFreq = 3.0f;
     int m_runtimeProcRequest = 0;
     uint32_t m_runtimeProcNode = UINT32_MAX;
-    smvk::ClusterStaticMeshHandle m_runtimeProcMesh{};
-    smvk::ClusterMaterialHandle m_runtimeProcMaterial{};
+    smvk::WorldPageStaticMeshHandle m_runtimeProcMesh{};
+    smvk::WorldPageMaterialHandle m_runtimeProcMaterial{};
     // ---- runtime spotlight (spawned from the camera; a real SceneLight
     // on the dynamic cluster, folded in by the resolve like the fixture) ----
-    int m_runtimeSpotRequest = 0;                  // 1 = spawn, 2 = remove
-    uint32_t m_runtimeSpotNode = UINT32_MAX;       // dynamic-cluster scene node
-    smvk::ClusterLightHandle m_runtimeSpotLight{}; // pool handle (destroy)
+    int m_runtimeSpotRequest = 0;                    // 1 = spawn, 2 = remove
+    uint32_t m_runtimeSpotNode = UINT32_MAX;         // dynamic-cluster scene node
+    smvk::WorldPageLightHandle m_runtimeSpotLight{}; // pool handle (destroy)
     float m_spotIntensity = 20000.0f;
     float m_spotRange = 15.0f;
     float m_spotInnerDeg = 20.0f;
     float m_spotOuterDeg = 45.0f;
     glm::vec3 m_spotColor{1.0f, 0.92f, 0.82f};
     struct Retired {
-        smvk::ClusterStaticMeshHandle mesh{};
-        smvk::ClusterMaterialHandle material{};
+        smvk::WorldPageStaticMeshHandle mesh{};
+        smvk::WorldPageMaterialHandle material{};
     };
     std::vector<Retired> m_retired;
 };

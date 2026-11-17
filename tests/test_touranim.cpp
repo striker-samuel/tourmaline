@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // touranim_tests: the .tourAnim ASCII loader + the spline sampler + the
-// Cluster pose driver (SampleAnimation: track writes -> local compose ->
+// WorldPage pose driver (SampleAnimation: track writes -> local compose ->
 // global walk -> palette), headless (no GPU, nothing constructs a
 // ResourceManager). Run via CTest.
 //
@@ -150,7 +150,7 @@ void TestSampler() {
 }
 
 // ---------------------------------------------------------------------------
-// Cluster pose driver: SampleAnimation advances the clock, writes the
+// WorldPage pose driver: SampleAnimation advances the clock, writes the
 // joint locals, and the palette moves; no clip = bind-pose identity.
 // The regression this pins: the driver once froze at the first-key pose
 // (observed in the knight demo - identical output every frame).
@@ -160,7 +160,7 @@ void TestPoseDriver() {
     // A 2-node chain: node0 root (identity) -> node1 arm, bind local =
     // translate(1,0,0). Skeleton: joints {0,1}, identity inverse binds
     // (palette[i] = global[i] at the bind pose).
-    auto c = std::make_unique<smvk::Cluster>(nullptr);
+    auto c = std::make_unique<smvk::WorldPage>(nullptr);
     c->SetOfflineMode(true);
     std::cerr << "[touranim-tests] pose: cluster made\n";
     // addNode (never hand-built vectors): it keeps EVERY parallel array

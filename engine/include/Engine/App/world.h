@@ -108,9 +108,9 @@ typedef enum IteratorFlagBits {
 typedef uint32_t IteratorFlags;
 
 // World is the single runtime scene graph. It is *not* an imported scene.
-// It owns (has-a) the merged Scene hierarchy, owns the Clusters that hold
+// It owns (has-a) the merged Scene hierarchy, owns the Pages that hold
 // the actual mesh/material/texture resources, and resolves per-node mesh/
-// material indices stored in the Scene to the owning Cluster + handle.
+// material indices stored in the Scene to the owning WorldPage + handle.
 //
 // FLAT WORLD CONTRACT:
 // - The World is a CONTAINER, not a transform node. There is no synthetic
@@ -123,13 +123,13 @@ typedef uint32_t IteratorFlags;
 // - Runtime spawns (camera pass-through pose, decals, audio sources,
 //   mesh entities) are root-level by default.
 // - OWNERSHIP is independent of hierarchy: cluster-owned resources ride
-//   the Cluster pools + the per-cluster location tables; the Region
+//   the WorldPage pools + the per-cluster location tables; the Region
 //   registry exposes every merged ROOT as an ownership boundary. Removing
 //   a parent never deletes cluster-owned nodes; unloading a cluster
 //   removes exactly its nodes and resources through the resolve.
 struct World {
     explicit World() {};
-    // Must be set before loading/registering clusters or first resolve.
+    // Must be set before loading/registering pages or first resolve.
     // Budget covers the merged CONTENT nodes (no synthetic root; runtime
     // spawn nodes count against it as they merge).
     // 0 = UNBUDGETED (the default host shape): node storage rides the
@@ -144,7 +144,7 @@ struct World {
             scene.nodeSlotBudget = 0;
             return;
         }
-        if (!clusters.empty() || !scene.hierarchy.empty())
+        if (!pages.empty() || !scene.hierarchy.empty())
             tour::scene::CrashNodeBudget("late World budget", scene.hierarchy.size(), slots);
         scene.ReserveNodeSlots(slots);
     }
@@ -294,14 +294,14 @@ struct World {
     app::AssetManager* gameAssets_ = nullptr;
     std::string lastGameAssetError_;
 
-    // Merged runtime scene graph. Imported Cluster scenes are folded into
-    // this via ResolveAndFixup_clusters().
+    // Merged runtime scene graph. Imported WorldPage scenes are folded into
+    // this via ResolveAndFixup_pages().
     Scene scene;
     // Registered streaming/ownership subtree roots in the authoritative
     // world hierarchy. Registration does not take ownership of assets:
     // cluster-backed resource pools remain the transitional asset layer.
     RegionRegistry regions;
-    // Direct World-owned hierarchy instances do not create Clusters or
+    // Direct World-owned hierarchy instances do not create Pages or
     // duplicate authoring Scenes. Asset leases are instance-independent.
     tour::scene::WorldSceneInstances worldSceneInstances;
     // One active authored Map lives in this runtime World.
@@ -332,34 +332,34 @@ struct World {
         return regions.RegionOf(scene, node);
     }
     // Monotonic per-World owner registration identity; never use a
-    // recycled Cluster* address as the permanent GPU scene key.
+    // recycled WorldPage* address as the permanent GPU scene key.
     uint64_t gpuSceneTopologyRevision = 0;
-    uint64_t nextGpuSceneClusterId = 1;
+    uint64_t nextGpuScenePageId = 1;
     // Gameplay nodes share the same monotonically allocated registration namespace
-    // as Cluster owners, but use World node slots/generations for identity.
+    // as WorldPage owners, but use World node slots/generations for identity.
     uint64_t gpuSceneGameNodeRegistration = 0;
-    std::unordered_map<const Cluster*, uint64_t> gpuSceneClusterIds;
+    std::unordered_map<const WorldPage*, uint64_t> gpuScenePageIds;
 
-    bool clustersDirty_ = false; // pending cluster scene merge
+    bool pagesDirty_ = false; // pending cluster scene merge
     mutable bool dirtyCull = true;
     std::vector<IteratorFlags> flags; // indexed by node
-    std::vector<std::unique_ptr<Cluster>> clusters;
-    // RETAINED clusters (the shared-asset bridge, Cluster::assetRefs):
-    // clusters PARKED by UnloadCluster while asset-side references
+    std::vector<std::unique_ptr<WorldPage>> pages;
+    // RETAINED pages (the shared-asset bridge, WorldPage::assetRefs):
+    // pages PARKED by UnloadCluster while asset-side references
     // were live. A parked cluster is OUT of the merged fold + every
     // location table (its scene instance is gone — removal never
     // resurrects scene content) but its resource rows (meshes...)
     // stay alive for the reference holders (app::AssetStore). The
-    // last ReleaseCluster destroys it. UnregisterCluster can pull a
+    // last ReleasePage destroys it. UnregisterPage can pull a
     // parked cluster back out for re-parenting. Main-thread only.
-    std::vector<std::unique_ptr<Cluster>> retainedClusters;
+    std::vector<std::unique_ptr<WorldPage>> retainedPages;
 
     // Tiled-terrain source (see TerrainSource): empty unless a loaded
     // pak carried Terrain blobs.
     TerrainSource terrainSource;
 
     // ---- Compact draw list (hot-path iterator) --------------------
-    // Built once per ResolveAndFixup_clusters() and kept in sync by
+    // Built once per ResolveAndFixup_pages() and kept in sync by
     // Cull(). Every renderable node (mesh attached) appears exactly
     // once, sorted by material so per-material pipeline binds run
     // once per material per pass. Node id + world-level mesh/material
@@ -422,62 +422,62 @@ struct World {
             func(drawItems[idx]);
     }
 
-    // Resource lookup into clusters
+    // Resource lookup into pages
     struct MeshLocation {
-        Cluster* cluster;
-        ClusterStaticMeshHandle handle;
+        WorldPage* cluster;
+        WorldPageStaticMeshHandle handle;
     };
     struct MaterialLocation {
-        Cluster* cluster;
-        ClusterMaterialHandle handle;
+        WorldPage* cluster;
+        WorldPageMaterialHandle handle;
     };
     struct TextureLocation {
-        Cluster* cluster;
-        ClusterTextureHandle handle;
+        WorldPage* cluster;
+        WorldPageTextureHandle handle;
     };
     // Cooked punctual lights (KHR_lights_punctual): pool assets like
     // meshes — scene.lightForNode stores world indices into this table,
-    // each entry resolving back to the owning Cluster + handle.
+    // each entry resolving back to the owning WorldPage + handle.
     struct LightLocation {
-        Cluster* cluster;
-        ClusterLightHandle handle;
+        WorldPage* cluster;
+        WorldPageLightHandle handle;
     };
     // Authored cameras: pool assets like lights — scene.cameraForNode
     // stores world indices into this table, each entry resolving back
-    // to the owning Cluster + handle.
+    // to the owning WorldPage + handle.
     struct CameraLocation {
-        Cluster* cluster;
-        ClusterCameraHandle handle;
+        WorldPage* cluster;
+        WorldPageCameraHandle handle;
     };
     // Authored/runtime decals: pool assets like lights — scene.decalForNode
     // stores world indices into this table, each entry resolving back to
-    // the owning Cluster + handle. The shape rides the node transform
+    // the owning WorldPage + handle. The shape rides the node transform
     // (see SceneDecal).
     struct DecalLocation {
-        Cluster* cluster;
-        ClusterDecalHandle handle;
+        WorldPage* cluster;
+        WorldPageDecalHandle handle;
     };
     // Indexed by the mesh/material index stored in the scene's
     // tables (tables.meshes / tables.materials). Each entry points back to the owning
-    // Cluster so resources stay owned by clusters.
+    // WorldPage so resources stay owned by pages.
     std::vector<MeshLocation> meshLocations;
     std::vector<MaterialLocation> materialLocations;
     // The fallback material for renderable surfaces that carry no material
     // row (Caldera strips materials). A world index into materialLocations,
-    // resolved once by ResolveAndFixup_clusters from the cooked
+    // resolved once by ResolveAndFixup_pages from the cooked
     // "editor://default" material; kInvalidIndex when no default exists.
     uint32_t defaultMaterialIndex = kInvalidIndex;
     std::vector<TextureLocation> textureLocations;
     std::vector<LightLocation> lightLocations;
     std::vector<CameraLocation> cameraLocations;
     std::vector<DecalLocation> decalLocations;
-    // Cluster-slot -> MERGED-scene node id, parallel to `clusters`
+    // WorldPage-slot -> MERGED-scene node id, parallel to `pages`
     // (filled by ResolveAndFixup; UINT32_MAX = hole/retired). The
     // retained mapping is what lets the entity layers key state by
     // the STABLE (cluster, cluster-local node) pair while reading
     // positions from the merged global transforms — merged node
     // ids themselves are rebuilt on every resolve (unstable).
-    std::vector<std::vector<NodeId>> clusterMergedNodes;
+    std::vector<std::vector<NodeId>> pageMergedNodes;
     // Runtime audio-source entity registry (the smvk::AudioSourceHandle
     // slots — see SpawnAudioSource). Keyed by handle index; the
     // generation is the stale-handle guarantee. `owner` +
@@ -487,7 +487,7 @@ struct World {
     struct AudioSourceEntity {
         uint32_t generation = 1;
         bool alive = false;
-        Cluster* owner = nullptr;
+        WorldPage* owner = nullptr;
         NodeId clusterNode = 0;
         NodeId mergedNode = 0;
     };
@@ -502,12 +502,12 @@ struct World {
     struct MeshEntity {
         uint32_t generation = 1;
         bool alive = false;
-        Cluster* transformOwner = nullptr; // the dynamic cluster
-        NodeId clusterNode = 0;            // durable transform node
-        NodeId mergedNode = 0;             // resolved/mirrored node
-        Cluster* meshOwner = nullptr;      // the mesh's owning cluster
-        ClusterStaticMeshHandle mesh{};
-        ClusterMaterialHandle material{}; // empty = material-less
+        WorldPage* transformOwner = nullptr; // the dynamic cluster
+        NodeId clusterNode = 0;              // durable transform node
+        NodeId mergedNode = 0;               // resolved/mirrored node
+        WorldPage* meshOwner = nullptr;      // the mesh's owning cluster
+        WorldPageStaticMeshHandle mesh{};
+        WorldPageMaterialHandle material{}; // empty = material-less
         uint32_t animatorSlot = UINT32_MAX;
         // The OPTIONAL material instance (the 32-bit userdata
         // override lane — see the material-instance registry
@@ -533,8 +533,8 @@ struct World {
     struct MaterialInstanceEntity {
         uint32_t generation = 1;
         bool alive = false;
-        Cluster* baseOwner = nullptr; // the base material's owner
-        ClusterMaterialHandle base{}; // ... and its pool handle
+        WorldPage* baseOwner = nullptr; // the base material's owner
+        WorldPageMaterialHandle base{}; // ... and its pool handle
         uint32_t userData = 0;
         bool overridesUserData = false;
     };
@@ -574,26 +574,26 @@ struct World {
     // for runtime LOD selection — see SelectLodIndex).
     std::vector<smvk::LodInfo> meshLodInfos;
 
-    Cluster& LoadCluster(smvk::ResourceManager& ctx);
+    WorldPage& LoadPage(smvk::ResourceManager& ctx);
     // Deserializes a cooked pak (PakReader over caller-owned bytes) into
-    // a new registered Cluster. Throws std::runtime_error on failure.
+    // a new registered WorldPage. Throws std::runtime_error on failure.
     // The caller issues ctx.FlushUploads() after ResolveAndFixup.
     // streamer (optional): v4 textures carrying a digest stream through
     // CreateStreamingTextureFromMeta (tail-only upload, no KTX parse)
     // and register for demand upgrades — imagePin (the loaded pak
     // image) must then be given to pin the borrowed payloads.
-    Cluster& LoadClusterFromPak(smvk::ResourceManager& ctx,
-                                const asset::PakReader& reader,
-                                uint32_t sceneIndex = 0,
-                                TextureStreamer* streamer = nullptr,
-                                std::shared_ptr<const std::vector<uint8_t>> imagePin = {},
-                                const smvk::ExternalTextureResolver* externalTexture = nullptr);
+    WorldPage& LoadPageFromPak(smvk::ResourceManager& ctx,
+                               const asset::PakReader& reader,
+                               uint32_t sceneIndex = 0,
+                               TextureStreamer* streamer = nullptr,
+                               std::shared_ptr<const std::vector<uint8_t>> imagePin = {},
+                               const smvk::ExternalTextureResolver* externalTexture = nullptr);
     // Harvests the pak's Terrain blobs (terrain/meta + 16x H + 256x S)
     // into terrainSource (byte copies; the reader may die after). Also
-    // called by LoadClusterFromPak (non-fatal: scene loads even when
+    // called by LoadPageFromPak (non-fatal: scene loads even when
     // terrain is broken). False with err set on malformed terrain.
     bool LoadTerrainFromPak(const asset::PakReader& reader, std::string& err);
-    // The world's DYNAMIC cluster (see Cluster::isDynamic): the
+    // The world's DYNAMIC cluster (see WorldPage::isDynamic): the
     // dedicated home for runtime-created entities (editor-created
     // lights/cameras, app demo content, later decals/particles).
     // Lazily created on first call — repeat calls return the SAME
@@ -602,7 +602,7 @@ struct World {
     // either edit incrementally (node in the merged scene + location
     // push, the editor's live path) or keep their nodes in the
     // dynamic cluster's own scene so a later resolve folds them in.
-    Cluster& EnsureDynamicCluster(smvk::ResourceManager* ctx);
+    WorldPage& EnsureDynamicPage(smvk::ResourceManager* ctx);
     // Runtime decal creation (app presets, the renderer's J crosshair
     // spawn): appends a node with `frame` as its local transform
     // (translation = projector center, local -Z into the surface, +Y
@@ -779,35 +779,35 @@ struct World {
 
     // Advances every live animator + flushes the FIRST-ALIVE
     // animator's evaluated pose into its target cluster's scene
-    // (Cluster::poseExternallyDriven — the existing skinning path
+    // (WorldPage::poseExternallyDriven — the existing skinning path
     // consumes the pose; the renderer's own clip advance skips
-    // driven clusters). PUBLIC because the renderer's frame build
+    // driven pages). PUBLIC because the renderer's frame build
     // drives it with the frame's dt (bench-deterministic); custom
     // hosts that drive it themselves own the call instead.
     void Update(float dt);
 
     // Erases the cluster and REBUILDS the world: after the erase the
     // merged scene + every location table still point into the
-    // destroyed cluster, so a full ResolveAndFixup_clusters() runs
+    // destroyed cluster, so a full ResolveAndFixup_pages() runs
     // over the survivors — the unloaded cluster's entities vanish.
     // Refuses the dynamic cluster (runtime state, never pak content).
     // Load-time operation, not a hot path.
     //
     // SHARED-ASSET PARKING: a cluster with live external references
-    // (Cluster::assetRefs — an asset holder retained its resource
+    // (WorldPage::assetRefs — an asset holder retained its resource
     // rows) is NOT destroyed: it detaches from the merged fold
     // exactly like an unload (nodes stop rendering, location tables
-    // rebuild) but moves to retainedClusters until the last
-    // ReleaseCluster. Scene removal never destroys an independently
+    // rebuild) but moves to retainedPages until the last
+    // ReleasePage. Scene removal never destroys an independently
     // referenced asset — and never resurrects scene content.
-    void UnloadCluster(smvk::Cluster&);
+    void UnloadCluster(smvk::WorldPage&);
 
-    // ---- Shared-asset retention (Cluster::assetRefs) ---------------
+    // ---- Shared-asset retention (WorldPage::assetRefs) ---------------
     // Bumps the external ref count of a REGISTERED or RETAINED
     // cluster (false when this world does not hold it; the dynamic
     // cluster is refused — runtime state is never an asset carrier).
     // Main-thread only.
-    bool RetainCluster(Cluster&);
+    bool RetainPage(WorldPage&);
     // Drops one external ref. When the count reaches zero on a
     // RETAINED (parked) cluster the cluster is DESTROYED there (its
     // mesh range frees ride the same deferred-retirement contract
@@ -815,23 +815,23 @@ struct World {
     // outside the fold). A still-REGISTERED cluster is left to its
     // scene owner (UnloadCluster re-checks the count when its scene
     // goes). False when the cluster is unknown to this world.
-    bool ReleaseCluster(Cluster&);
+    bool ReleasePage(WorldPage&);
 
-    void RegisterCluster(std::unique_ptr<Cluster> cluster);
+    void RegisterPage(std::unique_ptr<WorldPage> cluster);
     // Detaches (does not destroy) + rebuilds like UnloadCluster; the
     // returned cluster is re-parentable into another World (also
     // pulls a RETAINED/parked cluster out — the re-parenting use
     // case). Refuses the dynamic cluster.
-    std::unique_ptr<Cluster> UnregisterCluster(Cluster&);
-    void ResolveAndFixup_clusters();
+    std::unique_ptr<WorldPage> UnregisterPage(WorldPage&);
+    void ResolveAndFixup_pages();
     // App/scene code marks a mutated cluster; the renderer consumes this
     // at the next frame boundary, before recording any scene readers.
     // The cluster must be registered in this World (including dynamic).
-    bool MarkClusterDirty(const smvk::Cluster& cluster);
-    bool HasDirtyClusters() const {
-        return clustersDirty_;
+    bool MarkPageDirty(const smvk::WorldPage& cluster);
+    bool HasDirtyPages() const {
+        return pagesDirty_;
     }
-    bool ResolveDirtyClusters();
+    bool ResolveDirtyPages();
 
     smvk::StaticMesh* GetMesh(uint32_t meshIndex);
     const smvk::StaticMesh* GetMesh(uint32_t meshIndex) const;
@@ -845,7 +845,7 @@ struct World {
     // The scene always references LOD0; siblings share the base URI and
     // are resolved here per instance. Length is >= 1 (LOD0 alone when
     // nothing was cooked). ResolveLodMesh() misses (nullopt) past the end.
-    // Chains are resolved once in ResolveAndFixup_clusters() into
+    // Chains are resolved once in ResolveAndFixup_pages() into
     // lodChains (hot paths below are O(1): no URI strings, no cluster
     // scans — the previous per-draw probing showed up as a major CPU
     // regression once every Bistro mesh had a cooked chain).
@@ -972,14 +972,14 @@ struct World {
 
     // Promote one deferred sibling to resident: locate its deferred
     // record on the owning cluster and replay the upload +
-    // registration (Cluster::PromoteDeferredMeshLod). Returns the
+    // registration (WorldPage::PromoteDeferredMeshLod). Returns the
     // fresh handle + payload bytes for the streamer's accounting, or
     // nullopt when the level is not deferred/already promoted. The
     // caller rebuilds the chains + the gfx tables afterwards.
-    [[nodiscard]] std::optional<Cluster::PromotedLod> PromoteLodLevel(uint32_t meshIndex,
-                                                                      uint32_t lodIndex);
+    [[nodiscard]] std::optional<WorldPage::PromotedLod> PromoteLodLevel(uint32_t meshIndex,
+                                                                        uint32_t lodIndex);
     // Evict a PROMOTED sibling back to deferred (the budget
-    // enforcement path): Cluster::EvictMeshLod destroys the pool
+    // enforcement path): WorldPage::EvictMeshLod destroys the pool
     // mesh (heap ranges retire deferred), the record returns to the
     // deferred state. Returns the freed payload bytes, 0 when the
     // level is not currently promoted (or is the never-evictable
@@ -997,7 +997,7 @@ struct World {
     // Cached LOD chains parallel to meshLocations (see RebuildLodChains).
     // Mutable so const hot paths (LodChainLength/SelectLodIndex) can
     // lazily rebuild after direct cluster edits that bypassed
-    // ResolveAndFixup_clusters().
+    // ResolveAndFixup_pages().
     mutable std::vector<LodChain> lodChains;
 
     // ---- Lightmap chart transform table -----------------------
@@ -1009,14 +1009,14 @@ struct World {
     // gfx::Draw::lmChartOffset, GfxDraw.misc2.x) is its mesh's base
     // into the table, and the vertex shader fetches
     // xforms[base + chartId]. Rebuilt by RebuildLightmapChartTable()
-    // at the end of ResolveAndFixup_clusters(); lmChartVersion bumps
+    // at the end of ResolveAndFixup_pages(); lmChartVersion bumps
     // on every rebuild so renderers re-upload only on change.
     std::vector<glm::vec4> lmChartTable;
     // Process-unique rebuild revision, not a counter local to this World:
     // the GPU chart-transform cache survives scene switches.
     uint64_t lmChartVersion = 0;
     struct LmChartKey {
-        const Cluster* cluster = nullptr;
+        const WorldPage* cluster = nullptr;
         uint32_t poolIndex = 0;
         bool operator==(const LmChartKey&) const = default;
     };
@@ -1086,7 +1086,7 @@ struct World {
         return lodStatSwitched_;
     }
     // Cache storage (lazily sized to the node count; reset by
-    // ResolveAndFixup_clusters).
+    // ResolveAndFixup_pages).
     mutable std::vector<uint8_t> nodeLod_;
     mutable std::vector<uint64_t> nodeLodStamp_;      // frameId of computation
     mutable std::vector<uint64_t> nodeLodCountFrame_; // frameId of stat count
@@ -1107,14 +1107,14 @@ struct World {
     mutable std::unordered_set<uint64_t> lodDrawnSet_;
     mutable bool lodTouchTracking_ = false;
 
-    // First-hit URI resolution across clusters in registration order
+    // First-hit URI resolution across pages in registration order
     // (mirrors the VFS overlay rule). Used for cross-pak references.
     std::optional<MeshLocation> ResolveMeshAcrossClusters(smvk::StringViewT uri) const;
     std::optional<MaterialLocation> ResolveMaterialAcrossClusters(smvk::StringViewT uri) const;
-    // Bake-payload channel (see Cluster::bakePayloads): the bytes at a
+    // Bake-payload channel (see WorldPage::bakePayloads): the bytes at a
     // GI/cubemap VFS path ("gi/<stem>.sggi", "textures/cubemaps/...").
     // DYNAMIC cluster first — runtime injections (editor quick-bake)
-    // override cooked pak payloads — then pak clusters in registration
+    // override cooked pak payloads — then pak pages in registration
     // order. Empty span = nothing carries it.
     [[nodiscard]] std::span<const uint8_t> ReadBakeBytes(const std::string& vfsPath) const;
     // ---- Env zones (see ZoneAtPosition in Engine/Scene/scene.h) --------
@@ -1134,7 +1134,7 @@ struct World {
 
     // ---- Static BVH for CPU frustum culling ---------------------
     // Built once from frozen static-subtree nodes (see Scene::
-    // staticNode) at the end of ResolveAndFixup_clusters(); static
+    // staticNode) at the end of ResolveAndFixup_pages(); static
     // globals never move per frame so the tree stays valid until the
     // next resolve. Bounds are the LOD-chain union per instance so any
     // LodIndexForNode selection stays inside the cached AABB.
@@ -1147,9 +1147,9 @@ struct World {
     // there are no static mesh nodes (leaves the tree empty).
     void RebuildStaticBvh();
     void InvalidateStaticBvh();
-    // The resolve-time entry (ResolveAndFixup_clusters calls this in
+    // The resolve-time entry (ResolveAndFixup_pages calls this in
     // place of RebuildStaticBvh): tries the COOKED tree first — a pak
-    // whose scene blob carried the static-cull section (Cluster::
+    // whose scene blob carried the static-cull section (WorldPage::
     // cookedStaticBvh) installs it instead of rebuilding, guarded by the
     // adoption hash (tour::StaticCullStateHash over the loaded scene —
     // any post-load edit mismatches and rebuilds). Single-contributing-
@@ -1168,7 +1168,7 @@ struct World {
         return staticBvhValid_ && !staticBvh_.nodes.empty() && !staticBvh_.primIndices.empty();
     }
     // Legacy-static fallback toggle (the app load path owns it): a
-    // PRE-SECTION pak (Cluster::hasBvh() == false — no cooked static-cull
+    // PRE-SECTION pak (WorldPage::hasBvh() == false — no cooked static-cull
     // section) is a deployment error because the static marking that gates
     // GPU-scene admission never exists, so the whole GPU-driven culling/
     // seed-history chain silently degrades to the legacy path. Default

@@ -15,10 +15,10 @@
 #include <Engine/Renderer/mesh.h>
 
 namespace tour {
-struct Cluster;
+struct WorldPage;
 }
 namespace smvk {
-using ::tour::Cluster;
+using ::tour::WorldPage;
 
 struct MeshletConfig;
 
@@ -183,10 +183,10 @@ void GenerateTangents(MeshData& upload);
 // (0 verts / <3 indices / non-triangle count) and leaves the upload
 // untouched (still fills outStats/outLod markers).
 bool OptimizeMeshData(MeshData& upload,
-                              const MeshOptConfig& config,
-                              uint32_t lodGroupId,
-                              MeshOptStats* outStats = nullptr,
-                              LodInfo* outLod = nullptr);
+                      const MeshOptConfig& config,
+                      uint32_t lodGroupId,
+                      MeshOptStats* outStats = nullptr,
+                      LodInfo* outLod = nullptr);
 
 // Builds the cooked LOD chain for an already-optimized LOD0 upload via
 // meshopt_simplify (+ vertex-cache/fetch cleanup). Each lodRatios entry is
@@ -406,7 +406,7 @@ struct CookLodSiblingsOptions {
 // the instance's world scale at pick time). Returns false only on
 // invalid input arguments (individual mesh failures are skipped with a
 // log). Prints per-mesh chain lines + per-level audit lines to stdout.
-bool CookLodSiblings(Cluster& cluster,
+bool CookLodSiblings(WorldPage& cluster,
                      const MeshOptConfig& config,
                      const MeshletConfig& meshletConfig,
                      const CookLodSiblingsOptions& options = {});

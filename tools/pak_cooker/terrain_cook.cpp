@@ -44,7 +44,7 @@ bool ReadFile(const std::string& path, std::string& out) {
 bool CookTerrainBlobs(const std::string& terrainDir,
                       smvk::PakWriter& writer,
                       std::string& err,
-                      const std::vector<const smvk::Cluster*>& scenes) {
+                      const std::vector<const smvk::WorldPage*>& scenes) {
     // terrain.json (the flat schema; .json never reaches the runtime).
     std::string jsonText;
     if (!ReadFile(terrainDir + "/terrain.json", jsonText)) {

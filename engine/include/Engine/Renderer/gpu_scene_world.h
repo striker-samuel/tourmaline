@@ -426,15 +426,14 @@ class WorldSynchronizer {
             nodeKeyCount_ = nodeCount;
             if (nodeKeyCount_)
                 std::fill_n(nodeKeys_, nodeKeyCount_, SourceKey{});
-            for (size_t i = 0; i < world.clusters.size() && i < world.clusterMergedNodes.size();
-                 ++i) {
-                const Cluster* c = world.clusters[i].get();
+            for (size_t i = 0; i < world.pages.size() && i < world.pageMergedNodes.size(); ++i) {
+                const WorldPage* c = world.pages[i].get();
                 if (!c)
                     continue;
-                const auto owner = world.gpuSceneClusterIds.find(c);
-                if (owner == world.gpuSceneClusterIds.end())
+                const auto owner = world.gpuScenePageIds.find(c);
+                if (owner == world.gpuScenePageIds.end())
                     continue;
-                const auto& nodes = world.clusterMergedNodes[i];
+                const auto& nodes = world.pageMergedNodes[i];
                 for (uint32_t local = 0; local < nodes.size(); ++local) {
                     const uint32_t merged = nodes[local];
                     if (merged == InvalidIndex || merged >= nodeKeyCount_)
@@ -445,11 +444,11 @@ class WorldSynchronizer {
                     nodeKeys_[merged] = {owner->second, local, gen};
                 }
             }
-            // Direct gameplay nodes are World-owned, not Cluster-local. Give them
+            // Direct gameplay nodes are World-owned, not WorldPage-local. Give them
             // a distinct registration allocated from the same namespace as
-            // Cluster registrations; the generational node handle prevents ABA
+            // WorldPage registrations; the generational node handle prevents ABA
             // when a removed gameplay slot is reused. The mesh below still
-            // resolves through its actual Cluster-backed resource owner.
+            // resolves through its actual WorldPage-backed resource owner.
             for (NodeHandle handle : world.gameNodes_) {
                 if (!world.IsGameNode(handle))
                     continue;
@@ -482,8 +481,8 @@ class WorldSynchronizer {
                 const World::MeshLocation& loc = world.meshLocations[item.mesh];
                 if (!loc.cluster || !loc.handle.valid())
                     continue;
-                const auto owner = world.gpuSceneClusterIds.find(loc.cluster);
-                if (owner == world.gpuSceneClusterIds.end())
+                const auto owner = world.gpuScenePageIds.find(loc.cluster);
+                if (owner == world.gpuScenePageIds.end())
                     continue;
                 SourceRecord record{};
                 record.instance = key;

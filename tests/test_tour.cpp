@@ -427,9 +427,9 @@ void TestReparent() {
 
 void TestReplay() {
     // GPU-free offline cluster with a hand-built scene (no import needed).
-    // NOTE: heap-allocated — Cluster embeds multi-MB pool arrays and must
+    // NOTE: heap-allocated — WorldPage embeds multi-MB pool arrays and must
     // never live on the (1MB) thread stack (see PakCooker).
-    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
     const int root = addNode(cluster->scene, -1, 0);
     const int g0 = addNode(cluster->scene, root, 1);
@@ -438,8 +438,8 @@ void TestReplay() {
     setNodeName(cluster->scene, g1, "Floor");
     smvk::MaterialCreateInfo ci{};
     ci.baseColorFactor = glm::vec4(1.0f);
-    smvk::ClusterMaterialHandle m0 = cluster->CreateMaterial(ci);
-    smvk::ClusterMaterialHandle m1 = cluster->CreateMaterial(ci);
+    smvk::WorldPageMaterialHandle m0 = cluster->CreateMaterial(ci);
+    smvk::WorldPageMaterialHandle m1 = cluster->CreateMaterial(ci);
     SetMaterial(cluster->scene, uint32_t(g0), m0.index());
     SetMaterial(cluster->scene, uint32_t(g1), m1.index());
     RebuildStaticCache(cluster->scene);
@@ -648,8 +648,8 @@ void TestReferences() {
               "ref fields and prefab TRS roundtrip");
     }
     // Apply to a offline cluster: wheel inlined + nested gear (BFS).
-    // NOTE: heap-allocated (Cluster embeds multi-MB pools).
-    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    // NOTE: heap-allocated (WorldPage embeds multi-MB pools).
+    auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
     addNode(cluster->scene, -1, 0); // cluster root (importer parity)
     std::vector<int> ph;
@@ -691,7 +691,7 @@ void TestReferences() {
     }
     // Without -namespace, references retain the placeholder-name prefix.
     back.references[0].nameSpace.clear();
-    auto legacyCluster = std::make_unique<smvk::Cluster>(nullptr);
+    auto legacyCluster = std::make_unique<smvk::WorldPage>(nullptr);
     legacyCluster->SetOfflineMode(true);
     addNode(legacyCluster->scene, -1, 0);
     Check(ApplySceneReferences(*legacyCluster,
@@ -724,7 +724,7 @@ void TestReferences() {
         occurrence.nameSpace = "right";
         occurrence.translate = glm::vec3(6.0f, 0.0f, 0.0f);
         instances.references.push_back(occurrence);
-        auto world = std::make_unique<smvk::Cluster>(nullptr);
+        auto world = std::make_unique<smvk::WorldPage>(nullptr);
         world->SetOfflineMode(true);
         addNode(world->scene, -1, 0);
         std::vector<int> placeholders;
@@ -771,7 +771,7 @@ void TestReferences() {
     sr.source = "self.tour";
     sr.name = "self";
     selfDoc.references.push_back(sr);
-    auto cluster2 = std::make_unique<smvk::Cluster>(nullptr);
+    auto cluster2 = std::make_unique<smvk::WorldPage>(nullptr);
     cluster2->SetOfflineMode(true);
     addNode(cluster2->scene, -1, 0);
     const size_t selfApplied = ApplySceneReferences(*cluster2,
@@ -858,7 +858,7 @@ void TestNestedModernTourRoot() {
     r2.translate = glm::vec3(-5.0f, 0.0f, 2.0f);
     r2.hasTranslate = true;
     doc.references.push_back(r2);
-    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
     addNode(cluster->scene, -1, 0); // cluster root (importer parity)
     std::vector<int> ph;
@@ -905,7 +905,7 @@ void TestNestedModernTourRoot() {
         for (const MeshRow& row : cluster->scene.tables.meshes) {
             if (!seen.insert(row.mesh).second)
                 continue;
-            const smvk::ClusterStaticMeshHandle h = cluster->staticMeshes.getHandle(row.mesh);
+            const smvk::WorldPageStaticMeshHandle h = cluster->staticMeshes.getHandle(row.mesh);
             if (!h.valid())
                 continue;
             ++total;
@@ -1006,7 +1006,7 @@ void TestRootReference() {
               "rootref second stays normal (sourced asset)");
     }
     // Bind parity A: definition build (empty root + root reference).
-    auto defCluster = std::make_unique<smvk::Cluster>(nullptr);
+    auto defCluster = std::make_unique<smvk::WorldPage>(nullptr);
     defCluster->SetOfflineMode(true);
     addNode(defCluster->scene, -1, 0);
     std::vector<int> defPh;
@@ -1034,7 +1034,7 @@ void TestRootReference() {
     Check(LoadModelFromSourceFile(model, gltf.string().c_str()), "rootref parse for direct import");
     smvk::source::Scene native;
     Check(DecodeGltfSourceScene(model, native), "rootref decode for direct import");
-    auto dirCluster = std::make_unique<smvk::Cluster>(nullptr);
+    auto dirCluster = std::make_unique<smvk::WorldPage>(nullptr);
     dirCluster->SetOfflineMode(true);
     addNode(dirCluster->scene, -1, 0);
     {
@@ -1094,7 +1094,7 @@ void TestRootReference() {
               "rootref derive extra artifact");
     }
     {
-        auto both = std::make_unique<smvk::Cluster>(nullptr);
+        auto both = std::make_unique<smvk::WorldPage>(nullptr);
         both->SetOfflineMode(true);
         addNode(both->scene, -1, 0);
         std::vector<int> ph2;
@@ -1187,7 +1187,7 @@ void TestTourReferences() {
              "setLightAttr -ref 0 -at intensity -v 200;\n";
     }
     auto freshCluster = []() {
-        auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+        auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
         addNode(cluster->scene, -1, 0); // cluster root (importer parity)
         return cluster;
@@ -1386,7 +1386,7 @@ void TestLightVerbs() {
           "light attr roundtrip");
 
     // Replay: root + one imported node; create under root.
-    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
     const int root = addNode(cluster->scene, -1, 0);
     setNodeName(cluster->scene, root, "Root");
@@ -1539,7 +1539,7 @@ void TestGiVolumeVerbs() {
           "GI volume describe");
 
     // Replay: root + one imported node; create under root.
-    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
     const int root = addNode(cluster->scene, -1, 0);
     setNodeName(cluster->scene, root, "Root");
@@ -1676,7 +1676,7 @@ void TestGiVolumeVerbs() {
         rc2.number = 1.30313;
         rc2.vec4 = glm::vec4(0.25f, 0.5f, 0.75f, 0.0f);
         rd.commands.push_back(rc2);
-        auto cluster2 = std::make_unique<smvk::Cluster>(nullptr);
+        auto cluster2 = std::make_unique<smvk::WorldPage>(nullptr);
         cluster2->SetOfflineMode(true);
         addNode(cluster2->scene, -1, 0);
         Check(smvk::tour::ApplyTourToCluster(*cluster2, rd, &warns, &err),
@@ -1702,7 +1702,7 @@ void TestGiVolumeVerbs() {
 // (never the terrain-ref misattribution), and a REAL out-of-range
 // terrain ref still reports the terrain error.
 void TestCreateParentSentinel() {
-    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
     const int root = addNode(cluster->scene, -1, 0);
     const int g0 = addNode(cluster->scene, root, 1);
@@ -1820,7 +1820,7 @@ void TestCubemapVerbs() {
           "cube describe");
 
     // Replay onto a offline cluster.
-    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
     const int root = addNode(cluster->scene, -1, 0);
     setNodeName(cluster->scene, root, "Root");
@@ -1949,7 +1949,7 @@ void TestCreateNode() {
               "createnode system stays");
     }
     // Cook replay: lowered light creates; system type warns+skips.
-    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
     addNode(cluster->scene, -1, 0);
     Check(smvk::tour::ApplyTourToCluster(*cluster, back, &warns, &err), "createnode replay ok");
@@ -2021,7 +2021,7 @@ void TestTerrainVerbs() {
     // Replay onto a offline cluster: group + 4 tile children + meshes from
     // the POST-PAINT heights. Material 0 is out of range -> the cook
     // mints the editor default (warned, not failed).
-    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
     const int root = addNode(cluster->scene, -1, 0);
     setNodeName(cluster->scene, root, "Root");
@@ -2098,7 +2098,7 @@ void TestDelete() {
 
     // Cook replay: mesh/material/light links drop; the node itself (and
     // every later command addressing it) survives — ids stay stable.
-    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
     const int root = addNode(cluster->scene, -1, 0);
     const int g0 = addNode(cluster->scene, root, 1);
@@ -2107,7 +2107,7 @@ void TestDelete() {
     setNodeName(cluster->scene, g1, "Floor");
     smvk::MaterialCreateInfo ci{};
     ci.baseColorFactor = glm::vec4(1.0f);
-    const smvk::ClusterMaterialHandle m0 = cluster->CreateMaterial(ci);
+    const smvk::WorldPageMaterialHandle m0 = cluster->CreateMaterial(ci);
     SetMesh(cluster->scene, uint32_t(g0), 0);
     SetMaterial(cluster->scene, uint32_t(g0), m0.index());
     SetMaterial(cluster->scene, uint32_t(g1), m0.index());
@@ -2149,7 +2149,7 @@ void TestDelete() {
 // MObject (runtime numeric id), MDagPath (full + shortest-unique), and
 // human name+namespace addressing.
 void TestIdentityLayers() {
-    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
     const int root = addNode(cluster->scene, -1, 0); // named root
     const int grpA = addNode(cluster->scene, root, 1);
@@ -2235,7 +2235,7 @@ void TestIdentityLayers() {
 // Maya delete addressing: uuid primary, name secondary, id fallback.
 void TestDeleteAddressing() {
     auto freshCluster = []() {
-        auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+        auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
         addNode(cluster->scene, -1, 0); // root (unnamed)
         return cluster;
@@ -2379,7 +2379,7 @@ void TestDeleteAddressing() {
 
 void TestLogicalNodeTargets() {
     auto freshCluster = []() {
-        auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+        auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
         addNode(cluster->scene, -1, 0); // root (unnamed)
         return cluster;
@@ -2755,7 +2755,7 @@ void TestAudioSource() {
     // Replay: node + row link + payload + slots; the remove verb drops
     // a slot; the upsert replaces by name.
     {
-        auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+        auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
         addNode(cluster->scene, -1, 0);
         std::vector<std::string> rw;
@@ -2888,7 +2888,7 @@ void TestAudioRoom() {
     // Replay: the created node + the payload row; the pose = translate
     // + FULL-extent scale; a second replay runs clean.
     {
-        auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+        auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
         addNode(cluster->scene, -1, 0);
         std::vector<std::string> rw;
@@ -2938,7 +2938,7 @@ void TestAudioRoom() {
         st.number = 2.4;
         gd.commands.push_back(st);
         {
-            auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+            auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
             cluster->SetOfflineMode(true);
             addNode(cluster->scene, -1, 0);
             std::vector<std::string> rw;
@@ -2968,7 +2968,7 @@ void TestAudioRoom() {
         rm.text = "givolume";
         gd.commands.push_back(rm);
         {
-            auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+            auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
             cluster->SetOfflineMode(true);
             addNode(cluster->scene, -1, 0);
             std::vector<std::string> rw;
@@ -3060,7 +3060,7 @@ void TestCamera() { // Hand-built doc: full-lens create + -ref attrs (fov + posi
     }
     // Replay: node + pool def + link + -ref attr + position.
     {
-        auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+        auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
         addNode(cluster->scene, -1, 0);
         std::vector<std::string> rw;
@@ -3070,7 +3070,7 @@ void TestCamera() { // Hand-built doc: full-lens create + -ref attrs (fov + posi
         const CameraRow* it = FindCamera(cluster->scene, 1);
         Check(it != nullptr, "camera replay link");
         if (it != nullptr) {
-            const smvk::ClusterCameraHandle h = cluster->cameras.getHandle(it->camera);
+            const smvk::WorldPageCameraHandle h = cluster->cameras.getHandle(it->camera);
             const SceneCamera* def = cluster->cameras.get(h);
             Check(def && def->fovYDeg == 40.0f &&
                       def->projection == SceneCamera::Projection::Perspective &&
@@ -3171,7 +3171,7 @@ void TestTextureCacheConsult() {
         smvk::source::Scene native;
         if (!DecodeGltfSourceScene(model, native))
             return false;
-        auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+        auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
         addNode(cluster->scene, -1, 0);
         SourceSceneImporter importer(*cluster, native, gltfPath);
@@ -3295,7 +3295,7 @@ void TestReferenceGuid() {
     resolver.movedTo = fs::path(gltf).replace_extension(".geometry").generic_string();
     // Identity-first: stale -source + GUID resolves to the moved file.
     {
-        auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+        auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
         addNode(cluster->scene, -1, 0);
         std::vector<int> ph;
@@ -3322,7 +3322,7 @@ void TestReferenceGuid() {
     // path — which is stale here, so the reference skips with an issue
     // (never a crash, never wrong geometry).
     {
-        auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+        auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
         addNode(cluster->scene, -1, 0);
         std::vector<int> ph;
@@ -3549,9 +3549,9 @@ struct FuzzRng {
 };
 
 // Fresh GPU-free offline cluster: root + Wall + Floor + one material (same
-// shape as TestReplay; heap-allocated — Cluster is multi-MB).
-std::unique_ptr<smvk::Cluster> FreshFuzzCluster() {
-    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+// shape as TestReplay; heap-allocated — WorldPage is multi-MB).
+std::unique_ptr<smvk::WorldPage> FreshFuzzCluster() {
+    auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
     const int root = addNode(cluster->scene, -1, 0);
     const int g0 = addNode(cluster->scene, root, 1);
@@ -3560,13 +3560,13 @@ std::unique_ptr<smvk::Cluster> FreshFuzzCluster() {
     setNodeName(cluster->scene, g1, "Floor");
     smvk::MaterialCreateInfo ci{};
     ci.baseColorFactor = glm::vec4(1.0f);
-    smvk::ClusterMaterialHandle m0 = cluster->CreateMaterial(ci);
+    smvk::WorldPageMaterialHandle m0 = cluster->CreateMaterial(ci);
     SetMaterial(cluster->scene, uint32_t(g0), m0.index());
     RebuildStaticCache(cluster->scene);
     return cluster;
 }
 
-size_t FuzzClusterNodeCount(smvk::Cluster& c) {
+size_t FuzzClusterNodeCount(smvk::WorldPage& c) {
     return c.scene.hierarchy.size();
 }
 
@@ -4181,7 +4181,7 @@ void TestDitherCloseup() {
         std::string err;
         std::vector<std::string> warns;
         Check(smvk::tour::LoadTour(TempTour(), doc, err, &warns), "dither verb parse");
-        auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+        auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
         addNode(cluster->scene, -1, 0);
         const int cGrp = addNode(cluster->scene, 0, 1);
@@ -4328,7 +4328,7 @@ void TestSceneFlagTables() {
 // "emissive" attr's flag PRESERVATION (it used to hard-write w=0 and
 // would silently clear the flags on every emissive edit).
 void TestMaterialContactFlag() {
-    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
     // Import chain: the create-info bit lands in the flags word.
     smvk::MaterialCreateInfo ciOn{};
@@ -4432,7 +4432,7 @@ void TestLightmapOptIn() {
         std::string err;
         std::vector<std::string> warns;
         Check(smvk::tour::LoadTour(TempTour(), doc, err, &warns), "lm verb parse");
-        auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+        auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
         addNode(cluster->scene, -1, 0);
         const int cGrp = addNode(cluster->scene, 0, 1);
@@ -4493,12 +4493,12 @@ void TestTextureAssetForceImport() {
     }
 
     // NOTE: the cluster is HEAP-allocated like every other test — a
-    // Cluster carries INLINE 8192-entry pools (Pool::objects_[kMaxSize]),
+    // WorldPage carries INLINE 8192-entry pools (Pool::objects_[kMaxSize]),
     // so a stack instance is megabytes and overflows the 1 MB stack at
     // the function probe (the stack-overflow exit this test first
     // shipped with, misread as an earlier test's crash through the
     // buffered-stdout ordering).
-    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
     const fs::path assetPath = dir / "brick.texture";
     std::string err;
@@ -4558,7 +4558,7 @@ void TestPhysicsAuthoring() {
     Check(SaveTour(TempTour(), doc, err), "physics: tour save");
     Doc loaded{};
     Check(LoadTour(TempTour(), loaded, err), "physics: tour reload");
-    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
     addNode(cluster->scene, -1, 0);
     Check(ApplyTourToCluster(*cluster, loaded, nullptr, &err), "physics: cook replay");
@@ -4615,7 +4615,7 @@ void TestRequiredNodeNames() {
     unnamed.nodeType = "image";
     invalid.commands.push_back(unnamed);
     Check(!SaveTour(TempTour(), invalid, err), "writer refuses unnamed nodes before writing");
-    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
     addNode(cluster->scene, -1, 0);
     Check(!ApplyTourToCluster(*cluster, invalid, nullptr, &err),

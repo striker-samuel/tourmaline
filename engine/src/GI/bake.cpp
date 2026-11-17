@@ -760,7 +760,7 @@ glm::vec3 GiTraceScene::TraceIrradiance(const glm::vec3& origin,
 }
 
 // ---------------------------------------------------------------------------
-// Cluster extraction
+// WorldPage extraction
 // ---------------------------------------------------------------------------
 
 std::optional<glm::vec3> GiAverageKtxTexel(std::span<const uint8_t> ktxBytes) {
@@ -978,13 +978,13 @@ GiStaticLightCounts CollectStaticBakeLightsImpl(const ::Scene& scene,
 
 } // namespace
 
-GiStaticLightCounts CollectStaticBakeLights(const Cluster& cluster,
+GiStaticLightCounts CollectStaticBakeLights(const WorldPage& cluster,
                                             GiTraceScene& out,
                                             const glm::vec3& aimAxis) {
     return CollectStaticBakeLightsImpl(
         cluster.scene,
         [&cluster](uint32_t, uint32_t lightIdx) -> const SceneLight* {
-            const ClusterLightHandle handle = cluster.lights.getHandle(lightIdx);
+            const WorldPageLightHandle handle = cluster.lights.getHandle(lightIdx);
             if (!handle.valid())
                 return nullptr;
             return cluster.lights.get(handle);
@@ -1295,7 +1295,7 @@ void AssembleTraceScene(const ::Scene& scene,
 
 } // namespace
 
-void BuildTraceSceneFromCluster(Cluster& cluster,
+void BuildTraceSceneFromCluster(WorldPage& cluster,
                                 const GiSceneBuildOptions& opts,
                                 GiTraceScene& out,
                                 std::string& err) {
@@ -1307,7 +1307,7 @@ void BuildTraceSceneFromCluster(Cluster& cluster,
         out,
         err,
         [&cluster](uint32_t, uint32_t meshIdx, bool& stale) -> const MeshData* {
-            const ClusterStaticMeshHandle h = cluster.staticMeshes.getHandle(meshIdx);
+            const WorldPageStaticMeshHandle h = cluster.staticMeshes.getHandle(meshIdx);
             if (!h.valid()) {
                 stale = true;
                 return nullptr;
@@ -1315,13 +1315,13 @@ void BuildTraceSceneFromCluster(Cluster& cluster,
             return cluster.GetRetainedUpload(h);
         },
         [&cluster](uint32_t, uint32_t matIdx) -> const Material* {
-            const ClusterMaterialHandle h = cluster.materials.getHandle(matIdx);
+            const WorldPageMaterialHandle h = cluster.materials.getHandle(matIdx);
             if (!h.valid())
                 return nullptr;
             return cluster.materials.get(h);
         },
         [&cluster](uint32_t, uint32_t lightIdx) -> const SceneLight* {
-            const ClusterLightHandle h = cluster.lights.getHandle(lightIdx);
+            const WorldPageLightHandle h = cluster.lights.getHandle(lightIdx);
             if (!h.valid())
                 return nullptr;
             return cluster.lights.get(h);
@@ -1348,7 +1348,7 @@ void ExtractTraceSceneFromWorld(World& world,
             // The merged world's LOCATION table: mesh slots index
             // world.meshLocations, each resolving to the owning cluster
             // + its retained CPU upload (the editor's picking mirror -
-            // Cluster::SetRetainUploads(true) at world bind).
+            // WorldPage::SetRetainUploads(true) at world bind).
             if (meshIdx >= world.meshLocations.size()) {
                 stale = true;
                 return nullptr;

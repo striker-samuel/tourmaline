@@ -48,7 +48,7 @@ void Check(bool cond, const char* name) {
 // (the honest route: a later ResolveAndFixup folds them into the merged
 // world — the cluster-scene light table stores the CLUSTER-LOCAL pool
 // index, the resolve remap rewrites it to the world lightLocations index).
-smvk::ClusterLightHandle AddLight(smvk::Cluster& cl, const char* name, float intensity) {
+smvk::WorldPageLightHandle AddLight(smvk::WorldPage& cl, const char* name, float intensity) {
     ::SceneLight def{};
     def.type = ::SceneLight::Type::Point;
     def.intensity = intensity;
@@ -60,7 +60,7 @@ smvk::ClusterLightHandle AddLight(smvk::Cluster& cl, const char* name, float int
 }
 
 // True when any world light location points into `cluster`.
-bool WorldHasLightFrom(const smvk::World& w, const smvk::Cluster* cluster) {
+bool WorldHasLightFrom(const smvk::World& w, const smvk::WorldPage* cluster) {
     for (const auto& loc : w.lightLocations)
         if (loc.cluster == cluster)
             return true;
@@ -71,32 +71,32 @@ void TestUnloadAndDynamicCluster() {
     smvk::World w;
 
     // Two "pak" clusters, each carrying one light.
-    auto a = std::make_unique<smvk::Cluster>(nullptr);
-    smvk::Cluster* ap = a.get();
+    auto a = std::make_unique<smvk::WorldPage>(nullptr);
+    smvk::WorldPage* ap = a.get();
     AddLight(*a, "a_light", 100.0f);
-    w.RegisterCluster(std::move(a));
-    auto b = std::make_unique<smvk::Cluster>(nullptr);
-    smvk::Cluster* bp = b.get();
+    w.RegisterPage(std::move(a));
+    auto b = std::make_unique<smvk::WorldPage>(nullptr);
+    smvk::WorldPage* bp = b.get();
     AddLight(*b, "b_light", 200.0f);
-    w.RegisterCluster(std::move(b));
+    w.RegisterPage(std::move(b));
 
     // A runtime-created entity in the dynamic cluster.
-    smvk::Cluster& dyn = w.EnsureDynamicCluster(nullptr);
+    smvk::WorldPage& dyn = w.EnsureDynamicPage(nullptr);
     Check(dyn.isDynamic, "dyn.flag");
     AddLight(dyn, "dyn_light", 300.0f);
 
     // Idempotent: the same cluster comes back.
-    Check(&w.EnsureDynamicCluster(nullptr) == &dyn, "dyn.idempotent");
-    Check(w.clusters.size() == 3, "dyn.count");
+    Check(&w.EnsureDynamicPage(nullptr) == &dyn, "dyn.idempotent");
+    Check(w.pages.size() == 3, "dyn.count");
 
-    w.ResolveAndFixup_clusters();
+    w.ResolveAndFixup_pages();
     Check(w.lightLocations.size() == 3, "resolve.lights");
     Check(WorldHasLightFrom(w, ap) && WorldHasLightFrom(w, bp) && WorldHasLightFrom(w, &dyn),
           "resolve.clusters");
 
     // Unload one pak cluster: its entities vanish, the rest survive.
     w.UnloadCluster(*ap);
-    Check(w.clusters.size() == 2, "unload.count");
+    Check(w.pages.size() == 2, "unload.count");
     Check(w.lightLocations.size() == 2, "unload.lights");
     Check(!WorldHasLightFrom(w, ap), "unload.a.gone");
     Check(WorldHasLightFrom(w, bp) && WorldHasLightFrom(w, &dyn), "unload.survivors");
@@ -110,20 +110,20 @@ void TestUnloadAndDynamicCluster() {
 
     // Unloading the dynamic cluster is refused (runtime state).
     w.UnloadCluster(dyn);
-    Check(w.clusters.size() == 2, "unload.dyn.refused");
+    Check(w.pages.size() == 2, "unload.dyn.refused");
     Check(w.lightLocations.size() == 2, "unload.dyn.lights.intact");
 
     // Unregister detaches the other pak cluster (alive, re-parentable) and
     // rebuilds over the survivors: only the dynamic light remains.
-    auto detached = w.UnregisterCluster(*bp);
+    auto detached = w.UnregisterPage(*bp);
     Check(detached != nullptr && detached.get() == bp && detached->world == nullptr,
           "unregister.detached");
-    Check(w.clusters.size() == 1, "unregister.count");
+    Check(w.pages.size() == 1, "unregister.count");
     Check(w.lightLocations.size() == 1 && WorldHasLightFrom(w, &dyn), "unregister.lights");
 
     // Unregistering the dynamic cluster is refused too.
-    Check(w.UnregisterCluster(dyn) == nullptr, "unregister.dyn.refused");
-    Check(w.clusters.size() == 1, "unregister.dyn.count.intact");
+    Check(w.UnregisterPage(dyn) == nullptr, "unregister.dyn.refused");
+    Check(w.pages.size() == 1, "unregister.dyn.count.intact");
 }
 
 // Runtime audio-source entities (the gameplay-handle surface —
@@ -147,7 +147,7 @@ void TestAudioSourceEntities() {
     Check(w.IsAudioSourceAlive(h), "audio.spawn-alive");
     // The durable row (dynamic cluster's own scene) + the merged
     // mirror both carry the payload.
-    smvk::Cluster& dyn = w.EnsureDynamicCluster(nullptr);
+    smvk::WorldPage& dyn = w.EnsureDynamicPage(nullptr);
     Check(dyn.scene.tables.audioSources.size() == 1 && w.scene.tables.audioSources.size() == 1,
           "audio.spawn-rows");
     const uint32_t mergedNode = w.AudioSourceNode(h);
@@ -161,7 +161,7 @@ void TestAudioSourceEntities() {
 
     // Resolve: the durable rows fold in; the HANDLE stays valid and
     // its merged node REMAPS (ids moved).
-    w.ResolveAndFixup_clusters();
+    w.ResolveAndFixup_pages();
     Check(w.IsAudioSourceAlive(h) && w.IsAudioSourceAlive(h2), "audio.resolve-handles-stay");
     Check(w.scene.tables.audioSources.size() == 2, "audio.resolve-folds-rows");
     {
@@ -211,9 +211,9 @@ void TestMeshEntitiesAndAnimators() {
 
     // A "pak" cluster: root(0) + a joint child(1) + a mesh node(2),
     // with a 2-joint skeleton (the v1 single-skeleton contract).
-    auto a = std::make_unique<smvk::Cluster>(nullptr);
+    auto a = std::make_unique<smvk::WorldPage>(nullptr);
     a->SetOfflineMode(true);
-    Cluster* ap = a.get();
+    WorldPage* ap = a.get();
     addNode(a->scene, -1, 0);                       // 0: root
     const int jointChild = addNode(a->scene, 0, 1); // 1
     const int meshNode = addNode(a->scene, 0, 1);   // 2
@@ -227,8 +227,8 @@ void TestMeshEntitiesAndAnimators() {
     matDef.rebuildPipeline();
     const auto math = a->materials.create(std::move(matDef));
     SetMaterial(a->scene, NodeId(meshNode), math.index());
-    w.RegisterCluster(std::move(a));
-    w.ResolveAndFixup_clusters();
+    w.RegisterPage(std::move(a));
+    w.ResolveAndFixup_pages();
 
     // The source node (the merged-scene node carrying the mesh).
     uint32_t sourceNode = UINT32_MAX;
@@ -257,7 +257,7 @@ void TestMeshEntitiesAndAnimators() {
 
     // Resolve: the mirror dies, the binding RE-ESTABLISHES on the
     // remapped node (the handle never moved).
-    w.ResolveAndFixup_clusters();
+    w.ResolveAndFixup_pages();
     Check(w.IsMeshEntityAlive(h), "meshent.resolve-handle-stays");
     {
         const uint32_t remapped = w.MeshEntityNode(h);
@@ -379,13 +379,13 @@ void TestMeshEntitiesAndAnimators() {
     // A static cluster (no skeleton) refuses the animator.
     {
         World w2;
-        auto s = std::make_unique<smvk::Cluster>(nullptr);
+        auto s = std::make_unique<smvk::WorldPage>(nullptr);
         s->SetOfflineMode(true);
         addNode(s->scene, -1, 0);
         const auto smh = s->staticMeshes.create(StaticMesh{});
         SetMesh(s->scene, 0, smh.index());
-        w2.RegisterCluster(std::move(s));
-        w2.ResolveAndFixup_clusters();
+        w2.RegisterPage(std::move(s));
+        w2.ResolveAndFixup_pages();
         uint32_t src = UINT32_MAX;
         for (const MeshRow& row : w2.scene.tables.meshes)
             src = row.node;
@@ -401,7 +401,7 @@ void TestMeshEntitiesAndAnimators() {
 void TestSingleClusterBulkResolve() {
     using namespace smvk;
     World w;
-    auto c = std::make_unique<Cluster>(nullptr);
+    auto c = std::make_unique<WorldPage>(nullptr);
     c->SetOfflineMode(true);
     const int root = addNode(c->scene, -1, 0);
     const int child = addNode(c->scene, root, 1);
@@ -411,16 +411,16 @@ void TestSingleClusterBulkResolve() {
     UnlinkNodeFromParent(c->scene, retired);
     RetireNodeSlot(c->scene, NodeId(retired));
     const size_t sourceSlots = c->scene.hierarchy.size();
-    Cluster* ptr = c.get();
-    w.RegisterCluster(std::move(c));
-    w.ResolveAndFixup_clusters();
+    WorldPage* ptr = c.get();
+    w.RegisterPage(std::move(c));
+    w.ResolveAndFixup_pages();
     // FLAT WORLD: no synthetic root — the merged scene is the source
     // scene verbatim (same slot count, parents untouched).
     Check(w.scene.hierarchy.size() == sourceSlots, "single.bulk.slot-count");
-    Check(w.clusterMergedNodes.size() == 1 && w.clusterMergedNodes[0].size() == sourceSlots &&
-              w.clusterMergedNodes[0][NodeId(root)] == NodeId(root) &&
-              w.clusterMergedNodes[0][NodeId(child)] == NodeId(child) &&
-              w.clusterMergedNodes[0][NodeId(retired)] == UINT32_MAX,
+    Check(w.pageMergedNodes.size() == 1 && w.pageMergedNodes[0].size() == sourceSlots &&
+              w.pageMergedNodes[0][NodeId(root)] == NodeId(root) &&
+              w.pageMergedNodes[0][NodeId(child)] == NodeId(child) &&
+              w.pageMergedNodes[0][NodeId(retired)] == UINT32_MAX,
           "single.bulk.identity-and-holes");
     Check(w.scene.hierarchy[NodeId(root)].parent == -1 &&
               w.scene.hierarchy[NodeId(child)].parent == root,
@@ -431,7 +431,7 @@ void TestSingleClusterBulkResolve() {
     Check(ptr->scene.hierarchy.size() == sourceSlots &&
               ptr->scene.hierarchy[NodeId(root)].parent == -1,
           "single.bulk.source-intact");
-    w.ResolveAndFixup_clusters();
+    w.ResolveAndFixup_pages();
     Check(w.scene.hierarchy.size() == sourceSlots && w.lightLocations.size() == 1,
           "single.bulk.repeat-resolve");
 }
@@ -452,14 +452,14 @@ void TestSceneNodeBudget() {
 
     World w;
     w.ConfigureSceneNodeBudget(3); // 3 cluster nodes, no synthetic root slot
-    auto c = std::make_unique<Cluster>(nullptr);
+    auto c = std::make_unique<WorldPage>(nullptr);
     for (int i = 0; i < 3; ++i)
         addNode(c->scene, -1, 0, false);
-    w.RegisterCluster(std::move(c));
-    w.ResolveAndFixup_clusters();
+    w.RegisterPage(std::move(c));
+    w.ResolveAndFixup_pages();
     Check(w.scene.hierarchy.size() == 3, "budget.world-exact-capacity");
     const auto* mergedStorage = w.scene.hierarchy.data();
-    w.ResolveAndFixup_clusters();
+    w.ResolveAndFixup_pages();
     Check(w.scene.hierarchy.size() == 3 && w.scene.hierarchy.data() == mergedStorage,
           "budget.resolve-reuses-node-storage");
 
@@ -494,9 +494,9 @@ void TestMaterialInstances() {
     World w;
     // One cluster with a mesh + material (the TestMeshEntities setup,
     // static — instances are a value lane, not a geometry one).
-    auto a = std::make_unique<smvk::Cluster>(nullptr);
+    auto a = std::make_unique<smvk::WorldPage>(nullptr);
     a->SetOfflineMode(true);
-    smvk::Cluster* ap = a.get();
+    smvk::WorldPage* ap = a.get();
     const int meshNode = addNode(a->scene, -1, 0);
     const auto mh = a->staticMeshes.create(StaticMesh{});
     SetMesh(a->scene, NodeId(meshNode), mh.index());
@@ -504,8 +504,8 @@ void TestMaterialInstances() {
     matDef.rebuildPipeline();
     const auto math = a->materials.create(std::move(matDef));
     SetMaterial(a->scene, NodeId(meshNode), math.index());
-    w.RegisterCluster(std::move(a));
-    w.ResolveAndFixup_clusters();
+    w.RegisterPage(std::move(a));
+    w.ResolveAndFixup_pages();
 
     uint32_t sourceNode = UINT32_MAX;
     uint32_t materialIdx = UINT32_MAX;
@@ -544,7 +544,7 @@ void TestMaterialInstances() {
     // The mirror-loop reorder pin: after ONE resolve the entity items
     // ARE in drawItems (the old tail-position loop left them out until
     // a second resolve — they never reached forEachRenderItem).
-    w.ResolveAndFixup_clusters();
+    w.ResolveAndFixup_pages();
     {
         const NodeId nodeA = w.MeshEntityNode(eA);
         const NodeId nodeB = w.MeshEntityNode(eB);
@@ -561,7 +561,7 @@ void TestMaterialInstances() {
     Check(!w.SetMeshMaterialInstance(MeshEntityHandle{}, inst), "matinst.bind-dead-entity-refused");
     // The linkage lands at the NEXT resolve (binding marks the world,
     // the drawItems build joins the entity's mirror node).
-    w.ResolveAndFixup_clusters();
+    w.ResolveAndFixup_pages();
     w.SetMaterialInstanceUserData(inst, 0x000000FFu);
     {
         const World::RenderItem* itemA = findItem(w.MeshEntityNode(eA));
@@ -601,7 +601,7 @@ void TestMaterialInstances() {
     }
     // And the base default SURVIVES resolves (the re-key capture): the
     // values are keyed by the stable (owner, handle) pair.
-    w.ResolveAndFixup_clusters();
+    w.ResolveAndFixup_pages();
     Check(w.MaterialUserData(materialIdx) == 0x12345678u, "matinst.default-survives-resolve");
     {
         const World::RenderItem* itemB = findItem(w.MeshEntityNode(eB));
@@ -630,7 +630,7 @@ void TestMaterialShaderFamily() {
     // One cluster, one material (allowFarVertexLit ON so the far gate is
     // observable), and a TWO-LEVEL LOD chain (LOD0 + a /lod1 sibling
     // with a LOD marker) so FarShadingAt has a farthest level to read.
-    auto a = std::make_unique<smvk::Cluster>(nullptr);
+    auto a = std::make_unique<smvk::WorldPage>(nullptr);
     a->SetOfflineMode(true);
     const int meshNode = addNode(a->scene, -1, 0);
     const auto mh = a->staticMeshes.create(StaticMesh{});
@@ -648,8 +648,8 @@ void TestMaterialShaderFamily() {
     lod1.candidateCount = 2;
     lod1.simplifyError = 0.5f;
     a->RegisterMeshLod("assets://rock/lod1", lod1);
-    w.RegisterCluster(std::move(a));
-    w.ResolveAndFixup_clusters();
+    w.RegisterPage(std::move(a));
+    w.ResolveAndFixup_pages();
 
     uint32_t materialIdx = UINT32_MAX;
     for (const MeshRow& row : w.scene.tables.meshes) {
@@ -671,7 +671,7 @@ void TestMaterialShaderFamily() {
     Check(w.ShaderFamilyOf(materialIdx) == MaterialShaderFamily::ProjectLit, "family.reads");
     // The re-key capture: the family assignment survives resolves (the
     // stable (owner, handle) pair re-emits into the new index layout).
-    w.ResolveAndFixup_clusters();
+    w.ResolveAndFixup_pages();
     Check(w.ShaderFamilyOf(materialIdx) == MaterialShaderFamily::ProjectLit,
           "family.survives-resolve");
     // Instances over a family material are the VALUE lane only — the
@@ -697,8 +697,8 @@ void TestDecalEntities() {
 
     // One pak cluster carrying a COOKED decal (node + pool def in the
     // cluster's own scene — the resolve-foldable route).
-    auto a = std::make_unique<smvk::Cluster>(nullptr);
-    smvk::Cluster* ap = a.get();
+    auto a = std::make_unique<smvk::WorldPage>(nullptr);
+    smvk::WorldPage* ap = a.get();
     {
         ::SceneDecal def{};
         def.albedoUri = "decals/blood_albedo";
@@ -710,8 +710,8 @@ void TestDecalEntities() {
         const int node = addNode(a->scene, -1, 0);
         SetDecal(a->scene, uint32_t(node), h.index());
     }
-    w.RegisterCluster(std::move(a));
-    w.ResolveAndFixup_clusters();
+    w.RegisterPage(std::move(a));
+    w.ResolveAndFixup_pages();
     Check(w.decalLocations.size() == 1, "decal.resolve.count");
     Check(w.decalLocations[0].cluster == ap && w.decalLocations[0].handle.valid(),
           "decal.resolve.location");
@@ -772,11 +772,11 @@ void TestDecalEntities() {
 // clusters in registration order; cluster unload drops its payloads.
 void TestBakePayloadChannel() {
     smvk::World w;
-    auto a = std::make_unique<smvk::Cluster>(nullptr);
-    smvk::Cluster* ap = a.get();
+    auto a = std::make_unique<smvk::WorldPage>(nullptr);
+    smvk::WorldPage* ap = a.get();
     a->AddBakePayload("gi/scene.sggi", {1, 2, 3, 4});
     a->AddBakePayload("gi/scene_0.sgrv", {5});
-    w.RegisterCluster(std::move(a));
+    w.RegisterPage(std::move(a));
 
     // Pak payload resolves.
     auto s = w.ReadBakeBytes("gi/scene_0.sgrv");
@@ -784,7 +784,7 @@ void TestBakePayloadChannel() {
 
     // Runtime injection on the DYNAMIC cluster overrides the pak payload
     // at the same path and adds new ones.
-    smvk::Cluster& dyn = w.EnsureDynamicCluster(nullptr);
+    smvk::WorldPage& dyn = w.EnsureDynamicPage(nullptr);
     dyn.AddBakePayload("gi/scene.sggi", {9, 9});
     dyn.AddBakePayload("gi/quick.sgrv", {7});
     auto over = w.ReadBakeBytes("gi/scene.sggi");
@@ -906,10 +906,10 @@ void TestEnvZones() {
     // World-level wrapper (the merged-scene API the hosts use).
     {
         smvk::World w;
-        auto c = std::make_unique<smvk::Cluster>(nullptr);
+        auto c = std::make_unique<smvk::WorldPage>(nullptr);
         c->scene = scene;
-        w.RegisterCluster(std::move(c));
-        w.ResolveAndFixup_clusters();
+        w.RegisterPage(std::move(c));
+        w.ResolveAndFixup_pages();
         Check(w.scene.tables.envs.size() == 4, "zone.world.merged");
         const NodeId worldB = w.zoneAtPosition(glm::vec3(2.5f, 0.5f, 0.5f));
         Check(worldB != UINT32_MAX && FindEnv(w.scene, worldB) != nullptr, "zone.world.resolve");
@@ -917,9 +917,9 @@ void TestEnvZones() {
 }
 
 void TestActiveEnvironmentFirstWins() {
-    // Cluster carrying env blocks: root + numbered env nodes, one
+    // WorldPage carrying env blocks: root + numbered env nodes, one
     // elevation per block (exact floats — resolve copies verbatim).
-    auto addEnvBlock = [](smvk::Cluster& cl, int parent, float sunEl) {
+    auto addEnvBlock = [](smvk::WorldPage& cl, int parent, float sunEl) {
         const int n = addNode(cl.scene, parent, 0);
         tour::scene::SceneEnv e{};
         e.sunElevation = sunEl;
@@ -931,21 +931,21 @@ void TestActiveEnvironmentFirstWins() {
     // not the first-wins value copy — can produce el 20.
     {
         smvk::World w;
-        auto a = std::make_unique<smvk::Cluster>(nullptr);
+        auto a = std::make_unique<smvk::WorldPage>(nullptr);
         const int aRoot = addNode(a->scene, -1, 0);
         addEnvBlock(*a, aRoot, 10.0f);
         const int aSel = addEnvBlock(*a, aRoot, 20.0f);
         a->scene.activeEnvironment = uint32_t(aSel);
         a->scene.environment.sunElevation = 99.0f;
         a->scene.envAuthored = true;
-        w.RegisterCluster(std::move(a));
-        auto b = std::make_unique<smvk::Cluster>(nullptr);
+        w.RegisterPage(std::move(a));
+        auto b = std::make_unique<smvk::WorldPage>(nullptr);
         const int bRoot = addNode(b->scene, -1, 0);
         const int bSel = addEnvBlock(*b, bRoot, 30.0f);
         b->scene.activeEnvironment = uint32_t(bSel);
         b->scene.envAuthored = true;
-        w.RegisterCluster(std::move(b));
-        w.ResolveAndFixup_clusters();
+        w.RegisterPage(std::move(b));
+        w.ResolveAndFixup_pages();
         Check(w.scene.activeEnvironment != UINT32_MAX, "actenv.kept");
         const EnvRow* it = FindEnv(w.scene, w.scene.activeEnvironment);
         Check(it != nullptr, "actenv.in-table");
@@ -956,17 +956,17 @@ void TestActiveEnvironmentFirstWins() {
     // An unselected first scene defers: A selects nothing, B's pick wins.
     {
         smvk::World w;
-        auto a = std::make_unique<smvk::Cluster>(nullptr);
+        auto a = std::make_unique<smvk::WorldPage>(nullptr);
         const int aRoot = addNode(a->scene, -1, 0);
         addEnvBlock(*a, aRoot, 10.0f);
         a->scene.activeEnvironment = UINT32_MAX;
-        w.RegisterCluster(std::move(a));
-        auto b = std::make_unique<smvk::Cluster>(nullptr);
+        w.RegisterPage(std::move(a));
+        auto b = std::make_unique<smvk::WorldPage>(nullptr);
         const int bRoot = addNode(b->scene, -1, 0);
         const int bSel = addEnvBlock(*b, bRoot, 30.0f);
         b->scene.activeEnvironment = uint32_t(bSel);
-        w.RegisterCluster(std::move(b));
-        w.ResolveAndFixup_clusters();
+        w.RegisterPage(std::move(b));
+        w.ResolveAndFixup_pages();
         Check(w.scene.activeEnvironment != UINT32_MAX, "actenv.defer-kept");
         Check(w.scene.environment.sunElevation == 30.0f, "actenv.defer-resolved");
     }
@@ -974,14 +974,14 @@ void TestActiveEnvironmentFirstWins() {
     // look falls back to the default block.
     {
         smvk::World w;
-        auto a = std::make_unique<smvk::Cluster>(nullptr);
+        auto a = std::make_unique<smvk::WorldPage>(nullptr);
         const int aRoot = addNode(a->scene, -1, 0);
         addEnvBlock(*a, aRoot, 10.0f);
         const int aDangle = addNode(a->scene, aRoot, 0);
         a->scene.activeEnvironment = uint32_t(aDangle);
         a->scene.envAuthored = true;
-        w.RegisterCluster(std::move(a));
-        w.ResolveAndFixup_clusters();
+        w.RegisterPage(std::move(a));
+        w.ResolveAndFixup_pages();
         Check(w.scene.activeEnvironment == UINT32_MAX, "actenv.dangling-cleared");
         Check(w.scene.environment.sunElevation == 55.0f, "actenv.dangling-fallback");
     }
@@ -992,12 +992,12 @@ void TestActiveEnvironmentFirstWins() {
 // scene, with overlapping cluster-local node numbers remapped apart.
 void TestResolveCarriesInlineTables() {
     smvk::World w;
-    auto c1 = std::make_unique<smvk::Cluster>(nullptr);
+    auto c1 = std::make_unique<smvk::WorldPage>(nullptr);
     c1->SetOfflineMode(true);
-    auto c2 = std::make_unique<smvk::Cluster>(nullptr);
+    auto c2 = std::make_unique<smvk::WorldPage>(nullptr);
     c2->SetOfflineMode(true);
     // OVERLAPPING local ids: node 1 in both clusters.
-    for (smvk::Cluster* c : {c1.get(), c2.get()}) {
+    for (smvk::WorldPage* c : {c1.get(), c2.get()}) {
         addNode(c->scene, -1, 0);
         addNode(c->scene, 0, 1);
     }
@@ -1012,9 +1012,9 @@ void TestResolveCarriesInlineTables() {
     SetExport(c2->scene, 1, es);
     SetNodeUuidRaw(c1->scene, 1, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
     setNodeName(c1->scene, 1, "GIV_a");
-    w.RegisterCluster(std::move(c1));
-    w.RegisterCluster(std::move(c2));
-    w.ResolveAndFixup_clusters();
+    w.RegisterPage(std::move(c1));
+    w.RegisterPage(std::move(c2));
+    w.ResolveAndFixup_pages();
     const ::Scene& s = w.scene;
     size_t gi = 0, cbm = 0, ex = 0;
     for (const GiVolumeRow& r : s.tables.giVolumes) {
@@ -1073,13 +1073,13 @@ void TestResolveCarriesInlineTables() {
 // instance-qualified identity gameplay iterates).
 void TestSchemaAssocFold() {
     smvk::World w;
-    auto c1 = std::make_unique<smvk::Cluster>(nullptr);
+    auto c1 = std::make_unique<smvk::WorldPage>(nullptr);
     c1->SetOfflineMode(true);
-    auto c2 = std::make_unique<smvk::Cluster>(nullptr);
+    auto c2 = std::make_unique<smvk::WorldPage>(nullptr);
     c2->SetOfflineMode(true);
     // OVERLAPPING local ids: node 1 in both clusters, each carrying a
     // schema association with DISTINCT cooked bytes.
-    for (smvk::Cluster* c : {c1.get(), c2.get()}) {
+    for (smvk::WorldPage* c : {c1.get(), c2.get()}) {
         addNode(c->scene, -1, 0);
         addNode(c->scene, 0, 1);
     }
@@ -1089,9 +1089,9 @@ void TestSchemaAssocFold() {
     Check(SetSchemaAssoc(c2->scene, 1, 3002, valsB), "schemafold.set-b");
     setNodeName(c1->scene, 1, "SpawnerA");
     setNodeName(c2->scene, 1, "SpawnerB");
-    w.RegisterCluster(std::move(c1));
-    w.RegisterCluster(std::move(c2));
-    w.ResolveAndFixup_clusters();
+    w.RegisterPage(std::move(c1));
+    w.RegisterPage(std::move(c2));
+    w.ResolveAndFixup_pages();
     const ::Scene& s = w.scene;
     Check(s.tables.schemaAssocs.size() == 2, "schemafold.both-carried");
     const SchemaAssocRow* a = nullptr;
@@ -1122,8 +1122,8 @@ void TestSchemaAssocFold() {
     // Unload ONE cluster: only its rows fold away — the other
     // instance's association survives untouched (the additive-scene
     // contract).
-    if (w.clusters.size() == 2) {
-        w.UnloadCluster(*w.clusters[0]);
+    if (w.pages.size() == 2) {
+        w.UnloadCluster(*w.pages[0]);
         Check(w.scene.tables.schemaAssocs.size() == 1 &&
                   w.scene.tables.schemaAssocs[0].schemaId == 3002,
               "schemafold.remove-one-keeps-other");
@@ -1136,7 +1136,7 @@ void TestSchemaAssocFold() {
 // refs (defaultCameraNode) ride the map instead of +offset arithmetic.
 void TestResolveHoledCluster() {
     smvk::World w;
-    auto c = std::make_unique<smvk::Cluster>(nullptr);
+    auto c = std::make_unique<smvk::WorldPage>(nullptr);
     c->SetOfflineMode(true);
     ::Scene& cs = c->scene;
     const int root = addNode(cs, -1, 0);
@@ -1147,8 +1147,8 @@ void TestResolveHoledCluster() {
     deleteSceneNodes(cs, {(uint32_t)a});
     Check(LiveNodeCount(cs) == 2 && cs.hierarchy.size() == 3, "holedresolve.cluster-hole");
     cs.defaultCameraNode = uint32_t(b);
-    w.RegisterCluster(std::move(c));
-    w.ResolveAndFixup_clusters();
+    w.RegisterPage(std::move(c));
+    w.ResolveAndFixup_pages();
     const ::Scene& s = w.scene;
     // The single-content-cluster identity copy (#228): source slots stay
     // 1:1 - the world scene carries the cluster's slots INCLUDING the
@@ -1202,7 +1202,7 @@ void TestGameOwnedNodes() {
           "game-node: reusable slot bumps generation");
     // The legacy cluster resolve still destroys direct game nodes
     // until Epoch 6c. A reminted slot must NOT make an old handle live.
-    w.ResolveAndFixup_clusters();
+    w.ResolveAndFixup_pages();
     Check(!w.IsGameNode(replacement),
           "game-node: legacy resolve explicitly invalidates old handles");
     const NodeHandle afterResolve = w.AddNode();
@@ -1266,14 +1266,14 @@ void TestFlatWorldResolve() {
     // node; the root registers as the ownership region.
     {
         World w;
-        auto c = std::make_unique<Cluster>(nullptr);
+        auto c = std::make_unique<WorldPage>(nullptr);
         c->SetOfflineMode(true);
         const int r = addNode(c->scene, -1, 0);
         const int m1 = addNode(c->scene, r, 1);
         const int m2 = addNode(c->scene, r, 1);
         MarkSubtreeStatic(c->scene, r);
-        w.RegisterCluster(std::move(c));
-        w.ResolveAndFixup_clusters();
+        w.RegisterPage(std::move(c));
+        w.ResolveAndFixup_pages();
         Check(w.scene.hierarchy.size() == 3, "flatworld.single.no-synthetic-root");
         Check(w.scene.hierarchy[size_t(r)].parent == -1, "flatworld.single.root-parent-kept");
         Check(w.scene.hierarchy[size_t(m1)].parent == r &&
@@ -1290,18 +1290,18 @@ void TestFlatWorldResolve() {
     // independent, each root its own region.
     {
         World w;
-        auto a = std::make_unique<Cluster>(nullptr);
+        auto a = std::make_unique<WorldPage>(nullptr);
         a->SetOfflineMode(true);
         const int ar = addNode(a->scene, -1, 0);
         const int ac = addNode(a->scene, ar, 1);
-        auto b = std::make_unique<Cluster>(nullptr);
+        auto b = std::make_unique<WorldPage>(nullptr);
         b->SetOfflineMode(true);
         const int br = addNode(b->scene, -1, 0);
         const int bc = addNode(b->scene, br, 1);
-        Cluster* bp = b.get();
-        w.RegisterCluster(std::move(a));
-        w.RegisterCluster(std::move(b));
-        w.ResolveAndFixup_clusters();
+        WorldPage* bp = b.get();
+        w.RegisterPage(std::move(a));
+        w.RegisterPage(std::move(b));
+        w.ResolveAndFixup_pages();
         Check(w.scene.hierarchy.size() == 4, "flatworld.two.node-count");
         Check(w.scene.hierarchy[0].parent == -1 && w.scene.hierarchy[2].parent == -1,
               "flatworld.two.roots-independent");
@@ -1313,7 +1313,7 @@ void TestFlatWorldResolve() {
         // Unload B: only B's nodes leave; A keeps its ids (the identity
         // fast path re-engages with ONE content cluster).
         w.UnloadCluster(*bp);
-        w.ResolveAndFixup_clusters();
+        w.ResolveAndFixup_pages();
         Check(w.scene.hierarchy.size() == 2 && w.scene.hierarchy[0].parent == -1 &&
                   w.scene.hierarchy[1].parent == 0,
               "flatworld.two.unload-only-owned");
@@ -1323,14 +1323,14 @@ void TestFlatWorldResolve() {
     // registers its own region (not just the first live slot).
     {
         World w;
-        auto c = std::make_unique<Cluster>(nullptr);
+        auto c = std::make_unique<WorldPage>(nullptr);
         c->SetOfflineMode(true);
         const int r1 = addNode(c->scene, -1, 0);
         const int r1c = addNode(c->scene, r1, 1);
         const int r2 = addNode(c->scene, -1, 0); // second authored root
         const int r2c = addNode(c->scene, r2, 1);
-        w.RegisterCluster(std::move(c));
-        w.ResolveAndFixup_clusters();
+        w.RegisterPage(std::move(c));
+        w.ResolveAndFixup_pages();
         Check(w.scene.hierarchy.size() == 4, "flatworld.multiroot.node-count");
         Check(w.scene.hierarchy[size_t(r1)].parent == -1 &&
                   w.scene.hierarchy[size_t(r2)].parent == -1,
@@ -1352,12 +1352,12 @@ void TestFlatWorldResolve() {
     // parent changes (no synthetic reparenting at resolve).
     {
         World w;
-        auto c = std::make_unique<Cluster>(nullptr);
+        auto c = std::make_unique<WorldPage>(nullptr);
         c->SetOfflineMode(true);
         const int r = addNode(c->scene, -1, 0);
         const int m = addNode(c->scene, r, 1);
-        w.RegisterCluster(std::move(c));
-        w.ResolveAndFixup_clusters();
+        w.RegisterPage(std::move(c));
+        w.ResolveAndFixup_pages();
         std::vector<int> parentsBefore(w.scene.hierarchy.size());
         for (size_t n = 0; n < w.scene.hierarchy.size(); ++n)
             parentsBefore[n] = w.scene.hierarchy[n].parent;
@@ -1370,7 +1370,7 @@ void TestFlatWorldResolve() {
                 Check(w.scene.hierarchy[n].parent == parentsBefore[n],
                       "flatworld.spawn-no-reparent");
         // The durable-side resolve keeps the spawn root-level too.
-        w.ResolveAndFixup_clusters();
+        w.ResolveAndFixup_pages();
         Check(w.scene.hierarchy[size_t(decalNode)].parent == -1,
               "flatworld.spawn-resolve-stays-root");
     }
@@ -1388,8 +1388,8 @@ void TestStaticBvhAdoptionGuard() {
     // 6 static mesh rows under one root (7 nodes): enough prims that
     // leafSize 1 (~11 nodes) and the rebuild's leafSize 4 (~3 nodes)
     // are unambiguous.
-    auto mkBaked = [](Cluster*& out) {
-        auto c = std::make_unique<Cluster>(nullptr);
+    auto mkBaked = [](WorldPage*& out) {
+        auto c = std::make_unique<WorldPage>(nullptr);
         c->SetOfflineMode(true);
         const int r = addNode(c->scene, -1, 0);
         std::vector<uint32_t> meshNodes;
@@ -1459,10 +1459,10 @@ void TestStaticBvhAdoptionGuard() {
     // shape lands; the seed is consumed).
     {
         World w;
-        Cluster* cp = nullptr;
+        WorldPage* cp = nullptr;
         auto c = mkBaked(cp);
-        w.RegisterCluster(std::move(c));
-        w.ResolveAndFixup_clusters();
+        w.RegisterPage(std::move(c));
+        w.ResolveAndFixup_pages();
         Check(w.HasStaticBvh() && w.EnsureStaticBvh().nodes.size() > 8,
               "bvhguard.unchanged-adopted");
         Check(cp->cookedStaticBvh.nodes.empty() && cp->cookedStaticBvhStateHash == 0,
@@ -1472,7 +1472,7 @@ void TestStaticBvhAdoptionGuard() {
         // contract: appended nodes never invalidate the baked asset).
         const glm::mat4 frame = glm::translate(glm::mat4(1.0f), glm::vec3(5.0f, 0.0f, 0.0f));
         (void)w.CreateDecalAt(frame, SceneDecal{});
-        w.ResolveAndFixup_clusters();
+        w.ResolveAndFixup_pages();
         Check(w.HasStaticBvh(), "bvhguard.append-still-culls");
     }
 
@@ -1480,13 +1480,13 @@ void TestStaticBvhAdoptionGuard() {
     // rejected (the rebuild shape lands, the seed consumed).
     {
         World w;
-        Cluster* cp = nullptr;
+        WorldPage* cp = nullptr;
         auto c = mkBaked(cp);
         glm::mat4 moved(1.0f);
         moved[3] = glm::vec4(2.0f, 0.0f, 0.0f, 1.0f);
         cp->scene.localTransform[2] = moved; // a static mesh node's local
-        w.RegisterCluster(std::move(c));
-        w.ResolveAndFixup_clusters();
+        w.RegisterPage(std::move(c));
+        w.ResolveAndFixup_pages();
         Check(w.HasStaticBvh() && w.EnsureStaticBvh().nodes.size() <= 8,
               "bvhguard.transform-edit-rejected");
         Check(cp->cookedStaticBvh.nodes.empty(), "bvhguard.transform-edit-consumed");
@@ -1495,14 +1495,14 @@ void TestStaticBvhAdoptionGuard() {
     // (c) Reparented static mesh BEFORE the first resolve: rejected.
     {
         World w;
-        Cluster* cp = nullptr;
+        WorldPage* cp = nullptr;
         auto c = mkBaked(cp);
         // The structural edit the fold must catch (no public scene
         // reparent mutator — the editor owns that lane; the field write
         // is the minimal honest probe of the hierarchy fold).
         cp->scene.hierarchy[3].parent = 1;
-        w.RegisterCluster(std::move(c));
-        w.ResolveAndFixup_clusters();
+        w.RegisterPage(std::move(c));
+        w.ResolveAndFixup_pages();
         Check(w.HasStaticBvh() && w.EnsureStaticBvh().nodes.size() <= 8,
               "bvhguard.reparent-rejected");
     }
@@ -1511,15 +1511,15 @@ void TestStaticBvhAdoptionGuard() {
     // bytes differ (a different AABB) — rejected.
     {
         World w;
-        Cluster* cp = nullptr;
+        WorldPage* cp = nullptr;
         auto c = mkBaked(cp);
         StaticMesh other{};
         other.geometry.aabbMin = {-4.0f, -4.0f, -4.0f};
         other.geometry.aabbMax = {4.0f, 4.0f, 4.0f};
         const auto mh = cp->staticMeshes.create(std::move(other));
         SetMesh(cp->scene, NodeId(2), mh.index());
-        w.RegisterCluster(std::move(c));
-        w.ResolveAndFixup_clusters();
+        w.RegisterPage(std::move(c));
+        w.ResolveAndFixup_pages();
         Check(w.HasStaticBvh() && w.EnsureStaticBvh().nodes.size() <= 8,
               "bvhguard.geometry-change-rejected");
     }

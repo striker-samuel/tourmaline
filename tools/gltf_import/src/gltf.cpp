@@ -293,7 +293,7 @@ inline void ApplyFileNodeSampler(smvk::TextureSamplerDesc& samp, const smvk::tou
 }
 }; // namespace
 
-SourceSceneImporter::SourceSceneImporter(smvk::Cluster& inCluster,
+SourceSceneImporter::SourceSceneImporter(smvk::WorldPage& inCluster,
                                          const smvk::source::Scene& inScene,
                                          std::filesystem::path inGltfModelPath)
     : cluster(inCluster), sourceScene_(inScene), gltfModelPath(std::move(inGltfModelPath)),
@@ -651,7 +651,7 @@ bool GltfExtrasDitherCloseup(const tinygltf::Value& extras) {
 // LoadKtxTextureMemory; cook-mode clusters skip the GPU entirely and mint
 // fake handles (Handle::Mint ids) that only feed MaterialValues slots and
 // the serializer's slot->uri remap. Either way the asset URI, sampler
-// params and source bytes are registered/stashed on the Cluster.
+// params and source bytes are registered/stashed on the WorldPage.
 smvk::TextureHandle SourceSceneImporter::loadTextureForImage(int imageIndex, int textureIndex) {
     auto cached = textureCache.find(imageIndex);
     if (cached != textureCache.end())
@@ -1636,7 +1636,7 @@ std::string TextureConversionHash(const void* data, size_t size, bool srgb) {
 // it too and an out-of-line definition here made every engine consumer
 // order-dependent on linking gltf_import; see the header note.)
 
-smvk::ClusterMaterialHandle SourceSceneImporter::getOrCreateMaterial(int gltfMaterialIndex) {
+smvk::WorldPageMaterialHandle SourceSceneImporter::getOrCreateMaterial(int gltfMaterialIndex) {
     if (gltfMaterialIndex < 0) {
         if (!defaultMaterialHandle.empty())
             return defaultMaterialHandle;
@@ -1777,8 +1777,8 @@ smvk::ClusterMaterialHandle SourceSceneImporter::getOrCreateMaterial(int gltfMat
     return slot;
 }
 
-smvk::ClusterLightHandle SourceSceneImporter::getOrCreateLight(int gltfLightIndex,
-                                                               bool staticLight) {
+smvk::WorldPageLightHandle SourceSceneImporter::getOrCreateLight(int gltfLightIndex,
+                                                                 bool staticLight) {
     assert(gltfLightIndex >= 0);
     assert(static_cast<size_t>(gltfLightIndex) < sourceScene_.lights.size());
 
@@ -2287,7 +2287,7 @@ void SourceSceneImporter::uploadPreparedMeshes() {
         return;
 
     // ONE batch upload (the GPU bulk-copy path, or the offline per-mesh loop).
-    std::vector<smvk::ClusterStaticMeshHandle> handles = cluster.UploadMeshes(uploads);
+    std::vector<smvk::WorldPageStaticMeshHandle> handles = cluster.UploadMeshes(uploads);
     if (handles.size() != uploads.size()) {
         // All-or-nothing batch failure (GPU mode rejects the whole batch).
         meshOverflow_ = true;
@@ -2300,7 +2300,7 @@ void SourceSceneImporter::uploadPreparedMeshes() {
     // inline). Offline mode reports a per-mesh overflow as an empty handle.
     for (size_t i = 0; i < slots.size(); ++i) {
         const Slot& s = slots[i];
-        const smvk::ClusterStaticMeshHandle h = handles[i];
+        const smvk::WorldPageStaticMeshHandle h = handles[i];
         if (h.empty()) {
             meshOverflow_ = true;
             ++meshOverflowCount_;
@@ -2341,8 +2341,8 @@ void SourceSceneImporter::uploadPreparedMeshes() {
         }
 }
 
-smvk::ClusterStaticMeshHandle SourceSceneImporter::getOrCreateMesh(int gltfMeshIndex,
-                                                                   int primitiveIndex) {
+smvk::WorldPageStaticMeshHandle SourceSceneImporter::getOrCreateMesh(int gltfMeshIndex,
+                                                                     int primitiveIndex) {
     assert(gltfMeshIndex >= 0);
     assert(static_cast<size_t>(gltfMeshIndex) < sourceScene_.meshes.size());
     assert(primitiveIndex >= 0);
@@ -2350,7 +2350,7 @@ smvk::ClusterStaticMeshHandle SourceSceneImporter::getOrCreateMesh(int gltfMeshI
            sourceScene_.meshes[gltfMeshIndex].primitives.size());
 
     // Phase A2 (uploadPreparedMeshes) batch-uploads EVERY prepared mesh +
-    // sibling in ONE Cluster::UploadMeshes call, then registers them. This is
+    // sibling in ONE WorldPage::UploadMeshes call, then registers them. This is
     // a pure cache lookup: the batch runs once on the first reference.
     uploadPreparedMeshes();
     return meshCache[gltfMeshIndex][primitiveIndex];
@@ -2635,7 +2635,7 @@ void SourceSceneImporter::importNodeRecursive(int gltfNodeIndex,
     // KHR_lights_punctual: node.light indexes the top-level lights array
     // (tinygltf 2.8.x keeps it only in the node's raw extension object -
     // GltfNodeLightIndex reads it back). Definitions
-    // are deduplicated into the Cluster light pool under "light.<gltf
+    // are deduplicated into the WorldPage light pool under "light.<gltf
     // index>" URIs (same registry as meshes); the group node stores the
     // pool index in lightForNode, and world position/direction resolve
     // from globalTransform at cook/runtime so parents + coordFix apply
@@ -2644,7 +2644,8 @@ void SourceSceneImporter::importNodeRecursive(int gltfNodeIndex,
     // wins when the definition is shared.
     const int gltfNodeLight = sourceNode.light;
     if (gltfNodeLight >= 0 && gltfNodeLight < (int)sourceScene_.lights.size()) {
-        const smvk::ClusterLightHandle h = getOrCreateLight(gltfNodeLight, sourceNode.staticLight);
+        const smvk::WorldPageLightHandle h =
+            getOrCreateLight(gltfNodeLight, sourceNode.staticLight);
         if (h.valid())
             SetLight(cluster.scene, (uint32_t)groupNode, h.index());
     }
@@ -2665,7 +2666,7 @@ void SourceSceneImporter::importNodeRecursive(int gltfNodeIndex,
                             std::string("Shape") + std::to_string(primIndex));
             cluster.scene.localTransform[primNode] = glm::mat4(1.0f);
             cluster.scene.globalTransform[primNode] = glm::mat4(1.0f);
-            const smvk::ClusterStaticMeshHandle primMesh =
+            const smvk::WorldPageStaticMeshHandle primMesh =
                 getOrCreateMesh(sourceNode.mesh, primIndex);
             SetMesh(cluster.scene, primNode, primMesh.index());
             SetMaterial(cluster.scene, primNode, getOrCreateMaterial(primitive.material).index());
@@ -2743,7 +2744,7 @@ int SourceSceneImporter::BuildSkinData() {
             }
             sk.joints.push_back(uint32_t(clusterNode));
         }
-        // Decoding is performed by the source adapter, not in the Cluster path.
+        // Decoding is performed by the source adapter, not in the WorldPage path.
         sk.inverseBind = skin.inverseBind;
         // Skeleton root: the skin's authored `skeleton` node when
         // present; otherwise the glTF spec fallback - the joint
@@ -3007,7 +3008,7 @@ bool ReadTourTextAt(const std::string& tourPath, const smvk::OverlayVfs* vfs, st
 // the reference resolution (its primary consumer) + the helpers it shares
 // (ReferenceTourPathFor / the anonymous-namespace block above).
 size_t BuildFromMeshAsset(
-    smvk::Cluster& cluster,
+    smvk::WorldPage& cluster,
     smvk::TextureStreamer* streamer,
     const smvk::assets::MeshAsset& asset,
     const smvk::assets::AssetManifest& manifest,
@@ -3024,8 +3025,8 @@ size_t BuildFromMeshAsset(
     // bindings below differ per reference. An instanced scene (N `source`
     // lines naming one .geometry) reuses the first build instead of
     // re-uploading the geometry N times.
-    std::vector<smvk::ClusterStaticMeshHandle> handles;
-    std::unordered_map<std::string, smvk::ClusterMaterialHandle> matOf;
+    std::vector<smvk::WorldPageStaticMeshHandle> handles;
+    std::unordered_map<std::string, smvk::WorldPageMaterialHandle> matOf;
     const bool reused = reuseCache && reuseCache->find(cacheKey) != reuseCache->end();
     if (reused) {
         const BuiltMeshCacheEntry& entry = reuseCache->find(cacheKey)->second;
@@ -3144,7 +3145,7 @@ size_t BuildFromMeshAsset(
     // 3) Materials in FIRST-USE order over the node-sorted instances
     // (matches the import's creation order; tour material indices stay
     // stable). GUID -> the manifest entry -> the .material sibling.
-    auto materialFor = [&](const std::string& guid) -> smvk::ClusterMaterialHandle {
+    auto materialFor = [&](const std::string& guid) -> smvk::WorldPageMaterialHandle {
         if (guid.empty())
             return {};
         auto it = matOf.find(guid);
@@ -3205,7 +3206,7 @@ size_t BuildFromMeshAsset(
         loadTex(m.occlusion, info.occlusionTexture);
         loadTex(m.emissiveTex, info.emissiveTexture);
         info.diffuse = info.baseColorTexture; // legacy alias
-        smvk::ClusterMaterialHandle h = cluster.CreateMaterial(info);
+        smvk::WorldPageMaterialHandle h = cluster.CreateMaterial(info);
         if (!h.empty()) {
             cluster.RegisterMaterialUri("asset://" + guid, h);
             matOf.emplace(guid, h);
@@ -3216,7 +3217,7 @@ size_t BuildFromMeshAsset(
     // 4) Registry: URIs (the derivation's fragments, re-based on the
     // .mesh path so cooks address identically) + meshlets + LOD chains.
     // GLOBAL per source: registered once on the first build, reused after.
-    std::vector<smvk::ClusterStaticMeshHandle> baseHandles;
+    std::vector<smvk::WorldPageStaticMeshHandle> baseHandles;
     if (reused) {
         baseHandles.assign(handles.begin(),
                            handles.begin() +
@@ -3224,7 +3225,7 @@ size_t BuildFromMeshAsset(
     } else {
         size_t up = 0;
         for (size_t gi = 0; gi < asset.geometry.size(); ++gi) {
-            const smvk::ClusterStaticMeshHandle h = handles[up++];
+            const smvk::WorldPageStaticMeshHandle h = handles[up++];
             const smvk::assets::MeshAsset::Geometry& g = asset.geometry[gi];
             const std::string uri =
                 smvk::MakeSubUri(meshBaseUri,
@@ -3250,7 +3251,7 @@ size_t BuildFromMeshAsset(
         }
         for (size_t gi = 0; gi < asset.lodChains.size(); ++gi) {
             for (const auto& s : asset.lodChains[gi]) {
-                const smvk::ClusterStaticMeshHandle h = handles[up++];
+                const smvk::WorldPageStaticMeshHandle h = handles[up++];
                 const std::string baseUri =
                     smvk::MakeSubUri(meshBaseUri, asset.geometry[gi].uriFragment).Str();
                 const std::string sibUri =
@@ -3358,7 +3359,7 @@ size_t BuildFromMeshAsset(
             continue;
         const uint32_t n = uint32_t(mapped[inst.node]);
         SetMesh(scene, n, baseHandles[inst.geometry].index());
-        smvk::ClusterMaterialHandle mh = materialFor(inst.materialGuid);
+        smvk::WorldPageMaterialHandle mh = materialFor(inst.materialGuid);
         if (!mh.empty())
             SetMaterial(scene, n, mh.index());
         // Already marked when the mapped node was created above; mesh/material
@@ -3367,14 +3368,14 @@ size_t BuildFromMeshAsset(
     for (const auto& l : asset.lights) {
         if (l.node == 0 || l.node >= asset.nodes.size())
             continue;
-        smvk::ClusterLightHandle h = cluster.CreateLight(l.def);
+        smvk::WorldPageLightHandle h = cluster.CreateLight(l.def);
         if (!h.empty())
             SetLight(scene, uint32_t(mapped[l.node]), h.index());
     }
     for (const auto& c : asset.cameras) {
         if (c.node == 0 || c.node >= asset.nodes.size())
             continue;
-        smvk::ClusterCameraHandle h = cluster.CreateCamera(c.def);
+        smvk::WorldPageCameraHandle h = cluster.CreateCamera(c.def);
         if (!h.empty())
             SetCamera(scene, uint32_t(mapped[c.node]), h.index());
     }
@@ -3385,7 +3386,7 @@ size_t BuildFromMeshAsset(
     return asset.nodes.size() - 1;
 }
 
-size_t ApplySceneReferences(smvk::Cluster& cluster,
+size_t ApplySceneReferences(smvk::WorldPage& cluster,
                             const smvk::tour::Doc& doc,
                             const std::string& ownerBaseDir,
                             smvk::ResourceManager* ctx,
@@ -3403,7 +3404,7 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
                             GltfGuidResolver* guidResolver,
                             std::vector<GltfImportImage>* outImages,
                             const std::string& contentRoot,
-                            std::vector<std::unique_ptr<smvk::Cluster>>* outPartClusters,
+                            std::vector<std::unique_ptr<smvk::WorldPage>>* outPartPages,
                             std::vector<std::string>* outPartSceneNames) {
     (void)ctx;
     auto issue = [&](const std::string& msg) {
@@ -3436,7 +3437,7 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
     // OWN bounded cluster once the main cluster nears the per-cluster mesh
     // bound (Pool::kMaxSize) — never overflow. Rebuilt from numObjects() so it
     // tracks the actual pool after the earlier references land.
-    uint32_t mainClusterMeshCount = cluster.staticMeshes.numObjects();
+    uint32_t mainPageMeshCount = cluster.staticMeshes.numObjects();
     // HOST-AWARE path utils: vfs::BaseDir/FileName are VFS-RELATIVE
     // utilities — vfs::Normalize REJECTS drive-letter absolutes (C:/...)
     // by design, so calling them on a resolved HOST path returns EMPTY
@@ -3525,7 +3526,7 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
             // PARTITIONED-FAMILY state (P1): when the referenced .geometry
             // is a partitioned family (its manifest carries geometry.<part>
             // rows), the parts are built into SEPARATE clusters (outPart
-            // Clusters) instead of the caller's cluster. Empty = unsplit.
+            // Pages) instead of the caller's cluster. Empty = unsplit.
             std::vector<std::string> partFiles;
             std::string partitionDir; // the resolved district dir (manifest home)
             smvk::assets::AssetManifest partitionManifest; // the shared family manifest
@@ -3835,7 +3836,7 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
                     // is ABSENT (only <stem>_partN.geometry files exist beside
                     // a <stem>.usd.meta manifest). Detect via the manifest
                     // sidecar; the parts build into SEPARATE clusters below.
-                    if (!meshLoaded && meshResolved.empty() && isGeometry && outPartClusters) {
+                    if (!meshLoaded && meshResolved.empty() && isGeometry && outPartPages) {
                         if (auto fam = loadFamilyManifest(modelSource)) {
                             partitionManifest = std::move(fam->first);
                             const std::string famDir = fam->second;
@@ -3911,7 +3912,7 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
             // ROOT references (the scene's own source, reference #0 in
             // the definition doc): inlined DIRECTLY under the scene
             // root — no placeholder, no namespace (Maya: the master
-            // file's own contents carry no prefix). Cluster ids match
+            // file's own contents carry no prefix). WorldPage ids match
             // a direct source import exactly, so editor and cook
             // builds are identical by construction.
             const bool isRoot = r.root;
@@ -4087,15 +4088,15 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
                 for (const auto& chain : meshAsset.lodChains)
                     refMeshRecords += chain.size();
                 const bool reuse = builtMeshCache.find(resolved) != builtMeshCache.end();
-                const bool spillToOwnCluster = outPartClusters && !reuse &&
-                                               (size_t(mainClusterMeshCount) + refMeshRecords >
-                                                size_t(cluster.staticMeshes.capacity()));
-                if (spillToOwnCluster) {
+                const bool spillToOwnPage = outPartPages && !reuse &&
+                                            (size_t(mainPageMeshCount) + refMeshRecords >
+                                             size_t(cluster.staticMeshes.capacity()));
+                if (spillToOwnPage) {
                     // Build this UNSplit reference into its OWN bounded cluster
                     // and register it beside the main cluster (the authoring
                     // layer stays agnostic; the runtime world fold covers every
                     // cluster). The reference frame anchors the own root.
-                    auto ownCluster = std::make_unique<smvk::Cluster>(nullptr);
+                    auto ownCluster = std::make_unique<smvk::WorldPage>(nullptr);
                     ownCluster->SetOfflineMode(true);
                     ownCluster->scene.namesStripped = cluster.scene.namesStripped;
                     addNode(ownCluster->scene, -1, 0);
@@ -4117,8 +4118,8 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
                         createdReferenceNodes += built;
                         RebuildStaticCache(ownCluster->scene);
                         recalculateGlobalTransforms(ownCluster->scene);
-                        if (outPartClusters)
-                            outPartClusters->push_back(std::move(ownCluster));
+                        if (outPartPages)
+                            outPartPages->push_back(std::move(ownCluster));
                         if (outPartSceneNames)
                             outPartSceneNames->push_back(name);
                     }
@@ -4139,7 +4140,7 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
                         builtFromMesh = true;
                         createdReferenceNodes += built;
                     }
-                    mainClusterMeshCount = cluster.staticMeshes.numObjects();
+                    mainPageMeshCount = cluster.staticMeshes.numObjects();
                 }
             } else if (partitioned) {
                 // PARTITIONED-FAMILY build (P1): each part imports into its OWN
@@ -4208,7 +4209,7 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
                         ++warnings;
                         continue;
                     }
-                    auto partCluster = std::make_unique<smvk::Cluster>(nullptr);
+                    auto partCluster = std::make_unique<smvk::WorldPage>(nullptr);
                     partCluster->SetOfflineMode(true);
                     partCluster->scene.namesStripped = cluster.scene.namesStripped;
                     addNode(partCluster->scene, -1, 0); // part scene root
@@ -4242,8 +4243,8 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
                     // Finalize like the main cluster's tail pass.
                     RebuildStaticCache(partCluster->scene);
                     recalculateGlobalTransforms(partCluster->scene);
-                    if (outPartClusters)
-                        outPartClusters->push_back(std::move(partCluster));
+                    if (outPartPages)
+                        outPartPages->push_back(std::move(partCluster));
                     if (outPartSceneNames)
                         outPartSceneNames->push_back(name + "_part" + std::to_string(pi));
                 }

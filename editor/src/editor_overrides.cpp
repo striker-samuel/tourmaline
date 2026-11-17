@@ -645,7 +645,7 @@ void EditorApp::LoadOverridesFromDoc(const smvk::tour::Doc& doc) {
             r.plug = tr.plug;
             r.value = tr.value;
         } else if (tr.attr == smvk::tour::OverrideAttr::Material) {
-            const int wm = ClusterMatToWorld(tr.material);
+            const int wm = PageMatToWorld(tr.material);
             if (wm < 0) {
                 Log("tour: override material out of range: " + std::to_string(tr.material) +
                     " (rule skipped)");

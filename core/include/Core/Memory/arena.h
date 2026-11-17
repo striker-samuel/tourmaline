@@ -5,8 +5,8 @@
 // Linear (bump) allocators for URI/string scratch (see Memory/string_view.h).
 //
 // Two arenas exist:
-//   - AppArena(): process-lifetime storage. Per-Cluster URI keys are NOT
-//     freed individually — each Cluster owns a private Arena instead, so
+//   - AppArena(): process-lifetime storage. Per-WorldPage URI keys are NOT
+//     freed individually — each WorldPage owns a private Arena instead, so
 //     unloading a cluster releases all of its strings wholesale.
 //   - FrameArena(): per-frame scratch (sibling URI probing, normalized URI
 //     builds). Reset once per frame by the renderer; views into it never

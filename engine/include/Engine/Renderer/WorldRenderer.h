@@ -54,10 +54,10 @@
 #include <Engine/Renderer/geometry_streamer.h>
 #include <Engine/Renderer/gpu_scene_raster_geometry.h>
 #include <Engine/Renderer/gpu_scene_raster_ownership.h>
+#include <Engine/Renderer/gpu_scene_render_view_bridge.h>
 #include <Engine/Renderer/gpu_scene_static.h>
 #include <Engine/Renderer/gpu_scene_task_mesh_runtime.h>
 #include <Engine/Renderer/gpu_scene_validation.h>
-#include <Engine/Renderer/gpu_scene_render_view_bridge.h>
 #include <Engine/Renderer/gpu_scene_world.h>
 #include <Engine/Renderer/ray_tracing_debug.h>
 #include <Engine/Renderer/renderview.h>
@@ -444,8 +444,8 @@ enum class ViewMode : int {
     Lods = 4,         // F5: LOD index by color (flat, direct draws)
     VertexColors = 5, // F6: vertex-color layer weights as false color (default_vertexcolor_debug)
     Uv0 = 6,          // F9: base UV (TEXCOORD0) checker + gradient (default_uv0_debug)
-    Uv1 = 7,          // combo/env only: lightmap atlas UV (uv2) checker + seam glow (default_uv1_debug)
-    Pom = 8,          // F11: parallax occlusion mapping (default_pom)
+    Uv1 = 7, // combo/env only: lightmap atlas UV (uv2) checker + seam glow (default_uv1_debug)
+    Pom = 8, // F11: parallax occlusion mapping (default_pom)
     SsrContribution = 9, // env/UI only (no F-key: F-keys exhausted):
                          // SSR contribution isolated (ssr_contribution_debug)
     SsrMask = 10,        // env/UI only: SSR receiver mask by material
@@ -2546,7 +2546,8 @@ class WorldRenderer : public IRenderer {
         smvk::LogicalBufferHandle workLogical{};
     };
     std::array<std::array<GpuSceneCascadeFlight, smvk::limits::MaxFramesInFlight>,
-               smvk::kMaxCascades> m_gpuSceneCascadeFlights{};
+               smvk::kMaxCascades>
+        m_gpuSceneCascadeFlights{};
     // Batched GPU-scene motion vectors: reuses the indexed raster work/
     // instance/indirect streams with a motion VS + FS. The previous-frame
     // transforms + camera-relative view are snapshotted at the end of each
@@ -2932,7 +2933,7 @@ class WorldRenderer : public IRenderer {
                m_world && !m_world->decalLocations.empty();
     }
     // Re-derives the GPU decal list from the WORLD's decal entities
-    // (decalForNode -> decalLocations -> Cluster decals pool; textures
+    // (decalForNode -> decalLocations -> WorldPage decals pool; textures
     // resolve through the cluster pools like light cookies) and uploads
     // the flight-sliced ring; returns the live count. Runs before
     // UpdateFrameUniforms (which reads the count via m_decalFrameCount).
@@ -3382,7 +3383,7 @@ class WorldRenderer : public IRenderer {
     // over the world's skinned clusters.
     smvk::skinning::SkinVisual m_skinning{};
     // The deformed heap's PARITY bookkeeping (the double-buffered
-    // deformed heap - see Cluster::EnsureSkinnedGpuData): the flip picks
+    // deformed heap - see WorldPage::EnsureSkinnedGpuData): the flip picks
     // the half the skinning pass writes (every render fetch follows the
     // cur BDA), and the last-run heap identity gates the PREV half's
     // validity for the motion vector leg (consecutive runs on the same

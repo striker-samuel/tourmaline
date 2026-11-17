@@ -128,7 +128,7 @@ void EditorApp::ForgetTexturePlug(const std::string& source, const std::string& 
 int EditorApp::RelinkTextureLive(const GltfImportImage& rec, const std::string& newPath) {
     if (!m_world || rec.uri.empty() || newPath.empty())
         return -1;
-    tour::Cluster* cl = m_world->clusters.empty() ? nullptr : m_world->clusters[0].get();
+    tour::WorldPage* cl = m_world->pages.empty() ? nullptr : m_world->pages[0].get();
     if (!cl)
         return -1;
     int pool = -1;
@@ -324,7 +324,7 @@ void EditorApp::DrawPathsPanel() {
             ImGui::TextDisabled(
                 "No imported image records (open a source scene / bind references).");
         } else {
-            tour::Cluster* cl = m_world->clusters.empty() ? nullptr : m_world->clusters[0].get();
+            tour::WorldPage* cl = m_world->pages.empty() ? nullptr : m_world->pages[0].get();
             // One row per import record: the authored uri, the resolved
             // source it came from, its plug (relink) state, the users.
             struct TexRow {

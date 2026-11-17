@@ -278,7 +278,7 @@ void RuntimeProcedurals::ApplyRuntimeProceduralRequest() {
         return;
     }
     const int request = std::exchange(m_runtimeProcRequest, 0);
-    smvk::Cluster& dyn = World()->EnsureDynamicCluster(m_host.GetResourceManager());
+    smvk::WorldPage& dyn = World()->EnsureDynamicPage(m_host.GetResourceManager());
 
     if (request == 1) {
         const smvk::MeshData upload = MakeFixture(std::clamp(m_runtimeProcShape, 0, 7),
@@ -331,7 +331,7 @@ void RuntimeProcedurals::ApplyRuntimeProceduralRequest() {
         m_runtimeProcNode = UINT32_MAX;
         m_retired.push_back({m_runtimeProcMesh, m_runtimeProcMaterial});
     }
-    World()->MarkClusterDirty(dyn);
+    World()->MarkPageDirty(dyn);
     if (request == 2) {
         m_runtimeProcMesh = {};
         m_runtimeProcMaterial = {};
@@ -349,7 +349,7 @@ void RuntimeProcedurals::ApplyRuntimeSpotRequest() {
         return;
     }
     const int request = std::exchange(m_runtimeSpotRequest, 0);
-    smvk::Cluster& dyn = World()->EnsureDynamicCluster(m_host.GetResourceManager());
+    smvk::WorldPage& dyn = World()->EnsureDynamicPage(m_host.GetResourceManager());
 
     if (request == 1) {
         const auto& cam = m_renderer.CameraPositioner();
@@ -372,7 +372,7 @@ void RuntimeProcedurals::ApplyRuntimeSpotRequest() {
         def.outerConeAngle = glm::radians(std::clamp(m_spotOuterDeg, 0.0f, 89.0f));
         def.flags = ::SceneLight::kSceneLightFlag_CastShadow;
         def.name = "runtime_spot";
-        const smvk::ClusterLightHandle handle = dyn.CreateLight(std::move(def));
+        const smvk::WorldPageLightHandle handle = dyn.CreateLight(std::move(def));
         if (!handle.valid()) {
             RetireNodeSlot(dyn.scene, node);
             return;
@@ -391,7 +391,7 @@ void RuntimeProcedurals::ApplyRuntimeSpotRequest() {
         m_runtimeSpotNode = UINT32_MAX;
         m_runtimeSpotLight = {};
     }
-    World()->MarkClusterDirty(dyn);
+    World()->MarkPageDirty(dyn);
 }
 
 void RuntimeProcedurals::DrawRuntimeProceduralsTab() {
@@ -429,7 +429,7 @@ void RuntimeProcedurals::DrawRuntimeProceduralsTab() {
 
     ImGui::SeparatorText("Fixture material");
     if (canSpawn && m_runtimeProcMaterial.valid()) {
-        smvk::Cluster& dyn = World()->EnsureDynamicCluster(m_host.GetResourceManager());
+        smvk::WorldPage& dyn = World()->EnsureDynamicPage(m_host.GetResourceManager());
         if (smvk::Material* mat = dyn.materials.get(m_runtimeProcMaterial)) {
             ImGui::ColorEdit3("Base color", &mat->values.diffuse.x);
             ImGui::SliderFloat("Metallic", &mat->values.params.y, 0, 1);
@@ -514,7 +514,7 @@ void RuntimeProcedurals::RetireResources() {
     auto* ctx = m_host.GetResourceManager();
     if (!ctx)
         return;
-    auto& dyn = world->EnsureDynamicCluster(ctx);
+    auto& dyn = world->EnsureDynamicPage(ctx);
     for (const auto& item : m_retired) {
         if (item.mesh.valid())
             dyn.DestroyMesh(item.mesh);

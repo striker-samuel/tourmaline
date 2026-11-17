@@ -133,7 +133,7 @@ using ::tour::TextureStreamer;
 }
 
 struct SourceSceneImporter {
-    SourceSceneImporter(smvk::Cluster& inCluster,
+    SourceSceneImporter(smvk::WorldPage& inCluster,
                         const smvk::source::Scene& inScene,
                         std::filesystem::path inGltfModelPath);
     void setTextureStreamer(smvk::TextureStreamer* streamer) {
@@ -189,7 +189,7 @@ struct SourceSceneImporter {
     void setMeshOptConfig(const smvk::MeshOptConfig& config);
     // Meshlet cook config (disabled by default). When enabled,
     // getOrCreateMesh builds meshlets from the optimized upload and stamps
-    // them on the Cluster keyed by mesh URI.
+    // them on the WorldPage keyed by mesh URI.
     void setMeshletConfig(const smvk::MeshletConfig& config);
     // Far-shading derivation (DeriveConfig::shaderLods parity; DEFAULT
     // OFF). When enabled, getOrCreateMaterial derives
@@ -264,7 +264,7 @@ struct SourceSceneImporter {
     }
 
   private:
-    smvk::ClusterMaterialHandle getOrCreateMaterial(int gltfMaterialIndex);
+    smvk::WorldPageMaterialHandle getOrCreateMaterial(int gltfMaterialIndex);
 
     // A fully-derived, upload-ready mesh payload (PHASE A — the pure,
     // CPU-bound meshopt/meshlet/LOD derivation). prepareMeshes computes one
@@ -287,12 +287,12 @@ struct SourceSceneImporter {
     // must be set first (they are, before any import()).
     void prepareMeshes();
     // Phase A2 (the batch upload): runs ONCE after prepareMeshes, uploads
-    // EVERY derived base + LOD-sibling mesh in ONE Cluster::UploadMeshes call
+    // EVERY derived base + LOD-sibling mesh in ONE WorldPage::UploadMeshes call
     // (the GPU bulk-copy path, or the offline per-mesh loop), then registers
     // their URIs/LODs/meshlets and releases the derived payloads. getOrCreateMesh
     // becomes a pure cache lookup after this. Keeps the lazy semantics (nothing
     // uploads until the first mesh is referenced) but replaces the per-mesh
-    // Cluster::UploadMesh with the batch API.
+    // WorldPage::UploadMesh with the batch API.
     void uploadPreparedMeshes();
     // Derives ONE mesh's upload-ready payload. Pure over `model` + the configs
     // (never touches the cluster), so it runs safely on a worker thread.
@@ -307,9 +307,9 @@ struct SourceSceneImporter {
                            bool skinned,
                            bool largePlaced) const;
     // Phase B: upload + register a pre-derived mesh (see prepareMeshes).
-    smvk::ClusterStaticMeshHandle getOrCreateMesh(int gltfMeshIndex, int primitiveIndex);
+    smvk::WorldPageStaticMeshHandle getOrCreateMesh(int gltfMeshIndex, int primitiveIndex);
 
-    smvk::ClusterLightHandle getOrCreateLight(int gltfLightIndex, bool staticLight);
+    smvk::WorldPageLightHandle getOrCreateLight(int gltfLightIndex, bool staticLight);
     // Importer data rows (see setImportImages): find-or-create the row for
     // imageIndex (nullptr when no collector), note the import result, and
     // append the (material, slot) users as getOrCreateMaterial walks slots.
@@ -322,7 +322,7 @@ struct SourceSceneImporter {
                              bool topOfImport = false // the chain's first node carries the
                                                       // coordFix basis (see importUnder)
     );
-    smvk::Cluster& cluster;
+    smvk::WorldPage& cluster;
     const smvk::source::Scene& sourceScene_;
     std::filesystem::path gltfModelPath;
     std::shared_ptr<TextureSource> textureSource;
@@ -335,8 +335,8 @@ struct SourceSceneImporter {
     int coordFix_ = 0; // 0=engine fix, 1=skip, 2=invert Y, 3=cancel root -90°X + 100x scale
     std::vector<int> gltfNodeMap_; // glTF node idx -> cluster node id (-1 = none)
     glm::mat4 preTransform_{1.0f};
-    std::vector<smvk::ClusterMaterialHandle> materialCache;
-    std::vector<std::vector<smvk::ClusterStaticMeshHandle>> meshCache;
+    std::vector<smvk::WorldPageMaterialHandle> materialCache;
+    std::vector<std::vector<smvk::WorldPageStaticMeshHandle>> meshCache;
     // Phase A derived payloads (see DerivedMesh): [mesh][prim], filled by
     // prepareMeshes before the node walk uploads anything.
     std::vector<std::vector<DerivedMesh>> meshDerived_;
@@ -348,13 +348,13 @@ struct SourceSceneImporter {
     // clusters instead.
     bool meshOverflow_ = false;
     size_t meshOverflowCount_ = 0;
-    std::vector<smvk::ClusterLightHandle> lightCache;          // gltf light index -> handle
+    std::vector<smvk::WorldPageLightHandle> lightCache;        // gltf light index -> handle
     std::unordered_map<int, smvk::TextureHandle> textureCache; // imageIndex -> handle
     // glTF skin references recorded during the node walk: (mesh handle,
     // glTF skin index, glTF mesh index, primitive index) per primitive
     // of a node carrying node.skin. BuildSkinData consumes them.
     struct SkinRef {
-        smvk::ClusterStaticMeshHandle mesh;
+        smvk::WorldPageStaticMeshHandle mesh;
         int skinIndex = -1;
         int gltfMeshIndex = -1;
         int primitiveIndex = -1;
@@ -391,7 +391,7 @@ struct SourceSceneImporter {
                          int imageIndex,
                          std::vector<uint8_t>& out,
                          std::string& err) const;
-    smvk::ClusterMaterialHandle defaultMaterialHandle{};
+    smvk::WorldPageMaterialHandle defaultMaterialHandle{};
 };
 
 // THE source-model loader (every mesh import funnels through here):
@@ -582,12 +582,12 @@ struct VfsTextureSource final : SourceSceneImporter::TextureSource {
 // uploads instead of re-uploading the geometry N times — turning the cook
 // from O(N * full-geometry-build) into O(N * node-instantiation).
 struct BuiltMeshCacheEntry {
-    std::vector<smvk::ClusterStaticMeshHandle> handles;                 // base + LOD, upload order
-    std::unordered_map<std::string, smvk::ClusterMaterialHandle> matOf; // guid -> material
+    std::vector<smvk::WorldPageStaticMeshHandle> handles; // base + LOD, upload order
+    std::unordered_map<std::string, smvk::WorldPageMaterialHandle> matOf; // guid -> material
 };
 
 size_t BuildFromMeshAsset(
-    smvk::Cluster& cluster,
+    smvk::WorldPage& cluster,
     smvk::TextureStreamer* streamer,
     const smvk::assets::MeshAsset& asset,
     const smvk::assets::AssetManifest& manifest,
@@ -621,7 +621,7 @@ size_t BuildFromMeshAsset(
 // node ids in doc.references order (level-1 refs only). Returns the
 // number of references applied (level-1 + nested).
 // ---------------------------------------------------------------------------
-size_t ApplySceneReferences(smvk::Cluster& cluster,
+size_t ApplySceneReferences(smvk::WorldPage& cluster,
                             const smvk::tour::Doc& doc,
                             const std::string& ownerBaseDir,
                             smvk::ResourceManager* ctx,
@@ -671,14 +671,14 @@ size_t ApplySceneReferences(smvk::Cluster& cluster,
                             // the caller to serialize/register beside the main cluster — the
                             // authoring layer stays agnostic of the parts. Null = the legacy
                             // single-cluster behavior (every reference lands in `cluster`).
-                            std::vector<std::unique_ptr<smvk::Cluster>>* outPartClusters = nullptr,
+                            std::vector<std::unique_ptr<smvk::WorldPage>>* outPartPages = nullptr,
                             std::vector<std::string>* outPartSceneNames = nullptr);
 
 inline void GltfToCluster(
     smvk::ResourceManager& ctx,
     const tinygltf::Model& inModel,
     std::filesystem::path inGltfModelPath,
-    smvk::Cluster& out,
+    smvk::WorldPage& out,
     const smvk::MeshOptConfig& meshOpt = smvk::MeshOptConfig{},
     const smvk::MeshletConfig& meshlets = smvk::MeshletConfig{},
     int coordFix = 0, // 0=engine fix, 1=skip, 2=invert Y, 3=cancel root -90°X + 100x scale
@@ -707,7 +707,7 @@ inline void GltfToCluster(
 
     assert(out.scene.hierarchy.empty());
 
-    // Cluster-scene root (index 0, parent = -1). Imported glTF scene roots
+    // WorldPage-scene root (index 0, parent = -1). Imported glTF scene roots
     // attach underneath it so addNode() always sees a valid parent index.
     const int root = addNode(out.scene, -1, 0);
 

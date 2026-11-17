@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-// Cluster-free Map streaming. Content loading is a separate responsibility:
+// WorldPage-free Map streaming. Content loading is a separate responsibility:
 // the source must supply a decoded immutable Scene, stable resource leases,
 // and valid World resource bindings before the hierarchy is published.
 // Unsupported component types fail through World::InstantiateSceneHierarchy.
@@ -29,23 +29,32 @@ struct DirectScenePayload {
 // before the host's deferred retirement fence. The scene resolver must not
 // mutate World; it prepares independent resource-backed scene data only.
 class DirectMapSceneStreaming {
-public:
+  public:
     using ResolveScene = std::function<bool(uint64_t, DirectScenePayload&, std::string&)>;
 
     DirectMapSceneStreaming(tour::World& world, ResolveScene resolve)
         : world_(world), resolve_(std::move(resolve)) {
-        provider_.SetCallbacks(
-            [this](const SceneTileDescriptor& d, DesiredResidency, uint64_t ticket) {
-                Load(d, ticket);
-            },
-            [this](const SceneTileDescriptor& d) { return Retire(d.tile); });
+        provider_.SetCallbacks([this](const SceneTileDescriptor& d,
+                                      DesiredResidency,
+                                      uint64_t ticket) { Load(d, ticket); },
+                               [this](const SceneTileDescriptor& d) { return Retire(d.tile); });
     }
 
-    SceneTileProvider& Provider() { return provider_; }
-    WorldId ActiveMap() const { return provider_.ActiveWorld(); }
-    const std::string& LastError() const { return error_; }
-    size_t ActiveTileCount() const { return active_.size(); }
-    size_t PersistentInstanceCount() const { return persistent_.size(); }
+    SceneTileProvider& Provider() {
+        return provider_;
+    }
+    WorldId ActiveMap() const {
+        return provider_.ActiveWorld();
+    }
+    const std::string& LastError() const {
+        return error_;
+    }
+    size_t ActiveTileCount() const {
+        return active_.size();
+    }
+    size_t PersistentInstanceCount() const {
+        return persistent_.size();
+    }
 
     // Reader and resolver must outlive the binding; borrowed provider must
     // be unregistered from WorldPartition before this object is destroyed.
@@ -73,14 +82,18 @@ public:
         }
         std::vector<uint64_t> created;
         if (!InstantiateRecords(persistent, created)) {
-            if (!Rollback(created)) orphaned_ = std::move(created);
-            if (orphaned_.empty()) world_.SetActiveMapIdentity(0);
+            if (!Rollback(created))
+                orphaned_ = std::move(created);
+            if (orphaned_.empty())
+                world_.SetActiveMapIdentity(0);
             return false;
         }
         if (!provider_.SetManifest(mapId, std::move(descriptors))) {
             error_ = "Scene tile manifest installation failed";
-            if (!Rollback(created)) orphaned_ = std::move(created);
-            if (orphaned_.empty()) world_.SetActiveMapIdentity(0);
+            if (!Rollback(created))
+                orphaned_ = std::move(created);
+            if (orphaned_.empty())
+                world_.SetActiveMapIdentity(0);
             return false;
         }
         persistent_ = std::move(created);
@@ -98,7 +111,8 @@ public:
             error_ = "streamed tiles could not all be retired";
             return false;
         }
-        if (!Rollback(persistent_) || !Rollback(orphaned_)) return false;
+        if (!Rollback(persistent_) || !Rollback(orphaned_))
+            return false;
         if (!provider_.SetManifest(WorldId(0), {})) {
             error_ = "provider still has live tile requests";
             return false;
@@ -111,7 +125,7 @@ public:
         return true;
     }
 
-private:
+  private:
     bool Rollback(std::vector<uint64_t>& instances) {
         while (!instances.empty()) {
             if (!world_.RetireSceneHierarchy(instances.back())) {
@@ -129,15 +143,18 @@ private:
             DirectScenePayload payload;
             std::string err;
             if (!resolve_(placement.sceneAssetId, payload, err) || !payload.scene) {
-                error_ = "Scene resolver failed for " +
-                    std::to_string(placement.sceneAssetId) + ": " + err;
+                error_ = "Scene resolver failed for " + std::to_string(placement.sceneAssetId) +
+                         ": " + err;
                 return false;
             }
             // World performs exact typed-resource and unsupported-component
             // validation; no placeholder resources or dropped nodes.
-            const uint64_t instance = world_.InstantiateSceneHierarchy(
-                *payload.scene, placement.sceneAssetId,
-                placement.worldTransform, std::move(payload.assets), err, &payload.resources);
+            const uint64_t instance = world_.InstantiateSceneHierarchy(*payload.scene,
+                                                                       placement.sceneAssetId,
+                                                                       placement.worldTransform,
+                                                                       std::move(payload.assets),
+                                                                       err,
+                                                                       &payload.resources);
             if (!instance) {
                 error_ = "direct Scene publication failed: " + err;
                 return false;
@@ -166,12 +183,14 @@ private:
         }
         std::vector<uint64_t> created;
         if (!InstantiateRecords(records, created)) {
-            if (!Rollback(created)) orphaned_.insert(orphaned_.end(), created.begin(), created.end());
+            if (!Rollback(created))
+                orphaned_.insert(orphaned_.end(), created.begin(), created.end());
             provider_.ResetPending(descriptor.tile, ticket);
             return;
         }
         if (!provider_.Activate(descriptor.tile, ticket)) {
-            if (!Rollback(created)) orphaned_.insert(orphaned_.end(), created.begin(), created.end());
+            if (!Rollback(created))
+                orphaned_.insert(orphaned_.end(), created.begin(), created.end());
             return;
         }
         active_.emplace(descriptor.tile, std::move(created));
@@ -179,8 +198,10 @@ private:
 
     bool Retire(WorldTileKey tile) {
         auto it = active_.find(tile);
-        if (it == active_.end()) return true;
-        if (!Rollback(it->second)) return false;
+        if (it == active_.end())
+            return true;
+        if (!Rollback(it->second))
+            return false;
         active_.erase(it);
         return true;
     }

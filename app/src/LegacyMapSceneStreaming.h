@@ -4,7 +4,7 @@
 
 // Compatibility-only host bridge: drives ProjectScenes instances from one active Map's
 // paged SMP8 tile content. Deliberately explicit about its temporary use of
-// ProjectScenes' legacy Cluster loader; replacing that loader with incremental
+// ProjectScenes' legacy WorldPage loader; replacing that loader with incremental
 // World mutation is the Epoch-5 cutover, NOT accomplished by this bridge.
 #include "ProjectScenes.h"
 
@@ -23,9 +23,9 @@ namespace app {
 class LegacyMapSceneStreaming {
   public:
     LegacyMapSceneStreaming(ProjectScenes& scenes,
-                      tour::World& world,
-                      smvk::ResourceManager* context,
-                      tour::TextureStreamer* streamer)
+                            tour::World& world,
+                            smvk::ResourceManager* context,
+                            tour::TextureStreamer* streamer)
         : scenes_(scenes), world_(world), context_(context), streamer_(streamer) {
         provider_.SetCallbacks([this](const engine::worldpartition::SceneTileDescriptor& desc,
                                       engine::worldpartition::DesiredResidency,

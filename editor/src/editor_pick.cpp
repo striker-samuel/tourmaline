@@ -5,7 +5,7 @@
 //
 // Mouse/extent are VIEWPORT-LOCAL (the central rect between the panels;
 // the projection is built for that aspect). Exact triangle tests read the
-// CLUSTER's retained uploads (Cluster::GetRetainedUpload — the same CPU
+// CLUSTER's retained uploads (WorldPage::GetRetainedUpload — the same CPU
 // geometry the cook/bake paths consume) through the world's asset
 // registry (meshLocations); nodes whose cluster did not retain geometry
 // fall back to AABB picking.

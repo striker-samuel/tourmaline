@@ -204,7 +204,7 @@ inline uint32_t RegisterPoolShard() noexcept {
 }
 
 // Single-threaded pool: NO internal locking. The owner thread (or any
-// externally synchronized context, e.g. Cluster on the main thread)
+// externally synchronized context, e.g. WorldPage on the main thread)
 // may use it directly. Shared Vulkan pools use ShardedPool below.
 template <typename ObjectType, typename ImplObjectType> class Pool {
     static constexpr uint32_t kListEndSentinel = 0xffffffff;

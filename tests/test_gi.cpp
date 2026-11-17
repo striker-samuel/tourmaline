@@ -22,7 +22,7 @@
 
 #include <glm/glm.hpp>
 
-#include <Engine/App/cluster.h>       // Cluster (static-bake-light harvest test)
+#include <Engine/App/cluster.h>       // WorldPage (static-bake-light harvest test)
 #include <Engine/App/world.h>         // World (live-world trace-scene test)
 #include <Engine/Asset/compression.h> // Lz4Compress (payload fixtures)
 #include <Engine/GI/bake.h>
@@ -918,45 +918,35 @@ void TestGiVolume() {
         def.planes = GiVolumeBoxPlanes(glm::vec3(-1.0f), glm::vec3(1.0f), 0.1f, 0.1f);
         Check(def.planes.size() == 6, "GI volume box has six planes");
         Check(def.Weight(glm::vec3(0.0f)) == 1.0f, "GI volume inside owns field");
-        Check(def.Weight(glm::vec3(0.95f, 0, 0)) == 1.0f,
-              "GI volume never fades just inside face");
-        Check(def.Weight(glm::vec3(1.0f, 0, 0)) == 1.0f,
-              "GI volume boundary is inside");
-        Check(def.Weight(glm::vec3(1.05f, 0, 0)) == 0.0f,
-              "GI volume never bleeds outside face");
-        Check(def.Weight(glm::vec3(2.0f, 0, 0)) == 0.0f,
-              "GI volume rejects far outside");
+        Check(def.Weight(glm::vec3(0.95f, 0, 0)) == 1.0f, "GI volume never fades just inside face");
+        Check(def.Weight(glm::vec3(1.0f, 0, 0)) == 1.0f, "GI volume boundary is inside");
+        Check(def.Weight(glm::vec3(1.05f, 0, 0)) == 0.0f, "GI volume never bleeds outside face");
+        Check(def.Weight(glm::vec3(2.0f, 0, 0)) == 0.0f, "GI volume rejects far outside");
 
         // Even legacy asymmetric authored fades cannot affect membership.
         def.planes[1].insideFade = 2.0f;
         def.planes[1].outsideFade = 0.3f;
         Check(def.Weight(glm::vec3(0.95f, 0, 0)) == 1.0f &&
-              def.Weight(glm::vec3(1.05f, 0, 0)) == 0.0f,
+                  def.Weight(glm::vec3(1.05f, 0, 0)) == 0.0f,
               "legacy GI face fades ignored for region membership");
 
-        const std::vector<GiVolumePlane> id = GiVolumeBoxPlanesRotated(
-            glm::vec3(0.0f), glm::mat3(1.0f), glm::vec3(1.0f));
-        const std::vector<GiVolumePlane> aa =
-            GiVolumeBoxPlanes(glm::vec3(-1.0f), glm::vec3(1.0f));
+        const std::vector<GiVolumePlane> id =
+            GiVolumeBoxPlanesRotated(glm::vec3(0.0f), glm::mat3(1.0f), glm::vec3(1.0f));
+        const std::vector<GiVolumePlane> aa = GiVolumeBoxPlanes(glm::vec3(-1.0f), glm::vec3(1.0f));
         bool same = id.size() == 6 && aa.size() == 6;
         if (same) {
             for (size_t i = 0; i < 6; ++i)
-                same &= glm::all(glm::equal(id[i].normal, aa[i].normal)) &&
-                        id[i].d == aa[i].d;
+                same &= glm::all(glm::equal(id[i].normal, aa[i].normal)) && id[i].d == aa[i].d;
         }
         Check(same, "GI rotated identity hull matches axis-aligned hull");
 
         GiVolumeDef rotated;
         rotated.planes = GiVolumeBoxPlanesRotated(
             glm::vec3(0.0f),
-            glm::mat3(0.0f, 0.0f, -1.0f,
-                      0.0f, 1.0f, 0.0f,
-                      1.0f, 0.0f, 0.0f),
+            glm::mat3(0.0f, 0.0f, -1.0f, 0.0f, 1.0f, 0.0f, 1.0f, 0.0f, 0.0f),
             glm::vec3(1.0f, 2.0f, 0.5f));
-        Check(rotated.Weight(glm::vec3(0.4f, 0, 0)) == 1.0f,
-              "GI rotated hull accepts inside");
-        Check(rotated.Weight(glm::vec3(1.2f, 0, 0)) == 0.0f,
-              "GI rotated hull rejects outside");
+        Check(rotated.Weight(glm::vec3(0.4f, 0, 0)) == 1.0f, "GI rotated hull accepts inside");
+        Check(rotated.Weight(glm::vec3(1.2f, 0, 0)) == 0.0f, "GI rotated hull rejects outside");
     }
     // ---- Bounds clipping ----
     {
@@ -2213,7 +2203,7 @@ void TestLmChartTransfer() {
 // GiTraceSpot NEE lights and seeds the bake sun from the first static
 // directional; unflagged lights are never baked.
 void TestStaticBakeLights() {
-    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
     ::Scene& scene = cluster->scene;
     addNode(scene, -1, 0); // root
@@ -2224,7 +2214,7 @@ void TestStaticBakeLights() {
         g[3] = glm::vec4(pos, 1.0f);
         scene.localTransform[n] = g;
         scene.globalTransform[n] = g;
-        const smvk::ClusterLightHandle h = cluster->CreateLight(def);
+        const smvk::WorldPageLightHandle h = cluster->CreateLight(def);
         SetLight(scene, NodeId(n), h.index());
         return n;
     };
@@ -2310,7 +2300,7 @@ void TestStaticBakeLights() {
     // the default (0,0,-1) axis at -X; an explicit (0,0,1) axis at +X.
     // Runtime + bake share the convention.
     {
-        auto cluster2 = std::make_unique<smvk::Cluster>(nullptr);
+        auto cluster2 = std::make_unique<smvk::WorldPage>(nullptr);
         cluster2->SetOfflineMode(true);
         ::Scene& scene2 = cluster2->scene;
         addNode(scene2, -1, 0); // root
@@ -2320,14 +2310,14 @@ void TestStaticBakeLights() {
             const int n = addNode(scene2, 0, 1);
             scene2.localTransform[n] = g;
             scene2.globalTransform[n] = g;
-            const smvk::ClusterLightHandle h = cluster2->CreateLight(spotDef);
+            const smvk::WorldPageLightHandle h = cluster2->CreateLight(spotDef);
             SetLight(scene2, NodeId(n), h.index());
         }
         {
             const int n = addNode(scene2, 0, 1);
             scene2.localTransform[n] = g;
             scene2.globalTransform[n] = g;
-            const smvk::ClusterLightHandle h = cluster2->CreateLight(sunDef);
+            const smvk::WorldPageLightHandle h = cluster2->CreateLight(sunDef);
             SetLight(scene2, NodeId(n), h.index());
         }
         gi::GiTraceScene tsA, tsB;
@@ -3014,7 +3004,7 @@ void TestTraceSceneFromWorld() {
     // One offline cluster: the 4x4x4 closed room (the optimizer test's
     // box, lifted +1 m by the node transform so a local/global-transform
     // mixup cannot pass silently) on a mesh node + a static sun.
-    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true); // retained uploads (the editor keeps
                                    // them ONLINE via SetRetainUploads -
                                    // same CPU mirror either way)
@@ -3089,8 +3079,8 @@ void TestTraceSceneFromWorld() {
 
     // The WORLD path (the editor's live merged graph).
     smvk::World world;
-    world.RegisterCluster(std::move(cluster));
-    world.ResolveAndFixup_clusters();
+    world.RegisterPage(std::move(cluster));
+    world.ResolveAndFixup_pages();
     GiTraceScene tsWorld;
     std::string errW;
     BuildTraceSceneFromWorld(world, opts, tsWorld, errW);
@@ -3423,11 +3413,11 @@ void TestGiVolumeBc6hRoundTrip() {
 // this: flipping the white-world override or the firefly clamp kept
 // matching old records, so the A/B compared a stale bake).
 void TestBakeInputHashFolds() {
-    // HEAP-constructed (the world-entity-tests convention): Cluster is
+    // HEAP-constructed (the world-entity-tests convention): WorldPage is
     // far too large for a stack frame — a by-value instance overflowed
     // the stack at the function prologue (0xC00000FD before the first
     // statement executed).
-    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
     addNode(cluster->scene, -1, 0);
     SceneGiVolume def{};
@@ -3506,7 +3496,7 @@ void TestBakeInputHashFolds() {
         const int n = addNode(cluster->scene, 0, 1);
         cluster->scene.localTransform[size_t(n)] = glm::mat4(1.0f);
         cluster->scene.globalTransform[size_t(n)] = glm::mat4(1.0f);
-        const smvk::ClusterLightHandle h = cluster->CreateLight(def);
+        const smvk::WorldPageLightHandle h = cluster->CreateLight(def);
         Check(h.valid(), "bakehash light created");
         if (h.valid()) {
             if (uri)

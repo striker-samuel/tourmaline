@@ -126,7 +126,7 @@ struct BakeCellGrid {
 // globals + materials — the superset incl. masked cutouts + decal
 // overlays, so the hash covers everything any bake opts may trace).
 // Recalculates global transforms like the trace builder does.
-BakeCellGrid BuildBakeCellGrid(Cluster& cluster);
+BakeCellGrid BuildBakeCellGrid(WorldPage& cluster);
 
 // ---------------------------------------------------------------------------
 // The global inputs
@@ -148,7 +148,7 @@ std::string BakeEnvHash(const Scene& scene);
 // inputs are already folded by BakeEnvHash, and the cook/pak seed it at
 // different pipeline points, so folding it would make one authored scene
 // hash differently per tool (the capture-vs-gate refusal class).
-std::string BakeLightsHash(const Cluster& cluster);
+std::string BakeLightsHash(const WorldPage& cluster);
 
 // ---------------------------------------------------------------------------
 // Unit reach + config hashes
@@ -183,7 +183,7 @@ struct GiVolumeBakeConfigHashInputs {
     glm::vec3 albedoValue{0.7f};
 };
 std::string GiVolumeBakeUnitHash(const BakeCellGrid& grid,
-                                 const Cluster& cluster,
+                                 const WorldPage& cluster,
                                  const SceneGiVolume& def,
                                  const glm::mat4& nodeGlobal,
                                  const GiVolumeBakeConfigHashInputs& cfg);
@@ -212,7 +212,7 @@ struct CubemapBakeConfigHashInputs {
 };
 using CellId = std::array<int32_t, 3>;
 std::string CubemapBakeUnitHash(const BakeCellGrid& grid,
-                                const Cluster& cluster,
+                                const WorldPage& cluster,
                                 const glm::vec3& position,
                                 float influenceRadius,
                                 float fadeRadius,

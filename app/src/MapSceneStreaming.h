@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 #pragma once
 
-// Canonical Map streaming host adapter: no ProjectScenes/Cluster loader.
+// Canonical Map streaming host adapter: no ProjectScenes/WorldPage loader.
 // Supply an immutable Scene/resource resolver, then register Provider() with
 // WorldPartition. The opt-in historical implementation lives in
 // LegacyMapSceneStreaming.h and must never be the default path.

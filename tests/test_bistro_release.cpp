@@ -21,7 +21,7 @@
 //
 // GPU-free on purpose: it reads the pak TOC + material/texture blobs with
 // the file-backed PakReader (positional page reads, no whole-image load)
-// and never deserializes into a Cluster (that needs a Vulkan device).
+// and never deserializes into a WorldPage (that needs a Vulkan device).
 
 #include <cstdint>
 #include <cstdio>

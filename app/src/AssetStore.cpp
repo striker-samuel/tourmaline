@@ -8,7 +8,7 @@
 // AssetManager's old EnsureFamilyCluster walk (verbatim semantics —
 // the held-cluster + world-cluster searches, the scene walk, the
 // split-family refusal), now owning REFS (the park-on-unload bridge)
-// instead of caching raw Cluster* pointers (the use-after-free the
+// instead of caching raw WorldPage* pointers (the use-after-free the
 // extraction fixes: a RemoveScene destroyed clusters the manager
 // still pointed at).
 
@@ -29,14 +29,14 @@ AssetStore::AssetStore(ProjectRuntime& runtime, smvk::ResourceManager* ctx)
     clusterSource = [this](tour::World& world,
                            const smvk::PakReader& reader,
                            uint32_t sceneIndex,
-                           std::string& err) -> tour::Cluster* {
+                           std::string& err) -> tour::WorldPage* {
         if (!m_ctx) {
             err = "LoadMesh needs a GPU context (the mesh's owning"
                   " scene cluster deserializes + uploads)";
             return nullptr;
         }
         try {
-            return &world.LoadClusterFromPak(*m_ctx, reader, sceneIndex);
+            return &world.LoadPageFromPak(*m_ctx, reader, sceneIndex);
         } catch (const std::exception& e) {
             err = std::string("the owning cluster failed to load: ") + e.what();
             return nullptr;
@@ -54,12 +54,13 @@ AssetStore::~AssetStore() {
 
 // ---- the found-or-loaded acquire ------------------------------------------
 
-tour::Cluster* AssetStore::AcquireFamilyCluster(tour::World& world,
-                                                const std::string& pakName,
-                                                const std::string& familyPath,
-                                                const std::vector<smvk::PakMeshPlanMember>& members,
-                                                bool resident,
-                                                std::string& err) {
+tour::WorldPage* AssetStore::AcquireFamilyCluster(
+    tour::World& world,
+    const std::string& pakName,
+    const std::string& familyPath,
+    const std::vector<smvk::PakMeshPlanMember>& members,
+    bool resident,
+    std::string& err) {
     err.clear();
     if (members.empty()) {
         err = "the mesh family '" + familyPath +
@@ -71,14 +72,14 @@ tour::Cluster* AssetStore::AcquireFamilyCluster(tour::World& world,
     // (a) A cluster this store already holds (registered OR parked)
     // against THIS world: the shared-acquire dedup — repeated keys
     // never re-load, never re-carve GPU ranges.
-    if (tour::Cluster* held = FindHeldWithFamily(world, members)) {
+    if (tour::WorldPage* held = FindHeldWithFamily(world, members)) {
         TakeRef(world, held, resident);
         return held;
     }
     // (b) ANY world-registered cluster (the apphost may have loaded
     // the owning scene through ProjectScenes): adopt it — the asset
     // rides the scene's own cluster, no duplicate carrier.
-    for (const auto& c : world.clusters)
+    for (const auto& c : world.pages)
         if (c && clusterHasFamily(*c, members)) {
             TakeRef(world, c.get(), resident);
             return c.get();
@@ -106,7 +107,7 @@ tour::Cluster* AssetStore::AcquireFamilyCluster(tour::World& world,
             err = "the AssetStore has no cluster source installed";
             return nullptr;
         }
-        tour::Cluster* loaded = clusterSource(world, backend->Reader(), si, err);
+        tour::WorldPage* loaded = clusterSource(world, backend->Reader(), si, err);
         if (!loaded) {
             if (err.empty())
                 err = "the cluster source failed (scene " + std::to_string(si) + ")";
@@ -114,10 +115,10 @@ tour::Cluster* AssetStore::AcquireFamilyCluster(tour::World& world,
         }
         if (clusterHasFamily(*loaded, members)) {
             // The fresh carrier folds into the world exactly like the
-            // old EnsureFamilyCluster did (World::LoadClusterFromPak's
+            // old EnsureFamilyCluster did (World::LoadPageFromPak's
             // own resolve parity — a source that registers a cluster
             // must see it resolved).
-            world.ResolveAndFixup_clusters();
+            world.ResolveAndFixup_pages();
             TakeRef(world, loaded, resident);
             return loaded;
         }
@@ -132,10 +133,10 @@ tour::Cluster* AssetStore::AcquireFamilyCluster(tour::World& world,
     return nullptr;
 }
 
-tour::Cluster* AssetStore::AcquireFamilyClusterByPlan(tour::World& world,
-                                                      const smvk::MeshPlanRef& plan,
-                                                      bool resident,
-                                                      std::string& err) {
+tour::WorldPage* AssetStore::AcquireFamilyClusterByPlan(tour::World& world,
+                                                        const smvk::MeshPlanRef& plan,
+                                                        bool resident,
+                                                        std::string& err) {
     err.clear();
     // The pak by MOUNT INDEX — never a name search.
     const std::string pakName = m_runtime.ManifestPakName(plan.pakIndex);
@@ -183,7 +184,7 @@ tour::Cluster* AssetStore::AcquireFamilyClusterByPlan(tour::World& world,
     return AcquireFamilyCluster(world, pakName, plan.familyPath, members, resident, err);
 }
 
-void AssetStore::ReleaseFamilyCluster(tour::Cluster* cluster) {
+void AssetStore::ReleaseFamilyCluster(tour::WorldPage* cluster) {
     // Pointer IDENTITY only until the ref is confirmed — a cluster
     // this store does not hold is a no-op, never a dereference.
     const auto it = m_held.find(cluster);
@@ -193,12 +194,12 @@ void AssetStore::ReleaseFamilyCluster(tour::Cluster* cluster) {
     if (h.refs == 0)
         return; // only the session ref remains (ReleaseAll owns it)
     if (h.world)
-        h.world->ReleaseCluster(*cluster);
+        h.world->ReleasePage(*cluster);
     if (--h.refs == 0 && !h.resident)
         m_held.erase(it); // nothing left holding it: the record goes
 }
 
-void AssetStore::MakeResident(tour::Cluster* cluster) {
+void AssetStore::MakeResident(tour::WorldPage* cluster) {
     const auto it = m_held.find(cluster);
     if (it == m_held.end())
         return;
@@ -206,7 +207,7 @@ void AssetStore::MakeResident(tour::Cluster* cluster) {
     if (h.resident || !h.world)
         return;
     h.resident = true;
-    h.world->RetainCluster(*cluster);
+    h.world->RetainPage(*cluster);
 }
 
 void AssetStore::ReleaseAll() {
@@ -219,7 +220,7 @@ void AssetStore::ReleaseAll() {
         // state, so the loop is safe past that point.
         const uint32_t total = h.refs + (h.resident ? 1 : 0);
         for (uint32_t i = 0; i < total; ++i)
-            h.world->ReleaseCluster(*cluster);
+            h.world->ReleasePage(*cluster);
     }
     m_held.clear();
 }
@@ -240,11 +241,11 @@ std::size_t AssetStore::HeldClusterCount() const {
     return m_held.size();
 }
 
-bool AssetStore::HoldsCluster(tour::Cluster* cluster) const {
+bool AssetStore::HoldsCluster(tour::WorldPage* cluster) const {
     return m_held.find(cluster) != m_held.end();
 }
 
-tour::Cluster* AssetStore::FindHeldWithFamily(
+tour::WorldPage* AssetStore::FindHeldWithFamily(
     tour::World& world,
     const std::vector<smvk::PakMeshPlanMember>& members) const {
     // A held cluster is refcounted alive (every record implies >= 1
@@ -257,7 +258,7 @@ tour::Cluster* AssetStore::FindHeldWithFamily(
     return nullptr;
 }
 
-bool AssetStore::clusterHasFamily(tour::Cluster& cluster,
+bool AssetStore::clusterHasFamily(tour::WorldPage& cluster,
                                   const std::vector<smvk::PakMeshPlanMember>& members) {
     for (const smvk::PakMeshPlanMember& m : members)
         if (cluster.FindMeshByUri(m.tocPath))
@@ -265,17 +266,17 @@ bool AssetStore::clusterHasFamily(tour::Cluster& cluster,
     return false;
 }
 
-void AssetStore::TakeRef(tour::World& world, tour::Cluster* cluster, bool resident) {
+void AssetStore::TakeRef(tour::World& world, tour::WorldPage* cluster, bool resident) {
     const auto [it, inserted] = m_held.try_emplace(cluster, Held{&world, 0, false});
     Held& h = it->second;
     h.world = &world; // a re-acquire against a new world re-homes the record
     ++h.refs;
-    world.RetainCluster(*cluster);
+    world.RetainPage(*cluster);
     // keepResident upgrades only (never downgrades a shared carrier's
     // residency — the LoadMesh rule): the sticky session ref.
     if (resident && !h.resident) {
         h.resident = true;
-        world.RetainCluster(*cluster);
+        world.RetainPage(*cluster);
     }
 }
 

@@ -159,7 +159,7 @@ bool EditorApp::Initialize() {
         }
     }
     // Static mesh heap (VMA virtual blocks + GPU buffers) backing
-    // Cluster::UploadMesh. Without this, the first glTF import
+    // WorldPage::UploadMesh. Without this, the first glTF import
     // crashes in vmaVirtualAllocate on a null m_staticVertexBlock.
     smvk::AllocateStaticVertexFmt(*m_context);
     {
@@ -771,10 +771,10 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& pathIn, const std::string& 
     RestorePrefabPreview();
     RestoreIsolation(); // node ids and saved flags belong to the old scene
     m_world = tour::mem::MakeProcess<tour::World>();
-    tour::Cluster& cluster = m_world->LoadCluster(*m_context);
+    tour::WorldPage& cluster = m_world->LoadPage(*m_context);
     // CPU geometry mirror (the editor's picking/UV/placement source):
     // every mesh this import lands keeps a retained MeshData
-    // (Cluster::GetRetainedUpload) — THE replacement for the old kept
+    // (WorldPage::GetRetainedUpload) — THE replacement for the old kept
     // tinygltf::Model (picking walks the world's asset registry).
     cluster.SetRetainUploads(true);
     // THE DEFINITION BUILD: the world assembles from the tour doc.
@@ -906,7 +906,7 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& pathIn, const std::string& 
     // inside ApplySceneReferences.)
     m_context->FlushUploads();
     Log("Resolving world...");
-    m_world->ResolveAndFixup_clusters();
+    m_world->ResolveAndFixup_pages();
     // (No LOD world-error finalize here anymore: sibling simplifyError
     // stays MESH-LOCAL (scale-free) in the cluster + the artifact, and the
     // renderer applies each INSTANCE's own world scale at pick time -
@@ -918,7 +918,7 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& pathIn, const std::string& 
     // live worlds, matching cooked paks.
     {
         uint32_t meshedMeshes = 0, meshletTotal = 0;
-        cluster.staticMeshes.forEachHandle([&](tour::ClusterStaticMeshHandle h) {
+        cluster.staticMeshes.forEachHandle([&](tour::WorldPageStaticMeshHandle h) {
             if (const smvk::StaticMesh* m = cluster.staticMeshes.get(h)) {
                 if (m->meshlets && !m->meshlets->empty()) {
                     ++meshedMeshes;
@@ -990,10 +990,10 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& pathIn, const std::string& 
     m_imageFocus = UINT32_MAX;
     ClearSelection();
     ResetMeshletDebug(); // cooked meshlets are per-scene
-    // Cluster base for tour id translation (single-cluster scenes only).
+    // WorldPage base for tour id translation (single-cluster scenes only).
     m_clusterBase = UINT32_MAX;
-    if (m_world->clusters.size() == 1 &&
-        m_world->scene.hierarchy.size() == 1 + m_world->clusters[0]->scene.hierarchy.size())
+    if (m_world->pages.size() == 1 &&
+        m_world->scene.hierarchy.size() == 1 + m_world->pages[0]->scene.hierarchy.size())
         m_clusterBase = 1;
     // Map the reference placeholder CLUSTER ids -> world ids (cluster
     // base just became valid). Root references carry a -1 sentinel (no
@@ -1002,7 +1002,7 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& pathIn, const std::string& 
     if (!m_refPhCluster.empty()) {
         m_refPlaceholders.clear();
         for (int cn : m_refPhCluster)
-            m_refPlaceholders.push_back(cn < 0 ? UINT32_MAX : ClusterToWorld(uint32_t(cn)));
+            m_refPlaceholders.push_back(cn < 0 ? UINT32_MAX : PageToWorld(uint32_t(cn)));
         m_refPhCluster.clear();
     }
     // Node indexing died with the kept glTF (picking resolves through the
@@ -1139,7 +1139,7 @@ bool EditorApp::TryLoadSceneSglm() {
     // resolution: the project content first, the bundled content second.
     std::vector<std::string> stems;
     if (m_world) {
-        for (const auto& clusterPtr : m_world->clusters) {
+        for (const auto& clusterPtr : m_world->pages) {
             if (!clusterPtr)
                 continue;
             for (const smvk::GiBinding& b : clusterPtr->giBindings) {
@@ -1287,7 +1287,7 @@ bool EditorApp::TryLoadGiVolumes() {
     // Stage an entire new generation before changing the borrowed
     // renderer's byte/binding channel. Invalid or missing replacements
     // must not discard the last valid GI set.
-    if (m_world->clusters.empty() || !m_world->clusters.front())
+    if (m_world->pages.empty() || !m_world->pages.front())
         return false;
     std::vector<std::pair<std::string, std::vector<uint8_t>>> staged;
     int loaded = 0;
@@ -1463,7 +1463,7 @@ bool EditorApp::TryLoadGiVolumes() {
     }
     // Commit the complete generation only after the registry delivered
     // and the CPU validated every bound volume.
-    smvk::Cluster& carrier = *m_world->clusters.front();
+    smvk::WorldPage& carrier = *m_world->pages.front();
     for (const std::string& stale : m_editorGiInjectedPaths)
         carrier.RemoveBakePayload(stale);
     m_editorGiInjectedPaths.clear();
@@ -1586,8 +1586,8 @@ void EditorApp::UpdateTextureStreaming(smvk::Extent2D renderExtent) {
                 // Avoid turning a near-zero heuristic distance into a mip-0
                 // request for every texture on the intersected object.
                 constexpr float kMinStreamingDistance = 1.0f;
-                const float dist = std::max(kMinStreamingDistance,
-                                            glm::distance(eye, glm::vec3(model[3])));
+                const float dist =
+                    std::max(kMinStreamingDistance, glm::distance(eye, glm::vec3(model[3])));
                 note(mat->values.textures.x, dist);
                 note(mat->values.textures.y, dist);
                 note(mat->values.textures.z, dist);
@@ -1638,7 +1638,7 @@ void EditorApp::RebuildTexHandleMap() {
     if (!m_world || !m_context)
         return;
     uint32_t mismatched = 0;
-    for (const auto& clusterPtr : m_world->clusters) {
+    for (const auto& clusterPtr : m_world->pages) {
         if (!clusterPtr)
             continue;
         for (const auto& [uri, h] : clusterPtr->ListTextureUris()) {

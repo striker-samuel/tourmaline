@@ -295,17 +295,17 @@ glm::mat4 EditorApp::LocalMatrixFromTRS(const glm::vec3& t,
 }
 
 int EditorApp::WorldToCluster(uint32_t worldNode) const {
-    if (!m_world || m_clusterBase == UINT32_MAX || m_world->clusters.empty())
+    if (!m_world || m_clusterBase == UINT32_MAX || m_world->pages.empty())
         return -1;
     if (worldNode < m_clusterBase)
         return -1;
     const uint32_t cn = worldNode - m_clusterBase;
-    if (cn >= m_world->clusters[0]->scene.hierarchy.size())
+    if (cn >= m_world->pages[0]->scene.hierarchy.size())
         return -1;
     return int(cn);
 }
 
-uint32_t EditorApp::ClusterToWorld(uint32_t clusterNode) const {
+uint32_t EditorApp::PageToWorld(uint32_t clusterNode) const {
     if (m_clusterBase == UINT32_MAX)
         return UINT32_MAX;
     return m_clusterBase + clusterNode;
@@ -320,7 +320,7 @@ int EditorApp::WorldMatToCluster(uint32_t worldMat) const {
     return int(loc.handle.index()); // cluster pool index (deterministic)
 }
 
-int EditorApp::ClusterMatToWorld(uint32_t poolIdx) const {
+int EditorApp::PageMatToWorld(uint32_t poolIdx) const {
     if (!m_world)
         return -1;
     for (uint32_t i = 0; i < uint32_t(m_world->materialLocations.size()); ++i) {
@@ -1500,7 +1500,7 @@ void EditorApp::ExecCreateLight(EditCmd& c) {
     const uint32_t nameId = uint32_t(scene.nodeNames.size());
     scene.nodeNames.push_back(c.afterText);
     SetNodeNameIndex(scene, uint32_t(created), nameId);
-    // Pool definition on the DYNAMIC cluster (World::EnsureDynamicCluster):
+    // Pool definition on the DYNAMIC cluster (World::EnsureDynamicPage):
     // runtime-created entities live there, never in the scene's cluster —
     // pak unloads leave them alone and the scene cluster stays pure cooked
     // content. FindNodeLight resolves world lights through lightLocations
@@ -1517,7 +1517,7 @@ void EditorApp::ExecCreateLight(EditCmd& c) {
     if (c.lightShadow && def.type != ::SceneLight::Type::Directional)
         def.flags |= ::SceneLight::kSceneLightFlag_CastShadow;
     def.name = c.afterText;
-    tour::Cluster* cl = &m_world->EnsureDynamicCluster(m_context.get());
+    tour::WorldPage* cl = &m_world->EnsureDynamicPage(m_context.get());
     auto handle = cl->lights.create(std::move(def));
     const uint32_t worldLightIdx = uint32_t(m_world->lightLocations.size());
     m_world->lightLocations.push_back({cl, handle});
@@ -1645,7 +1645,7 @@ void EditorApp::ExecCreateCamera(EditCmd& c) {
     const uint32_t nameId = uint32_t(scene.nodeNames.size());
     scene.nodeNames.push_back(c.afterText);
     SetNodeNameIndex(scene, uint32_t(created), nameId);
-    // Lens definition on the DYNAMIC cluster (World::EnsureDynamicCluster:
+    // Lens definition on the DYNAMIC cluster (World::EnsureDynamicPage:
     // runtime-created entities live there — see ExecCreateLight).
     // FindNodeCamera resolves world cameras through cameraLocations ->
     // cluster + handle.
@@ -1657,7 +1657,7 @@ void EditorApp::ExecCreateCamera(EditCmd& c) {
     def.farClip = std::max(c.camFar, def.nearClip * 1.1f + 1e-3f);
     def.orthoHalfH = std::clamp(c.camOrthoHalfH, 1e-2f, 1e5f);
     def.name = c.afterText;
-    tour::Cluster* cl = &m_world->EnsureDynamicCluster(m_context.get());
+    tour::WorldPage* cl = &m_world->EnsureDynamicPage(m_context.get());
     auto handle = cl->cameras.create(std::move(def));
     const uint32_t worldCamIdx = uint32_t(m_world->cameraLocations.size());
     m_world->cameraLocations.push_back({cl, handle});
@@ -2742,7 +2742,7 @@ void EditorApp::DuplicateSelection() {
             ++skippedTerrain;
             continue;
         }
-        // Cluster-backed mesh nodes own no create verb (imported
+        // WorldPage-backed mesh nodes own no create verb (imported
         // geometry — a duplicate needs an instancing system).
         if (FindMesh(m_world->scene, t) != nullptr) {
             ++skippedMesh;
@@ -4134,7 +4134,7 @@ std::string EditorApp::RedoLabel() const {
 // ---- tour translation ----
 
 bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c, smvk::tour::Command& out) {
-    // Cluster id for a create's LIVE parent, NORMALIZED (the six create
+    // WorldPage id for a create's LIVE parent, NORMALIZED (the six create
     // families below share it): the SCENE-ROOT parent (world node 0 — the
     // synthetic root ABOVE the cluster base, so WorldToCluster(0) reads
     // -1) maps to the CLUSTER ROOT (id 0): the tour id space has no
@@ -5017,7 +5017,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c, smvk::tour::Co
         return true;
     }
     case EditVerb::Delete: {
-        // Cluster-backed nodes persist as a first-class Maya delete.
+        // WorldPage-backed nodes persist as a first-class Maya delete.
         // Addressing: uuid (file-stable identity, assigned for every
         // delete target by the SaveTourTo pre-pass), name (secondary,
         // via needNode's verify-name side effect), numeric id as the
@@ -5465,7 +5465,7 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget, bool allowE
         // terrain groups/tiles) never persist — their creates are
         // dropped by the live-state emission, which removes them from
         // the file. Skipped silently here: the unmapped-command log
-        // below is for translation misses. Cluster-backed deletes map
+        // below is for translation misses. WorldPage-backed deletes map
         // through CmdToTour below (Verb::Delete).
         if (m_history[i].verb == EditVerb::Delete && WorldToCluster(m_history[i].node) < 0)
             continue;
@@ -5663,7 +5663,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
             worldNode = app.m_tourCreatedTerrainNodes[k];
             return true;
         }
-        const uint32_t w = app.ClusterToWorld(raw);
+        const uint32_t w = app.PageToWorld(raw);
         if (w == UINT32_MAX || w >= app.m_world->scene.hierarchy.size())
             return false;
         worldNode = w;
@@ -5730,7 +5730,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
     case smvk::tour::Verb::AssignMaterial: {
         if (!needNode())
             return false;
-        const int wm = tc.material == UINT32_MAX ? -1 : app.ClusterMatToWorld(tc.material);
+        const int wm = tc.material == UINT32_MAX ? -1 : app.PageMatToWorld(tc.material);
         if (wm < 0 && tc.material != UINT32_MAX)
             return false;
         out.verb = EditVerb::AssignMaterial;
@@ -5740,7 +5740,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
         return true;
     }
     case smvk::tour::Verb::SetMatAttr: {
-        const int wm = app.ClusterMatToWorld(tc.material);
+        const int wm = app.PageMatToWorld(tc.material);
         if (wm < 0)
             return false;
         out.verb = EditVerb::SetMatAttr;
@@ -5753,7 +5753,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
             auto toWorld = [&](float poolId) -> float {
                 if (poolId < 0.0f)
                     return -1.0f;
-                const int w = app.ClusterMatToWorld(uint32_t(poolId));
+                const int w = app.PageMatToWorld(uint32_t(poolId));
                 return (w >= 0) ? float(w) : -1.0f;
             };
             out.vec4.x = toWorld(tc.vec4.x);
@@ -5834,7 +5834,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
             if (!smvk::tour::ResolveParentTarget(app.m_world->scene, tc.parentRef, wp))
                 return false;
         } else {
-            wp = app.ClusterToWorld(tc.node);
+            wp = app.PageToWorld(tc.node);
             if (wp == UINT32_MAX || wp >= app.m_world->scene.hierarchy.size())
                 return false;
         }
@@ -5860,7 +5860,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
             if (!smvk::tour::ResolveParentTarget(app.m_world->scene, tc.parentRef, wp))
                 return false;
         } else {
-            wp = app.ClusterToWorld(tc.node);
+            wp = app.PageToWorld(tc.node);
             if (wp == UINT32_MAX || wp >= app.m_world->scene.hierarchy.size())
                 return false;
         }
@@ -5927,7 +5927,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
             out.afterVec = tc.vec;
             out.vec4 = tc.vec4;
             out.number = tc.number;
-            const int wm = app.ClusterMatToWorld(tc.material);
+            const int wm = app.PageMatToWorld(tc.material);
             out.material = (wm >= 0) ? uint32_t(wm) : UINT32_MAX;
             return true;
         }
@@ -5955,7 +5955,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
         // records the links/entries from the live world), so the
         // replayed command is exactly undoable like a session delete.
         uint32_t target = UINT32_MAX;
-        const uint32_t w = app.ClusterToWorld(tc.node);
+        const uint32_t w = app.PageToWorld(tc.node);
         const uint32_t wid =
             (w != UINT32_MAX && w < app.m_world->scene.hierarchy.size()) ? w : UINT32_MAX;
         if (!smvk::tour::ResolveDeleteTarget(app.m_world->scene, tc.uuid, tc.name, wid, target))
@@ -5970,7 +5970,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
             if (!smvk::tour::ResolveParentTarget(app.m_world->scene, tc.parentRef, wp))
                 return false;
         } else {
-            wp = app.ClusterToWorld(tc.node);
+            wp = app.PageToWorld(tc.node);
             if (wp == UINT32_MAX || wp >= app.m_world->scene.hierarchy.size())
                 return false;
         }
@@ -5997,7 +5997,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
             if (!smvk::tour::ResolveParentTarget(app.m_world->scene, tc.parentRef, wp))
                 return false;
         } else {
-            wp = app.ClusterToWorld(tc.node);
+            wp = app.PageToWorld(tc.node);
             if (wp == UINT32_MAX || wp >= app.m_world->scene.hierarchy.size())
                 return false;
         }
@@ -6019,7 +6019,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
             if (!smvk::tour::ResolveParentTarget(app.m_world->scene, tc.parentRef, wp))
                 return false;
         } else {
-            wp = app.ClusterToWorld(tc.node);
+            wp = app.PageToWorld(tc.node);
             if (wp == UINT32_MAX || wp >= app.m_world->scene.hierarchy.size())
                 return false;
         }
@@ -6037,7 +6037,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
             if (!smvk::tour::ResolveParentTarget(app.m_world->scene, tc.parentRef, wp))
                 return false;
         } else {
-            wp = app.ClusterToWorld(tc.node);
+            wp = app.PageToWorld(tc.node);
             if (wp == UINT32_MAX || wp >= app.m_world->scene.hierarchy.size())
                 return false;
         }
@@ -6060,7 +6060,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
             if (!smvk::tour::ResolveParentTarget(app.m_world->scene, tc.parentRef, wp))
                 return false;
         } else {
-            wp = app.ClusterToWorld(tc.node);
+            wp = app.PageToWorld(tc.node);
             if (wp == UINT32_MAX || wp >= app.m_world->scene.hierarchy.size())
                 return false;
         }
@@ -6073,7 +6073,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
         out.afterVec = tc.vec;
         out.vec4 = tc.vec4;     // (size, res, height, freq)
         out.number = tc.number; // seed
-        const int wm = app.ClusterMatToWorld(tc.material);
+        const int wm = app.PageMatToWorld(tc.material);
         out.material = (wm >= 0) ? uint32_t(wm) : UINT32_MAX;
         return true;
     }
@@ -6097,7 +6097,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
                 return false;
             target = app.m_tourCreatedNodes[k];
         } else {
-            target = app.ClusterToWorld(tc.node);
+            target = app.PageToWorld(tc.node);
         }
         if (target == UINT32_MAX || target >= app.m_world->scene.hierarchy.size())
             return false;
@@ -6133,7 +6133,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
                 return false;
             target = app.m_tourCreatedTransformNodes[k];
         } else {
-            target = app.ClusterToWorld(tc.node);
+            target = app.PageToWorld(tc.node);
         }
         if (target == UINT32_MAX || target >= app.m_world->scene.hierarchy.size())
             return false;
@@ -6163,7 +6163,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
                 return false;
             target = app.m_tourCreatedCubemapNodes[k];
         } else {
-            target = app.ClusterToWorld(tc.node);
+            target = app.PageToWorld(tc.node);
         }
         if (target == UINT32_MAX || target >= app.m_world->scene.hierarchy.size())
             return false;
@@ -6193,7 +6193,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
                 return false;
             target = app.m_tourCreatedCameraNodes[k];
         } else {
-            target = app.ClusterToWorld(tc.node);
+            target = app.PageToWorld(tc.node);
         }
         if (target == UINT32_MAX || target >= app.m_world->scene.hierarchy.size())
             return false;
@@ -6220,7 +6220,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
             if (!smvk::tour::ResolveParentTarget(app.m_world->scene, tc.parentRef, wp))
                 return false;
         } else {
-            wp = app.ClusterToWorld(tc.node);
+            wp = app.PageToWorld(tc.node);
             if (wp == UINT32_MAX || wp >= app.m_world->scene.hierarchy.size())
                 return false;
         }
@@ -6245,7 +6245,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
                 return false;
             target = app.m_tourCreatedAudioNodes[k];
         } else {
-            target = app.ClusterToWorld(tc.node);
+            target = app.PageToWorld(tc.node);
         }
         if (target == UINT32_MAX || target >= app.m_world->scene.hierarchy.size())
             return false;
@@ -6277,7 +6277,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
                 return false;
             target = app.m_tourCreatedAudioNodes[k];
         } else {
-            target = app.ClusterToWorld(tc.node);
+            target = app.PageToWorld(tc.node);
         }
         if (target == UINT32_MAX || target >= app.m_world->scene.hierarchy.size())
             return false;
@@ -6303,7 +6303,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
                 return false;
             target = app.m_tourCreatedAudioNodes[k];
         } else {
-            target = app.ClusterToWorld(tc.node);
+            target = app.PageToWorld(tc.node);
         }
         if (target == UINT32_MAX || target >= app.m_world->scene.hierarchy.size())
             return false;
@@ -6322,7 +6322,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
             if (!smvk::tour::ResolveParentTarget(app.m_world->scene, tc.parentRef, wp))
                 return false;
         } else {
-            wp = app.ClusterToWorld(tc.node);
+            wp = app.PageToWorld(tc.node);
             if (wp == UINT32_MAX || wp >= app.m_world->scene.hierarchy.size())
                 return false;
         }
@@ -6359,7 +6359,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
                 return false;
             target = app.m_tourCreatedTransformNodes[k];
         } else {
-            target = app.ClusterToWorld(tc.node);
+            target = app.PageToWorld(tc.node);
         }
         if (target == UINT32_MAX || target >= app.m_world->scene.hierarchy.size())
             return false;
@@ -6398,7 +6398,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
                 return false;
             target = nodes[k];
         } else
-            target = app.ClusterToWorld(tc.node);
+            target = app.PageToWorld(tc.node);
         if (target == UINT32_MAX || !tour::scene::FindPhysicsBody(app.m_world->scene, target))
             return false;
         out.verb = EditVerb::SetPhysicsBodyAttr;
@@ -6425,7 +6425,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
                 return false;
             target = nodes[k];
         } else
-            target = app.ClusterToWorld(tc.node);
+            target = app.PageToWorld(tc.node);
         if (target == UINT32_MAX || !tour::scene::FindTriggerVolume(app.m_world->scene, target))
             return false;
         out.verb = EditVerb::SetTriggerVolumeAttr;
@@ -6467,7 +6467,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
                 return false;
             target = app.m_tourCreatedTransformNodes[k];
         } else {
-            target = app.ClusterToWorld(tc.node);
+            target = app.PageToWorld(tc.node);
         }
         if (target == UINT32_MAX || target >= app.m_world->scene.hierarchy.size())
             return false;
@@ -6493,7 +6493,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
                 return false;
             target = app.m_tourCreatedExportNodes[k];
         } else {
-            target = app.ClusterToWorld(tc.node);
+            target = app.PageToWorld(tc.node);
         }
         if (target == UINT32_MAX || target >= app.m_world->scene.hierarchy.size())
             return false;
@@ -6577,7 +6577,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc, const std::string& sourcePat
             hp = std::filesystem::path(m_projectRoot) / ta.path;
         if (hp.empty() || !std::filesystem::exists(hp, ec))
             hp = std::filesystem::path(ta.path);
-        tour::Cluster* cl = m_world->clusters.empty() ? nullptr : m_world->clusters[0].get();
+        tour::WorldPage* cl = m_world->pages.empty() ? nullptr : m_world->pages[0].get();
         if (!cl)
             break;
         std::string imErr;
@@ -6620,11 +6620,11 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc, const std::string& sourcePat
             hp = std::filesystem::path(m_projectRoot) / ma.path;
         if (hp.empty() || !std::filesystem::exists(hp, ec))
             hp = std::filesystem::path(ma.path);
-        tour::Cluster* cl = m_world->clusters.empty() ? nullptr : m_world->clusters[0].get();
+        tour::WorldPage* cl = m_world->pages.empty() ? nullptr : m_world->pages[0].get();
         if (!cl)
             break;
         std::string imErr;
-        const tour::ClusterMaterialHandle h =
+        const tour::WorldPageMaterialHandle h =
             smvk::assets::ImportMaterialAssetToCluster(*cl, hp, m_context.get(), imErr);
         if (h.empty()) {
             Log("tour: materialAsset import failed: '" + ma.path +
@@ -6656,7 +6656,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc, const std::string& sourcePat
         // entry) so later deletes resolve through it. Maya setUuid
         // parity: rejected when another live node already holds it.
         if (tc.verb == smvk::tour::Verb::SetUuid) {
-            const uint32_t target = ClusterToWorld(tc.node);
+            const uint32_t target = PageToWorld(tc.node);
             if (target != UINT32_MAX && target < m_world->scene.hierarchy.size() &&
                 smvk::tour::SetNodeUuid(m_world->scene, target, tc.uuid)) {
                 ++applied;
@@ -6991,10 +6991,10 @@ bool EditorApp::RebuildTerrainTiles(uint32_t groupNode,
             continue;
         }
         const auto& loc = m_world->meshLocations[worldMeshIdx];
-        tour::Cluster* cl = loc.cluster ? loc.cluster : m_world->clusters[0].get();
+        tour::WorldPage* cl = loc.cluster ? loc.cluster : m_world->pages[0].get();
         if (loc.cluster)
             loc.cluster->DestroyMesh(loc.handle);
-        const tour::ClusterStaticMeshHandle mh = cl->UploadMesh(upload);
+        const tour::WorldPageStaticMeshHandle mh = cl->UploadMesh(upload);
         if (!mh.valid()) {
             Log("Terrain tile upload failed.");
             ok = false;
@@ -7010,7 +7010,7 @@ bool EditorApp::RebuildTerrainTiles(uint32_t groupNode,
 }
 
 void EditorApp::ExecCreateTerrain(EditCmd& c) {
-    if (!m_world || m_world->clusters.empty() || !m_world->clusters[0])
+    if (!m_world || m_world->pages.empty() || !m_world->pages[0])
         return;
     Scene& scene = m_world->scene;
     // Parent rides beforeParent (node2 packs the tile split). The draft
@@ -7059,7 +7059,7 @@ void EditorApp::ExecCreateTerrain(EditCmd& c) {
         (c.material != UINT32_MAX && c.material < m_world->materialLocations.size())
             ? c.material
             : EnsureDefaultMaterial();
-    tour::Cluster* cl = m_world->clusters[0].get();
+    tour::WorldPage* cl = m_world->pages[0].get();
     // Tile children: node + mesh + world wiring + draw entry each.
     // Tile position = its ACTUAL first sample (TerrainTileOrigin — the
     // integer sample split does not align with the even metric split
@@ -7083,7 +7083,7 @@ void EditorApp::ExecCreateTerrain(EditCmd& c) {
                 Log("Terrain tile build failed.");
                 return;
             }
-            const tour::ClusterStaticMeshHandle mh = cl->UploadMesh(upload);
+            const tour::WorldPageStaticMeshHandle mh = cl->UploadMesh(upload);
             if (!mh.valid()) {
                 Log("Terrain tile upload failed.");
                 return;
@@ -7183,7 +7183,7 @@ void EditorApp::ExecTerrainPaint(EditCmd& c) {
 }
 
 int EditorApp::AddTextureFromFile(const std::string& path) {
-    if (!m_world || m_world->clusters.empty() || !m_world->clusters[0] || !m_context)
+    if (!m_world || m_world->pages.empty() || !m_world->pages[0] || !m_context)
         return -1;
     // Read the payload first (the cluster keeps the source bytes for
     // cook re-embeds; the URI IS the file path — a filepath ref).
@@ -7198,7 +7198,7 @@ int EditorApp::AddTextureFromFile(const std::string& path) {
         Log("Material editor: texture file is empty: " + path);
         return -1;
     }
-    tour::Cluster* cl = m_world->clusters[0].get();
+    tour::WorldPage* cl = m_world->pages[0].get();
     // KTX2 payload passes through; other image sources (PNG/JPG/...)
     // transcode to KTX2 (the importer's own conversion) so the Path
     // editor + material slots can relink against the ORIGINAL source
@@ -7288,8 +7288,8 @@ void EditorApp::ImportCookieTexture(const std::string& cookieRef) {
     // import it as a .texture first). NOT during replay (the tour's
     // records replay there). The record dedupes by path (one .texture
     // cooks cookies on any number of lights).
-    if (cookieRef.empty() || m_replayingTour || !m_world || m_world->clusters.empty() ||
-        !m_world->clusters[0] || !m_context)
+    if (cookieRef.empty() || m_replayingTour || !m_world || m_world->pages.empty() ||
+        !m_world->pages[0] || !m_context)
         return;
     {
         std::string ext = std::filesystem::path(cookieRef).extension().string();
@@ -7313,7 +7313,7 @@ void EditorApp::ImportCookieTexture(const std::string& cookieRef) {
         if (hp.empty() || !std::filesystem::exists(hp, ec))
             hp = std::filesystem::path(cookieRef);
     }
-    tour::Cluster* cl = m_world->clusters[0].get();
+    tour::WorldPage* cl = m_world->pages[0].get();
     std::string imErr;
     const smvk::TextureHandle h =
         smvk::assets::ImportTextureAssetToCluster(*cl, hp, m_context.get(), imErr);
@@ -7354,7 +7354,7 @@ void EditorApp::AssignMaterialAsset(const std::string& assetPath) {
     // file, create the cluster material (values + textures from its
     // refs — the image files beside the source glTF), assign it to the
     // SELECTED subtree (one undoable AssignMaterial).
-    if (!m_world || m_world->clusters.empty() || !m_world->clusters[0] || !m_context)
+    if (!m_world || m_world->pages.empty() || !m_world->pages[0] || !m_context)
         return;
     if (m_selected == UINT32_MAX || m_selected >= m_world->scene.hierarchy.size()) {
         Log("Assets: material drop needs a selection (select a node "
@@ -7367,11 +7367,11 @@ void EditorApp::AssignMaterialAsset(const std::string& assetPath) {
         Log("Assets: material load failed: " + err);
         return;
     }
-    tour::Cluster* cl = m_world->clusters[0].get();
+    tour::WorldPage* cl = m_world->pages[0].get();
     // SHARED import (the cook replays the same path from the tour's
     // materialAsset records — pool determinism across the session and
     // the cook replay; see ImportMaterialAssetToCluster).
-    tour::ClusterMaterialHandle imported{};
+    tour::WorldPageMaterialHandle imported{};
     {
         std::string imErr;
         imported =
@@ -7444,11 +7444,11 @@ void EditorApp::ExecUnterrainPaint(EditCmd& c) {
 }
 
 uint32_t EditorApp::EnsureDefaultMaterial() {
-    if (!m_world || m_world->clusters.empty() || !m_world->clusters[0])
+    if (!m_world || m_world->pages.empty() || !m_world->pages[0])
         return UINT32_MAX;
     if (m_defaultMatWorld != UINT32_MAX && m_defaultMatWorld < m_world->materialLocations.size())
         return m_defaultMatWorld;
-    tour::Cluster* cl = m_world->clusters[0].get();
+    tour::WorldPage* cl = m_world->pages[0].get();
     // Reuse an existing pool entry when the URI is already registered
     // (e.g. a pak scene cooked from a tour that minted one) — NO pool
     // growth, so no tour record (records mirror pool CREATIONS only).
@@ -7460,7 +7460,7 @@ uint32_t EditorApp::EnsureDefaultMaterial() {
     }
     // SHARED seed creation (the deterministic material; cooks replay it
     // from the tour's materialAsset records — EnsureClusterDefaultMaterial).
-    const tour::ClusterMaterialHandle h = smvk::assets::EnsureClusterDefaultMaterial(*cl);
+    const tour::WorldPageMaterialHandle h = smvk::assets::EnsureClusterDefaultMaterial(*cl);
     if (h.empty())
         return UINT32_MAX;
     // Pool creation: record it (ordered — the record order IS the pool

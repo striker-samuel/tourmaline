@@ -8885,7 +8885,7 @@ void smvk::VulkanResourceManager::ProcessDeferrredTasks() {
         // the drained tasks: a same-timeline pair queued as destroy-then-
         // free (the FIFO pairing the range frees rely on — see
         // ReleaseTargetHeapClaim / ReleaseTransientPlacement / the mesh
-        // heap frees in Cluster::DestroyMesh) can never invert, because
+        // heap frees in WorldPage::DestroyMesh) can never invert, because
         // the retire values are monotonic (the free's point being ready
         // implies the earlier destroy's point was ready too) and the
         // partition below is stable.

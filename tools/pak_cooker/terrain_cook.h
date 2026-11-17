@@ -11,10 +11,10 @@
 #include <vector>
 
 namespace tour {
-struct Cluster;
+struct WorldPage;
 }
 namespace smvk {
-using ::tour::Cluster;
+using ::tour::WorldPage;
 }
 
 #include <Engine/Asset/pak.h>
@@ -26,6 +26,6 @@ namespace terraincook {
 bool CookTerrainBlobs(const std::string& terrainDir,
                       smvk::PakWriter& writer,
                       std::string& err,
-                      const std::vector<const smvk::Cluster*>& scenes = {});
+                      const std::vector<const smvk::WorldPage*>& scenes = {});
 
 } // namespace terraincook

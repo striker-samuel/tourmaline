@@ -2724,7 +2724,7 @@ bool WorldRenderer::onAttach() {
             m_geometryStreamer.config = smvk::GeometryStreamingRuntimeConfig();
             m_geometryStreamer.stats.deferredAtLoad = 0;
             m_geometryStreamer.stats.deferredBytesAtLoad = 0;
-            for (const auto& clusterPtr : m_world->clusters) {
+            for (const auto& clusterPtr : m_world->pages) {
                 if (!clusterPtr)
                     continue;
                 m_geometryStreamer.stats.deferredAtLoad += clusterPtr->DeferredLodCount();
@@ -5876,7 +5876,7 @@ WorldRenderer::FrameBindlessMap WorldRenderer::BuildPoolToBindlessMap() const {
                             std::hash<uint32_t>{},
                             std::equal_to<uint32_t>{},
                             tour::mem::LinearAllocatorSTL<Entry>{&tour::mem::FrameAllocator()}};
-    for (const auto& clusterPtr : m_world->clusters) {
+    for (const auto& clusterPtr : m_world->pages) {
         if (!clusterPtr)
             continue;
         // The serialization enumeration allocates and sorts an owning
@@ -6990,7 +6990,7 @@ void WorldRenderer::UpdateReadbacks(uint32_t frameSlot, uint32_t streamFrame) {
 }
 
 // ---------------------------------------------------------------------
-// Named GI bakes (Cluster::giBindings across the loaded clusters).
+// Named GI bakes (WorldPage::giBindings across the loaded clusters).
 // Model supports N bindings; exactly one per kind is honored for now
 // (first wins + warn). Empty outcome = registry-less pak: callers
 // fall back to the scene id. The names are STABLE bake stems (the
@@ -7015,7 +7015,7 @@ void WorldRenderer::ResolveGiBakes() {
     // DYNAMIC cluster FIRST (runtime quick-bake bindings override the
     // cooked pak registry - same precedence as World::ReadBakeBytes),
     // then pak clusters in registration order.
-    auto walkCluster = [&](const smvk::Cluster& cluster) {
+    auto walkCluster = [&](const smvk::WorldPage& cluster) {
         for (const smvk::GiBinding& b : cluster.giBindings) {
             if (b.name.empty())
                 continue;
@@ -7056,11 +7056,11 @@ void WorldRenderer::ResolveGiBakes() {
             }
         }
     };
-    for (auto it = m_world->clusters.rbegin(); it != m_world->clusters.rend(); ++it) {
+    for (auto it = m_world->pages.rbegin(); it != m_world->pages.rend(); ++it) {
         if (*it && (*it)->isDynamic)
             walkCluster(**it);
     }
-    for (const auto& clusterPtr : m_world->clusters) {
+    for (const auto& clusterPtr : m_world->pages) {
         if (clusterPtr && !clusterPtr->isDynamic)
             walkCluster(*clusterPtr);
     }
@@ -7076,9 +7076,9 @@ void WorldRenderer::ResolveGiBakes() {
 // Cooked scene lights (KHR_lights_punctual).
 //
 // Built once per scene load from the resolved world: the definitions
-// come back as Cluster pool assets (Light blobs in the pak, loaded
+// come back as WorldPage pool assets (Light blobs in the pak, loaded
 // exactly like meshes - m_world->lightLocations resolves the world
-// light index to Cluster + handle) and the node links ride the scene
+// light index to WorldPage + handle) and the node links ride the scene
 // graph, so global transforms apply coordFix + parent chains exactly
 // like meshes. The directional sun seeds the environment
 // (azimuth/elevation/color/intensity, so the sky disc, IBL tint and
@@ -7291,7 +7291,7 @@ void WorldRenderer::RefreshSceneLights(bool log, bool seedEnvSun) {
             // records import it).
             sl.cookieIndex = -1;
             if (!L.cookieUri.empty() && m_context) {
-                for (const auto& cp : m_world->clusters) {
+                for (const auto& cp : m_world->pages) {
                     if (!cp)
                         continue;
                     if (auto hit = cp->FindTextureByUri(L.cookieUri)) {
@@ -8000,7 +8000,7 @@ uint32_t WorldRenderer::UpdateDecals(uint32_t currentFrame) {
             slot = (slot + 1) & cacheMask;
         }
         int32_t bindless = -1;
-        for (const auto& cp : m_world->clusters) {
+        for (const auto& cp : m_world->pages) {
             if (!cp)
                 continue;
             if (auto th = cp->FindTextureByUri(uri)) {
@@ -13897,7 +13897,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // GfxSkinBounds rebuilds (spheres + cones + the per-draw union
     // tail) is NOT deferred anymore - it runs every frame below.
     // The App loads the clip (TOURMALINE_ANIM - PakApp) via
-    // Cluster::SetAnimClip. m_deltaTime = the sim dt (the bench pins
+    // WorldPage::SetAnimClip. m_deltaTime = the sim dt (the bench pins
     // it at 60Hz - deterministic playback).
     if (m_world) {
         // Optick: the CPU half of the skinning box (static-data
@@ -13929,8 +13929,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // (poseExternallyDriven). A world with no animators no-ops.
         if (!m_world->animators.empty())
             m_world->Update(m_deltaTime);
-        for (const auto& clusterPtr : m_world->clusters) {
-            smvk::Cluster* c = clusterPtr.get();
+        for (const auto& clusterPtr : m_world->pages) {
+            smvk::WorldPage* c = clusterPtr.get();
             if (!c || !c->hasSkeleton)
                 continue;
             {
@@ -14039,7 +14039,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         m_gpuSceneTaskMeshPlan.graphics.skinValid = fc.skinDeformedValid ? 1u : 0u;
     }
 
-    #include "WorldRendererGpuSceneCascades.inl"
+#include "WorldRendererGpuSceneCascades.inl"
 
     // ---- Cascaded shadow map passes - one per cascade tile (builder owns offsets/extents/load
     // ops) ---- Pass-config gate: no shadow sampling without tiles (the main shader reads
@@ -14119,20 +14119,26 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 const bool evsmTsEnd = (ci == NUM_CASCADES - 1) && !evsmSpotOn;
                 const auto gpuCascade = gpuCascades[ci];
                 hintGpuCascade(momentPass, gpuCascade);
-                momentPass.SetRecordingFunc(
-                    [this, cascadePC, casterViewIndex, evsmTsBegin, evsmTsEnd,
-                     gpuCascade, recordGpuCascade](smvk::CommandBuffer& cmd) {
-                        if (evsmTsBegin)
-                            cmd.WriteStageTimestamp(smvk::kGpuStageEvsmCasters, /*begin=*/true);
-                        recordGpuCascade(cmd, cascadePC, gpuCascade,
-                                         smvk::MSAASettings::Count2());
-                        RecordShadowCastersDirect(
-                            cmd, m_viewportResources.directionalShadows.program,
-                            cascadePC, casterViewIndex, /*skipFiltered=*/false,
-                            smvk::MSAASettings::Count2(), gpuCascade.ready);
-                        if (evsmTsEnd)
-                            cmd.WriteStageTimestamp(smvk::kGpuStageEvsmCasters, /*begin=*/false);
-                    });
+                momentPass.SetRecordingFunc([this,
+                                             cascadePC,
+                                             casterViewIndex,
+                                             evsmTsBegin,
+                                             evsmTsEnd,
+                                             gpuCascade,
+                                             recordGpuCascade](smvk::CommandBuffer& cmd) {
+                    if (evsmTsBegin)
+                        cmd.WriteStageTimestamp(smvk::kGpuStageEvsmCasters, /*begin=*/true);
+                    recordGpuCascade(cmd, cascadePC, gpuCascade, smvk::MSAASettings::Count2());
+                    RecordShadowCastersDirect(cmd,
+                                              m_viewportResources.directionalShadows.program,
+                                              cascadePC,
+                                              casterViewIndex,
+                                              /*skipFiltered=*/false,
+                                              smvk::MSAASettings::Count2(),
+                                              gpuCascade.ready);
+                    if (evsmTsEnd)
+                        cmd.WriteStageTimestamp(smvk::kGpuStageEvsmCasters, /*begin=*/false);
+                });
                 (void)momentPass;
                 continue;
             }
@@ -14146,19 +14152,26 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             const bool pcfTsEnd = (ci == NUM_CASCADES - 1) && !spotPassesOn && !pointPassesOn;
             const auto gpuCascade = gpuCascades[ci];
             hintGpuCascade(shadowPass, gpuCascade);
-            shadowPass.SetRecordingFunc(
-                [this, cascadePC, casterViewIndex, pcfTsBegin, pcfTsEnd,
-                 gpuCascade, recordGpuCascade](smvk::CommandBuffer& cmd) {
-                    if (pcfTsBegin)
-                        cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/true);
-                    recordGpuCascade(cmd, cascadePC, gpuCascade, smvk::MSAASettings{});
-                    RecordShadowCastersDirect(
-                        cmd, m_viewportResources.directionalShadows.program,
-                        cascadePC, casterViewIndex, /*skipFiltered=*/false,
-                        smvk::MSAASettings{}, gpuCascade.ready);
-                    if (pcfTsEnd)
-                        cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/false);
-                });
+            shadowPass.SetRecordingFunc([this,
+                                         cascadePC,
+                                         casterViewIndex,
+                                         pcfTsBegin,
+                                         pcfTsEnd,
+                                         gpuCascade,
+                                         recordGpuCascade](smvk::CommandBuffer& cmd) {
+                if (pcfTsBegin)
+                    cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/true);
+                recordGpuCascade(cmd, cascadePC, gpuCascade, smvk::MSAASettings{});
+                RecordShadowCastersDirect(cmd,
+                                          m_viewportResources.directionalShadows.program,
+                                          cascadePC,
+                                          casterViewIndex,
+                                          /*skipFiltered=*/false,
+                                          smvk::MSAASettings{},
+                                          gpuCascade.ready);
+                if (pcfTsEnd)
+                    cmd.WriteStageTimestamp(smvk::kGpuStagePcfRaster, /*begin=*/false);
+            });
             (void)shadowPass;
         }
     }
@@ -15641,8 +15654,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             s_gpuSceneMotion && m_gpuSceneMotionProgram.shaderCount == 2 &&
             m_gpuSceneRasterDrawActive && m_gpuSceneRasterDrawCapacity > 0;
         bool gpuSceneMotionHistoryReady =
-            gpuSceneMotionActive && m_prevGpuSceneViewValid &&
-            m_prevGpuSceneTransformCount > 0;
+            gpuSceneMotionActive && m_prevGpuSceneViewValid && m_prevGpuSceneTransformCount > 0;
         tour::gpu_scene::RasterMotionVsPush motionVsPush{};
         smvk::BufferHandle motionCommands{};
         if (gpuSceneMotionActive) {
@@ -15653,7 +15665,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     m_gpuScenePrevTransformBuffers[flight].empty()) {
                     auto buf = m_context->CreateBuffer(
                         count * sizeof(tour::gpu_scene::GpuScenePrevTransform),
-                        smvk::BufferType_Storage, "GPU scene prev transforms");
+                        smvk::BufferType_Storage,
+                        "GPU scene prev transforms");
                     if (!buf.empty()) {
                         if (!m_gpuScenePrevTransformLogicals[flight].empty())
                             m_rendergraph->FreeBuffer(m_gpuScenePrevTransformLogicals[flight]);
@@ -15664,26 +15677,27 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     }
                 }
                 if (m_gpuScenePrevViewBuffers[flight].empty()) {
-                    auto buf = m_context->CreateBuffer(
-                        sizeof(tour::gpu_scene::RasterViewData), smvk::BufferType_Storage,
-                        "GPU scene prev view");
+                    auto buf = m_context->CreateBuffer(sizeof(tour::gpu_scene::RasterViewData),
+                                                       smvk::BufferType_Storage,
+                                                       "GPU scene prev view");
                     if (!buf.empty()) {
                         m_gpuScenePrevViewBuffers[flight] = std::move(buf);
                         m_gpuScenePrevViewLogicals[flight] = m_rendergraph->AddExternalBuffer(
                             m_gpuScenePrevViewBuffers[flight], "GPU scene prev view");
                     }
                 }
-                gpuSceneMotionHistoryReady =
-                    !m_gpuScenePrevTransformBuffers[flight].empty() &&
-                    !m_gpuScenePrevViewBuffers[flight].empty();
+                gpuSceneMotionHistoryReady = !m_gpuScenePrevTransformBuffers[flight].empty() &&
+                                             !m_gpuScenePrevViewBuffers[flight].empty();
                 if (gpuSceneMotionHistoryReady) {
                     m_context->UploadDataToBuffer(
-                        m_gpuScenePrevTransformBuffers[flight], m_prevGpuSceneTransforms,
+                        m_gpuScenePrevTransformBuffers[flight],
+                        m_prevGpuSceneTransforms,
                         count * sizeof(tour::gpu_scene::GpuScenePrevTransform),
                         smvk::PipelineStage(smvk::PipelineStageBit_Vertex),
                         smvk::AccessFlags::ShaderRead);
                     m_context->UploadDataToBuffer(
-                        m_gpuScenePrevViewBuffers[flight], &m_prevGpuSceneViewData,
+                        m_gpuScenePrevViewBuffers[flight],
+                        &m_prevGpuSceneViewData,
                         sizeof(tour::gpu_scene::RasterViewData),
                         smvk::PipelineStage(smvk::PipelineStageBit_Vertex),
                         smvk::AccessFlags::ShaderRead);

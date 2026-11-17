@@ -488,7 +488,7 @@ static bool BakePlanSdfs(const Project& project,
             err = "SDF scene replay failed (" + pak.scene + "): " + err;
             return false;
         }
-        for (const auto& owner : replay->world->clusters) {
+        for (const auto& owner : replay->world->pages) {
             auto& scene = owner->scene;
             MarkAllRootsChanged(scene);
             recalculateGlobalTransforms(scene);

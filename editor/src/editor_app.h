@@ -909,7 +909,7 @@ class EditorApp : public tour::App {
     // checkerboard (no Vulkan/ImGui-texture interop needed). Tinted by
     // the baseColor factor like the lit shader multiplies them.
     struct TexPreview {
-        tour::Cluster* cluster = nullptr;
+        tour::WorldPage* cluster = nullptr;
         int slot = -1;
         size_t srcBytes = 0;
         bool ok = false;
@@ -960,9 +960,9 @@ class EditorApp : public tour::App {
     // World<->cluster id translation (single-cluster scenes).
     uint32_t m_clusterBase = UINT32_MAX;          // world id of cluster node 0
     int WorldToCluster(uint32_t worldNode) const; // -1 when unmapped
-    uint32_t ClusterToWorld(uint32_t clusterNode) const;
+    uint32_t PageToWorld(uint32_t clusterNode) const;
     int WorldMatToCluster(uint32_t worldMat) const; // pool idx, -1 none
-    int ClusterMatToWorld(uint32_t poolIdx) const;  // first world slot, -1 none
+    int PageMatToWorld(uint32_t poolIdx) const;     // first world slot, -1 none
     // Undo stack (the document; saved to .tour).
     std::vector<EditCmd> m_history;
     size_t m_historyCursor = 0; // next redo index (commands[cursor..] = redo)
@@ -1198,7 +1198,7 @@ class EditorApp : public tour::App {
     void DeleteSelection();
     // Edit > Duplicate / Ctrl+D: re-emit a Create for every selected
     // duplicable node from its LIVE state (lens/params/transform), under
-    // the same parent, with a unique copy name. Cluster-backed mesh
+    // the same parent, with a unique copy name. WorldPage-backed mesh
     // nodes, terrain groups/tiles and reference placeholders own no
     // create verb — skipped with a log line. The new nodes become the
     // selection (multi-duplicates select the batch).

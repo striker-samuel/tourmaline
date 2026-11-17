@@ -13,18 +13,18 @@
 #include <Engine/App/cluster.h>
 #include <Engine/GI/bake.h>
 #include <Engine/Vfs/vfs.h>
-#include <Engine/WorldPartition/CubemapCapturePlanning.h>
 #include <Engine/WorldPartition/CubemapCaptureDiagnostics.h>
+#include <Engine/WorldPartition/CubemapCapturePlanning.h>
 #include <gltf_import/asset_export.h>
 #include <gltf_import/gltf.h> // BuildFromMeshAsset + VfsTextureSource (global ns)
 
 #include <cerrno>
 #include <cmath>
 #include <cstdio>
-#include <limits>
-#include <map>
 #include <cstdlib>
 #include <filesystem>
+#include <limits>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -33,12 +33,13 @@ namespace wp = engine::worldpartition;
 namespace fs = std::filesystem;
 
 static int usage() {
-    std::fprintf(stderr,
-                 "usage: cubemap_plan <content-dir> <geometry-vfs-path> "
-                 "[minX minY minZ maxX maxY maxZ] [--budget N] [--tier-budgets near mid far] [--sweep]\n"
-                 "  --budget N: default max probes per world cell and tier\n"
-                 "  --tier-budgets near mid far: explicit per-cascade maxima\n"
-                 "  --sweep: budgets 128, 256, 512 and 1024 (one BVH build)\n");
+    std::fprintf(
+        stderr,
+        "usage: cubemap_plan <content-dir> <geometry-vfs-path> "
+        "[minX minY minZ maxX maxY maxZ] [--budget N] [--tier-budgets near mid far] [--sweep]\n"
+        "  --budget N: default max probes per world cell and tier\n"
+        "  --tier-budgets near mid far: explicit per-cascade maxima\n"
+        "  --sweep: budgets 128, 256, 512 and 1024 (one BVH build)\n");
     return 2;
 }
 
@@ -52,8 +53,7 @@ int main(int argc, char** argv) {
     // Bounds are an optional six-number group; a negative X is valid.
     int next = 3;
     if (next < argc && std::string(argv[next]) != "--budget" &&
-        std::string(argv[next]) != "--sweep" &&
-        std::string(argv[next]) != "--tier-budgets") {
+        std::string(argv[next]) != "--sweep" && std::string(argv[next]) != "--tier-budgets") {
         if (argc - next < 6)
             return usage();
         float values[6]{};
@@ -86,8 +86,8 @@ int main(int argc, char** argv) {
         char* tail = nullptr;
         errno = 0;
         const unsigned long parsed = std::strtoul(raw.c_str(), &tail, 10);
-        if (errno == ERANGE || tail == raw.c_str() || *tail != '\0' ||
-            parsed == 0 || parsed > std::numeric_limits<uint32_t>::max())
+        if (errno == ERANGE || tail == raw.c_str() || *tail != '\0' || parsed == 0 ||
+            parsed > std::numeric_limits<uint32_t>::max())
             return false;
         value = static_cast<uint32_t>(parsed);
         return true;
@@ -166,7 +166,7 @@ int main(int argc, char** argv) {
         }
     }
 
-    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
+    auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
     addNode(cluster->scene, -1, 0); // empty scene root
     auto readSibling = [&](const std::string& file) -> std::optional<std::vector<uint8_t>> {
@@ -200,9 +200,8 @@ int main(int argc, char** argv) {
 
     // ---- Reuse the same geometry BVH for every budget. Report actual
     // overlap, not the misleading equality of per-tier probe counts.
-    const std::vector<uint32_t> budgets = sweep
-        ? std::vector<uint32_t>{128, 256, 512, 1024}
-        : std::vector<uint32_t>{volume.maxProbesPerCell};
+    const std::vector<uint32_t> budgets = sweep ? std::vector<uint32_t>{128, 256, 512, 1024}
+                                                : std::vector<uint32_t>{volume.maxProbesPerCell};
     for (const uint32_t budget : budgets) {
         volume.maxProbesPerCell = budget;
         std::vector<wp::CubemapTileCaptureSet> sets;
@@ -213,7 +212,9 @@ int main(int argc, char** argv) {
         }
         std::printf("cubemap plan: default budget=%u per cell/tier, %zu capture sets, "
                     "%zu tiers; BVH=%u triangles\n",
-                    budget, sets.size(), volume.cascades.size(),
+                    budget,
+                    sets.size(),
+                    volume.cascades.size(),
                     (unsigned)traceScene.Bvh().TriangleCount());
         size_t totalProbes = 0;
         size_t equivalentTiers = 0;
@@ -224,27 +225,32 @@ int main(int argc, char** argv) {
             const auto* prior = it == previous.end() ? nullptr : it->second;
             const auto quality = wp::AnalyzeCubemapCaptureQuality(set, prior);
             const uint32_t tierBudget = volume.cascades[set.cascade].maxProbesPerCell
-                ? volume.cascades[set.cascade].maxProbesPerCell : budget;
+                                            ? volume.cascades[set.cascade].maxProbesPerCell
+                                            : budget;
             totalProbes += set.probes.size();
             if (quality.equivalentToPrevious)
                 ++equivalentTiers;
             std::printf("  cell (%lld,%lld) cascade %u target=%.1fm: "
                         "%zu probes (%.1f%% of %u budget); influence radius "
                         "min/median/max=%.2f/%.2f/%.2fm",
-                        (long long)set.cell.x, (long long)set.cell.z,
-                        set.cascade, (double)volume.cascades[set.cascade].densityMeters,
-                        set.probes.size(), 100.0 * double(set.probes.size()) / double(tierBudget),
+                        (long long)set.cell.x,
+                        (long long)set.cell.z,
+                        set.cascade,
+                        (double)volume.cascades[set.cascade].densityMeters,
+                        set.probes.size(),
+                        100.0 * double(set.probes.size()) / double(tierBudget),
                         tierBudget,
                         (double)quality.minInfluenceMeters,
                         (double)quality.medianInfluenceMeters,
                         (double)quality.maxInfluenceMeters);
             if (quality.hasPrevious) {
-                const double overlap = quality.probes
-                    ? 100.0 * double(quality.matchingPreviousPositions) /
-                        double(quality.probes)
-                    : (prior->probes.empty() ? 100.0 : 0.0);
+                const double overlap =
+                    quality.probes
+                        ? 100.0 * double(quality.matchingPreviousPositions) / double(quality.probes)
+                        : (prior->probes.empty() ? 100.0 : 0.0);
                 std::printf("; prior-tier position overlap=%.1f%%, equivalent=%s",
-                            overlap, quality.equivalentToPrevious ? "yes" : "no");
+                            overlap,
+                            quality.equivalentToPrevious ? "yes" : "no");
             }
             std::printf("\n");
             // Keep the original sample-position dump: visible geometry-
@@ -253,14 +259,19 @@ int main(int argc, char** argv) {
                 const auto& p = set.probes[i];
                 std::printf("      probe %zu: pos=(%.2f, %.2f, %.2f) "
                             "influence=%.1f fade=%.1f depth=%u\n",
-                            i, (double)p.position.x, (double)p.position.y,
-                            (double)p.position.z, (double)p.influenceRadius,
-                            (double)p.fadeRadius, p.depth);
+                            i,
+                            (double)p.position.x,
+                            (double)p.position.y,
+                            (double)p.position.z,
+                            (double)p.influenceRadius,
+                            (double)p.fadeRadius,
+                            p.depth);
             }
             previous[key] = &set;
         }
         std::printf("  total probes=%zu; equivalent adjacent cell-tiers=%zu\n",
-                    totalProbes, equivalentTiers);
+                    totalProbes,
+                    equivalentTiers);
         if (equivalentTiers)
             std::printf("  NOTE: matching placements do not justify distinct "
                         "capture tiers until bake/render quality is measured.\n");

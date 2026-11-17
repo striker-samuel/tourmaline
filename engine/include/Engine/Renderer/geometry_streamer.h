@@ -30,7 +30,7 @@
 // levels; demand compares against the full chain.
 //
 // Per SHARED MESH ASSET, not per instance: the deferred record + the
-// promoted pool mesh live on the Cluster that cooked the uri; 100 nodes
+// promoted pool mesh live on the WorldPage that cooked the uri; 100 nodes
 // sharing one LOD3 sibling upload it once (the pool + uri registry are
 // per-asset today - the streaming rides that).
 //
@@ -256,7 +256,7 @@ struct PromotedLodEntry {
 };
 
 // The streamer state the WorldRenderer ticks (the promote/evict
-// machinery itself lives on Cluster::Promote/EvictDeferredMeshLod +
+// machinery itself lives on WorldPage::Promote/EvictDeferredMeshLod +
 // World::Promote/EvictLodLevel - the asset owns its payload; this
 // struct owns POLICY).
 struct GeometryStreamer {

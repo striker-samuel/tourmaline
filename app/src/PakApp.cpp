@@ -17,15 +17,15 @@
 #include "ProjectRuntime.h"
 #include "RuntimeProcedurals.h"
 #include "ShapeSceneLoader.h"
-#include <imgui.h>
 #include <SDL3/SDL_video.h> // SDL_SetWindowTitle (matching the grass demo)
+#include <imgui.h>
 
 #include <Engine/Asset/appmanifest.h>
 #include <Engine/Asset/cluster_serializer.h> // ListPakScenes (the discovery lane's entry pick)
 #include <Engine/Asset/pak_pager.h>
-#include <Engine/WorldPartition/env_tile_pak.h>
 #include <Engine/Memory/memory.h>
 #include <Engine/Profile/profile.h>
+#include <Engine/WorldPartition/env_tile_pak.h>
 
 #include <Engine/Renderer/WorldRenderer.h>
 #include <Engine/Renderer/WorldRendererElement.h>
@@ -52,7 +52,9 @@ namespace {
 // rather than doing an OS title update on every frame.
 class PakViewerApp final : public tour::App {
   public:
-    void SetTitleScene(std::string scene) { m_titleScene = std::move(scene); }
+    void SetTitleScene(std::string scene) {
+        m_titleScene = std::move(scene);
+    }
 
   protected:
     void LateUpdate() override {
@@ -719,18 +721,16 @@ int RunPakApp(PakAppConfig cfg) {
                         std::string openError;
                         auto filePak = smvk::PakReader::OpenFile(envPakPath, openError);
                         if (!filePak) {
-                            std::cerr << "[EnvTiles] page reader failed: "
-                                      << openError << "\n";
+                            std::cerr << "[EnvTiles] page reader failed: " << openError << "\n";
                             return nullptr;
                         }
                         pagePak = std::make_shared<smvk::PakReader>(std::move(*filePak));
                     }
-                    const smvk::PakReader& reader =
-                        pagePak ? *pagePak : metadataReader;
+                    const smvk::PakReader& reader = pagePak ? *pagePak : metadataReader;
                     tour::envcook::Manifest cooked{};
                     if (!tour::envcook::ReadEnvManifest(reader, envWorld, cooked)) {
-                        std::cerr << "[EnvTiles] invalid cooked manifest for '"
-                                  << envSceneName << "'\n";
+                        std::cerr << "[EnvTiles] invalid cooked manifest for '" << envSceneName
+                                  << "'\n";
                         return nullptr;
                     }
                     const uint32_t count = uint32_t(cooked.records.size());
@@ -739,28 +739,37 @@ int RunPakApp(PakAppConfig cfg) {
                     const int64_t originZ = int64_t(std::floor(
                         double(cooked.gridMin.y) / engine::worldpartition::kEnvTileSize));
                     const uint32_t dimX = cooked.dimX, dimZ = cooked.dimZ;
-                    auto pageReader = [backend=envPageBackend, pagePak, envWorld, count,
-                                       originX, originZ, dimX, dimZ,
+                    auto pageReader = [backend = envPageBackend,
+                                       pagePak,
+                                       envWorld,
+                                       count,
+                                       originX,
+                                       originZ,
+                                       dimX,
+                                       dimZ,
                                        present = std::move(cooked.pagePresent)](
-                        engine::worldpartition::WorldSubcellKey key,
-                        std::vector<uint32_t>& ids) {
+                                          engine::worldpartition::WorldSubcellKey key,
+                                          std::vector<uint32_t>& ids) {
                         const int64_t x = key.x - originX, z = key.z - originZ;
                         if (x < 0 || z < 0 || x >= dimX || z >= dimZ)
                             return false;
-                        const bool required = present[size_t(z)*dimX + size_t(x)] != 0;
-                        const smvk::PakReader& pak =
-                            pagePak ? *pagePak : backend->Reader();
-                        return tour::envcook::ReadEnvPage(
-                            pak, envWorld, key, count, required, ids);
+                        const bool required = present[size_t(z) * dimX + size_t(x)] != 0;
+                        const smvk::PakReader& pak = pagePak ? *pagePak : backend->Reader();
+                        return tour::envcook::ReadEnvPage(pak, envWorld, key, count, required, ids);
                     };
                     if (!rendererRaw->InstallCookedEnvironment(
-                            envWorld, cooked.gridMin, cooked.dimX, cooked.dimZ,
-                            cooked.records.data(), cooked.shapes.data(), count,
+                            envWorld,
+                            cooked.gridMin,
+                            cooked.dimX,
+                            cooked.dimZ,
+                            cooked.records.data(),
+                            cooked.shapes.data(),
+                            count,
                             cooked.farCandidates.data(),
                             uint32_t(cooked.farCandidates.size()),
                             std::move(pageReader))) {
-                        std::cerr << "[EnvTiles] cooked environment rejected for '"
-                                  << envSceneName << "'\n";
+                        std::cerr << "[EnvTiles] cooked environment rejected for '" << envSceneName
+                                  << "'\n";
                         return nullptr;
                     }
                 }
@@ -779,7 +788,7 @@ int RunPakApp(PakAppConfig cfg) {
             // WORLD OWNS THE ASSET SERVICE: game code only holds the
             // loaded MeshHandle returned by world.LoadMesh(catalogKey).
             // The World destroys this service FIRST on teardown, while
-            // its Scene + Cluster resource pools are still alive.
+            // its Scene + WorldPage resource pools are still alive.
             if (world && session) {
                 auto assets =
                     std::make_shared<app::AssetManager>(*session, *world, &ctx, rendererRaw);
