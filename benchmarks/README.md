@@ -104,3 +104,7 @@ not saved unless you also specify `--save-paths`. Nsight's
 standard temp environment variables (best-effort for internal NVIDIA
 caches). Trace captures and their shader metadata are private artifacts.
 See [Nsight profiles](../docs/nsight_profiles.md).
+
+## Synthetic hardware limits
+
+See [Hardware profiles](HARDWARE_PROFILES.md) for PS4, PS5, RTX 4060 and custom CPU/VRAM ceilings.
