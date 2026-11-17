@@ -368,11 +368,12 @@ tour::mem::LinearPtr<tour::World> LoadPakWorld(PakPreload pre,
     }
     // Arm the camera-driven page streamer (only a manifest-carrying pak
     // streams — a pre-manifest cook keeps the entry-only shape). The
-    // reader is borrowed from the preload backend, which the App holds for
-    // the session's lifetime.
+    // streamer owns a SHARED reference to the backend so its reader stays
+    // alive for the session (a bare reader reference dangles once this
+    // function returns).
     if (manifest.sceneCount > 1) {
         world->SetPageStreamer(std::make_shared<tour::ScenePageStreamer>(*world,
-                                                                         reader,
+                                                                         pre.backend,
                                                                          ctx,
                                                                          sceneStreamer,
                                                                          pre.image,
@@ -528,9 +529,11 @@ tour::mem::LinearPtr<tour::World> LoadProjectWorld(std::vector<PakPreload> prelo
         }
     }
     // Arm the camera-driven page streamer (manifest-carrying paks only).
+    // The streamer owns a SHARED reference to the backend so its reader
+    // (and the manifest view's borrowed payload span) stay alive.
     if (manifest.sceneCount > 1) {
         world->SetPageStreamer(std::make_shared<tour::ScenePageStreamer>(*world,
-                                                                         reader,
+                                                                         entry.backend,
                                                                          ctx,
                                                                          sceneStreamer,
                                                                          entry.image,

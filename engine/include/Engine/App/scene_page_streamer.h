@@ -25,19 +25,19 @@ namespace tour {
 
 class ScenePageStreamer {
   public:
-    // `manifest` is a WorldManifestView over the reader's "#world" blob — a
-    // borrowed, fixed-size, offset-indexed table (no copy, no per-row
-    // allocation). The view's bytes must outlive the streamer (they are the
-    // PakReader's payload span, which the host keeps for the session).
+    // `backend` is the pak archive's whole-image backend: the streamer owns a
+    // SHARED reference so the PakReader (and the "#world" manifest view's
+    // borrowed payload span) stay alive for the session. A bare reader
+    // reference would dangle once the host loader returns.
     ScenePageStreamer(World& world,
-                      const asset::PakReader& reader,
+                      std::shared_ptr<const smvk::PakBackend> backend,
                       smvk::ResourceManager& ctx,
                       smvk::TextureStreamer* sceneStreamer,
                       std::shared_ptr<const std::vector<uint8_t>> imagePin,
                       const smvk::ExternalTextureResolver* externalTexture,
                       asset::WorldManifestView manifest,
                       uint32_t entryScene)
-        : world_(world), reader_(reader), ctx_(ctx), sceneStreamer_(sceneStreamer),
+        : world_(world), backend_(std::move(backend)), ctx_(ctx), sceneStreamer_(sceneStreamer),
           imagePin_(std::move(imagePin)), externalTexture_(externalTexture), manifest_(manifest),
           entryScene_(entryScene), loaded_(manifest.sceneCount, nullptr) {}
 
@@ -52,7 +52,7 @@ class ScenePageStreamer {
                 continue;
             try {
                 WorldPage& page = world_.LoadPageFromPak(
-                    ctx_, reader_, i, sceneStreamer_, imagePin_, externalTexture_);
+                    ctx_, backend_->Reader(), i, sceneStreamer_, imagePin_, externalTexture_);
                 loaded_[i] = &page;
                 ++loadedThisTick;
                 changed = true;
@@ -110,7 +110,7 @@ class ScenePageStreamer {
     }
 
     World& world_;
-    const asset::PakReader& reader_;
+    std::shared_ptr<const smvk::PakBackend> backend_;
     smvk::ResourceManager& ctx_;
     smvk::TextureStreamer* sceneStreamer_;
     std::shared_ptr<const std::vector<uint8_t>> imagePin_;
