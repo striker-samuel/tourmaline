@@ -406,7 +406,13 @@ bool SetLocalTransform(Scene& scene, NodeHandle handle, const glm::dmat4& transf
 }
 
 void markAsChanged(Scene& scene, int node) {
-    const int level = scene.hierarchy[node].level;
+    // Clamp to the fixed depth budget (changedAtThisFrame has MAX_NODE_LEVEL
+    // slots): a source hierarchy deeper than the budget — Caldera's deep
+    // instance chains — lumps into the last level instead of writing past
+    // the array (the runtime's depth guard on reparenting never exceeds it,
+    // but the importer accepts arbitrary source depth).
+    const int level = scene.hierarchy[node].level >= MAX_NODE_LEVEL ? MAX_NODE_LEVEL - 1
+                                                                    : scene.hierarchy[node].level;
     scene.changedAtThisFrame[level].push_back(node);
 
     // TODO: use non-recursive iteration with aux stack
@@ -430,7 +436,8 @@ void markAsChangedDynamic(Scene& scene, int node) {
     // Frozen subtrees never re-enter the dirty set after the initial build.
     if (node >= 0 && (size_t)node < scene.staticNode.size() && scene.staticNode[(size_t)node] != 0)
         return;
-    const int level = scene.hierarchy[node].level;
+    const int level = scene.hierarchy[node].level >= MAX_NODE_LEVEL ? MAX_NODE_LEVEL - 1
+                                                                    : scene.hierarchy[node].level;
     scene.changedAtThisFrame[level].push_back(node);
 
     for (int s = scene.hierarchy[node].firstChild; s != -1; s = scene.hierarchy[s].nextSibling) {
