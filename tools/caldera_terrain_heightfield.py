@@ -158,11 +158,112 @@ print("  %s: grid %dx%d (spacing %.3f) height %.3f..%.3f holes=%d" % (
     return {"path": str(src), "ok": True, "summary": line}
 
 
+def stitch_heightfields(sources: list[Path], out_dir: Path, env: dict[str, str],
+                        usd_python: Path) -> dict | None:
+    # One USD subprocess stitches every section into ONE heightfield: extract
+    # each `height` grid (holes kept as None), place them into the union grid
+    # at their world offset, and emit a single heightmap + meta. All sections
+    # share the 32-inch spacing, so the union is one regular grid.
+    code = r"""
+import json, sys
+from pxr import Usd, UsdGeom
+srcs, out_png, out_json = json.loads(sys.argv[1]), sys.argv[2], sys.argv[3]
+
+def extract_grid(path):
+    stage = Usd.Stage.Open(path)
+    for p in stage.Traverse():
+        if p.IsA(UsdGeom.Mesh) and p.GetName() == "height":
+            pts = UsdGeom.Mesh(p).GetPointsAttr().Get()
+            if not pts or len(pts) == 0:
+                return None
+            xs = [q[0] for q in pts]; ys = [q[1] for q in pts]; zs = [q[2] for q in pts]
+            ux = sorted(set(round(v, 6) for v in xs)); uy = sorted(set(round(v, 6) for v in ys))
+            if len(ux) < 2 or len(uy) < 2:
+                return None
+            spx, spy = ux[1] - ux[0], uy[1] - uy[0]
+            minx, miny = ux[0], uy[0]
+            nx, ny = len(ux), len(uy)
+            grid = [None] * (nx * ny)
+            for q in pts:
+                ix = int(round((q[0] - minx) / spx)); iy = int(round((q[1] - miny) / spy))
+                if 0 <= ix < nx and 0 <= iy < ny:
+                    grid[iy * nx + ix] = q[2]
+            return (minx, miny, spx, spy, nx, ny, grid)
+    return None
+
+secs = [g for g in (extract_grid(s) for s in srcs) if g]
+if not secs:
+    sys.exit("no height grids extracted")
+spx, spy = secs[0][2], secs[0][3]
+minx = min(g[0] for g in secs); miny = min(g[1] for g in secs)
+maxx = max(g[0] + (g[4] - 1) * g[2] for g in secs)
+maxy = max(g[1] + (g[5] - 1) * g[3] for g in secs)
+unx = int(round((maxx - minx) / spx)) + 1
+uny = int(round((maxy - miny) / spy)) + 1
+# Stitch (later sections overwrite earlier overlaps; uncovered cells stay None).
+union = [None] * (unx * uny)
+for g in secs:
+    ox = int(round((g[0] - minx) / spx)); oy = int(round((g[1] - miny) / spy))
+    for iy in range(g[5]):
+        for ix in range(g[4]):
+            h = g[6][iy * g[4] + ix]
+            if h is not None:
+                union[(oy + iy) * unx + (ox + ix)] = h
+zs = [h for h in union if h is not None]
+minz, maxz = min(zs), max(zs)
+span = (maxz - minz) if (maxz - minz) > 1e-9 else 1.0
+holes = sum(1 for h in union if h is None)
+pixels = []
+for h in union:
+    z = minz if h is None else h
+    pixels.append(max(0, min(65535, int(round((z - minz) / span * 65535.0)))))
+import struct, zlib
+def chunk(t, d):
+    return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
+raw = bytearray()
+for y in range(uny):
+    raw.append(0)
+    raw += struct.pack(">%dH" % unx, *pixels[y * unx:(y + 1) * unx])
+ihdr = struct.pack(">IIBBBBB", unx, uny, 16, 0, 0, 0, 0)
+png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
+       + chunk(b"IDAT", zlib.compress(bytes(raw), 9)) + chunk(b"IEND", b""))
+open(out_png, "wb").write(png)
+stage = Usd.Stage.Open(srcs[0])
+meta = {
+    "origin": [minx, miny],
+    "spacing": [spx, spy],
+    "grid": [unx, uny],
+    "height": [minz, maxz],
+    "metersPerUnit": UsdGeom.GetStageMetersPerUnit(stage),
+    "upAxis": str(UsdGeom.GetStageUpAxis(stage)),
+    "holes": holes,
+    "sections": len(secs),
+    "packing": "rg16",
+}
+json.dump(meta, open(out_json, "w"), indent=2, sort_keys=True)
+print("stitched %d sections -> grid %dx%d height %.3f..%.3f holes=%d" % (
+    len(secs), unx, uny, minz, maxz, holes))
+"""
+    out_png = out_dir / "island.height.png"
+    out_json = out_dir / "island.height.json"
+    proc = __import__("subprocess").run(
+        [str(usd_python), "-c", code, json.dumps([str(s) for s in sources]),
+         str(out_png), str(out_json)],
+        env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    if proc.returncode != 0:
+        return {"error": (proc.stderr or "exit").strip()}
+    line = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else ""
+    return {"ok": True, "summary": line}
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="caldera_terrain_heightfield")
     ap.add_argument("--usd-root", required=True, help="extracted OpenUSD prebuilt root")
     ap.add_argument("--caldera-root", required=True, help="Caldera repo root")
     ap.add_argument("--out-dir", required=True, help="heightmap output directory")
+    ap.add_argument("--stitch", action="store_true",
+                    help="stitch all sections into ONE island heightmap instead of per-section files")
     args = ap.parse_args(argv)
 
     usd_root = Path(args.usd_root)
@@ -176,6 +277,13 @@ def main(argv: list[str]) -> int:
 
     terrain = discover_terrain(caldera_root)
     print("caldera_terrain_heightfield: %d terrain sections" % len(terrain), flush=True)
+    if args.stitch:
+        r = stitch_heightfields(terrain, out_dir, env, usd_python)
+        if r and r.get("ok"):
+            print("  " + r["summary"], flush=True)
+            return 0
+        print("  stitch FAILED: %s" % (r or {}).get("error", "unknown"), flush=True)
+        return 2
     failures = 0
     for i, src in enumerate(terrain, 1):
         r = extract_heightfield(src, out_dir, env, usd_python)
