@@ -1,10 +1,10 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
-#include <gltf_import/source_scene.h>
-#include <gltf_import/asset_export.h>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <cstdlib>
+#include <gltf_import/asset_export.h>
+#include <gltf_import/source_scene.h>
 #include <iostream>
 #include <limits>
 #include <string>
@@ -18,7 +18,7 @@ static void Require(bool condition) {
 
 int main() {
     using namespace smvk::source;
-    Scene s;
+    smvk::source::Scene s;
     s.nodes.emplace_back();
     s.roots.push_back(0);
     s.meshes.emplace_back();
@@ -57,7 +57,7 @@ int main() {
         file << "native test scene";
         Require(bool(file));
     }
-    Scene native;
+    smvk::source::Scene native;
     native.roots = {0};
     native.activeRoots = {0};
     native.nodes.emplace_back();
@@ -86,6 +86,51 @@ int main() {
     Require(smvk::assets::LoadMeshAsset(dir / "native.geometry", derived, loadError));
     Require(derived.geometry.size() == 1);
     Require(derived.geometry[0].indices.size() == 3);
+
+    // STRICT OVERFLOW: the bounded static-mesh pool (Pool::kMaxSize = 8192)
+    // must fail the derive loudly past its bound — never silently truncate.
+    // 8193 single-triangle meshes (one upload each) overflow by one.
+    {
+        const fs::path odir = fs::temp_directory_path(ec) / "tourmaline_overflow";
+        fs::remove_all(odir, ec);
+        fs::create_directories(odir, ec);
+        const fs::path oinput = odir / "overflow.src";
+        {
+            std::ofstream file(oinput, std::ios::binary);
+            file << "overflow test scene";
+        }
+        smvk::source::Scene big;
+        big.roots.reserve(8193);
+        big.activeRoots.reserve(8193);
+        big.nodes.reserve(8193);
+        big.meshes.resize(8193);
+        for (int i = 0; i < 8193; ++i) {
+            smvk::source::Node n;
+            n.name = "m" + std::to_string(i);
+            n.mesh = i;
+            n.parent = InvalidIndex;
+            big.nodes.push_back(n);
+            big.roots.push_back(uint32_t(i));
+            big.activeRoots.push_back(uint32_t(i));
+            auto& prim = big.meshes[size_t(i)].primitives.emplace_back();
+            prim.vertices.resize(3);
+            prim.vertices[0].position = {0.0f, 0.0f, 0.0f};
+            prim.vertices[1].position = {1.0f, 0.0f, 0.0f};
+            prim.vertices[2].position = {0.0f, 1.0f, 0.0f};
+            prim.indices = {0, 1, 2};
+            prim.aabbMin = {0.0f, 0.0f, 0.0f};
+            prim.aabbMax = {1.0f, 1.0f, 0.0f};
+        }
+        Require(Validate(big, error));
+        smvk::assets::AssetManifest om;
+        smvk::assets::DeriveStats os{};
+        std::string oerr;
+        Require(
+            !smvk::assets::DeriveNativeAssets(big, oinput, "", nullptr, config, om, &os, &oerr) &&
+            !oerr.empty());
+        fs::remove_all(odir, ec);
+    }
+
     fs::remove_all(dir, ec);
     return 0;
 }

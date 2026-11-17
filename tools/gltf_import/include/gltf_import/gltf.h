@@ -11,8 +11,8 @@
 #include <unordered_map>
 #include <vector>
 
-#include <tiny_gltf.h>
 #include <gltf_import/source_scene.h>
+#include <tiny_gltf.h>
 
 // ---------------------------------------------------------------------------
 // Artifact-cache hook (optional): the registry store adapter the
@@ -252,6 +252,17 @@ struct SourceSceneImporter {
     // Returns the number of skinned meshes patched.
     int BuildSkinData();
 
+    // STRICT OVERFLOW: true once the bounded static-mesh pool filled during
+    // upload (getOrCreateMesh sets it on an empty upload handle). The derive
+    // owner must fail loudly on this instead of serializing a truncated
+    // cluster — and partition the content into bounded clusters.
+    bool MeshOverflow() const {
+        return meshOverflow_;
+    }
+    size_t MeshOverflowCount() const {
+        return meshOverflowCount_;
+    }
+
   private:
     smvk::ClusterMaterialHandle getOrCreateMaterial(int gltfMaterialIndex);
 
@@ -322,6 +333,12 @@ struct SourceSceneImporter {
     // prepareMeshes before the node walk uploads anything.
     std::vector<std::vector<DerivedMesh>> meshDerived_;
     bool meshesPrepared_ = false;
+    // STRICT OVERFLOW: set when the bounded static-mesh pool fills during
+    // upload. The derive must treat this as a hard failure (fail the import,
+    // never silently drop geometry) and partition the content into bounded
+    // clusters instead.
+    bool meshOverflow_ = false;
+    size_t meshOverflowCount_ = 0;
     std::vector<smvk::ClusterLightHandle> lightCache;          // gltf light index -> handle
     std::unordered_map<int, smvk::TextureHandle> textureCache; // imageIndex -> handle
     // glTF skin references recorded during the node walk: (mesh handle,

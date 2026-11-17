@@ -312,6 +312,13 @@ template <typename ObjectType, typename ImplObjectType> class Pool {
         return numObjects_;
     }
 
+    // The hard bound (fixed array): callers that fill a pool must detect the
+    // overflow at their call site and fail loudly — create() returns an empty
+    // handle past it, and dereferencing that handle is silent corruption.
+    uint32_t capacity() const {
+        return kMaxSize;
+    }
+
     template <typename Func> void forEach(Func&& func) {
         for (uint32_t i = 0; i < kMaxSize; ++i) {
             if (objects_[i].occupied_)

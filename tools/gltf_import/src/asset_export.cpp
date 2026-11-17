@@ -1325,6 +1325,16 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
         importer.preloadTextures();
         for (uint32_t sourceNode : roots)
             importer.import(int(sourceNode));
+        // STRICT OVERFLOW: the bounded static-mesh pool filled during import.
+        // Fail loudly — never serialize a silently-truncated cluster. The
+        // content must be partitioned into bounded clusters (the per-cluster
+        // mesh bound is a hard invariant, see Pool::kMaxSize).
+        if (importer.MeshOverflow()) {
+            return giveUp(
+                "static-mesh pool overflow: " + std::to_string(importer.MeshOverflowCount()) +
+                " mesh upload(s) failed against the per-cluster bound — "
+                "partition the content into bounded clusters");
+        }
         // SKIN post pass (the Northlight data path): build the cluster
         // Skeleton + patch the recorded (mesh, skin) pairs' PackedSkinInfluences
         // streams (the gltfNodeMap is fully populated now - the same

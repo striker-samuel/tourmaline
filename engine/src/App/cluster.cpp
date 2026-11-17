@@ -57,6 +57,19 @@ smvk::ClusterStaticMeshHandle smvk::Cluster::UploadMesh(const MeshData& data) {
         surface.baseVertex = 0;
         mesh.geometry.surfaces.push_back(surface);
         const ClusterStaticMeshHandle handle = staticMeshes.create(std::move(mesh));
+        if (handle.empty()) {
+            // STRICT OVERFLOW: the static-mesh pool is a bounded per-cluster
+            // resource (see Pool::kMaxSize). A full pool must never silently
+            // drop geometry — report it and return an empty handle so the
+            // importer can fail loudly and partition the content into bounded
+            // clusters instead.
+            std::fprintf(stderr,
+                         "[Cluster] static mesh pool overflow at %u meshes; "
+                         "the cluster is full (partition the content into "
+                         "bounded clusters)\n",
+                         staticMeshes.capacity());
+            return {};
+        }
         if (retainUploads_)
             retainedUploads_[handle.index()] = data;
         return handle;
