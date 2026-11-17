@@ -17,6 +17,43 @@
 
 ### P0 — production correctness and architecture cutover
 
+- [ ] **Shared tiled WorldSerialization service (PARTIAL; #375).**
+  Design contract LANDED (`docs/gi_assets_tiled_world_contract.md`); the
+  service itself does not yet exist. One content-addressed, transactional
+  serialization/artifact service for world resources (GI, terrain, scene,
+  environment, fields) with shared keys, sparse tile indices, hash/ABI
+  validation, atomic generation publication and Pak/VFS readback — while each
+  provider keeps its own codec, grid and bake algorithm. Implement in the
+  doc's sequence (service contract → characterization tests → GI-set plumbing
+  → world-GI tile bake format → runtime streaming bridge → dynamic updates),
+  migrating terrain/GI/Map/env providers incrementally without changing their
+  payload ABIs.
+  **Non-goals (do not fold these into the service):** the service does NOT bake
+  GI transport / generate terrain heightmaps / interpret a provider's
+  GPU-native payload; does NOT own cameras, streaming interests, frame budgets,
+  async residency policy or GPU-fence retirement (WorldPartition/providers do);
+  does NOT force one codec / atlas / cell dimension / coordinate cardinality;
+  and never treats a package as a world (one world may span paks; one pak may
+  hold several worlds). GI remains both finite authored `.givolume` sets AND
+  an infinite logical tiled field (never a world-sized dense grid).
+- [ ] **GPU-driven sphere visibility hierarchy + multi-view (PARTIAL; #372).**
+  RFC LANDED (`docs/gpu_scene_visibility_hierarchy_proposal.md`); no
+  implementation. A GPU-resident balanced BVH4 sphere hierarchy replacing the
+  CPU visibility traversal and the fixed `kMaxRasterDrawGroups = 65535` raster
+  geometry table (which today spills ~62% of the island's draw items to the
+  legacy direct path). Byte-level layouts, VRAM cost models and rollout gates
+  are specified in the RFC; keep #371's shader integration and measured
+  regression in view.
+- [ ] **Pak-precounted linear PSO bins + per-flight scene layout (PARTIAL; #365).**
+  CPU-only histogram/prefix/scatter contract + frame-flight descriptor
+  `LANDED` (`pak_linear_pso_bins.h`, `gpu_scene_pipeline_registry.h`,
+  `PakLinearPsoBinsTests`, `GpuScenePipelineRegistryTests`). The live pak
+  loader and Main renderer are NOT switched: the runtime still allocates the
+  eight fixed-class raster indirect buffers reactively (per-flight `Ensure`
+  growth) instead of pak-precounted bump allocation. Follow
+  `docs/pak_linear_pso_flight_scene.md` for pak enumeration, runtime re-plan,
+  frame-flight publication, consumer parity and rollback gates.
+
 - [ ] **GPU-scene physical geometry ownership (PARTIAL; #294/#295).**
   Stable generation/LOD-indexed descriptor identities, per-flight publication,
   transient-ID aliasing, and live raster-command handoff **LANDED**.
