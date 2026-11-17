@@ -676,6 +676,14 @@ bool SerializeClusters(const std::vector<const WorldPage*>& clusters,
     };
     std::vector<LocalMaps> locals(clusters.size());
 
+    // THE WORLD MANIFEST (the scene-list table, one row per scene, in
+    // scene-index order): the camera-streaming planner reads it ONCE and
+    // indexes by slot, addressing each brick by its content hash — never a
+    // TOC search. Accumulated as the scenes serialize, emitted after the
+    // per-cluster loop as the reserved "#world" blob.
+    std::vector<WorldManifestScene> worldManifest;
+    worldManifest.reserve(clusters.size());
+
     // COOKED STATIC-CULL BVH pre-pass (WorldPage::cookedStaticBvh): every
     // mesh's LOCAL-space AABB by URI (from the retained uploads the blob
     // writes — the runtime StaticMesh.geometry aabb is a bit-exact copy,
@@ -1273,6 +1281,36 @@ bool SerializeClusters(const std::vector<const WorldPage*>& clusters,
                     PutU32(blob, slotToDense[row->node]);
                     PutU32(blob, it->second);
                 }
+            }
+            // The scene's aggregate WORLD AABB (the WORLD MANIFEST's
+            // camera-distance input): union over EVERY mesh row's world
+            // AABB (base-mesh local AABB x the node's global transform),
+            // not just the static-cull subset.
+            ::tour::Aabb sceneBounds = ::tour::Aabb::empty();
+            for (const MeshRow& row : scene.tables.meshes) {
+                if (row.node >= scene.globalTransform.size())
+                    continue;
+                const auto uriIt = bvhUriByPoolIndex[ci].find(row.mesh);
+                if (uriIt == bvhUriByPoolIndex[ci].end())
+                    continue;
+                const auto aIt = bvhAabbByUri.find(uriIt->second);
+                if (aIt == bvhAabbByUri.end())
+                    continue;
+                const glm::vec3& mn = aIt->second.mn;
+                const glm::vec3& mx = aIt->second.mx;
+                const glm::mat4& model = scene.globalTransform[row.node];
+                const glm::vec3 corners[8] = {
+                    {mn.x, mn.y, mn.z},
+                    {mn.x, mn.y, mx.z},
+                    {mn.x, mx.y, mn.z},
+                    {mn.x, mx.y, mx.z},
+                    {mx.x, mn.y, mn.z},
+                    {mx.x, mn.y, mx.z},
+                    {mx.x, mx.y, mn.z},
+                    {mx.x, mx.y, mx.z},
+                };
+                for (const glm::vec3& c : corners)
+                    sceneBounds.expand(glm::vec3(model * glm::vec4(c, 1.0f)));
             }
             {
                 std::vector<const MaterialRow*> matRows;
@@ -1901,8 +1939,34 @@ bool SerializeClusters(const std::vector<const WorldPage*>& clusters,
                 return fail("scene blob rejected");
             if (stats)
                 stats->nodes += nodeCount;
+            // The WORLD MANIFEST row for this scene: the content hash (the
+            // scene-name hash for now — the #ids content-id join is a
+            // follow-up), the aggregate world AABB (the camera distance
+            // check), and the node/mesh counts. Row index == scene index.
+            // sceneNames may be SHORT (the single-scene SerializeCluster
+            // passes {}), so index it defensively.
+            const std::string sceneName = ci < sceneNames.size() ? sceneNames[ci] : std::string();
+            WorldManifestScene ms;
+            ms.contentHash = PakHashPath(sceneName);
+            ms.name = sceneName;
+            ms.aabbMin = sceneBounds.mn;
+            ms.aabbMax = sceneBounds.mx;
+            ms.nodes = nodeCount;
+            ms.meshes = static_cast<uint32_t>(scene.tables.meshes.size());
+            worldManifest.push_back(std::move(ms));
         }
     } // per-cluster loop
+
+    // THE WORLD MANIFEST (the scene-list table, one blob at the reserved
+    // "#world" path): the camera-streaming planner's flat, directly-indexable
+    // index of scene AABBs + hashes. Always written (a pak with scenes ships
+    // the table) so the runtime never falls back to a TOC scan.
+    if (!worldManifest.empty()) {
+        if (!writer.AddBlob(PakAssetKind::WorldManifest,
+                            kPakWorldManifestPath,
+                            WriteWorldManifestBlob(worldManifest)))
+            return fail("world manifest blob rejected");
+    }
 
     // The pak-level SCHEMA REGISTRY (node_schema.h): the cooked schema
     // layouts the runtime + the generated project::types decode

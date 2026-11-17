@@ -16,6 +16,8 @@
 #include <Engine/Vfs/vfs.h>
 #include <Engine/smvk.h> // smvk::TextureStreamMeta (v4 tail-upload digest form)
 
+#include <glm/glm.hpp>
+
 #include <mutex>
 
 namespace tour::mem {
@@ -114,6 +116,10 @@ inline constexpr const char* kPakMeshPlanPath = "#meshplan";
 // the discovery lane's metadata (a fixed reserved path, one per pak,
 // exactly like #meshplan / #schemas).
 inline constexpr const char* kPakAssetIdsPath = "#ids";
+// The per-pak WORLD MANIFEST blob's reserved TOC path: the scene-list
+// table (see WorldManifestScene + WriteWorldManifestBlob) — one per pak,
+// fixed reserved path, exactly like #meshplan / #schemas / #ids.
+inline constexpr const char* kPakWorldManifestPath = "#world";
 
 // A breaking change to any of this bumps the pak magic (SMP8 is the
 // current epoch - the paged break: per-page contentCrc, stable slots,
@@ -231,6 +237,14 @@ enum class PakAssetKind : uint32_t {
     MapManifest = 24,     // cooked world-wide Map ID, tile count and persistent placement index
     EnvTile = 25,         // cooked immutable 64m environment-volume candidate page (not VFS)
     Anim = 26,            // VFS-addressable authored .anim clip (raw tourAnim text)
+    // WORLDMANIFEST (the world's scene-list table): ONE blob per pak at the
+    // reserved path kPakWorldManifestPath ("#world") carrying the pak's
+    // WorldManifestScene rows — the content HASH, AABB, name and node/mesh
+    // counts of every scene, in scene-index order. The camera-streaming
+    // planner indexes it by slot (never a TOC search) and addresses bricks
+    // by their content hash. WorldPage-internal, invisible to the VFS
+    // backends.
+    WorldManifest = 27,
 };
 
 enum PakEntryFlags : uint32_t {
@@ -335,6 +349,30 @@ struct PakAssetIdRow {
 bool ParseAssetIdsBlob(std::span<const uint8_t> blob,
                        std::vector<PakAssetIdRow>& out,
                        std::string& err);
+
+// ---- THE PER-PAK WORLD MANIFEST (the scene-list table) -------------------
+// One WorldManifest-kind blob per pak at kPakWorldManifestPath: a FLAT,
+// directly-indexable table of the pak's scenes (row index == the scene
+// index == the LoadPageFromPak scene index). Each row carries the scene's
+// content HASH (the stable identity the streaming planner + the entrypoint
+// address bricks by — never a name search), its world AABB (the camera
+// distance check), and its node/mesh counts. The runtime reads it ONCE and
+// indexes by slot; bricks resolve by hash in O(1).
+struct WorldManifestScene {
+    uint64_t contentHash = 0; // the scene's stable content id (hash-based address)
+    std::string name;
+    glm::vec3 aabbMin{0.0f};
+    glm::vec3 aabbMax{0.0f};
+    uint32_t nodes = 0;
+    uint32_t meshes = 0;
+};
+// Blob encoding (LE): 'WMAN' u32 magic | u32 version(=1) | u32 sceneCount |
+// per scene: u64 contentHash | 6 x f32 aabb (min.xyz, max.xyz) | u32 nodes |
+// u32 meshes | u32 nameLen | name bytes. End-exact.
+std::vector<uint8_t> WriteWorldManifestBlob(const std::vector<WorldManifestScene>& scenes);
+bool ParseWorldManifestBlob(std::span<const uint8_t> blob,
+                            std::vector<WorldManifestScene>& out,
+                            std::string& err);
 
 // Append-grow: adds blobs to a pak FILE on disk (created when missing
 // or empty), keeping the image valid for PakReader::Open at all times.
@@ -684,6 +722,7 @@ using ::tour::asset::BuildTexturePayloadV4;
 using ::tour::asset::kPakFooterMagic;
 using ::tour::asset::kPakMagic;
 using ::tour::asset::kPakMeshPlanPath;
+using ::tour::asset::kPakWorldManifestPath;
 using ::tour::asset::PakAppendInfo;
 using ::tour::asset::PakAssetKind;
 using ::tour::asset::PakBackend;
@@ -705,5 +744,8 @@ using ::tour::asset::ParseMeshPlanBlob;
 using ::tour::asset::ParseTextureDigest;
 using ::tour::asset::ParseTexturePayload;
 using ::tour::asset::ParseTexturePayloadV4;
+using ::tour::asset::ParseWorldManifestBlob;
+using ::tour::asset::WorldManifestScene;
 using ::tour::asset::WriteMeshPlanBlob;
+using ::tour::asset::WriteWorldManifestBlob;
 } // namespace smvk

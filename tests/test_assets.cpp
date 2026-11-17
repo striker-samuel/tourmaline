@@ -533,6 +533,89 @@ void TestPakStreamingWrite() {
     fs::remove_all(dir, ec);
 }
 
+// The WORLD MANIFEST (the scene-list table): blob round-trip + the
+// SerializeClusters emission (one "#world" blob carrying the scene AABB,
+// hash and counts in scene-index order).
+smvk::MeshData MakeQuad(); // forward (defined below the pak tests)
+void TestWorldManifestBlob() {
+    using namespace smvk;
+    // Round-trip the blob format directly.
+    std::vector<WorldManifestScene> scenes;
+    {
+        WorldManifestScene a;
+        a.contentHash = 0xdeadbeefcafe1234ull;
+        a.name = "island_part0";
+        a.aabbMin = {-10.0f, 0.0f, -20.0f};
+        a.aabbMax = {30.0f, 5.0f, 40.0f};
+        a.nodes = 4096;
+        a.meshes = 4000;
+        scenes.push_back(a);
+        WorldManifestScene b;
+        b.contentHash = 0x1234cafebeef5678ull;
+        b.name = "island_part1";
+        b.aabbMin = {-50.0f, 0.0f, -60.0f};
+        b.aabbMax = {-20.0f, 8.0f, -30.0f};
+        b.nodes = 2048;
+        b.meshes = 2000;
+        scenes.push_back(b);
+    }
+    const std::vector<uint8_t> blob = WriteWorldManifestBlob(scenes);
+    std::vector<WorldManifestScene> parsed;
+    std::string err;
+    Check(ParseWorldManifestBlob(std::span<const uint8_t>(blob), parsed, err), "worldman.parse");
+    Check(parsed.size() == 2, "worldman.count");
+    if (parsed.size() == 2) {
+        Check(parsed[0].contentHash == scenes[0].contentHash && parsed[0].name == "island_part0",
+              "worldman.row0.hash");
+        Check(parsed[0].aabbMin == scenes[0].aabbMin && parsed[0].aabbMax == scenes[0].aabbMax,
+              "worldman.row0.aabb");
+        Check(parsed[0].nodes == 4096 && parsed[0].meshes == 4000, "worldman.row0.counts");
+        Check(parsed[1].name == "island_part1" && parsed[1].meshes == 2000, "worldman.row1");
+    }
+    // A malformed blob (bad magic) must fail closed.
+    std::vector<uint8_t> bad(blob);
+    bad[0] ^= 0xFF;
+    Check(!ParseWorldManifestBlob(std::span<const uint8_t>(bad), parsed, err),
+          "worldman.bad-magic");
+
+    // SerializeClusters emits the "#world" blob for a two-scene cook.
+    auto makeScene = [](const char* uri, const char* nodeName) {
+        auto c = std::make_unique<WorldPage>(nullptr);
+        c->SetOfflineMode(true);
+        const auto mh = c->UploadMesh(MakeQuad());
+        c->RegisterMeshUri(uri, mh);
+        const int root = addNode(c->scene, -1, 0);
+        const int n = addNode(c->scene, root, 1);
+        SetMesh(c->scene, uint32_t(n), mh.index());
+        MarkSubtreeStatic(c->scene, n);
+        setNodeName(c->scene, n, nodeName);
+        return c;
+    };
+    auto a = makeScene("m#a", "A");
+    auto b = makeScene("m#b", "B");
+    PakWriter writer;
+    WorldPageSerializeStats stats;
+    Check(SerializeClusters({a.get(), b.get()}, {"Alpha", "Beta"}, writer, &stats, &err),
+          "worldman.serialize");
+    std::vector<uint8_t> img = writer.Finalize();
+    std::string openErr;
+    auto reader = PakReader::Open(std::span<const uint8_t>(img), openErr);
+    Check(reader.has_value(), "worldman.open");
+    if (reader) {
+        const auto* wm = reader->Find(PakAssetKind::WorldManifest, kPakWorldManifestPath);
+        Check(wm != nullptr, "worldman.blob-present");
+        if (wm) {
+            std::vector<WorldManifestScene> rows;
+            Check(ParseWorldManifestBlob(reader->Payload(*wm), rows, err) && rows.size() == 2,
+                  "worldman.rows");
+            if (rows.size() == 2) {
+                Check(rows[0].name == "Alpha" && rows[1].name == "Beta", "worldman.order");
+                Check(rows[0].aabbMin.x >= -1.0f && rows[0].aabbMax.x <= 2.0f, "worldman.aabb");
+            }
+        }
+    }
+}
+
 void TestPakAppend() {
     namespace fs = std::filesystem;
     const auto dir = fs::temp_directory_path() / "tourmaline_pak_append";
@@ -4297,6 +4380,7 @@ int main() {
     run("TestTextureSourceLifetime", TestTextureSourceLifetime);
     run("TestPakRoundTrip", TestPakRoundTrip);
     run("TestPakStreamingWrite", TestPakStreamingWrite);
+    run("TestWorldManifestBlob", TestWorldManifestBlob);
     run("TestShapePakBlobs", TestShapePakBlobs);
     run("TestPakCrcCombine", TestPakCrcCombine);
     run("TestPakCrcParallel", TestPakCrcParallel);
