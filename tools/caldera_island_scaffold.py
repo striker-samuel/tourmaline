@@ -54,6 +54,12 @@ def stage_district(caldera_root: Path, project_dir: Path, stem: str) -> None:
             print(f"  WARN: missing {src.name} for {stem}", flush=True)
             continue
         shutil.copy2(src, dst / src.name)
+    # PARTITIONED-FAMILY parts (P1): a split district ships <stem>_partN.
+    # geometry files beside the manifest. The authoring stays agnostic —
+    # the .tour still references the single logical <stem>.geometry, and
+    # the cook/runtime resolve the parts through the manifest.
+    for part in sorted(season.glob(stem + "_part*.geometry")):
+        shutil.copy2(part, dst / part.name)
 
 
 def write_island_tour(project_dir: Path, stems: list[str]) -> Path:
