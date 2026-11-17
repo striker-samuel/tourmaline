@@ -4844,9 +4844,14 @@ int Run(const CookArgs& c) {
                             }
                         }
                     }
-                    if (c.GetMeshMeshlets(uri).has_value())
-                        ++meshletSets;
-                    ++meshBlobs;
+                    // Only meshlet-ELIGIBLE meshes count toward the meshlet
+                    // requirement: a tiny (< kGpuDrivenMeshMinTriangles) mesh
+                    // legitimately ships no meshlet set and draws direct.
+                    if (smvk::EligibleForGpuDrivenMesh(lod.triCount)) {
+                        if (c.GetMeshMeshlets(uri).has_value())
+                            ++meshletSets;
+                        ++meshBlobs;
+                    }
                 } else {
                     const auto sibling = c.FindMeshByUri(uri);
                     if (sibling && c.staticMeshes.get(*sibling))
