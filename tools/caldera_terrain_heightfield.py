@@ -213,6 +213,31 @@ zs = [h for h in union if h is not None]
 minz, maxz = min(zs), max(zs)
 span = (maxz - minz) if (maxz - minz) > 1e-9 else 1.0
 holes = sum(1 for h in union if h is None)
+# Discontinuity analysis: adjacent-cell height jumps (the sections overlap
+# with conflicting heights, so a naive last-wins stitch can leave seams where
+# the winning section changes). Report the largest jump + how many cell edges
+# exceed 2x / 10x the grid spacing.
+max_jump = 0.0
+steep_edges = 0
+seam_edges = 0
+for iy in range(uny):
+    for ix in range(unx):
+        h = union[iy * unx + ix]
+        if h is None:
+            continue
+        for dx, dy in ((1, 0), (0, 1)):
+            nx, ny = ix + dx, iy + dy
+            if nx >= unx or ny >= uny:
+                continue
+            n = union[ny * unx + nx]
+            if n is None:
+                continue
+            d = abs(h - n)
+            max_jump = max(max_jump, d)
+            if d > 2.0 * spx:
+                steep_edges += 1
+            if d > 10.0 * spx:
+                seam_edges += 1
 pixels = []
 for h in union:
     z = minz if h is None else h
@@ -238,11 +263,14 @@ meta = {
     "upAxis": str(UsdGeom.GetStageUpAxis(stage)),
     "holes": holes,
     "sections": len(secs),
+    "maxJump": max_jump,
+    "steepEdges": steep_edges,
+    "seamEdges": seam_edges,
     "packing": "rg16",
 }
 json.dump(meta, open(out_json, "w"), indent=2, sort_keys=True)
-print("stitched %d sections -> grid %dx%d height %.3f..%.3f holes=%d" % (
-    len(secs), unx, uny, minz, maxz, holes))
+print("stitched %d sections -> grid %dx%d height %.3f..%.3f holes=%d maxJump=%.1f steepEdges=%d seamEdges=%d" % (
+    len(secs), unx, uny, minz, maxz, holes, max_jump, steep_edges, seam_edges))
 """
     out_png = out_dir / "island.height.png"
     out_json = out_dir / "island.height.json"
