@@ -333,21 +333,29 @@ tour::mem::LinearPtr<tour::World> LoadPakWorld(PakPreload pre,
                   << " scenes)\n";
         return nullptr;
     }
-    std::cerr << "[App] loading " << scenes.size() << " scene(s) "
-              << "(entry scene[" << sceneIndex << "] '" << scenes[size_t(sceneIndex)].name
-              << "')...\n";
+    std::cerr << "[App] loading entry scene[" << sceneIndex << "] '"
+              << scenes[size_t(sceneIndex)].name << "' (" << scenes.size()
+              << " scene(s) total)...\n";
     auto world = tour::mem::MakeProcess<tour::World>();
     world->ConfigureSceneNodeBudget(nodeBudget);
+    // The WORLD MANIFEST (the scene-list table): the camera-driven page
+    // streamer indexes it by slot (each row's AABB is the distance-check
+    // input). Read + report it here; the streamer re-reads it per page.
     {
-        // The cluster deserialize + GPU uploads (meshes, materials,
-        // textures staged through the streamer) — the dominant
-        // scene-switch cost. Load EVERY scene: a partitioned-family world
-        // ships as one scene per bounded cluster; PostLoadTail's
-        // ResolveAndFixup_pages folds them into the merged scene.
+        std::string wmErr;
+        const std::vector<smvk::WorldManifestScene> manifest =
+            smvk::ListPakWorldManifest(reader, &wmErr);
+        std::cerr << "[App] world manifest: " << manifest.size() << " scene(s)"
+                  << (wmErr.empty() ? "" : " (" + wmErr + ")") << "\n";
+    }
+    {
+        // ENTRYPOINT: load the entry scene synchronously (the world goes
+        // live), and DEFER the remaining pages to the camera-driven page
+        // streamer. A partitioned-family world ships one scene per bounded
+        // cluster; the streamer loads the rest by camera distance.
         SMVK_PROFILE_IO("PakWorld_LoadPage");
         try {
-            for (size_t i = 0; i < scenes.size(); ++i)
-                world->LoadPageFromPak(ctx, reader, uint32_t(i), sceneStreamer, pre.image);
+            world->LoadPageFromPak(ctx, reader, uint32_t(sceneIndex), sceneStreamer, pre.image);
         } catch (const std::exception& e) {
             // DeserializeCluster drains its own staged uploads on failure;
             // drain anything queued since, then fail the load.
@@ -356,7 +364,8 @@ tour::mem::LinearPtr<tour::World> LoadPakWorld(PakPreload pre,
             return nullptr;
         }
     }
-    std::cerr << "[App] pak clusters loaded (" << scenes.size() << " scene(s))\n";
+    std::cerr << "[App] entry scene loaded (" << (scenes.size() - 1)
+              << " page(s) deferred to the camera streamer)\n";
     // Mount the pak backend into the overlay (the world-source
     // protocol role: the engine hands the callback a vfs, hosts
     // mount their paks) AND ADOPT it into the session's registry —
@@ -475,25 +484,34 @@ tour::mem::LinearPtr<tour::World> LoadProjectWorld(std::vector<PakPreload> prelo
 
     auto world = tour::mem::MakeProcess<tour::World>();
     world->ConfigureSceneNodeBudget(nodeBudget);
+    // The WORLD MANIFEST (the scene-list table): the camera-driven page
+    // streamer indexes it by slot (each row's AABB is the distance-check
+    // input). Read + report it here; the streamer re-reads it per page.
+    {
+        std::string wmErr;
+        const std::vector<smvk::WorldManifestScene> manifest =
+            smvk::ListPakWorldManifest(reader, &wmErr);
+        std::cerr << "[App] project: world manifest: " << manifest.size() << " scene(s)"
+                  << (wmErr.empty() ? "" : " (" + wmErr + ")") << "\n";
+    }
     {
         SMVK_PROFILE_IO("ProjectWorld_LoadPage");
         try {
-            // Load EVERY scene in the entry pak: the entry scene (the main
-            // cluster) + any partitioned-family part scenes. Each scene is
-            // one cluster; PostLoadTail's ResolveAndFixup_pages folds
-            // them into the single merged world scene. The authoring layer
-            // never sees the partition (the parts resolve here at load).
-            for (size_t i = 0; i < scenes.size(); ++i) {
-                world->LoadPageFromPak(
-                    ctx, reader, uint32_t(i), sceneStreamer, entry.image, &resolver);
-            }
+            // ENTRYPOINT: load the ENTRY scene synchronously (the world
+            // goes live) and DEFER the partitioned-family part scenes to
+            // the camera-driven page streamer. Each scene is one cluster;
+            // the streamer loads the parts by camera distance and
+            // PostLoadTail's ResolveAndFixup_pages folds them in.
+            world->LoadPageFromPak(
+                ctx, reader, uint32_t(entryIdx), sceneStreamer, entry.image, &resolver);
         } catch (const std::exception& e) {
             std::cerr << "[App] project pak load failed: " << e.what() << "\n";
             ctx.WaitForUploads();
             return nullptr;
         }
     }
-    std::cerr << "[App] project clusters loaded (" << scenes.size() << " scene(s))\n";
+    std::cerr << "[App] project entry scene loaded (" << (scenes.size() - 1)
+              << " page(s) deferred to the camera streamer)\n";
     PostLoadTail(*world, StemOf(entry.scenePak), *session);
     return world;
 }
