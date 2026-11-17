@@ -14,6 +14,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from benchmark_environment import sample_environment
+from benchmark_profiles import PROFILES, resolve_profile, profile_applied
 
 
 def default_paths_config():
@@ -285,7 +286,18 @@ def main(argv=None):
                         help="cull mode: the tracked baseline directory (one <scenario>.json per camera)")
     parser.add_argument("--app-arg", action="append", default=[], help="Additional App flag (repeat, one token per flag)")
     parser.add_argument("--timeout", type=positive, default=600)
+    parser.add_argument("--hardware-profile", choices=PROFILES, default="native",
+                        help="Approximate hardware resource ceiling (bench only)")
+    parser.add_argument("--cpu-limit", type=positive, help="Override logical CPU ceiling")
+    parser.add_argument("--vram-mb", type=positive, help="Override VMA device-local ceiling (MiB)")
     args = parser.parse_args(argv)
+    if args.hardware_profile != "native" or args.cpu_limit or args.vram_mb:
+        if args.mode != "bench":
+            parser.error("hardware limits apply to bench mode only")
+    try:
+        hardware = resolve_profile(args.hardware_profile, args.cpu_limit, args.vram_mb)
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.mode in ("trace", "capture") or args.save_paths or args.show_paths:
         config_file, chosen = resolve_paths(parser, args)
         if args.save_paths or args.show_paths:
@@ -323,6 +335,8 @@ def main(argv=None):
             parser.error("comparison requires two uninstrumented bench results")
         if a.get("ok") is False or b.get("ok") is False or a.get("environment_checks", [{}])[-1].get("status") not in ("clean", None) or b.get("environment_checks", [{}])[-1].get("status") not in ("clean", None):
             parser.error("cannot compare invalid or contaminated benchmark results")
+        if a.get("hardware_profile") != b.get("hardware_profile"):
+            parser.error("hardware profiles differ; compare matching runs only")
         if a.get("frames") != b.get("frames") or a.get("app_args") != b.get("app_args") or a.get("environment") != b.get("environment") or a.get("source_args") != b.get("source_args") or a.get("scenario") != b.get("scenario"):
             parser.error("benchmark configurations differ; compare matching runs only")
         # Resolution-scaling results compare per resolution: a regression at
@@ -425,6 +439,18 @@ def main(argv=None):
     if args.mode == "snapshot" and "TOURMALINE_RNG_SEED" not in pins:
         # In a replayable scenario, do not depend on process entropy.
         pins["TOURMALINE_RNG_SEED"] = "0"
+    # Reserved pins are owned by the profile selector, not inherited or
+    # overridden through scenario/environment settings.
+    for key, value in (("TOURMALINE_BENCH_CPU_LIMIT", hardware["cpu_limit"]),
+                       ("TOURMALINE_BENCH_VRAM_MB", hardware["vram_mb"])):
+        if key in pins:
+            parser.error(key + " is reserved; use hardware profile options")
+        env.pop(key, None)
+        if value is not None:
+            pins[key] = str(value)
+    if hardware["cpu_limit"] is not None or hardware["vram_mb"] is not None:
+        if args.exe.stem.lower() != "benchmark":
+            parser.error("hardware profiles require the dedicated Benchmark executable")
     env.update(pins)
     if args.mode == "cull":
         if not args.scenario:
@@ -461,6 +487,8 @@ def main(argv=None):
               "command": argv_app, "cwd": str(workdir), "frames": args.frames,
               "warmup_frames": args.warmup, "environment": pins, "app_args": args.app_arg,
               "source_args": args.source_args if scenario else argv_app[1:3], "scenario": args.scenario, "runs": []}
+    if hardware["cpu_limit"] is not None or hardware["vram_mb"] is not None:
+        report["hardware_profile"] = hardware
     if args.mode == "trace":
         report["trace_frames"] = args.trace_frames
         report["trace_duration_ms"] = args.trace_duration_ms
@@ -605,6 +633,8 @@ def main(argv=None):
                                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                           timeout=args.timeout, errors="replace", check=False)
                     log, rc = proc.stdout, proc.returncode
+                    if rc == 0 and not profile_applied(hardware, log):
+                        rc = 1
                 except subprocess.TimeoutExpired as exc:
                     log = (exc.stdout or b"").decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
                     rc = 124
@@ -634,6 +664,8 @@ def main(argv=None):
                                       stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                                       timeout=args.timeout, errors="replace", check=False)
                 log, rc = proc.stdout, proc.returncode
+                if rc == 0 and not profile_applied(hardware, log):
+                    rc = 1
             except subprocess.TimeoutExpired as exc:
                 log = (exc.stdout or b"").decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or "")
                 rc = 124
