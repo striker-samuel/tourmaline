@@ -34,7 +34,11 @@ namespace gfx {
 // so a cluster bigger than this would drop geometry (see meshlet.h's
 // kMeshletMaxTriangles, the tighter cook-time limit).
 static constexpr uint32_t kMaxClusterTris = 128;
-static constexpr uint32_t kMaxMeshes = 8192;
+// World-level mesh budget (2^18). The old 8192 cap rejected large scenes
+// (the island's ~162k valid meshes); the GPU buffers are sized by the actual
+// registered count, so this is an admission ceiling, not a reservation.
+// HLSL mirror: GFX_MAX_MESHES (gfxfilter.hlsli).
+static constexpr uint32_t kMaxMeshes = 262144;
 
 // Cluster record (CPU). The task/mesh + indexed raster backends read the GPU
 // mirror (ClusterConstants below) from the cluster buffer; the filtered

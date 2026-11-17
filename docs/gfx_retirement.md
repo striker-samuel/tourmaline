@@ -224,6 +224,23 @@ Commit subjects follow the plan; the deltas are marked.
 - 04 — `refactor(gfx): capacity and startup allocation overhaul` —
   remove the 65,535/65,536 ceilings; derive reservations from world
   requirements; expose utilization/high-water/overflow.
+  - **Record**: raised the two hard admission ceilings that reject
+    large scenes — `kMaxMeshes` 8192 → 262144 (HLSL mirror
+    `GFX_MAX_MESHES`) and `kMaxRasterDrawGroups` 65535 → 262144 (HLSL
+    mirror `GS_MAX_GEO`; the hardcoded `65535u` bounds in
+    `gpu_scene_task_mesh_runtime.h` now reference the named constant).
+    Both are admission ceilings, not reservations: the per-flight
+    publisher buffers double to the actual geometry count, so GPU
+    memory follows usage. Sibling limits are already at 262144+
+    (`GFX_MAX_CLUSTERS`, `GS_MAX_WORK`/`GS_MAX_INSTANCES`/
+    `GS_MAX_CLUSTERS` 4194304). Remaining doc-only items: leaf-range /
+    instance-candidate / shader-row / PSO-work budgets
+    (`MaxPassedLeafRanges` 65536, `MaxPassedInstanceCandidates`
+    1048576, `MaxShaderRowSlots` 4194304, `workCandidates` 1048576) are
+    declared-max checks, not admission ceilings — to be re-derived from
+    checked scene requirements with GPU validation.
+  - **Gates**: 7-test GFX subset green; `EngineScene_shaders` recompiles
+    (HLSL mirrors stay in lockstep); text integrity clean.
 - 05 — `refactor(gfx): shared prepass Hi-Z and parallel skinning` —
   one pyramid, two culling consumers; skinning overlaps the static
   prepass/Hi-Z work.
