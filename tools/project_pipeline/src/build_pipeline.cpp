@@ -113,6 +113,8 @@ namespace fs = std::filesystem;
 struct BuildSettings {
     bool cubemap = true;   // the capture bake (Cook --cubemap)
     bool lightmap = false; // deprecated path (off)
+    bool gi = false;       // the authored-GI-volume refresh (GiBaker); default OFF to match
+                           // the recipe pipeline's `bake gi` default (project_recipe.h).
                            // (The legacy .sggi world-bake knobs — giBackend/giMaxProbes — are
                            // REMOVED (stage 3 of the octree retirement completed the stage-2
                            // retirement): old projects' settings files keep loading, their
@@ -140,6 +142,8 @@ BuildSettings LoadBuildSettings(const Project& p) {
             s.cubemap = val != "off";
         else if (key == "lightmap")
             s.lightmap = val == "on";
+        else if (key == "gi")
+            s.gi = val == "on";
         // (giBackend/giMaxProbes skip: retired with the .sggi bake.)
     }
     return s;
@@ -1704,7 +1708,11 @@ bool BuildProject(const Project& project,
     }
 
     // ---- 5) GiBaker (the authored GI volumes only) -----------------------
-    {
+    // Gated by the `gi` setting, matching the recipe pipeline's `bake gi`
+    // (default OFF). The volume-only pass refreshes authored/convex volumes
+    // the Cook's in-process bake did not already stamp fresh; a project
+    // without authored volumes skips it outright (no world rebuild).
+    if (settings.gi) {
         // The legacy .sggi world bake is RETIRED from the schedule (stage
         // 2 of the octree retirement): NO --out, no
         // --max-probes — a bare run is GI-VOLUME-ONLY (the
