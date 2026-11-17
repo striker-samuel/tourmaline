@@ -706,16 +706,6 @@ inline constexpr const char* kHizSpdCsPath = "content/shaders/hzb_spd.cs.hlsl.mi
 inline constexpr const char* kGfxSkinBoundsCsPath = "content/shaders/gfxskinbounds.cs.hlsl.spv";
 
 // ---- GPU cull chain pass shells (caller sets the recording func) ----
-// Deformed cluster bounds: runs between the skinning pass and GfxBatchCull.
-// One 128-thread workgroup per draw; threads stride the draw's clusters and
-// write an object-space bounding sphere (cone degenerated) per candidate
-// slot from the frame's deformed heap. No-op when no skinned cluster exists
-// (the caller gates on State::skinDeformedBda).
-smvk::RenderPass& AddSkinBoundsPass(State& s, smvk::RenderGraph& rg, uint32_t view);
-void PushAndDispatchSkinBounds(State& s,
-                               smvk::CommandBuffer& cmd,
-                               smvk::ResourceManager& ctx,
-                               uint32_t view);
 // Creates the per-flight skinBounds ring + module lazily (idempotent).
 bool EnsureSkinBounds(State& s, smvk::ResourceManager& ctx, smvk::RenderGraph& rg);
 bool EnsureShaders(State& s, smvk::ResourceManager& ctx, const char* csPath = kGfxFilterCsPath);
