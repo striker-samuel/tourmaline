@@ -681,7 +681,7 @@ bool SerializeClusters(const std::vector<const WorldPage*>& clusters,
     // indexes by slot, addressing each brick by its content hash — never a
     // TOC search. Accumulated as the scenes serialize, emitted after the
     // per-cluster loop as the reserved "#world" blob.
-    std::vector<WorldManifestScene> worldManifest;
+    std::vector<WorldManifestRow> worldManifest;
     worldManifest.reserve(clusters.size());
 
     // COOKED STATIC-CULL BVH pre-pass (WorldPage::cookedStaticBvh): every
@@ -1946,14 +1946,13 @@ bool SerializeClusters(const std::vector<const WorldPage*>& clusters,
             // sceneNames may be SHORT (the single-scene SerializeCluster
             // passes {}), so index it defensively.
             const std::string sceneName = ci < sceneNames.size() ? sceneNames[ci] : std::string();
-            WorldManifestScene ms;
+            WorldManifestRow ms;
             ms.contentHash = PakHashPath(sceneName);
-            ms.name = sceneName;
             ms.aabbMin = sceneBounds.mn;
             ms.aabbMax = sceneBounds.mx;
             ms.nodes = nodeCount;
             ms.meshes = static_cast<uint32_t>(scene.tables.meshes.size());
-            worldManifest.push_back(std::move(ms));
+            worldManifest.push_back(ms);
         }
     } // per-cluster loop
 
@@ -1964,7 +1963,7 @@ bool SerializeClusters(const std::vector<const WorldPage*>& clusters,
     if (!worldManifest.empty()) {
         if (!writer.AddBlob(PakAssetKind::WorldManifest,
                             kPakWorldManifestPath,
-                            WriteWorldManifestBlob(worldManifest)))
+                            WriteWorldManifestBlob(worldManifest.data(), worldManifest.size())))
             return fail("world manifest blob rejected");
     }
 

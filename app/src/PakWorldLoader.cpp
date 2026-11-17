@@ -339,13 +339,15 @@ tour::mem::LinearPtr<tour::World> LoadPakWorld(PakPreload pre,
               << " scene(s) total)...\n";
     auto world = tour::mem::MakeProcess<tour::World>();
     world->ConfigureSceneNodeBudget(nodeBudget);
-    // The WORLD MANIFEST (the scene-list table): the camera-driven page
-    // streamer indexes it by slot (each row's AABB is the distance-check
-    // input).
+    // The WORLD MANIFEST (the fixed-size scene-list table): the camera-driven
+    // page streamer indexes it by OFFSET (each row's AABB is the distance
+    // check input). Read once into a directly-addressable view (borrowed
+    // bytes — no std::vector/string copy).
     std::string wmErr;
-    const std::vector<smvk::WorldManifestScene> manifest =
-        smvk::ListPakWorldManifest(reader, &wmErr);
-    std::cerr << "[App] world manifest: " << manifest.size() << " scene(s)"
+    const std::optional<smvk::WorldManifestView> manifestOpt =
+        smvk::ReadWorldManifest(reader, &wmErr);
+    const smvk::WorldManifestView manifest = manifestOpt.value_or(smvk::WorldManifestView{});
+    std::cerr << "[App] world manifest: " << manifest.sceneCount << " scene(s)"
               << (wmErr.empty() ? "" : " (" + wmErr + ")") << "\n";
     {
         // ENTRYPOINT: load the entry scene synchronously (the world goes
@@ -367,7 +369,7 @@ tour::mem::LinearPtr<tour::World> LoadPakWorld(PakPreload pre,
     // streams — a pre-manifest cook keeps the entry-only shape). The
     // reader is borrowed from the preload backend, which the App holds for
     // the session's lifetime.
-    if (manifest.size() > 1) {
+    if (manifest.sceneCount > 1) {
         world->SetPageStreamer(std::make_shared<tour::ScenePageStreamer>(*world,
                                                                          reader,
                                                                          ctx,
@@ -497,13 +499,15 @@ tour::mem::LinearPtr<tour::World> LoadProjectWorld(std::vector<PakPreload> prelo
 
     auto world = tour::mem::MakeProcess<tour::World>();
     world->ConfigureSceneNodeBudget(nodeBudget);
-    // The WORLD MANIFEST (the scene-list table): the camera-driven page
-    // streamer indexes it by slot (each row's AABB is the distance-check
-    // input).
+    // The WORLD MANIFEST (the fixed-size scene-list table): the camera-driven
+    // page streamer indexes it by OFFSET (each row's AABB is the distance
+    // check input). Read once into a directly-addressable view (borrowed
+    // bytes — no std::vector/string copy).
     std::string wmErr;
-    const std::vector<smvk::WorldManifestScene> manifest =
-        smvk::ListPakWorldManifest(reader, &wmErr);
-    std::cerr << "[App] project: world manifest: " << manifest.size() << " scene(s)"
+    const std::optional<smvk::WorldManifestView> manifestOpt =
+        smvk::ReadWorldManifest(reader, &wmErr);
+    const smvk::WorldManifestView manifest = manifestOpt.value_or(smvk::WorldManifestView{});
+    std::cerr << "[App] project: world manifest: " << manifest.sceneCount << " scene(s)"
               << (wmErr.empty() ? "" : " (" + wmErr + ")") << "\n";
     {
         SMVK_PROFILE_IO("ProjectWorld_LoadPage");
@@ -522,7 +526,7 @@ tour::mem::LinearPtr<tour::World> LoadProjectWorld(std::vector<PakPreload> prelo
         }
     }
     // Arm the camera-driven page streamer (manifest-carrying paks only).
-    if (manifest.size() > 1) {
+    if (manifest.sceneCount > 1) {
         world->SetPageStreamer(std::make_shared<tour::ScenePageStreamer>(*world,
                                                                          reader,
                                                                          ctx,

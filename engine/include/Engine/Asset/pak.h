@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <fstream>
 #include <memory>
 #include <optional>
@@ -117,7 +118,7 @@ inline constexpr const char* kPakMeshPlanPath = "#meshplan";
 // exactly like #meshplan / #schemas).
 inline constexpr const char* kPakAssetIdsPath = "#ids";
 // The per-pak WORLD MANIFEST blob's reserved TOC path: the scene-list
-// table (see WorldManifestScene + WriteWorldManifestBlob) — one per pak,
+// table (see WorldManifestRow + WorldManifestView) — one per pak,
 // fixed reserved path, exactly like #meshplan / #schemas / #ids.
 inline constexpr const char* kPakWorldManifestPath = "#world";
 
@@ -239,11 +240,11 @@ enum class PakAssetKind : uint32_t {
     Anim = 26,            // VFS-addressable authored .anim clip (raw tourAnim text)
     // WORLDMANIFEST (the world's scene-list table): ONE blob per pak at the
     // reserved path kPakWorldManifestPath ("#world") carrying the pak's
-    // WorldManifestScene rows — the content HASH, AABB, name and node/mesh
-    // counts of every scene, in scene-index order. The camera-streaming
-    // planner indexes it by slot (never a TOC search) and addresses bricks
-    // by their content hash. WorldPage-internal, invisible to the VFS
-    // backends.
+    // FIXED-SIZE WorldManifestRow table — the content HASH, AABB and
+    // node/mesh counts of every scene, in scene-index order. The camera-
+    // streaming planner indexes it by OFFSET (never a TOC search, never a
+    // name search) and addresses bricks by their content hash. WorldPage-
+    // internal, invisible to the VFS backends.
     WorldManifest = 27,
 };
 
@@ -352,33 +353,71 @@ bool ParseAssetIdsBlob(std::span<const uint8_t> blob,
 
 // ---- THE PER-PAK WORLD MANIFEST (the scene-list table) -------------------
 // One WorldManifest-kind blob per pak at kPakWorldManifestPath: a FLAT,
-// directly-indexable table of the pak's scenes (row index == the scene
-// index == the LoadPageFromPak scene index). Each row carries the scene's
-// content HASH (the stable identity the streaming planner + the entrypoint
-// address bricks by — never a name search), its world AABB (the camera
-// distance check), and its node/mesh counts. The runtime reads it ONCE and
-// indexes by slot; bricks resolve by hash in O(1).
-struct WorldManifestScene {
+// FIXED-SIZE table of the pak's scenes (row index == the scene index == the
+// LoadPageFromPak scene index). Every row is 40 bytes: u64 contentHash |
+// 6 x f32 aabb (min.xyz, max.xyz) | u32 nodes | u32 meshes. No variable-
+// length fields (the scene NAMES live in the scene list, not here), so the
+// runtime indexes a row by OFFSET arithmetic — no copy, no search, no
+// per-row allocation.
+
+// The cook-side fixed-size row (accumulated by the serializer).
+struct WorldManifestRow {
     uint64_t contentHash = 0; // the scene's stable content id (hash-based address)
-    std::string name;
     glm::vec3 aabbMin{0.0f};
     glm::vec3 aabbMax{0.0f};
     uint32_t nodes = 0;
     uint32_t meshes = 0;
 };
+
+// The runtime view: borrowed bytes of the "#world" blob + the scene count.
+// Every access is OFFSET arithmetic (O(1), allocation-free). The bytes must
+// outlive the view (they are the PakReader's payload span).
+struct WorldManifestView {
+    std::span<const uint8_t> bytes;
+    uint32_t sceneCount = 0;
+    static constexpr size_t kRowBytes = 40;
+
+    bool Valid() const {
+        return sceneCount != 0 && bytes.size() >= 12 + size_t(sceneCount) * kRowBytes;
+    }
+    const uint8_t* Row(uint32_t i) const {
+        return bytes.data() + 12 + size_t(i) * kRowBytes;
+    }
+    uint64_t ContentHash(uint32_t i) const {
+        uint64_t h = 0;
+        std::memcpy(&h, Row(i), 8);
+        return h;
+    }
+    void Aabb(uint32_t i, glm::vec3& mn, glm::vec3& mx) const {
+        const uint8_t* p = Row(i) + 8;
+        std::memcpy(&mn.x, p + 0, 4);
+        std::memcpy(&mn.y, p + 4, 4);
+        std::memcpy(&mn.z, p + 8, 4);
+        std::memcpy(&mx.x, p + 12, 4);
+        std::memcpy(&mx.y, p + 16, 4);
+        std::memcpy(&mx.z, p + 20, 4);
+    }
+    uint32_t Nodes(uint32_t i) const {
+        uint32_t n = 0;
+        std::memcpy(&n, Row(i) + 32, 4);
+        return n;
+    }
+    uint32_t Meshes(uint32_t i) const {
+        uint32_t m = 0;
+        std::memcpy(&m, Row(i) + 36, 4);
+        return m;
+    }
+};
+
 // Blob encoding (LE): 'WMAN' u32 magic | u32 version(=1) | u32 sceneCount |
-// per scene: u64 contentHash | 6 x f32 aabb (min.xyz, max.xyz) | u32 nodes |
-// u32 meshes | u32 nameLen | name bytes. End-exact.
-std::vector<uint8_t> WriteWorldManifestBlob(const std::vector<WorldManifestScene>& scenes);
-bool ParseWorldManifestBlob(std::span<const uint8_t> blob,
-                            std::vector<WorldManifestScene>& out,
-                            std::string& err);
-// Reads the pak's "#world" manifest (the scene-list table) in scene-index
-// order. A pak without one (a pre-manifest cook) returns an empty list.
-// Used by the runtime's entrypoint + camera-based page streaming.
+// per scene: u64 contentHash | 6 x f32 aabb | u32 nodes | u32 meshes.
+// End-exact; every row is kRowBytes (40) bytes.
+std::vector<uint8_t> WriteWorldManifestBlob(const WorldManifestRow* rows, size_t count);
+// Reads the pak's "#world" manifest into a directly-addressable view.
+// nullopt on error (or no manifest); the view's bytes borrow the reader.
 class PakReader;
-std::vector<WorldManifestScene> ListPakWorldManifest(const PakReader& reader,
-                                                     std::string* err = nullptr);
+std::optional<WorldManifestView> ReadWorldManifest(const PakReader& reader,
+                                                   std::string* err = nullptr);
 
 // Append-grow: adds blobs to a pak FILE on disk (created when missing
 // or empty), keeping the image valid for PakReader::Open at all times.
@@ -729,7 +768,6 @@ using ::tour::asset::kPakFooterMagic;
 using ::tour::asset::kPakMagic;
 using ::tour::asset::kPakMeshPlanPath;
 using ::tour::asset::kPakWorldManifestPath;
-using ::tour::asset::ListPakWorldManifest;
 using ::tour::asset::PakAppendInfo;
 using ::tour::asset::PakAssetKind;
 using ::tour::asset::PakBackend;
@@ -751,8 +789,9 @@ using ::tour::asset::ParseMeshPlanBlob;
 using ::tour::asset::ParseTextureDigest;
 using ::tour::asset::ParseTexturePayload;
 using ::tour::asset::ParseTexturePayloadV4;
-using ::tour::asset::ParseWorldManifestBlob;
-using ::tour::asset::WorldManifestScene;
+using ::tour::asset::ReadWorldManifest;
+using ::tour::asset::WorldManifestRow;
+using ::tour::asset::WorldManifestView;
 using ::tour::asset::WriteMeshPlanBlob;
 using ::tour::asset::WriteWorldManifestBlob;
 } // namespace smvk

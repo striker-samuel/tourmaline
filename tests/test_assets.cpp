@@ -539,46 +539,62 @@ void TestPakStreamingWrite() {
 smvk::MeshData MakeQuad(); // forward (defined below the pak tests)
 void TestWorldManifestBlob() {
     using namespace smvk;
-    // Round-trip the blob format directly.
-    std::vector<WorldManifestScene> scenes;
+    // Round-trip the FIXED-SIZE blob format directly (offset-indexed rows).
+    std::vector<WorldManifestRow> rows;
     {
-        WorldManifestScene a;
+        WorldManifestRow a;
         a.contentHash = 0xdeadbeefcafe1234ull;
-        a.name = "island_part0";
         a.aabbMin = {-10.0f, 0.0f, -20.0f};
         a.aabbMax = {30.0f, 5.0f, 40.0f};
         a.nodes = 4096;
         a.meshes = 4000;
-        scenes.push_back(a);
-        WorldManifestScene b;
+        rows.push_back(a);
+        WorldManifestRow b;
         b.contentHash = 0x1234cafebeef5678ull;
-        b.name = "island_part1";
         b.aabbMin = {-50.0f, 0.0f, -60.0f};
         b.aabbMax = {-20.0f, 8.0f, -30.0f};
         b.nodes = 2048;
         b.meshes = 2000;
-        scenes.push_back(b);
+        rows.push_back(b);
     }
-    const std::vector<uint8_t> blob = WriteWorldManifestBlob(scenes);
-    std::vector<WorldManifestScene> parsed;
+    const std::vector<uint8_t> blob = WriteWorldManifestBlob(rows.data(), rows.size());
     std::string err;
-    Check(ParseWorldManifestBlob(std::span<const uint8_t>(blob), parsed, err), "worldman.parse");
-    Check(parsed.size() == 2, "worldman.count");
-    if (parsed.size() == 2) {
-        Check(parsed[0].contentHash == scenes[0].contentHash && parsed[0].name == "island_part0",
-              "worldman.row0.hash");
-        Check(parsed[0].aabbMin == scenes[0].aabbMin && parsed[0].aabbMax == scenes[0].aabbMax,
-              "worldman.row0.aabb");
-        Check(parsed[0].nodes == 4096 && parsed[0].meshes == 4000, "worldman.row0.counts");
-        Check(parsed[1].name == "island_part1" && parsed[1].meshes == 2000, "worldman.row1");
+    // 12-byte header + two 40-byte rows, end-exact.
+    Check(blob.size() == 12 + 2 * WorldManifestView::kRowBytes, "worldman.size");
+    {
+        uint32_t magic = 0, version = 0, count = 0;
+        memcpy(&magic, blob.data(), 4);
+        memcpy(&version, blob.data() + 4, 4);
+        memcpy(&count, blob.data() + 8, 4);
+        Check(magic == 0x4E414D57u /* "WMAN" LE */ && version == 1 && count == 2,
+              "worldman.header");
+        // The directly-addressable view: O(1) offset arithmetic, no copy.
+        WorldManifestView view;
+        view.bytes = std::span<const uint8_t>(blob);
+        view.sceneCount = count;
+        Check(view.Valid(), "worldman.view.valid");
+        Check(view.ContentHash(0) == rows[0].contentHash &&
+                  view.ContentHash(1) == rows[1].contentHash,
+              "worldman.view.hash");
+        glm::vec3 mn, mx;
+        view.Aabb(0, mn, mx);
+        Check(mn == rows[0].aabbMin && mx == rows[0].aabbMax, "worldman.view.aabb0");
+        view.Aabb(1, mn, mx);
+        Check(mn == rows[1].aabbMin && mx == rows[1].aabbMax, "worldman.view.aabb1");
+        Check(view.Nodes(0) == 4096 && view.Meshes(0) == 4000, "worldman.view.counts0");
+        Check(view.Nodes(1) == 2048 && view.Meshes(1) == 2000, "worldman.view.counts1");
     }
-    // A malformed blob (bad magic) must fail closed.
-    std::vector<uint8_t> bad(blob);
-    bad[0] ^= 0xFF;
-    Check(!ParseWorldManifestBlob(std::span<const uint8_t>(bad), parsed, err),
-          "worldman.bad-magic");
+    // A size mismatch (a trailing/truncated byte) must fail closed.
+    {
+        WorldManifestView view;
+        view.bytes = std::span<const uint8_t>(blob.data(), blob.size() - 1);
+        view.sceneCount = 2;
+        Check(!view.Valid(), "worldman.view.truncated");
+    }
 
-    // SerializeClusters emits the "#world" blob for a two-scene cook.
+    // SerializeClusters emits the "#world" blob for a two-scene cook, and
+    // ReadWorldManifest reads it back as a fixed-size view (rows in
+    // scene-index order, addressed by content hash).
     auto makeScene = [](const char* uri, const char* nodeName) {
         auto c = std::make_unique<WorldPage>(nullptr);
         c->SetOfflineMode(true);
@@ -605,12 +621,18 @@ void TestWorldManifestBlob() {
         const auto* wm = reader->Find(PakAssetKind::WorldManifest, kPakWorldManifestPath);
         Check(wm != nullptr, "worldman.blob-present");
         if (wm) {
-            std::vector<WorldManifestScene> rows;
-            Check(ParseWorldManifestBlob(reader->Payload(*wm), rows, err) && rows.size() == 2,
-                  "worldman.rows");
-            if (rows.size() == 2) {
-                Check(rows[0].name == "Alpha" && rows[1].name == "Beta", "worldman.order");
-                Check(rows[0].aabbMin.x >= -1.0f && rows[0].aabbMax.x <= 2.0f, "worldman.aabb");
+            std::string werr;
+            const auto view = ReadWorldManifest(*reader, &werr);
+            Check(view.has_value() && view->sceneCount == 2, "worldman.rows");
+            if (view && view->sceneCount == 2) {
+                // Rows are content-hash addressed (the scene names were the
+                // cook-side hash input); order is scene-index order.
+                Check(view->ContentHash(0) == PakHashPath("Alpha") &&
+                          view->ContentHash(1) == PakHashPath("Beta"),
+                      "worldman.order");
+                glm::vec3 mn, mx;
+                view->Aabb(0, mn, mx);
+                Check(mn.x >= -1.0f && mx.x <= 2.0f, "worldman.aabb");
             }
         }
     }

@@ -1621,112 +1621,68 @@ bool ParseAssetIdsBlob(std::span<const uint8_t> blob,
 inline constexpr uint32_t kWorldManifestMagic = 0x4E414D57u; // "WMAN" LE
 inline constexpr uint32_t kWorldManifestVersion = 1;
 
-std::vector<uint8_t> WriteWorldManifestBlob(const std::vector<WorldManifestScene>& scenes) {
+std::vector<uint8_t> WriteWorldManifestBlob(const WorldManifestRow* rows, size_t count) {
     std::vector<uint8_t> out;
+    out.reserve(12 + count * WorldManifestView::kRowBytes);
     AppendU32(out, kWorldManifestMagic);
     AppendU32(out, kWorldManifestVersion);
-    AppendU32(out, static_cast<uint32_t>(scenes.size()));
-    for (const WorldManifestScene& s : scenes) {
-        AppendU64(out, s.contentHash);
+    AppendU32(out, static_cast<uint32_t>(count));
+    for (size_t i = 0; i < count; ++i) {
+        const WorldManifestRow& r = rows[i];
+        AppendU64(out, r.contentHash);
         const float aabb[6] = {
-            s.aabbMin.x, s.aabbMin.y, s.aabbMin.z, s.aabbMax.x, s.aabbMax.y, s.aabbMax.z};
+            r.aabbMin.x, r.aabbMin.y, r.aabbMin.z, r.aabbMax.x, r.aabbMax.y, r.aabbMax.z};
         for (const float f : aabb) {
             const uint8_t* p = reinterpret_cast<const uint8_t*>(&f);
             out.insert(out.end(), p, p + 4);
         }
-        AppendU32(out, s.nodes);
-        AppendU32(out, s.meshes);
-        AppendU32(out, static_cast<uint32_t>(s.name.size()));
-        out.insert(out.end(), s.name.begin(), s.name.end());
+        AppendU32(out, r.nodes);
+        AppendU32(out, r.meshes);
     }
     return out;
 }
 
-bool ParseWorldManifestBlob(std::span<const uint8_t> blob,
-                            std::vector<WorldManifestScene>& out,
-                            std::string& err) {
-    out.clear();
-    auto need = [&](size_t off, size_t n) -> bool {
-        if (off > blob.size() || n > blob.size() - off)
-            return false;
-        return true;
-    };
-    uint32_t magic = 0, version = 0, sceneCount = 0;
-    if (!need(0, 12)) {
-        err = "world manifest header truncated";
-        return false;
-    }
-    memcpy(&magic, blob.data(), 4);
-    memcpy(&version, blob.data() + 4, 4);
-    memcpy(&sceneCount, blob.data() + 8, 4);
-    if (magic != kWorldManifestMagic) {
-        err = "bad world manifest magic";
-        return false;
-    }
-    if (version != kWorldManifestVersion) {
-        err = "unsupported world manifest version";
-        return false;
-    }
-    if (sceneCount > (1u << 20)) {
-        err = "world manifest scene count out of range";
-        return false;
-    }
-    size_t off = 12;
-    out.reserve(sceneCount);
-    for (uint32_t i = 0; i < sceneCount; ++i) {
-        WorldManifestScene s;
-        if (!need(off, 8)) {
-            err = "world manifest row hash truncated";
-            return false;
-        }
-        memcpy(&s.contentHash, blob.data() + off, 8);
-        off += 8;
-        if (!need(off, 24 + 8 + 4)) {
-            err = "world manifest row fields truncated";
-            return false;
-        }
-        memcpy(&s.aabbMin.x, blob.data() + off + 0, 4);
-        memcpy(&s.aabbMin.y, blob.data() + off + 4, 4);
-        memcpy(&s.aabbMin.z, blob.data() + off + 8, 4);
-        memcpy(&s.aabbMax.x, blob.data() + off + 12, 4);
-        memcpy(&s.aabbMax.y, blob.data() + off + 16, 4);
-        memcpy(&s.aabbMax.z, blob.data() + off + 20, 4);
-        off += 24;
-        memcpy(&s.nodes, blob.data() + off, 4);
-        memcpy(&s.meshes, blob.data() + off + 4, 4);
-        off += 8;
-        uint32_t nameLen = 0;
-        memcpy(&nameLen, blob.data() + off, 4);
-        off += 4;
-        if (nameLen > 4096 || !need(off, nameLen)) {
-            err = "world manifest row name out of range";
-            return false;
-        }
-        s.name.assign(reinterpret_cast<const char*>(blob.data() + off), nameLen);
-        off += nameLen;
-        out.push_back(std::move(s));
-    }
-    if (off != blob.size()) {
-        err = "world manifest trailing bytes";
-        return false;
-    }
-    return true;
-}
-
-std::vector<WorldManifestScene> ListPakWorldManifest(const PakReader& reader, std::string* err) {
+std::optional<WorldManifestView> ReadWorldManifest(const PakReader& reader, std::string* err) {
     if (err)
         err->clear();
     const PakTocEntry* wm = reader.Find(PakAssetKind::WorldManifest, kPakWorldManifestPath);
     if (!wm)
-        return {}; // a pre-manifest cook: no table, the caller falls back
-    std::vector<WorldManifestScene> rows;
-    std::string perr;
-    if (!ParseWorldManifestBlob(reader.Payload(*wm), rows, perr)) {
+        return std::nullopt; // a pre-manifest cook: no table, the caller falls back
+    const std::span<const uint8_t> blob = reader.Payload(*wm);
+    if (blob.size() < 12) {
         if (err)
-            *err = perr;
-        return {};
+            *err = "world manifest header truncated";
+        return std::nullopt;
     }
-    return rows;
+    uint32_t magic = 0, version = 0, sceneCount = 0;
+    memcpy(&magic, blob.data(), 4);
+    memcpy(&version, blob.data() + 4, 4);
+    memcpy(&sceneCount, blob.data() + 8, 4);
+    if (magic != kWorldManifestMagic) {
+        if (err)
+            *err = "bad world manifest magic";
+        return std::nullopt;
+    }
+    if (version != kWorldManifestVersion) {
+        if (err)
+            *err = "unsupported world manifest version";
+        return std::nullopt;
+    }
+    if (sceneCount > (1u << 20)) {
+        if (err)
+            *err = "world manifest scene count out of range";
+        return std::nullopt;
+    }
+    // End-exact: the FIXED-SIZE table must occupy exactly this many bytes.
+    if (blob.size() != 12 + size_t(sceneCount) * WorldManifestView::kRowBytes) {
+        if (err)
+            *err = "world manifest size mismatch";
+        return std::nullopt;
+    }
+    WorldManifestView view;
+    view.bytes = blob;
+    view.sceneCount = sceneCount;
+    return view;
 }
 
 // ---------------------------------------------------------------------------
