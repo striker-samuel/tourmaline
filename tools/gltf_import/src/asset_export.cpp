@@ -381,8 +381,13 @@ bool ParseManifestLine(const std::string& key, const std::string& val, AssetMani
     if (key == "geometry" || key == "mesh") {
         // ".geometry" is the data blob's name now (the pre-10/6 ".mesh"
         // derived asset renamed; ".mesh" is the higher placeable asset).
-        // Both keys parse; only "geometry" is written.
+        // Both keys parse; only "geometry" is written. A partitioned family
+        // (P1) writes "geometry.<part>" per part.
         e.kind = AssetKind::Geometry;
+        have = true;
+    } else if (key.rfind("geometry.", 0) == 0) {
+        e.kind = AssetKind::Geometry;
+        e.sourceIndex = std::atoi(key.c_str() + 9);
         have = true;
     } else if (key.rfind("material.", 0) == 0) {
         e.kind = AssetKind::Material;
@@ -469,7 +474,9 @@ bool SaveAssetManifest(const std::filesystem::path& gltfPath,
         std::string key;
         switch (e.kind) {
         case AssetKind::Geometry:
-            key = "geometry";
+            // Single-file families keep the legacy "geometry" key; a
+            // partitioned family (P1) writes "geometry.<part>" per part.
+            key = (e.sourceIndex >= 0) ? "geometry." + std::to_string(e.sourceIndex) : "geometry";
             break;
         case AssetKind::Material:
             key = "material." + std::to_string(e.sourceIndex);
@@ -1280,70 +1287,22 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
         return false;
     };
 
-    // 1) The deterministic cook-mode import (GPU-free like the baker;
-    // node ids identical to the live import — the .tour replay contract).
-    // AUTHORITATIVE PREPROCESSING: the LOD chain + meshlets derive HERE —
-    // the .geometry carries them; cooks consume and never re-decide (the
-    // old cook-time --lods regeneration + geometry write-back is retired).
+    // P1: partition an oversized scene into bounded clusters. Each part is
+    // within the per-cluster mesh bound (the pool caps at 8192; plan at 4096).
+    // Materials + manifest identity are SHARED (derived once from the full
+    // scene); only geometry + instances split per part into <stem>_partN.geometry.
+    const smvk::source::ScenePartition partition =
+        smvk::source::PartitionScene(native, 4096, 256.0f);
+    const bool split = !partition.unchanged;
+    const std::vector<smvk::source::Scene>& parts = partition.parts;
+
+    // The cook-time meshopt config (the LOD chain + meshlets derive in the
+    // per-part import below; the manifest records their fingerprint).
     smvk::MeshOptConfig meshOpt{};
     meshOpt.enabled = config.lods;
-    // The chain settings ride the config (the manifest records their
-    // fingerprint — a ratio change re-derives the artifact).
     meshOpt.generateLods = config.lods;
     meshOpt.lodRatios = config.lodRatios;
     meshOpt.lodTargetError = config.lodTargetError;
-    auto cluster = std::make_unique<smvk::Cluster>(nullptr);
-    cluster->SetOfflineMode(true);
-    std::vector<int> gltfNodeMap;
-    {
-        SourceSceneImporter importer{*cluster, native, gltfPath};
-        importer.setMeshOptConfig(meshOpt);
-        // Meshlets bake INTO THE .GEOMETRY (the artifact owns the cooked
-        // sets — pak assembly reads them, never re-decides). The old
-        // inverted form (config.meshlets -> setMeshletConfig({}), a
-        // default-DISABLED config) never built a single set: every
-        // .geometry shipped meshlet-less, the runtime GfxRenderer
-        // registered zero clusters and the whole scene fell back to the
-        // direct draw path. request -> the engine canon (64v/64t).
-        if (config.meshlets) {
-            smvk::MeshletConfig mlc{};
-            mlc.enabled = true;
-            mlc.splitFactor = config.meshletSplitFactor;
-            mlc.minTriangles = config.meshletMinTris;
-            importer.setMeshletConfig(mlc);
-        }
-        // Far-shading derivation (default off; see DeriveConfig::shaderLods).
-        importer.setDeriveShaderLods(config.shaderLods);
-        importer.setAutoKtx(true);
-        importer.setModelUriBase(gltfPath.generic_string());
-        // The classic GltfToCluster body (cook mode, no RM): cluster
-        // scene root + the glTF scene roots imported underneath.
-        const int root = addNode(cluster->scene, -1, 0);
-        cluster->scene.localTransform[size_t(root)] = glm::mat4(1.0f);
-        cluster->scene.globalTransform[size_t(root)] = glm::mat4(1.0f);
-        const auto& roots = native.activeRoots.empty() ? native.roots : native.activeRoots;
-        importer.preloadTextures();
-        for (uint32_t sourceNode : roots)
-            importer.import(int(sourceNode));
-        // STRICT OVERFLOW: the bounded static-mesh pool filled during import.
-        // Fail loudly — never serialize a silently-truncated cluster. The
-        // content must be partitioned into bounded clusters (the per-cluster
-        // mesh bound is a hard invariant, see Pool::kMaxSize).
-        if (importer.MeshOverflow()) {
-            return giveUp(
-                "static-mesh pool overflow: " + std::to_string(importer.MeshOverflowCount()) +
-                " mesh upload(s) failed against the per-cluster bound — "
-                "partition the content into bounded clusters");
-        }
-        // SKIN post pass (the Northlight data path): build the cluster
-        // Skeleton + patch the recorded (mesh, skin) pairs' PackedSkinInfluences
-        // streams (the gltfNodeMap is fully populated now - the same
-        // post-pass contract as GltfToCluster's inline flow).
-        importer.BuildSkinData();
-        RebuildStaticCache(cluster->scene);
-        recalculateGlobalTransforms(cluster->scene);
-        gltfNodeMap = importer.gltfNodeMap();
-    }
 
     // 2) Manifest identity — THE IDENTITY LEDGER, separate from the
     // source-byte fingerprints (the identity contract):
@@ -1565,485 +1524,555 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
         ++stats.materials;
     }
 
-    // 4) The .mesh asset (from the imported cluster): the RAW hierarchy +
-    // the packed SoA geometry blobs + the material GUID bindings (the
-    // cluster material URIs carry "<...>#mat.<gltf index>").
-    MeshAsset mesh;
-    {
-        const Scene& scene = cluster->scene;
-        const size_t nodeCount = scene.hierarchy.size();
-        mesh.nodes.resize(nodeCount);
-        for (size_t i = 0; i < nodeCount; ++i) {
-            mesh.nodes[i].parent = scene.hierarchy[i].parent;
-            mesh.nodes[i].level = scene.hierarchy[i].level;
+    // The imported cluster + node map (the single-scene case keeps them for
+    // the animation post pass; the split case skips animations — its districts
+    // are static).
+    std::unique_ptr<smvk::Cluster> cluster;
+    std::vector<int> gltfNodeMap;
+
+    // 4) The .geometry: import + serialize. Oversized scenes PARTITION (P1):
+    // each part imports into its own bounded cluster and serializes into
+    // <stem>_partN.geometry. Materials + manifest identity are shared (derived
+    // once above); only geometry + instances split per part.
+    auto importAndSerialize = [&](const smvk::source::Scene& part,
+                                  const std::string& geometryFile,
+                                  int partIndex) -> bool {
+        auto partCluster = std::make_unique<smvk::Cluster>(nullptr);
+        partCluster->SetOfflineMode(true);
+        {
+            SourceSceneImporter importer{*partCluster, part, gltfPath};
+            importer.setMeshOptConfig(meshOpt);
+            if (config.meshlets) {
+                smvk::MeshletConfig mlc{};
+                mlc.enabled = true;
+                mlc.splitFactor = config.meshletSplitFactor;
+                mlc.minTriangles = config.meshletMinTris;
+                importer.setMeshletConfig(mlc);
+            }
+            importer.setDeriveShaderLods(config.shaderLods);
+            importer.setAutoKtx(true);
+            importer.setModelUriBase(gltfPath.generic_string());
+            const int root = addNode(partCluster->scene, -1, 0);
+            partCluster->scene.localTransform[size_t(root)] = glm::mat4(1.0f);
+            partCluster->scene.globalTransform[size_t(root)] = glm::mat4(1.0f);
+            const auto& roots = part.activeRoots.empty() ? part.roots : part.activeRoots;
+            importer.preloadTextures();
+            for (uint32_t sourceNode : roots)
+                importer.import(int(sourceNode));
+            if (importer.MeshOverflow()) {
+                fail = "static-mesh pool overflow in part '" + geometryFile +
+                       "': " + std::to_string(importer.MeshOverflowCount()) +
+                       " upload(s) failed against the per-cluster bound";
+                return false;
+            }
+            importer.BuildSkinData();
+            RebuildStaticCache(partCluster->scene);
+            recalculateGlobalTransforms(partCluster->scene);
+            gltfNodeMap = importer.gltfNodeMap();
         }
-        mesh.names.resize(nodeCount);
-        for (size_t i = 0; i < nodeCount; ++i) {
-            const uint32_t nameIdx = GetNodeNameIndex(scene, NodeId(i));
-            int id = (nameIdx != 0xFFFFFFFFu) ? int(nameIdx) : -1;
-            mesh.names[i] = (id >= 0 && id < int(scene.nodeNames.size()))
-                                ? scene.nodeNames[size_t(id)]
-                                : std::string();
-        }
-        mesh.locals = scene.localTransform;
-        mesh.staticRoot = scene.staticRoot;
-        mesh.noLightmap = scene.noLightmap;
-        // The cluster skeleton (the Northlight data path; the import
-        // post pass built it): the joint ids are CLUSTER scene node ids,
-        // and this node list is a 1:1 copy of that scene - so the ids
-        // ARE the asset node indices. BuildFromMeshAsset remaps them
-        // through its node mapping on restore.
-        mesh.skeleton = cluster->skeleton;
-        mesh.hasSkeleton = cluster->hasSkeleton;
-        // Geometry blobs: unique meshes in first-use order over the
-        // node-sorted instance list (deterministic; the load order
-        // matches the live import's pool order closely enough for the
-        // .tour replay contract: node ids, not pool ids, address nodes).
-        // Deterministic order: the mesh table's rows are unordered, so
-        // the (node, mesh) pair list is sorted by node before use.
-        std::vector<std::pair<uint32_t, uint32_t>> meshPairs;
-        meshPairs.reserve(scene.tables.meshes.size());
-        for (const MeshRow& r : scene.tables.meshes)
-            meshPairs.emplace_back(r.node, r.mesh);
-        std::sort(meshPairs.begin(), meshPairs.end());
-        std::unordered_map<uint32_t, uint32_t> blobOf;
-        for (const auto& [node, poolIdx] : meshPairs) {
-            uint32_t blob = 0;
-            const auto it = blobOf.find(poolIdx);
-            if (it != blobOf.end()) {
-                blob = it->second;
-            } else {
-                blob = uint32_t(mesh.geometry.size());
-                blobOf.emplace(poolIdx, blob);
-                MeshAsset::Geometry g{};
-                const smvk::ClusterStaticMeshHandle h =
-                    smvk::ClusterStaticMeshHandle::Mint(poolIdx);
-                // Registry: the derivation's cluster registration (the
-                // URI fragment "<mesh>#mesh.N/prim.M" — rebuilt on the
-                // .mesh path at load so cooks address it identically)
-                // + cooked meshlets + the LOD chain (sibling blobs).
-                const smvk::StringViewT uri = cluster->GetMeshUri(h);
-                const std::string u = uri.Str();
-                const size_t hash = u.rfind('#');
-                g.uriFragment = (hash != std::string::npos) ? u.substr(hash + 1) : std::string();
-                if (auto ml = cluster->GetMeshMeshlets(uri))
-                    g.meshlets = std::move(*ml);
-                if (const smvk::MeshData* up = cluster->GetRetainedUpload(h)) {
-                    g.positions.resize(up->vertices.size());
-                    g.shading.resize(up->vertices.size());
-                    g.lightmap.resize(up->vertices.size());
-                    bool charted = false;
-                    for (size_t v = 0; v < up->vertices.size(); ++v) {
-                        smvk::PackMeshVertex(
-                            up->vertices[v], g.positions[v], g.shading[v], g.lightmap[v]);
-                        if (up->vertices[v].chartId != 0xFFFFFFFFu)
-                            charted = true;
+
+        // 4) The .mesh asset (from the imported cluster): the RAW hierarchy +
+        // the packed SoA geometry blobs + the material GUID bindings (the
+        // cluster material URIs carry "<...>#mat.<gltf index>").
+        MeshAsset mesh;
+        {
+            const Scene& scene = partCluster->scene;
+            const size_t nodeCount = scene.hierarchy.size();
+            mesh.nodes.resize(nodeCount);
+            for (size_t i = 0; i < nodeCount; ++i) {
+                mesh.nodes[i].parent = scene.hierarchy[i].parent;
+                mesh.nodes[i].level = scene.hierarchy[i].level;
+            }
+            mesh.names.resize(nodeCount);
+            for (size_t i = 0; i < nodeCount; ++i) {
+                const uint32_t nameIdx = GetNodeNameIndex(scene, NodeId(i));
+                int id = (nameIdx != 0xFFFFFFFFu) ? int(nameIdx) : -1;
+                mesh.names[i] = (id >= 0 && id < int(scene.nodeNames.size()))
+                                    ? scene.nodeNames[size_t(id)]
+                                    : std::string();
+            }
+            mesh.locals = scene.localTransform;
+            mesh.staticRoot = scene.staticRoot;
+            mesh.noLightmap = scene.noLightmap;
+            // The cluster skeleton (the Northlight data path; the import
+            // post pass built it): the joint ids are CLUSTER scene node ids,
+            // and this node list is a 1:1 copy of that scene - so the ids
+            // ARE the asset node indices. BuildFromMeshAsset remaps them
+            // through its node mapping on restore.
+            mesh.skeleton = partCluster->skeleton;
+            mesh.hasSkeleton = partCluster->hasSkeleton;
+            // Geometry blobs: unique meshes in first-use order over the
+            // node-sorted instance list (deterministic; the load order
+            // matches the live import's pool order closely enough for the
+            // .tour replay contract: node ids, not pool ids, address nodes).
+            // Deterministic order: the mesh table's rows are unordered, so
+            // the (node, mesh) pair list is sorted by node before use.
+            std::vector<std::pair<uint32_t, uint32_t>> meshPairs;
+            meshPairs.reserve(scene.tables.meshes.size());
+            for (const MeshRow& r : scene.tables.meshes)
+                meshPairs.emplace_back(r.node, r.mesh);
+            std::sort(meshPairs.begin(), meshPairs.end());
+            std::unordered_map<uint32_t, uint32_t> blobOf;
+            for (const auto& [node, poolIdx] : meshPairs) {
+                uint32_t blob = 0;
+                const auto it = blobOf.find(poolIdx);
+                if (it != blobOf.end()) {
+                    blob = it->second;
+                } else {
+                    blob = uint32_t(mesh.geometry.size());
+                    blobOf.emplace(poolIdx, blob);
+                    MeshAsset::Geometry g{};
+                    const smvk::ClusterStaticMeshHandle h =
+                        smvk::ClusterStaticMeshHandle::Mint(poolIdx);
+                    // Registry: the derivation's cluster registration (the
+                    // URI fragment "<mesh>#mesh.N/prim.M" — rebuilt on the
+                    // .mesh path at load so cooks address it identically)
+                    // + cooked meshlets + the LOD chain (sibling blobs).
+                    const smvk::StringViewT uri = partCluster->GetMeshUri(h);
+                    const std::string u = uri.Str();
+                    const size_t hash = u.rfind('#');
+                    g.uriFragment =
+                        (hash != std::string::npos) ? u.substr(hash + 1) : std::string();
+                    if (auto ml = partCluster->GetMeshMeshlets(uri))
+                        g.meshlets = std::move(*ml);
+                    if (const smvk::MeshData* up = partCluster->GetRetainedUpload(h)) {
+                        g.positions.resize(up->vertices.size());
+                        g.shading.resize(up->vertices.size());
+                        g.lightmap.resize(up->vertices.size());
+                        bool charted = false;
+                        for (size_t v = 0; v < up->vertices.size(); ++v) {
+                            smvk::PackMeshVertex(
+                                up->vertices[v], g.positions[v], g.shading[v], g.lightmap[v]);
+                            if (up->vertices[v].chartId != 0xFFFFFFFFu)
+                                charted = true;
+                        }
+                        // Uncharted geometry carries NO lightmap stream
+                        // (count-gated on disk; the engine blob marks it
+                        // lmOff = 0).
+                        if (!charted)
+                            g.lightmap.clear();
+                        g.indices = up->indices;
+                        g.surfaces = up->surfaces;
+                        g.aabbMin = up->aabbMin;
+                        g.aabbMax = up->aabbMax;
+                        // The skin stream (the Northlight data path): the
+                        // import post pass (BuildSkinData) filled the
+                        // retained upload; the .geometry carries it so
+                        // cooks/paks/bakes see the same skin.
+                        g.skin = up->skin;
                     }
-                    // Uncharted geometry carries NO lightmap stream
-                    // (count-gated on disk; the engine blob marks it
-                    // lmOff = 0).
-                    if (!charted)
-                        g.lightmap.clear();
-                    g.indices = up->indices;
-                    g.surfaces = up->surfaces;
-                    g.aabbMin = up->aabbMin;
-                    g.aabbMax = up->aabbMax;
-                    // The skin stream (the Northlight data path): the
-                    // import post pass (BuildSkinData) filled the
-                    // retained upload; the .geometry carries it so
-                    // cooks/paks/bakes see the same skin.
-                    g.skin = up->skin;
-                }
-                // LOD chain: the registered siblings ("<fragment>/lodK")
-                // with their own streams + meshlets + LodInfo.
-                if (auto base = cluster->GetMeshLod(uri)) {
-                    std::vector<MeshAsset::LodSibling> chain;
-                    const uint32_t siblings =
-                        base->candidateCount > 0 ? base->candidateCount - 1 : 0u;
-                    for (uint32_t k = 0; k < siblings; ++k) {
-                        const smvk::StringViewT sibUri = smvk::LodSiblingUri(uri, k + 1);
-                        auto sibH = cluster->FindMeshByUri(sibUri);
-                        if (!sibH)
-                            continue;
-                        MeshAsset::LodSibling s{};
-                        const std::string su = sibUri.Str();
-                        const size_t sh = su.rfind('#');
-                        s.geo.uriFragment =
-                            (sh != std::string::npos) ? su.substr(sh + 1) : std::string();
-                        if (auto ml = cluster->GetMeshMeshlets(sibUri))
-                            s.geo.meshlets = std::move(*ml);
-                        if (const smvk::MeshData* up = cluster->GetRetainedUpload(*sibH)) {
-                            s.geo.positions.resize(up->vertices.size());
-                            s.geo.shading.resize(up->vertices.size());
-                            s.geo.lightmap.resize(up->vertices.size());
-                            bool charted = false;
-                            for (size_t v = 0; v < up->vertices.size(); ++v) {
-                                smvk::PackMeshVertex(up->vertices[v],
-                                                     s.geo.positions[v],
-                                                     s.geo.shading[v],
-                                                     s.geo.lightmap[v]);
-                                if (up->vertices[v].chartId != 0xFFFFFFFFu)
-                                    charted = true;
+                    // LOD chain: the registered siblings ("<fragment>/lodK")
+                    // with their own streams + meshlets + LodInfo.
+                    if (auto base = partCluster->GetMeshLod(uri)) {
+                        std::vector<MeshAsset::LodSibling> chain;
+                        const uint32_t siblings =
+                            base->candidateCount > 0 ? base->candidateCount - 1 : 0u;
+                        for (uint32_t k = 0; k < siblings; ++k) {
+                            const smvk::StringViewT sibUri = smvk::LodSiblingUri(uri, k + 1);
+                            auto sibH = partCluster->FindMeshByUri(sibUri);
+                            if (!sibH)
+                                continue;
+                            MeshAsset::LodSibling s{};
+                            const std::string su = sibUri.Str();
+                            const size_t sh = su.rfind('#');
+                            s.geo.uriFragment =
+                                (sh != std::string::npos) ? su.substr(sh + 1) : std::string();
+                            if (auto ml = partCluster->GetMeshMeshlets(sibUri))
+                                s.geo.meshlets = std::move(*ml);
+                            if (const smvk::MeshData* up = partCluster->GetRetainedUpload(*sibH)) {
+                                s.geo.positions.resize(up->vertices.size());
+                                s.geo.shading.resize(up->vertices.size());
+                                s.geo.lightmap.resize(up->vertices.size());
+                                bool charted = false;
+                                for (size_t v = 0; v < up->vertices.size(); ++v) {
+                                    smvk::PackMeshVertex(up->vertices[v],
+                                                         s.geo.positions[v],
+                                                         s.geo.shading[v],
+                                                         s.geo.lightmap[v]);
+                                    if (up->vertices[v].chartId != 0xFFFFFFFFu)
+                                        charted = true;
+                                }
+                                // Uncharted siblings carry NO lightmap stream
+                                // (count-gated on disk; the engine blob marks
+                                // it lmOff = 0).
+                                if (!charted)
+                                    s.geo.lightmap.clear();
+                                s.geo.indices = up->indices;
+                                s.geo.surfaces = up->surfaces;
+                                s.geo.aabbMin = up->aabbMin;
+                                s.geo.aabbMax = up->aabbMax;
                             }
-                            // Uncharted siblings carry NO lightmap stream
-                            // (count-gated on disk; the engine blob marks
-                            // it lmOff = 0).
-                            if (!charted)
-                                s.geo.lightmap.clear();
-                            s.geo.indices = up->indices;
-                            s.geo.surfaces = up->surfaces;
-                            s.geo.aabbMin = up->aabbMin;
-                            s.geo.aabbMax = up->aabbMax;
+                            if (auto li = partCluster->GetMeshLod(sibUri)) {
+                                s.lodIndex = li->lodIndex;
+                                s.simplifyError = li->simplifyError;
+                                s.screenThreshold = li->screenThreshold;
+                                s.triCount = li->triCount;
+                                s.acmr = li->acmr;
+                            }
+                            chain.push_back(std::move(s));
                         }
-                        if (auto li = cluster->GetMeshLod(sibUri)) {
-                            s.lodIndex = li->lodIndex;
-                            s.simplifyError = li->simplifyError;
-                            s.screenThreshold = li->screenThreshold;
-                            s.triCount = li->triCount;
-                            s.acmr = li->acmr;
+                        if (!chain.empty()) {
+                            mesh.lodChains.resize(blob + 1);
+                            mesh.lodChains[blob] = std::move(chain);
                         }
-                        chain.push_back(std::move(s));
                     }
-                    if (!chain.empty()) {
-                        mesh.lodChains.resize(blob + 1);
-                        mesh.lodChains[blob] = std::move(chain);
+                    mesh.geometry.push_back(std::move(g));
+                    ++stats.geometryBlobs;
+                }
+                MeshAsset::Instance inst{};
+                inst.node = node;
+                inst.geometry = blob;
+                // Material GUID: the cluster material URI fragment
+                // "#mat.<gltf index>" -> the manifest entry.
+                const MaterialRow* mRow = FindMaterial(scene, node);
+                if (mRow) {
+                    const smvk::StringViewT uri = partCluster->GetMaterialUri(
+                        smvk::ClusterMaterialHandle::Mint(mRow->material));
+                    const std::string u = uri.Str();
+                    const size_t at = u.rfind("#mat.");
+                    if (at != std::string::npos) {
+                        const int mi = std::atoi(u.c_str() + at + 5);
+                        if (mi >= 0 && mi < int(native.materials.size()))
+                            inst.materialGuid = guidFor(AssetKind::Material,
+                                                        mi,
+                                                        materialName(mi)); // idempotent:
+                                                                           // the material's
+                                                                           // guid resolved
+                                                                           // in its own
+                                                                           // loop; the
+                                                                           // re-ask adds
+                                                                           // no rows
                     }
                 }
-                mesh.geometry.push_back(std::move(g));
-                ++stats.geometryBlobs;
+                mesh.instances.push_back(inst);
+                ++stats.instances;
             }
-            MeshAsset::Instance inst{};
-            inst.node = node;
-            inst.geometry = blob;
-            // Material GUID: the cluster material URI fragment
-            // "#mat.<gltf index>" -> the manifest entry.
-            const MaterialRow* mRow = FindMaterial(scene, node);
-            if (mRow) {
-                const smvk::StringViewT uri =
-                    cluster->GetMaterialUri(smvk::ClusterMaterialHandle::Mint(mRow->material));
-                const std::string u = uri.Str();
-                const size_t at = u.rfind("#mat.");
-                if (at != std::string::npos) {
-                    const int mi = std::atoi(u.c_str() + at + 5);
-                    if (mi >= 0 && mi < int(native.materials.size()))
-                        inst.materialGuid = guidFor(AssetKind::Material,
-                                                    mi,
-                                                    materialName(mi)); // idempotent:
-                                                                       // the material's
-                                                                       // guid resolved
-                                                                       // in its own
-                                                                       // loop; the
-                                                                       // re-ask adds
-                                                                       // no rows
+            // Lights (the pool defs + node links).
+            for (const LightRow& _row : scene.tables.lights) {
+                const NodeId node = _row.node;
+                const auto& poolIdx = _row.light;
+                if (auto* l = partCluster->lights.get(smvk::ClusterLightHandle::Mint(poolIdx))) {
+                    MeshAsset::LightDef d{};
+                    d.node = node;
+                    d.def = *l;
+                    mesh.lights.push_back(d);
+                    ++stats.lights;
                 }
             }
-            mesh.instances.push_back(inst);
-            ++stats.instances;
         }
-        // Lights (the pool defs + node links).
-        for (const LightRow& _row : scene.tables.lights) {
-            const NodeId node = _row.node;
-            const auto& poolIdx = _row.light;
-            if (auto* l = cluster->lights.get(smvk::ClusterLightHandle::Mint(poolIdx))) {
-                MeshAsset::LightDef d{};
-                d.node = node;
-                d.def = *l;
-                mesh.lights.push_back(d);
-                ++stats.lights;
+        // The data-blob file: "<stem>.geometry" (the pre-10/6 ".mesh" derived
+        // asset renamed; ".mesh" is the higher placeable asset's name now).
+        const std::string partName = std::filesystem::path(geometryFile).stem().string();
+        for (AssetEntry& e : manifest.entries)
+            if (e.kind == AssetKind::Geometry && e.sourceIndex == partIndex) {
+                e.file = geometryFile;
+                e.name = partName;
             }
-        }
-    }
-    // The data-blob file: "<stem>.geometry" (the pre-10/6 ".mesh" derived
-    // asset renamed; ".mesh" is the higher placeable asset's name now).
-    const std::string geometryFile = stem + ".geometry";
-    for (AssetEntry& e : manifest.entries)
-        if (e.kind == AssetKind::Geometry) {
+        {
+            AssetEntry e{};
+            e.kind = AssetKind::Geometry;
+            e.sourceIndex = partIndex;
+            e.guid = guidFor(AssetKind::Geometry, partIndex, partName);
             e.file = geometryFile;
-            e.name = stem;
+            e.name = partName;
+            for (AssetEntry& x : manifest.entries)
+                if (x.kind == AssetKind::Geometry && x.sourceIndex == partIndex && &x != &e) {
+                    x.file = geometryFile;
+                    x.name = partName;
+                }
         }
-    {
-        AssetEntry e{};
-        e.kind = AssetKind::Geometry;
-        e.sourceIndex = -1;
-        e.guid = guidFor(AssetKind::Geometry, -1, stem);
-        e.file = geometryFile;
-        e.name = stem;
-        for (AssetEntry& x : manifest.entries)
-            if (x.kind == AssetKind::Geometry && &x != &e) {
-                x.file = geometryFile;
-                x.name = stem;
-            }
+        WriteMeshAsset(dir / geometryFile, mesh, fail);
+        cluster = std::move(partCluster);
+        return true;
+    };
+
+    if (!split) {
+        if (!importAndSerialize(native, stem + ".geometry", -1))
+            return giveUp(fail);
+    } else {
+        for (size_t pi = 0; pi < parts.size(); ++pi) {
+            const std::string partStem = stem + "_part" + std::to_string(pi);
+            if (!importAndSerialize(parts[pi], partStem + ".geometry", int(pi)))
+                return giveUp(fail);
+        }
     }
-    WriteMeshAsset(dir / geometryFile, mesh, fail);
 
     // 5) Animation assets (the .tourAnim format; tracks retargeted onto
-    // the .geometry's node ids via the import's gltf node map).
-    for (int ai = 0; ai < int(native.animations.size()); ++ai) {
-        const smvk::source::Animation& ga = native.animations[size_t(ai)];
-        smvk::touranim::AnimDoc doc{};
-        doc.source = std::filesystem::path(gltfPath).filename().string();
-        smvk::touranim::Clip clip{};
-        clip.name = ga.name.empty() ? ("anim" + std::to_string(ai)) : ga.name;
-        // The anim's identity ask (the manifest row + the ledger
-        // carry): NAME-keyed like materials — a re-import keeps a
-        // NAMED animation's GUID wherever cooks/.tours expect it, and
-        // the row (with the fallback-named display name — never the
-        // EMPTY raw name, which could not key the ledger) lands in
-        // the manifest like materials always did.
-        (void)guidFor(AssetKind::Anim, ai, clip.name);
-        double lastT = 0.0;
-        // ---- World->local translation fix (the Unreal hip-flap convention).
-        // Some exporters bake a child bone's PARENT-CHAIN world translation
-        // into its `translation` channel (keeping `rotation` local). The
-        // runtime applies translate as a LOCAL offset, so a world-accumulating
-        // translation cancels the parent's walk and the bone freezes in place
-        // ("armor left behind"). A channel whose raw world stays frozen while
-        // its parent chain moves is corrected to its rigid local offset:
-        // local = parent_world_bind^-1 * parent_world(t) * raw. This runs on
-        // the RAW glTF values, before the coordFix conjugation below, so both
-        // share the same (raw, cm) frame.
-        std::vector<int> parentOf(native.nodes.size(), -1);
-        for (size_t n = 0; n < native.nodes.size(); ++n)
-            for (int c : native.nodes[n].children)
-                if (c >= 0 && c < int(parentOf.size()) && parentOf[size_t(c)] < 0)
-                    parentOf[size_t(c)] = int(n);
-        std::map<int, std::map<int, std::vector<smvk::touranim::Key>>> rawByNode;
-        for (const smvk::source::AnimationTrack& track : ga.tracks) {
-            if (track.node >= native.nodes.size())
-                continue;
-            const int chan = track.channel == smvk::source::AnimationChannel::Rotation ? 1
-                             : track.channel == smvk::source::AnimationChannel::Scale  ? 2
-                                                                                       : 0;
-            auto& dst = rawByNode[int(track.node)][chan];
-            for (const auto& value : track.keys) {
-                smvk::touranim::Key key{};
-                key.t = value.time;
-                key.v = value.value;
-                dst.push_back(key);
+    // the .geometry's node ids via the import's gltf node map). Split
+    // (partitioned) scenes skip animations: the districts are static, and a
+    // multi-part node remap is a separate follow-up.
+    if (!split) {
+        for (int ai = 0; ai < int(native.animations.size()); ++ai) {
+            const smvk::source::Animation& ga = native.animations[size_t(ai)];
+            smvk::touranim::AnimDoc doc{};
+            doc.source = std::filesystem::path(gltfPath).filename().string();
+            smvk::touranim::Clip clip{};
+            clip.name = ga.name.empty() ? ("anim" + std::to_string(ai)) : ga.name;
+            // The anim's identity ask (the manifest row + the ledger
+            // carry): NAME-keyed like materials — a re-import keeps a
+            // NAMED animation's GUID wherever cooks/.tours expect it, and
+            // the row (with the fallback-named display name — never the
+            // EMPTY raw name, which could not key the ledger) lands in
+            // the manifest like materials always did.
+            (void)guidFor(AssetKind::Anim, ai, clip.name);
+            double lastT = 0.0;
+            // ---- World->local translation fix (the Unreal hip-flap convention).
+            // Some exporters bake a child bone's PARENT-CHAIN world translation
+            // into its `translation` channel (keeping `rotation` local). The
+            // runtime applies translate as a LOCAL offset, so a world-accumulating
+            // translation cancels the parent's walk and the bone freezes in place
+            // ("armor left behind"). A channel whose raw world stays frozen while
+            // its parent chain moves is corrected to its rigid local offset:
+            // local = parent_world_bind^-1 * parent_world(t) * raw. This runs on
+            // the RAW glTF values, before the coordFix conjugation below, so both
+            // share the same (raw, cm) frame.
+            std::vector<int> parentOf(native.nodes.size(), -1);
+            for (size_t n = 0; n < native.nodes.size(); ++n)
+                for (int c : native.nodes[n].children)
+                    if (c >= 0 && c < int(parentOf.size()) && parentOf[size_t(c)] < 0)
+                        parentOf[size_t(c)] = int(n);
+            std::map<int, std::map<int, std::vector<smvk::touranim::Key>>> rawByNode;
+            for (const smvk::source::AnimationTrack& track : ga.tracks) {
+                if (track.node >= native.nodes.size())
+                    continue;
+                const int chan = track.channel == smvk::source::AnimationChannel::Rotation ? 1
+                                 : track.channel == smvk::source::AnimationChannel::Scale  ? 2
+                                                                                           : 0;
+                auto& dst = rawByNode[int(track.node)][chan];
+                for (const auto& value : track.keys) {
+                    smvk::touranim::Key key{};
+                    key.t = value.time;
+                    key.v = value.value;
+                    dst.push_back(key);
+                }
             }
-        }
-        auto rawTrackAt = [](const std::vector<smvk::touranim::Key>& ks, double t) -> glm::vec4 {
-            if (ks.empty())
-                return glm::vec4(0.0f);
-            if (ks.size() == 1u || t <= ks.front().t)
-                return ks.front().v;
-            if (t >= ks.back().t)
+            auto rawTrackAt = [](const std::vector<smvk::touranim::Key>& ks,
+                                 double t) -> glm::vec4 {
+                if (ks.empty())
+                    return glm::vec4(0.0f);
+                if (ks.size() == 1u || t <= ks.front().t)
+                    return ks.front().v;
+                if (t >= ks.back().t)
+                    return ks.back().v;
+                for (size_t i = 1; i < ks.size(); ++i)
+                    if (t <= ks[i].t) {
+                        const double d = ks[i].t - ks[i - 1].t;
+                        const double a = d > 1e-12 ? (t - ks[i - 1].t) / d : 0.0;
+                        return glm::mix(ks[i - 1].v, ks[i].v, float(a));
+                    }
                 return ks.back().v;
-            for (size_t i = 1; i < ks.size(); ++i)
-                if (t <= ks[i].t) {
-                    const double d = ks[i].t - ks[i - 1].t;
-                    const double a = d > 1e-12 ? (t - ks[i - 1].t) / d : 0.0;
-                    return glm::mix(ks[i - 1].v, ks[i].v, float(a));
+            };
+            auto rawLocal = [&](int g, double t) -> glm::mat4 {
+                const glm::mat4 base = native.nodes[size_t(g)].localTransform;
+                const glm::vec3 T0(base[3]);
+                const glm::mat3 R3(base);
+                const glm::vec3 S0(glm::length(glm::vec3(R3[0])),
+                                   glm::length(glm::vec3(R3[1])),
+                                   glm::length(glm::vec3(R3[2])));
+                glm::quat q0(1.0f, 0.0f, 0.0f, 0.0f);
+                {
+                    glm::mat3 Rn(1.0f);
+                    for (int c = 0; c < 3; ++c)
+                        if (S0[c] > 1e-8f)
+                            Rn[c] = R3[c] / S0[c];
+                    q0 = glm::quat_cast(Rn);
                 }
-            return ks.back().v;
-        };
-        auto rawLocal = [&](int g, double t) -> glm::mat4 {
-            const glm::mat4 base = native.nodes[size_t(g)].localTransform;
-            const glm::vec3 T0(base[3]);
-            const glm::mat3 R3(base);
-            const glm::vec3 S0(glm::length(glm::vec3(R3[0])),
-                               glm::length(glm::vec3(R3[1])),
-                               glm::length(glm::vec3(R3[2])));
-            glm::quat q0(1.0f, 0.0f, 0.0f, 0.0f);
-            {
-                glm::mat3 Rn(1.0f);
-                for (int c = 0; c < 3; ++c)
-                    if (S0[c] > 1e-8f)
-                        Rn[c] = R3[c] / S0[c];
-                q0 = glm::quat_cast(Rn);
-            }
-            glm::vec3 T = T0, S = S0;
-            glm::quat q = q0;
-            if (auto it = rawByNode.find(g); it != rawByNode.end()) {
-                if (auto jt = it->second.find(0); jt != it->second.end())
-                    T = glm::vec3(rawTrackAt(jt->second, t));
-                if (auto jt = it->second.find(1); jt != it->second.end()) {
-                    const glm::vec4 v = rawTrackAt(jt->second, t);
-                    q = glm::quat(v.w, v.x, v.y, v.z);
+                glm::vec3 T = T0, S = S0;
+                glm::quat q = q0;
+                if (auto it = rawByNode.find(g); it != rawByNode.end()) {
+                    if (auto jt = it->second.find(0); jt != it->second.end())
+                        T = glm::vec3(rawTrackAt(jt->second, t));
+                    if (auto jt = it->second.find(1); jt != it->second.end()) {
+                        const glm::vec4 v = rawTrackAt(jt->second, t);
+                        q = glm::quat(v.w, v.x, v.y, v.z);
+                    }
+                    if (auto jt = it->second.find(2); jt != it->second.end())
+                        S = glm::vec3(rawTrackAt(jt->second, t));
                 }
-                if (auto jt = it->second.find(2); jt != it->second.end())
-                    S = glm::vec3(rawTrackAt(jt->second, t));
-            }
-            return glm::translate(glm::mat4(1.0f), T) * glm::mat4_cast(q) *
-                   glm::scale(glm::mat4(1.0f), S);
-        };
-        std::function<glm::mat4(int, double)> rawWorld = [&](int g, double t) -> glm::mat4 {
-            glm::mat4 w = rawLocal(g, t);
-            if (parentOf[size_t(g)] >= 0)
-                w = rawWorld(parentOf[size_t(g)], t) * w;
-            return w;
-        };
-        auto rawBindWorld = [&](auto&& self, int g) -> glm::mat4 {
-            glm::mat4 w = native.nodes[size_t(g)].localTransform;
-            if (parentOf[size_t(g)] >= 0)
-                w = self(self, parentOf[size_t(g)]) * w;
-            return w;
-        };
-        // The raw keys and the world sampler both live in the raw glTF frame
-        // (cm; the root's cm->m scale cancels in the bind^-1 * world product).
-        for (const smvk::source::AnimationTrack& ch : ga.tracks) {
-            const int target = int(ch.node);
-            if (target < 0 || target >= int(gltfNodeMap.size()))
-                continue;
-            const int joint = gltfNodeMap[size_t(target)];
-            if (joint < 0 || ch.keys.empty())
-                continue;
-            smvk::touranim::Track t{};
-            t.joint = uint32_t(joint);
-            t.name = (target >= 0 && target < int(native.nodes.size()))
-                         ? native.nodes[size_t(target)].name
-                         : std::string();
-            t.channel = ch.channel == smvk::source::AnimationChannel::Rotation
-                            ? smvk::touranim::Channel::Rotate
-                        : ch.channel == smvk::source::AnimationChannel::Scale
-                            ? smvk::touranim::Channel::Scale
-                            : smvk::touranim::Channel::Translate;
-            // RUNTIME-convention keys: the track REPLACES the node's
-            // whole channel in the RUNTIME's local space, and the
-            // import conjugates each CHAIN TOP node's local by the
-            // coordFix basis (clusterLocal = C * rawLocal; descendants
-            // keep rawLocal verbatim). The raw glTF sampler keys match
-            // only the DESCENDANTS - writing them raw for a top node
-            // SNAPS the whole chain by the basis at the first sample
-            // (the knight: the root's raw -15.3deg yaw key replaced the
-            // C-conjugated +164.7deg bind, and every palette entry
-            // inherited a conjugated -180deg - the deformed body flipped
-            // front-to-back while the draw frame stayed put). Derive the
-            // per-node basis C = clusterLocal * rawLocal^-1 (identity
-            // for descendants, the coordFix basis for tops) and
-            // conjugate the keys through it.
-            glm::mat4 basis(1.0f);
-            glm::vec3 basisScale(1.0f);
-            {
-                const glm::mat4 rawLocal = native.nodes[size_t(target)].localTransform;
-                if (joint < int(cluster->scene.localTransform.size())) {
-                    basis = cluster->scene.localTransform[size_t(joint)] * glm::inverse(rawLocal);
-                    basisScale = glm::vec3(glm::length(glm::vec3(basis[0])),
-                                           glm::length(glm::vec3(basis[1])),
-                                           glm::length(glm::vec3(basis[2])));
-                    // The conjugation below decomposes C*T*R*S into
-                    // T'*R'*S' exactly only while C is a similarity
-                    // (uniform scale, no shear). The coordFix bases
-                    // (identity / rotY(180) / Y-mirror, no scale) and
-                    // uniform preTransforms qualify; anything else warns
-                    // (the keys still go out conjugated - better than
-                    // the raw snap - but the TRS decomposition is lossy).
-                    const float eps = 1e-3f;
-                    if (glm::abs(basisScale.x - basisScale.y) > eps ||
-                        glm::abs(basisScale.y - basisScale.z) > eps) {
-                        std::cerr << "[Anim] node '" << t.name << "' basis is non-uniform ("
-                                  << basisScale.x << "/" << basisScale.y << "/" << basisScale.z
-                                  << ") - key"
-                                     " conjugation is approximate\n";
+                return glm::translate(glm::mat4(1.0f), T) * glm::mat4_cast(q) *
+                       glm::scale(glm::mat4(1.0f), S);
+            };
+            std::function<glm::mat4(int, double)> rawWorld = [&](int g, double t) -> glm::mat4 {
+                glm::mat4 w = rawLocal(g, t);
+                if (parentOf[size_t(g)] >= 0)
+                    w = rawWorld(parentOf[size_t(g)], t) * w;
+                return w;
+            };
+            auto rawBindWorld = [&](auto&& self, int g) -> glm::mat4 {
+                glm::mat4 w = native.nodes[size_t(g)].localTransform;
+                if (parentOf[size_t(g)] >= 0)
+                    w = self(self, parentOf[size_t(g)]) * w;
+                return w;
+            };
+            // The raw keys and the world sampler both live in the raw glTF frame
+            // (cm; the root's cm->m scale cancels in the bind^-1 * world product).
+            for (const smvk::source::AnimationTrack& ch : ga.tracks) {
+                const int target = int(ch.node);
+                if (target < 0 || target >= int(gltfNodeMap.size()))
+                    continue;
+                const int joint = gltfNodeMap[size_t(target)];
+                if (joint < 0 || ch.keys.empty())
+                    continue;
+                smvk::touranim::Track t{};
+                t.joint = uint32_t(joint);
+                t.name = (target >= 0 && target < int(native.nodes.size()))
+                             ? native.nodes[size_t(target)].name
+                             : std::string();
+                t.channel = ch.channel == smvk::source::AnimationChannel::Rotation
+                                ? smvk::touranim::Channel::Rotate
+                            : ch.channel == smvk::source::AnimationChannel::Scale
+                                ? smvk::touranim::Channel::Scale
+                                : smvk::touranim::Channel::Translate;
+                // RUNTIME-convention keys: the track REPLACES the node's
+                // whole channel in the RUNTIME's local space, and the
+                // import conjugates each CHAIN TOP node's local by the
+                // coordFix basis (clusterLocal = C * rawLocal; descendants
+                // keep rawLocal verbatim). The raw glTF sampler keys match
+                // only the DESCENDANTS - writing them raw for a top node
+                // SNAPS the whole chain by the basis at the first sample
+                // (the knight: the root's raw -15.3deg yaw key replaced the
+                // C-conjugated +164.7deg bind, and every palette entry
+                // inherited a conjugated -180deg - the deformed body flipped
+                // front-to-back while the draw frame stayed put). Derive the
+                // per-node basis C = clusterLocal * rawLocal^-1 (identity
+                // for descendants, the coordFix basis for tops) and
+                // conjugate the keys through it.
+                glm::mat4 basis(1.0f);
+                glm::vec3 basisScale(1.0f);
+                {
+                    const glm::mat4 rawLocal = native.nodes[size_t(target)].localTransform;
+                    if (joint < int(cluster->scene.localTransform.size())) {
+                        basis =
+                            cluster->scene.localTransform[size_t(joint)] * glm::inverse(rawLocal);
+                        basisScale = glm::vec3(glm::length(glm::vec3(basis[0])),
+                                               glm::length(glm::vec3(basis[1])),
+                                               glm::length(glm::vec3(basis[2])));
+                        // The conjugation below decomposes C*T*R*S into
+                        // T'*R'*S' exactly only while C is a similarity
+                        // (uniform scale, no shear). The coordFix bases
+                        // (identity / rotY(180) / Y-mirror, no scale) and
+                        // uniform preTransforms qualify; anything else warns
+                        // (the keys still go out conjugated - better than
+                        // the raw snap - but the TRS decomposition is lossy).
+                        const float eps = 1e-3f;
+                        if (glm::abs(basisScale.x - basisScale.y) > eps ||
+                            glm::abs(basisScale.y - basisScale.z) > eps) {
+                            std::cerr << "[Anim] node '" << t.name << "' basis is non-uniform ("
+                                      << basisScale.x << "/" << basisScale.y << "/" << basisScale.z
+                                      << ") - key"
+                                         " conjugation is approximate\n";
+                        }
                     }
                 }
-            }
-            const bool identityBasis =
-                glm::abs(basis[0].x - 1.0f) < 1e-6f && glm::abs(basis[1].y - 1.0f) < 1e-6f &&
-                glm::abs(basis[2].z - 1.0f) < 1e-6f && glm::abs(basis[3].x) < 1e-6f &&
-                glm::abs(basis[3].y) < 1e-6f && glm::abs(basis[3].z) < 1e-6f &&
-                glm::abs(basis[0].y) + glm::abs(basis[0].z) + glm::abs(basis[1].x) +
-                        glm::abs(basis[1].z) + glm::abs(basis[2].x) + glm::abs(basis[2].y) <
-                    1e-6f;
-            t.spline = ch.interpolation == smvk::source::Interpolation::Step
-                           ? smvk::touranim::Spline::Step
-                       : ch.interpolation == smvk::source::Interpolation::CubicSpline
-                           ? smvk::touranim::Spline::CatmullRom
-                           : smvk::touranim::Spline::Linear;
-            // World-space translation detection: a bone whose raw local
-            // translation keeps its WORLD frozen (barely moves) while its
-            // parent chain moves significantly was authored in WORLD space
-            // (the Unreal hip-flap convention). Only those channels get the
-            // world->local correction below; a correctly-authored local
-            // translation (e.g. the hipSwinger) follows its parent and is
-            // left untouched.
-            bool worldSpaceTranslation = false;
-            if (t.channel == smvk::touranim::Channel::Translate && target >= 0 &&
-                target < int(parentOf.size()) && parentOf[size_t(target)] >= 0) {
-                if (auto rit = rawByNode.find(target); rit != rawByNode.end()) {
-                    if (auto jt = rit->second.find(0);
-                        jt != rit->second.end() && jt->second.size() >= 2u) {
-                        const int p = parentOf[size_t(target)];
-                        const double t0 = jt->second.front().t;
-                        const double t1 = jt->second.back().t;
-                        const glm::vec3 parentDrift =
-                            glm::vec3(rawWorld(p, t1)[3]) - glm::vec3(rawWorld(p, t0)[3]);
-                        const glm::vec3 boneDrift =
-                            glm::vec3(rawWorld(target, t1)[3]) - glm::vec3(rawWorld(target, t0)[3]);
-                        worldSpaceTranslation =
-                            glm::length(parentDrift) > 1e-3f &&
-                            glm::length(boneDrift) < glm::length(parentDrift) * 0.5f;
+                const bool identityBasis =
+                    glm::abs(basis[0].x - 1.0f) < 1e-6f && glm::abs(basis[1].y - 1.0f) < 1e-6f &&
+                    glm::abs(basis[2].z - 1.0f) < 1e-6f && glm::abs(basis[3].x) < 1e-6f &&
+                    glm::abs(basis[3].y) < 1e-6f && glm::abs(basis[3].z) < 1e-6f &&
+                    glm::abs(basis[0].y) + glm::abs(basis[0].z) + glm::abs(basis[1].x) +
+                            glm::abs(basis[1].z) + glm::abs(basis[2].x) + glm::abs(basis[2].y) <
+                        1e-6f;
+                t.spline = ch.interpolation == smvk::source::Interpolation::Step
+                               ? smvk::touranim::Spline::Step
+                           : ch.interpolation == smvk::source::Interpolation::CubicSpline
+                               ? smvk::touranim::Spline::CatmullRom
+                               : smvk::touranim::Spline::Linear;
+                // World-space translation detection: a bone whose raw local
+                // translation keeps its WORLD frozen (barely moves) while its
+                // parent chain moves significantly was authored in WORLD space
+                // (the Unreal hip-flap convention). Only those channels get the
+                // world->local correction below; a correctly-authored local
+                // translation (e.g. the hipSwinger) follows its parent and is
+                // left untouched.
+                bool worldSpaceTranslation = false;
+                if (t.channel == smvk::touranim::Channel::Translate && target >= 0 &&
+                    target < int(parentOf.size()) && parentOf[size_t(target)] >= 0) {
+                    if (auto rit = rawByNode.find(target); rit != rawByNode.end()) {
+                        if (auto jt = rit->second.find(0);
+                            jt != rit->second.end() && jt->second.size() >= 2u) {
+                            const int p = parentOf[size_t(target)];
+                            const double t0 = jt->second.front().t;
+                            const double t1 = jt->second.back().t;
+                            const glm::vec3 parentDrift =
+                                glm::vec3(rawWorld(p, t1)[3]) - glm::vec3(rawWorld(p, t0)[3]);
+                            const glm::vec3 boneDrift = glm::vec3(rawWorld(target, t1)[3]) -
+                                                        glm::vec3(rawWorld(target, t0)[3]);
+                            worldSpaceTranslation =
+                                glm::length(parentDrift) > 1e-3f &&
+                                glm::length(boneDrift) < glm::length(parentDrift) * 0.5f;
+                        }
                     }
                 }
-            }
-            for (const smvk::source::AnimationKey& srcKey : ch.keys) {
-                smvk::touranim::Key key{};
-                key.t = srcKey.time;
-                lastT = std::max(lastT, key.t);
-                if (t.channel == smvk::touranim::Channel::Rotate) {
-                    const glm::vec4 q = srcKey.value; // glTF xyzw ordering preserved by adapter
-                    glm::quat rot{q.w, q.x, q.y, q.z};
-                    if (!identityBasis) {
-                        // The runtime composes the local as T * R * S
-                        // and the true animated top local is
-                        // C * T * R * S = T' * (C_rot * R) * (|C| * S):
-                        // the rotate key is the LEFT-COMPOSED rotation
-                        // (q_C * q), NOT the conjugate (C*R*C^-1 - a
-                        // yaw under the knight's rotY(180) fix commutes
-                        // with it and the conjugate silently kept the
-                        // raw key, snapping the root by the full basis).
-                        // Strip |C| first so quat_cast sees a rotation.
-                        const float meanScale = (basisScale.x + basisScale.y + basisScale.z) / 3.0f;
-                        const glm::mat3 c3 =
-                            glm::mat3(basis) / (std::abs(meanScale) > 1e-9f ? meanScale : 1.0f);
-                        rot = glm::quat_cast(c3) * rot;
+                for (const smvk::source::AnimationKey& srcKey : ch.keys) {
+                    smvk::touranim::Key key{};
+                    key.t = srcKey.time;
+                    lastT = std::max(lastT, key.t);
+                    if (t.channel == smvk::touranim::Channel::Rotate) {
+                        const glm::vec4 q = srcKey.value; // glTF xyzw ordering preserved by adapter
+                        glm::quat rot{q.w, q.x, q.y, q.z};
+                        if (!identityBasis) {
+                            // The runtime composes the local as T * R * S
+                            // and the true animated top local is
+                            // C * T * R * S = T' * (C_rot * R) * (|C| * S):
+                            // the rotate key is the LEFT-COMPOSED rotation
+                            // (q_C * q), NOT the conjugate (C*R*C^-1 - a
+                            // yaw under the knight's rotY(180) fix commutes
+                            // with it and the conjugate silently kept the
+                            // raw key, snapping the root by the full basis).
+                            // Strip |C| first so quat_cast sees a rotation.
+                            const float meanScale =
+                                (basisScale.x + basisScale.y + basisScale.z) / 3.0f;
+                            const glm::mat3 c3 =
+                                glm::mat3(basis) / (std::abs(meanScale) > 1e-9f ? meanScale : 1.0f);
+                            rot = glm::quat_cast(c3) * rot;
+                        }
+                        key.v = glm::vec4(rot.x, rot.y, rot.z, rot.w);
+                    } else {
+                        glm::vec3 val(srcKey.value);
+                        // World->local translation: subtract the parent chain's
+                        // world-translation delta so a rigid child keeps its
+                        // constant local offset (see the fix block above).
+                        if (t.channel == smvk::touranim::Channel::Translate &&
+                            worldSpaceTranslation) {
+                            const int p = parentOf[size_t(target)];
+                            // Recover the rigid local offset: the DCC baked
+                            // frozen_world = parentWorld(t) * raw_T(t). Undo the
+                            // parent's world change so the child keeps its bind
+                            // offset and follows the parent instead of freezing.
+                            const glm::mat4 M =
+                                glm::inverse(rawBindWorld(rawBindWorld, p)) * rawWorld(p, key.t);
+                            // M is unit-scale (the cm->m root scale cancels); its
+                            // translation is in cm, matching the raw key units.
+                            val = glm::vec3(M * glm::vec4(val, 1.0f));
+                        }
+                        if (!identityBasis) {
+                            if (t.channel == smvk::touranim::Channel::Translate)
+                                // C * T * R * S keeps the translation column
+                                // C3*t + C's own translation (the full
+                                // affine; coordFix bases carry none).
+                                val = glm::vec3(basis * glm::vec4(val, 1.0f));
+                            else // Scale: |C| per axis * S.
+                                val *= basisScale;
+                        }
+                        key.v = glm::vec4(val, 1.0f);
                     }
-                    key.v = glm::vec4(rot.x, rot.y, rot.z, rot.w);
-                } else {
-                    glm::vec3 val(srcKey.value);
-                    // World->local translation: subtract the parent chain's
-                    // world-translation delta so a rigid child keeps its
-                    // constant local offset (see the fix block above).
-                    if (t.channel == smvk::touranim::Channel::Translate && worldSpaceTranslation) {
-                        const int p = parentOf[size_t(target)];
-                        // Recover the rigid local offset: the DCC baked
-                        // frozen_world = parentWorld(t) * raw_T(t). Undo the
-                        // parent's world change so the child keeps its bind
-                        // offset and follows the parent instead of freezing.
-                        const glm::mat4 M =
-                            glm::inverse(rawBindWorld(rawBindWorld, p)) * rawWorld(p, key.t);
-                        // M is unit-scale (the cm->m root scale cancels); its
-                        // translation is in cm, matching the raw key units.
-                        val = glm::vec3(M * glm::vec4(val, 1.0f));
-                    }
-                    if (!identityBasis) {
-                        if (t.channel == smvk::touranim::Channel::Translate)
-                            // C * T * R * S keeps the translation column
-                            // C3*t + C's own translation (the full
-                            // affine; coordFix bases carry none).
-                            val = glm::vec3(basis * glm::vec4(val, 1.0f));
-                        else // Scale: |C| per axis * S.
-                            val *= basisScale;
-                    }
-                    key.v = glm::vec4(val, 1.0f);
+                    t.keys.push_back(key);
                 }
-                t.keys.push_back(key);
+                if (!t.keys.empty())
+                    clip.tracks.push_back(std::move(t));
             }
-            if (!t.keys.empty())
-                clip.tracks.push_back(std::move(t));
+            clip.duration = lastT;
+            doc.clips.push_back(std::move(clip));
+            const std::string file = AnimFileName(stem, ai, ga.name);
+            std::string aerr;
+            WriteTourAnimAsset(dir / file, doc, aerr);
+            for (AssetEntry& e : manifest.entries)
+                if (e.kind == AssetKind::Anim && e.sourceIndex == ai) {
+                    e.file = file;
+                    e.name = clip.name; // the fallback-named key (never
+                                        // empty — the ledger's name group)
+                }
+            ++stats.anims;
         }
-        clip.duration = lastT;
-        doc.clips.push_back(std::move(clip));
-        const std::string file = AnimFileName(stem, ai, ga.name);
-        std::string aerr;
-        WriteTourAnimAsset(dir / file, doc, aerr);
-        for (AssetEntry& e : manifest.entries)
-            if (e.kind == AssetKind::Anim && e.sourceIndex == ai) {
-                e.file = file;
-                e.name = clip.name; // the fallback-named key (never
-                                    // empty — the ledger's name group)
-            }
-        ++stats.anims;
     }
 
     // 6) The manifest.

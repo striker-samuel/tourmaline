@@ -88,16 +88,16 @@ int main() {
     Require(derived.geometry[0].indices.size() == 3);
 
     // STRICT OVERFLOW: the bounded static-mesh pool (Pool::kMaxSize = 8192)
-    // must fail the derive loudly past its bound — never silently truncate.
-    // 8193 single-triangle meshes (one upload each) overflow by one.
+    // must partition past its bound — never silently truncate, never overflow.
+    // 8193 single-triangle meshes (one upload each) derive into 3 parts.
     {
-        const fs::path odir = fs::temp_directory_path(ec) / "tourmaline_overflow";
+        const fs::path odir = fs::temp_directory_path(ec) / "tourmaline_partition_derive";
         fs::remove_all(odir, ec);
         fs::create_directories(odir, ec);
         const fs::path oinput = odir / "overflow.src";
         {
             std::ofstream file(oinput, std::ios::binary);
-            file << "overflow test scene";
+            file << "partition derive test";
         }
         smvk::source::Scene big;
         big.roots.reserve(8193);
@@ -114,20 +114,22 @@ int main() {
             big.activeRoots.push_back(uint32_t(i));
             auto& prim = big.meshes[size_t(i)].primitives.emplace_back();
             prim.vertices.resize(3);
-            prim.vertices[0].position = {0.0f, 0.0f, 0.0f};
-            prim.vertices[1].position = {1.0f, 0.0f, 0.0f};
-            prim.vertices[2].position = {0.0f, 1.0f, 0.0f};
+            prim.vertices[0].position = {float(i), 0.0f, 0.0f};
+            prim.vertices[1].position = {float(i) + 1.0f, 0.0f, 0.0f};
+            prim.vertices[2].position = {float(i), 1.0f, 0.0f};
             prim.indices = {0, 1, 2};
-            prim.aabbMin = {0.0f, 0.0f, 0.0f};
-            prim.aabbMax = {1.0f, 1.0f, 0.0f};
+            prim.aabbMin = {float(i), 0.0f, 0.0f};
+            prim.aabbMax = {float(i) + 1.0f, 1.0f, 0.0f};
         }
         Require(Validate(big, error));
         smvk::assets::AssetManifest om;
         smvk::assets::DeriveStats os{};
         std::string oerr;
-        Require(
-            !smvk::assets::DeriveNativeAssets(big, oinput, "", nullptr, config, om, &os, &oerr) &&
-            !oerr.empty());
+        Require(smvk::assets::DeriveNativeAssets(big, oinput, "", nullptr, config, om, &os, &oerr));
+        Require(os.geometryBlobs == 8193);
+        Require(std::filesystem::exists(odir / "overflow_part0.geometry"));
+        Require(std::filesystem::exists(odir / "overflow_part1.geometry"));
+        Require(std::filesystem::exists(odir / "overflow_part2.geometry"));
         fs::remove_all(odir, ec);
     }
 
