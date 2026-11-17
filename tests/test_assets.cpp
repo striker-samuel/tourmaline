@@ -471,6 +471,68 @@ void TestPakTextureDigest() {
     Check(p3.digest.empty() && p3.ktxBytes.size() == 4, "pak.digest.payload.legacy.fields");
 }
 
+// The streaming write path (BeginFile/AddBlob/FinishFile) must be
+// byte-identical to the in-memory Finalize() path — same header, blob
+// alignment, TOC and footer. Uses a tiny flush threshold to exercise the
+// flush/rewind loop without writing half a gigabyte.
+void TestPakStreamingWrite() {
+    namespace fs = std::filesystem;
+    const auto dir = fs::temp_directory_path() / "tourmaline_pak_stream";
+    std::error_code ec;
+    fs::remove_all(dir, ec);
+    fs::create_directories(dir, ec);
+    const std::string streamPath = (dir / "stream.pak").string();
+
+    // A mix of sizes (exercises 16-byte alignment padding + the LZ4 path).
+    auto build = [](smvk::PakWriter& w, bool compressed) {
+        w.SetCompression(compressed ? smvk::PakCompression::Lz4 : smvk::PakCompression::None);
+        std::vector<smvk::PakAssetKind> kinds = {
+            smvk::PakAssetKind::Texture, smvk::PakAssetKind::Mesh, smvk::PakAssetKind::Scene};
+        std::vector<size_t> sizes = {1, 4, 15, 16, 17, 20, 31, 32, 33, 100, 1000, 4000, 20000};
+        for (size_t i = 0; i < sizes.size(); ++i) {
+            std::vector<uint8_t> blob(sizes[i]);
+            for (size_t b = 0; b < blob.size(); ++b)
+                blob[b] = static_cast<uint8_t>((b * 31 + i * 7) & 0xFF);
+            const std::string path = "blobs/" + std::to_string(i) + ".bin";
+            const bool ok = w.AddBlob(kinds[i % kinds.size()],
+                                      path,
+                                      std::move(blob),
+                                      /*storeUncompressed=*/false);
+            Check(ok, "pak.stream.add");
+        }
+    };
+
+    for (const bool compressed : {false, true}) {
+        // In-memory reference.
+        smvk::PakWriter wMem;
+        build(wMem, compressed);
+        const std::vector<uint8_t> imgMem = wMem.Finalize();
+
+        // Streaming (tiny threshold forces several flush cycles).
+        smvk::PakWriter wStream(/*flushThresholdBytes=*/64);
+        std::string err;
+        Check(wStream.BeginFile(streamPath, &err), "pak.stream.begin");
+        build(wStream, compressed);
+        Check(wStream.FinishFile(&err), "pak.stream.finish");
+
+        std::vector<uint8_t> imgStream;
+        {
+            std::ifstream f(streamPath, std::ios::binary);
+            Check(static_cast<bool>(f), "pak.stream.file.open");
+            f.seekg(0, std::ios::end);
+            imgStream.resize(size_t(f.tellg()));
+            f.seekg(0);
+            f.read(reinterpret_cast<char*>(imgStream.data()), std::streamsize(imgStream.size()));
+        }
+        Check(imgStream == imgMem, "pak.stream.byte-identical");
+        // And the streamed pak opens through the real reader.
+        std::string openErr;
+        auto reader = smvk::PakReader::Open(std::span<const uint8_t>(imgStream), openErr);
+        Check(reader.has_value() && reader->EntryCount() == 13, "pak.stream.open");
+    }
+    fs::remove_all(dir, ec);
+}
+
 void TestPakAppend() {
     namespace fs = std::filesystem;
     const auto dir = fs::temp_directory_path() / "tourmaline_pak_append";
@@ -4234,6 +4296,7 @@ int main() {
     run("TestAssetUris", TestAssetUris);
     run("TestTextureSourceLifetime", TestTextureSourceLifetime);
     run("TestPakRoundTrip", TestPakRoundTrip);
+    run("TestPakStreamingWrite", TestPakStreamingWrite);
     run("TestShapePakBlobs", TestShapePakBlobs);
     run("TestPakCrcCombine", TestPakCrcCombine);
     run("TestPakCrcParallel", TestPakCrcParallel);

@@ -18,6 +18,7 @@
 #include <stdexcept>
 #include <thread>
 
+#include <Core/Memory/linear_allocator.h>
 #include <Engine/Asset/compression.h>
 #include <Engine/Utils/thread_pool.h>
 
@@ -373,6 +374,41 @@ bool ParseTextureDigest(std::span<const uint8_t> digest, TextureStreamMeta& out)
 // PakWriter
 // ---------------------------------------------------------------------------
 
+PakWriter::PakWriter(size_t flushThresholdBytes) : flushThreshold_(flushThresholdBytes) {}
+
+PakWriter::~PakWriter() {
+    if (file_.is_open())
+        file_.close();
+}
+
+PakWriter::PakWriter(PakWriter&&) = default;
+PakWriter& PakWriter::operator=(PakWriter&&) = default;
+
+// The reserve slack above the flush threshold: room for one oversized blob
+// (a packed mesh blob is at most tens of MB) before the buffer is flushed.
+// The reserve is VIRTUAL (commit-on-demand), so the headroom is free.
+inline constexpr size_t kBlobSlack = 256ull * 1024ull * 1024ull;
+
+bool PakWriter::FlushBuffer(std::string* err) {
+    if (!flushAlloc_)
+        return true;
+    const size_t used = flushAlloc_->Used() - flushMark_;
+    if (used == 0)
+        return true;
+    file_.write(reinterpret_cast<const char*>(flushAlloc_->Base() + flushMark_),
+                static_cast<std::streamsize>(used));
+    if (!file_) {
+        if (err)
+            *err = "pak stream write failed";
+        return false;
+    }
+    written_ += used;
+    // Rewind the bump pointer WITHOUT decommitting — the committed pages are
+    // reused for the next cycle (the whole point of the linear buffer).
+    flushAlloc_->Reset(flushMark_);
+    return true;
+}
+
 bool PakWriter::AddBlob(PakAssetKind kind,
                         const std::string& path,
                         std::vector<uint8_t> payload,
@@ -380,46 +416,215 @@ bool PakWriter::AddBlob(PakAssetKind kind,
     const VfsPath n = vfs::Normalize(path);
     if (n.empty() || payload.empty())
         return false;
-    Pending p;
-    p.meta.pathHash = PakHashPath(n);
-    p.meta.kind = kind;
-    p.meta.flags = PakEntryFlag_None;
-    p.meta.path = n;
+    if (streaming_ && !streamErr_.empty())
+        return false; // a prior flush failed: refuse further writes
+
+    PakTocEntry meta;
+    meta.pathHash = PakHashPath(n);
+    meta.kind = kind;
+    meta.flags = PakEntryFlag_None;
+    meta.path = n;
     // SMP8: the STABLE slot (the entry's ordinal - assigned at cook,
     // preserved across append grows; the compiled-plan addressing keys
     // pages by slot, never by TOC position).
-    p.meta.slot = static_cast<uint32_t>(entries_.size());
+    meta.slot = static_cast<uint32_t>(metas_.size());
+
+    // Determine the STORED bytes (compressed or not). The payload is moved
+    // here, so the blob leaves memory once AddBlob returns in streaming
+    // mode — nothing accumulates.
+    std::vector<uint8_t> stored;
     if (compression_ == PakCompression::Lz4 && !storeUncompressed) {
-        auto [stored, compressed] = CompressPakBlob(
+        auto [compressed, didCompress] = CompressPakBlob(
             std::span<const uint8_t>(payload), PakCompression::Lz4, lz4Acceleration_);
-        if (compressed) {
-            p.meta.flags = PakEntryFlag_Lz4;
-            p.payload = std::move(stored);
+        if (didCompress) {
+            meta.flags = PakEntryFlag_Lz4;
+            stored = std::move(compressed);
         } else {
-            p.payload = std::move(payload);
+            stored = std::move(payload);
         }
     } else {
-        p.payload = std::move(payload);
+        stored = std::move(payload);
     }
     // SMP8: the page integrity - the CRC over the entry's STORED bytes
     // (the LZ4 wrapper included when compressed). Verified at FETCH
     // time by the reader, never at mount.
-    p.meta.contentCrc = PakCrc32(p.payload.data(), p.payload.size());
-    metas_.push_back(p.meta);
+    meta.contentCrc = PakCrc32(stored.data(), stored.size());
+
+    if (streaming_) {
+        // Stream the blob into the bounded staging buffer (the linear
+        // allocator's reserved memory), aligning it to the page boundary
+        // and recording its offset. Flush once the buffer exceeds the hard
+        // threshold.
+        const size_t used = flushAlloc_->Used() - flushMark_;
+        const uint64_t cursor = written_ + used;
+        const uint64_t aligned = AlignUp(size_t(cursor), kAlign);
+        const size_t pad = static_cast<size_t>(aligned - cursor);
+        if (pad)
+            std::memset(flushAlloc_->Allocate(pad, 1), 0, pad);
+        meta.offset = aligned;
+        meta.size = stored.size();
+        std::memcpy(flushAlloc_->Allocate(stored.size(), 1), stored.data(), stored.size());
+        metas_.push_back(meta);
+        if (flushAlloc_->Used() - flushMark_ > flushThreshold_ && !FlushBuffer(&streamErr_))
+            return false;
+        return true;
+    }
+
+    Pending p;
+    p.meta = meta;
+    p.payload = std::move(stored);
+    metas_.push_back(meta);
     entries_.push_back(std::move(p));
+    return true;
+}
+
+bool PakWriter::BeginFile(const std::string& path, std::string* err) {
+    if (streaming_) {
+        if (err)
+            *err = "pak writer already streaming";
+        return false;
+    }
+    if (!entries_.empty() || !metas_.empty()) {
+        if (err)
+            *err = "pak writer already has entries (BeginFile before AddBlob)";
+        return false;
+    }
+    file_.open(path, std::ios::binary | std::ios::out | std::ios::trunc);
+    if (!file_) {
+        if (err)
+            *err = "cannot open output: " + path;
+        return false;
+    }
+    // Placeholder header (32 zero bytes) — patched with the magic +
+    // tocOffset/tocCount at FinishFile. A torn write leaves a zero-magic
+    // file that fails PakReader::Open (the crash-safety contract).
+    const std::array<uint8_t, 32> zero{};
+    file_.write(reinterpret_cast<const char*>(zero.data()), zero.size());
+    if (!file_) {
+        if (err)
+            *err = "pak header write failed: " + path;
+        file_.close();
+        return false;
+    }
+    streaming_ = true;
+    written_ = kHeaderSize;
+    streamErr_.clear();
+    // The staging buffer: reserved virtual memory from the engine's linear
+    // allocator (commit-on-demand, mmap-like), rewound per flush. Reserve
+    // the threshold + slack for one oversized blob.
+    flushAlloc_ = std::make_unique<tour::mem::LinearAllocator>("PakStreamBuffer",
+                                                               flushThreshold_ + kBlobSlack);
+    flushAlloc_->EnsureInitialized();
+    flushMark_ = flushAlloc_->Mark();
+    return true;
+}
+
+bool PakWriter::FinishFile(std::string* err) {
+    if (!streaming_) {
+        if (err)
+            *err = "pak writer is not streaming";
+        return false;
+    }
+    if (!streamErr_.empty()) {
+        if (err)
+            *err = streamErr_;
+        file_.close();
+        streaming_ = false;
+        return false;
+    }
+    if (metas_.empty()) {
+        if (err)
+            *err = "pak writer: no entries";
+        file_.close();
+        streaming_ = false;
+        return false;
+    }
+    // Flush the remaining blob bytes.
+    if (!FlushBuffer(&streamErr_)) {
+        if (err)
+            *err = streamErr_;
+        file_.close();
+        streaming_ = false;
+        return false;
+    }
+
+    // TOC (16-aligned), then the CRC over ONLY the TOC bytes (the mount
+    // validates the metadata cheaply; every blob page verifies through its
+    // own contentCrc at fetch).
+    const uint64_t tocOffset = AlignUp(size_t(written_), kAlign);
+    {
+        std::vector<uint8_t> toc;
+        toc.reserve(metas_.size() * (kTocEntryFixed + 8));
+        for (const auto& e : metas_) {
+            AppendU64(toc, e.pathHash);
+            AppendU32(toc, static_cast<uint32_t>(e.kind));
+            AppendU32(toc, e.flags);
+            AppendU64(toc, e.offset);
+            AppendU64(toc, e.size);
+            AppendU32(toc, e.slot);
+            AppendU32(toc, e.contentCrc);
+            AppendU32(toc, static_cast<uint32_t>(e.path.size()));
+            toc.insert(toc.end(), e.path.begin(), e.path.end());
+        }
+        const size_t pad = static_cast<size_t>(tocOffset - written_);
+        if (pad) {
+            const std::array<uint8_t, kAlign> zero{};
+            file_.write(reinterpret_cast<const char*>(zero.data()),
+                        static_cast<std::streamsize>(pad));
+        }
+        const uint32_t tocCrc = PakCrc32(toc.data(), toc.size());
+        file_.write(reinterpret_cast<const char*>(toc.data()),
+                    static_cast<std::streamsize>(toc.size()));
+        if (!file_) {
+            if (err)
+                *err = "pak TOC write failed";
+            file_.close();
+            streaming_ = false;
+            return false;
+        }
+        written_ = tocOffset + toc.size();
+
+        // Footer (tocOffset, tocCount, tocCrc, magic).
+        const uint64_t tocCount = metas_.size();
+        const uint32_t footerMagic = kPakFooterMagic;
+        file_.write(reinterpret_cast<const char*>(&tocOffset), 8);
+        file_.write(reinterpret_cast<const char*>(&tocCount), 8);
+        file_.write(reinterpret_cast<const char*>(&tocCrc), 4);
+        file_.write(reinterpret_cast<const char*>(&footerMagic), 4);
+
+        // Patch the header (magic + tocOffset + tocCount).
+        file_.seekp(0, std::ios::beg);
+        std::array<uint8_t, kHeaderSize> hdr{};
+        memcpy(hdr.data() + 0, &kPakMagic, 4);
+        memcpy(hdr.data() + 12, &tocOffset, 8);
+        memcpy(hdr.data() + 20, &tocCount, 8);
+        file_.write(reinterpret_cast<const char*>(hdr.data()), hdr.size());
+        file_.flush();
+        if (!file_) {
+            if (err)
+                *err = "pak finalize write failed";
+            file_.close();
+            streaming_ = false;
+            return false;
+        }
+    }
+    file_.close();
+    streaming_ = false;
     return true;
 }
 
 size_t PakWriter::CompressedEntryCount() const {
     size_t n = 0;
-    for (const auto& e : entries_) {
-        if (e.meta.flags & PakEntryFlag_Lz4)
+    for (const auto& e : metas_) {
+        if (e.flags & PakEntryFlag_Lz4)
             ++n;
     }
     return n;
 }
 
 std::vector<uint8_t> PakWriter::Finalize() const {
+    if (streaming_)
+        throw std::runtime_error("PakWriter: streaming writer cannot Finalize() (use FinishFile)");
     if (entries_.empty())
         throw std::runtime_error("PakWriter: no entries");
 

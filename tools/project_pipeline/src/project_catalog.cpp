@@ -423,6 +423,7 @@ bool GenerateProjectCatalog(const Project& project,
 
     // Every ensured (guid -> where it landed) for the tombstone sweep.
     std::set<std::string> liveGuids;
+    size_t mintedIds = 0;
     const auto ensureAsset = [&](const std::string& projectRel,
                                  const std::string& kind,
                                  const std::string& pakId,
@@ -446,7 +447,7 @@ bool GenerateProjectCatalog(const Project& project,
                     db, abs.lexically_normal().generic_string(), kind, guid, sidecar, note, err))
                 return false;
             if (!note.empty())
-                std::printf("[ids] %s\n", note.c_str());
+                ++mintedIds; // summary printed once below (first-cook mint storm)
             // Identity inputs belong with the content deps: a sidecar
             // GUID change regenerates (the depfile feed).
             contentDeps.push_back(sidecar);
@@ -675,6 +676,11 @@ bool GenerateProjectCatalog(const Project& project,
             }
         }
     }
+
+    // First-cook mint storm collapses to one summary: N fresh identities
+    // (a 250-part world mints one .meta per part — a line each is noise).
+    if (mintedIds)
+        std::printf("[ids] identity MINTED for %zu asset(s) (missing sidecars)\n", mintedIds);
 
     // The tombstone sweep: active registry rows whose guid the plan no
     // longer carries drop to active=0 (id+symbol reserved forever).

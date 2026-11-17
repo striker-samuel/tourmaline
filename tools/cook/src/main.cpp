@@ -424,7 +424,7 @@ BakeEnv EnvForBake(const smvk::WorldPage& c, const Args& args) {
 // the old non-static choice starved every bake of the sun while
 // the 2D-lightmap double-count it feared is deprecated in-shader
 // and off in every shipped tour.
-void EnsureWorldSun(smvk::WorldPage& cluster, const BakeEnv& be) {
+bool EnsureWorldSun(smvk::WorldPage& cluster, const BakeEnv& be) {
     bool hasDir = false;
     cluster.lights.forEachHandle([&](smvk::WorldPageLightHandle h) {
         if (const SceneLight* l = cluster.lights.get(h))
@@ -432,7 +432,7 @@ void EnsureWorldSun(smvk::WorldPage& cluster, const BakeEnv& be) {
                 hasDir = true;
     });
     if (hasDir || cluster.scene.hierarchy.empty())
-        return;
+        return false;
     // toSun from compass azimuth (0 = +Z) + elevation — the same formula
     // as EnvironmentSettings::SunDirectionToSun (unit by construction).
     const float az = be.sunAzimuth * 0.01745329252f;
@@ -471,12 +471,10 @@ void EnsureWorldSun(smvk::WorldPage& cluster, const BakeEnv& be) {
     sun.flags |= SceneLight::kSceneLightFlag_Static;
     const auto h = cluster.CreateLight(std::move(sun));
     if (!h.valid())
-        return;
+        return false;
     cluster.RegisterLightUri("sun/world", h);
     SetLight(cluster.scene, uint32_t(node), h.index());
-    tool::out() << "World sun synthesized (env block): az=" << be.sunAzimuth
-                << " el=" << be.sunElevation << " I=" << be.sunIntensity << " rgb=("
-                << be.sunColor.x << "," << be.sunColor.y << "," << be.sunColor.z << ")\n";
+    return true;
 }
 
 // Produce a filename-safe token for embedded GI-volume paths (manifest rows
@@ -4900,8 +4898,11 @@ int Run(const CookArgs& c) {
     // World sun per scene (App parity: first directional wins as the
     // runtime sun). Authored directionals always survive; sunless scenes
     // synthesize one from the ENV BLOCK (EnvForBake — one authored sun).
+    size_t synthesizedSuns = 0;
     for (auto& sc : scenePages)
-        EnsureWorldSun(*sc, EnvForBake(*sc, args));
+        synthesizedSuns += EnsureWorldSun(*sc, EnvForBake(*sc, args)) ? 1u : 0u;
+    if (synthesizedSuns)
+        tool::out() << "World sun synthesized (env block) for " << synthesizedSuns << " page(s)\n";
 
     // Sun of record -> the scene's look env (sun fields only): an
     // AUTHORED directional (imported KHR punctual or tour-created) is

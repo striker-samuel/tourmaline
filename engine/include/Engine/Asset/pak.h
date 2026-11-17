@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <fstream>
 #include <memory>
 #include <optional>
 #include <span>
@@ -16,6 +17,10 @@
 #include <Engine/smvk.h> // smvk::TextureStreamMeta (v4 tail-upload digest form)
 
 #include <mutex>
+
+namespace tour::mem {
+class LinearAllocator; // the streaming staging buffer's reserved-memory allocator
+} // namespace tour::mem
 
 namespace tour::asset {
 // (namespace/RHI boundary audit) fully qualified - no broad
@@ -415,10 +420,36 @@ bool BuildTextureDigest(const smvk::TextureStreamMeta& meta, std::vector<uint8_t
 bool ParseTextureDigest(std::span<const uint8_t> digest, smvk::TextureStreamMeta& out);
 
 // Incremental pak builder (cooker side).
+//
+// Two mutually exclusive modes:
+//   * In-memory (default): AddBlob accumulates every payload, Finalize()
+//     returns the whole image. Fine for tests and small paks, but O(pak)
+//     memory — the multi-GB island class must NOT use this.
+//   * Streaming: BeginFile() opens the output and writes the header, then
+//     every AddBlob streams its (possibly compressed) payload straight to
+//     the file through a bounded staging buffer that FLUSHES whenever it
+//     exceeds kFlushThreshold (512 MB). FinishFile() writes the TOC +
+//     footer, patches the header and closes. Peak memory is O(largest
+//     blob + kFlushThreshold), never O(pak). The two modes produce
+//     byte-identical images (pinned by test_pak.cpp).
 class PakWriter {
   public:
-    PakWriter() = default;
-    // Payloads are copied. Path is normalized; empty/invalid paths fail.
+    // flushThresholdBytes: the hard flush threshold for the streaming path.
+    // Tests pass a tiny value to exercise the flush loop without writing
+    // half a gigabyte; production uses the default. OUT-OF-LINE (pak.cpp):
+    // the unique_ptr<LinearAllocator> member's exception-safety destructor
+    // needs the complete type.
+    explicit PakWriter(size_t flushThresholdBytes = kFlushThreshold);
+    ~PakWriter();
+    // Move operations are OUT-OF-LINE (defined in pak.cpp): the streaming
+    // buffer holds a forward-declared LinearAllocator behind a unique_ptr,
+    // so the move-assignment's delete needs the complete type.
+    PakWriter(PakWriter&&);
+    PakWriter& operator=(PakWriter&&);
+    PakWriter(const PakWriter&) = delete;
+    PakWriter& operator=(const PakWriter&) = delete;
+
+    // Payloads are moved. Path is normalized; empty/invalid paths fail.
     // storeUncompressed forces flags == None regardless of SetCompression:
     // v4 direct-addressed blobs (packed-SoA mesh streams) must stay
     // byte-identical subspans of the pak image — compressing them would
@@ -438,13 +469,32 @@ class PakWriter {
         return compression_;
     }
     size_t EntryCount() const {
-        return entries_.size();
+        return metas_.size();
     }
     size_t CompressedEntryCount() const;
     const std::vector<PakTocEntry>& Entries() const {
         return metas_;
     }
-    // Serializes header+blobs+TOC+footer. Throws on failure.
+
+    // ---- Streaming mode (the cooker's multi-GB path) --------------------
+    // Opens `path` (creating parent dirs is the CALLER's job) and writes
+    // the placeholder header. Returns false + *err on open/write failure.
+    // Fails if already streaming or if entries were already added in
+    // in-memory mode.
+    bool BeginFile(const std::string& path, std::string* err);
+    // Writes the TOC + footer, patches the header's tocOffset/tocCount,
+    // flushes and closes. Returns false + *err on I/O failure.
+    bool FinishFile(std::string* err);
+    bool Streaming() const {
+        return streaming_;
+    }
+    // The hard flush threshold: once the staging buffer exceeds this many
+    // bytes the writer flushes it to disk, bounding peak memory.
+    static constexpr size_t kFlushThreshold = 512ull * 1024ull * 1024ull;
+
+    // ---- In-memory mode (tests / small paks) ----------------------------
+    // Serializes header+blobs+TOC+footer into one vector. Throws on
+    // failure. Fails (throws) if called while streaming.
     std::vector<uint8_t> Finalize() const;
 
   private:
@@ -452,10 +502,25 @@ class PakWriter {
         PakTocEntry meta;
         std::vector<uint8_t> payload;
     };
-    std::vector<Pending> entries_;
-    std::vector<PakTocEntry> metas_; // mirrors entries_[].meta (stable order)
+    // Flushes the staging buffer to the file; false + *err on I/O failure.
+    bool FlushBuffer(std::string* err);
+
+    std::vector<Pending> entries_;   // in-memory mode: payloads (metas_ mirrors)
+    std::vector<PakTocEntry> metas_; // always populated (metadata, stable order)
     smvk::PakCompression compression_ = smvk::PakCompression::None;
     int lz4Acceleration_ = 1;
+
+    bool streaming_ = false;
+    std::ofstream file_;
+    size_t flushThreshold_ = kFlushThreshold; // the hard flush threshold
+    // The bounded staging buffer: reserved virtual memory from the engine's
+    // linear allocator (commit-on-demand, mmap-like), rewound via Mark/Reset
+    // each flush. Peak memory is O(largest blob + flushThreshold_), never
+    // O(pak). Lazily created on BeginFile.
+    std::unique_ptr<tour::mem::LinearAllocator> flushAlloc_;
+    size_t flushMark_ = 0;  // the buffer's rewind mark for the current cycle
+    uint64_t written_ = 0;  // bytes already flushed to the file
+    std::string streamErr_; // first streaming I/O error (sticky)
 };
 
 // Parsed pak view over borrowed bytes (the caller keeps the image alive;

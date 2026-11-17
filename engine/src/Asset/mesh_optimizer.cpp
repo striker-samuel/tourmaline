@@ -1101,8 +1101,12 @@ bool CookLodSiblings(WorldPage& cluster,
         }
         lod0.candidateCount = uint32_t(1 + registered);
         cluster.RegisterMeshLod(uri, lod0);
+        // Per-mesh LOD diagnostic: too noisy for large scenes (a 1M-mesh
+        // island prints one line per mesh) — keep it debug-only.
+#ifndef NDEBUG
         std::cout << "LOD " << uri.Str() << ": " << registered << " sibling(es)"
                   << (charts ? " (lightmapped)" : "") << "\n";
+#endif
     }
     // No world-scale finalize here (see the removal note above
     // FinalizeLodWorldErrors): simplifyError stays MESH-LOCAL, and the

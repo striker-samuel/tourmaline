@@ -273,7 +273,7 @@ BakeEnv EnvForBake(const smvk::WorldPage& c, const Args& args) {
 // bake-time sun rides the in-pak bakes (convex volumes); the runtime
 // still renders it as the analytic/CSM sun (static directionals are
 // exempt from the bake-only rule), so nothing double-counts.
-void EnsureWorldSun(smvk::WorldPage& cluster, const BakeEnv& be) {
+bool EnsureWorldSun(smvk::WorldPage& cluster, const BakeEnv& be) {
     bool hasDir = false;
     cluster.lights.forEachHandle([&](smvk::WorldPageLightHandle h) {
         if (const SceneLight* l = cluster.lights.get(h))
@@ -281,7 +281,7 @@ void EnsureWorldSun(smvk::WorldPage& cluster, const BakeEnv& be) {
                 hasDir = true;
     });
     if (hasDir || cluster.scene.hierarchy.empty())
-        return;
+        return false;
     // toSun from compass azimuth (0 = +Z) + elevation — the same formula
     // as EnvironmentSettings::SunDirectionToSun (unit by construction).
     const float az = be.sunAzimuth * 0.01745329252f;
@@ -320,12 +320,10 @@ void EnsureWorldSun(smvk::WorldPage& cluster, const BakeEnv& be) {
     sun.flags |= SceneLight::kSceneLightFlag_Static;
     const auto h = cluster.CreateLight(std::move(sun));
     if (!h.valid())
-        return;
+        return false;
     cluster.RegisterLightUri("sun/world", h);
     SetLight(cluster.scene, uint32_t(node), h.index());
-    tool::out() << "World sun synthesized (env block): az=" << be.sunAzimuth
-                << " el=" << be.sunElevation << " I=" << be.sunIntensity << " rgb=("
-                << be.sunColor.x << "," << be.sunColor.y << "," << be.sunColor.z << ")\n";
+    return true;
 }
 
 // Produce a filename-safe token for embedded GI-volume paths (manifest rows
@@ -2403,6 +2401,7 @@ int Run(const PakArgs& c) {
     // scenes) are preserved verbatim — the stamp only fills the
     // no-marks-at-all case, never overrides an authored mark.
     // ---------------------------------------------------------------------------
+    size_t staticMarked = 0;
     for (auto& sc : scenePages) {
         smvk::WorldPage& c = *sc;
         if (c.scene.hierarchy.empty())
@@ -2416,9 +2415,11 @@ int Run(const PakArgs& c) {
         if (c.hasSkeleton || !c.scene.animClipRefs.empty())
             continue; // animated content: stays dynamic
         MarkSubtreeStatic(c.scene, 0);
-        tool::out() << "Static marks cooked: cluster root frozen (no"
-                       " skeleton, no anim refs)\n";
+        ++staticMarked;
     }
+    if (staticMarked)
+        tool::out() << "Static marks cooked: " << staticMarked
+                    << " page root(s) frozen (no skeleton, no anim refs)\n";
     // Import phase finished: commit any staged registry artifacts (one
     // pak grow per touched class). Flush failure loses acceleration
     // only — staged bytes were already used in the import.
@@ -2723,8 +2724,11 @@ int Run(const PakArgs& c) {
     // World sun per scene (App parity: first directional wins as the
     // runtime sun). Authored directionals always survive; sunless scenes
     // synthesize one from the ENV BLOCK (EnvForBake — one authored sun).
+    size_t synthesizedSuns = 0;
     for (auto& sc : scenePages)
-        EnsureWorldSun(*sc, EnvForBake(*sc, args));
+        synthesizedSuns += EnsureWorldSun(*sc, EnvForBake(*sc, args)) ? 1u : 0u;
+    if (synthesizedSuns)
+        tool::out() << "World sun synthesized (env block) for " << synthesizedSuns << " page(s)\n";
 
     // Sun of record -> the scene's look env (sun fields only): an
     // AUTHORED directional (imported KHR punctual or tour-created) is
@@ -2827,6 +2831,18 @@ int Run(const PakArgs& c) {
     smvk::PakWriter writer;
     writer.SetCompression(args.compress ? smvk::PakCompression::Lz4 : smvk::PakCompression::None,
                           args.lz4Accel);
+    // Stream the pak straight to disk (blobs flush at 512 MB) instead of
+    // building one multi-GB image in memory. Byte-identical to the old
+    // Finalize() path, minus the O(pak) peak memory.
+    {
+        std::error_code bec;
+        std::filesystem::create_directories(std::filesystem::path(args.outPak).parent_path(), bec);
+    }
+    std::string beginErr;
+    if (!writer.BeginFile(args.outPak, &beginErr)) {
+        tool::err() << "Cannot open output: " << beginErr << std::endl;
+        return 1;
+    }
     smvk::WorldPageSerializeStats stats;
 
     // The project's node schemas (--schema files, parsed here into the
@@ -3314,7 +3330,11 @@ int Run(const PakArgs& c) {
         levelSubs.push_back(
             {smvk::PakAssetKind::Texture, vfsPath, std::span<const uint8_t>(bytes)});
     const auto serializeStageEnd = std::chrono::steady_clock::now();
-    std::vector<uint8_t> pak = writer.Finalize();
+    std::string finishErr;
+    if (!writer.FinishFile(&finishErr)) {
+        tool::err() << "Pak write failed: " << finishErr << std::endl;
+        return 1;
+    }
     const auto packFinalizeEnd = std::chrono::steady_clock::now();
     tool::out() << "[CookProfile] assembly/pre-serialization "
                 << std::chrono::duration<double>(serializeStageStart - t0).count()
@@ -3323,19 +3343,6 @@ int Run(const PakArgs& c) {
                 << "s, pak finalize "
                 << std::chrono::duration<double>(packFinalizeEnd - serializeStageEnd).count()
                 << "s\n";
-
-    {
-        std::filesystem::path out(args.outPak);
-        std::error_code ec;
-        std::filesystem::create_directories(out.parent_path(), ec);
-        FILE* f = std::fopen(out.string().c_str(), "wb");
-        if (!f) {
-            tool::err() << "Cannot open output: " << args.outPak << std::endl;
-            return 1;
-        }
-        fwrite(pak.data(), 1, pak.size(), f);
-        fclose(f);
-    }
 
     // Level append: read the scene blob back from the JUST-WRITTEN pak
     // (the exact bytes the standalone scene blob rides), pack it + the
@@ -3416,7 +3423,7 @@ int Run(const PakArgs& c) {
             }
             return n;
         }()
-                << " pak=" << pak.size() << " B"
+                << " pak=" << std::filesystem::file_size(std::filesystem::path(args.outPak)) << " B"
                 << " staticRoots=" << stats.staticRoots << " meshleted=" << stats.meshesWithMeshlets
                 << "/" << stats.meshes << " meshes," << stats.meshletCount << " meshlets"
                 << " compressed=" << writer.CompressedEntryCount() << "/" << writer.EntryCount()
@@ -3574,6 +3581,16 @@ int main(int argc, char** argv) {
     c.schemaFiles = args.schemaFiles;
     c.shaderDir = args.shaderDir;
     c.shaderList = args.shaderList;
-    return paktool::Run(c);
+    try {
+        return paktool::Run(c);
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "\n[Pak] UNCAUGHT EXCEPTION: %s\n", e.what());
+        std::fflush(stderr);
+        return 1;
+    } catch (...) {
+        std::fprintf(stderr, "\n[Pak] UNCAUGHT NON-STD EXCEPTION\n");
+        std::fflush(stderr);
+        return 1;
+    }
 }
 #endif
