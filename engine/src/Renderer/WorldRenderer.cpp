@@ -15579,57 +15579,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     const smvk::RenderView liveMainCullView = m_renderViews.Get(mainRenderView);
 
     // ---------------------------------------------------------------------
-    // Cone-axis debug lines (the overlay's GPU leg): the toggle armed the
-    // GfxConeDebug pass (SetConeDebug — the UI handler), which writes two
-    // packed DebugLineVertex float3s per candidate slot from the cull
-    // chain's ACTUAL cones — baked bind-pose cones for static draws, THIS
-    // frame's deformed cones for skinned ones — GPU-driven end to end:
-    // zero latency, no readback (the retired CPU readback path corrupted
-    // the host heap — its download destinations dangled through vector
-    // reallocation between submit and poll — and the cache never landed,
-    // leaving the overlay dark on exactly the skinned meshes it existed
-    // to inspect).
-    // The candidate slot space is a DENSE prefix over the pushed draws'
-    // clusters (misc2.z is the build's prefix sum), so the pass writes
-    // exactly [0, candidateTotal) slots and Main Draws 2*candidateTotal
-    // verts over the line buffer — the count mirrors the pass's slot
-    // loop (the CPU batch list is not the source of truth here).
-    // ---------------------------------------------------------------------
-    uint32_t coneLineVerts = 0;
-    {
-        // Headless pin (TOURMALINE_CONE_DEBUG=1): arm the overlay for
-        // capture/A-B runs without the UI (the Debug-panel checkbox
-        // toggles the same state interactively; the env arms it once).
-        static const bool s_coneDebugEnv = [] {
-            const char* e = std::getenv("TOURMALINE_CONE_DEBUG");
-            return e && *e && *e != '0';
-        }();
-        if (s_coneDebugEnv && !m_debugCones) {
-            m_debugCones = true;
-            smvk::gfx::SetConeDebug(m_gfxRenderer.State(), *m_context, *m_rendergraph, true);
-        }
-    }
-    if (m_debugCones && gfxSlot != UINT32_MAX && gfxSlot < m_gfxRenderer.State().views.size() &&
-        smvk::gfx::ConeDebugReady(m_gfxRenderer.State())) {
-        const smvk::gfx::State& st = m_gfxRenderer.State();
-        const smvk::gfx::View& v = st.views[gfxSlot];
-        // The runtime candidate capacity of this view's current flight
-        // (the dynamic cutover — the retired fixed kMaxBatchSlots bound
-        // died with it).
-        const uint32_t slotCap = smvk::gfx::CandidateCapacity(st, gfxSlot);
-        uint64_t candidateTotal = 0;
-        for (const smvk::gfx::Draw& d : v.drawConstants) {
-            if (d.candidateBase == UINT32_MAX || d.mesh >= st.meshes.size())
-                continue;
-            const uint64_t count = st.meshes[d.mesh].clusterCount;
-            if (d.candidateBase + count > slotCap)
-                continue; // corrupt slot layout: the pass skips it too
-            candidateTotal += count;
-        }
-        coneLineVerts = (uint32_t)std::min<uint64_t>(candidateTotal * 2, (uint64_t)slotCap * 2);
-    }
-
-    // ---------------------------------------------------------------------
     // Motion vectors - per-pixel prevUV - currUV into RG16F (motionvector.h)
     // Re-rasterizes opaque geometry depth-tested READ-ONLY against the 1x
     // prepass depth (reversed-Z GreaterEqual, no writes) - identical in
@@ -16136,18 +16085,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         csRead.layout = smvk::ImageLayout::ShaderReadOnlyOptimal;
         mainPass.AddImageHint(m_viewportResources.contactShadows.OutputLogical(), csRead);
     }
-    // The GPU-written cone debug lines (vertex-attribute read by the
-    // overlay draw below): the vertex-stage read pairs with
-    // GfxConeDebug's compute write — the rendergraph's cross-stage
-    // ordering edge (the same pattern the filtered index monoblock's
-    // compute write + index read use).
-    if (coneLineVerts > 0) {
-        smvk::BufferSyncRequest coneLinesRead{};
-        coneLinesRead.barrierMasks.accessMask = smvk::AccessFlags::VertexAttributeRead;
-        coneLinesRead.barrierMasks.stageMask = smvk::PipelineStageBit_Vertex;
-        mainPass.AddBufferHint(smvk::gfx::ConeDebugLinesLogical(m_gfxRenderer.State()),
-                               coneLinesRead);
-    }
     // Shader failure and missing multisample sampling support degrade to hardware AVERAGE.
     const bool customMsaaResolve = useMsaa && m_aaMode == AaMode::Msaa2xCustom &&
                                    m_viewportResources.msaa.CustomResolveInputValid() &&
@@ -16546,7 +16483,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                sceneRasterVsPush,
                                renderViewsAddress,
                                mainRenderView,
-                               coneLineVerts,
                                selectionLineVerts,
                                frameViewProj,
                                debugDrawRanges,
@@ -17346,12 +17282,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     // (covers the filterable + white-fallback branches below).
                     pushMeshDebugSkinTail(worldMesh, item.node);
                     // Heat-mode cone source: SKINNED items have no CPU-visible
-                    // deformed cutoffs (the skinBounds table is GPU-resident —
-                    // the axis overlay reads it GPU-side via GfxConeDebug, but
-                    // this per-cluster CPU-recorded color loop cannot without
-                    // a readback, which the overlay's retired path proved too
-                    // fragile to keep). They draw the sentinel deep-blue "no
-                    // deformed data" instead of the bind-pose cutoff — the
+                    // deformed cutoffs (the skinBounds table is GPU-resident;
+                    // this per-cluster CPU-recorded color loop cannot read it
+                    // without a readback, which the retired overlay path proved
+                    // too fragile to keep). They draw the sentinel deep-blue
+                    // "no deformed data" instead of the bind-pose cutoff — the
                     // exact lie the heat mode exists to expose. Static items
                     // keep the baked cutoffs — their actual cull input.
                     // (Skinned-heat-from-GPU: the F4 todo.)
@@ -17920,41 +17855,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                          m_world->MaterialUserData(d.materialId),
                          useDirectLm);
             }
-        }
-
-        // ---- Cone-axis debug overlay (LineList over the GPU-written
-        // candidate lines) ----
-        // Shows the normal cone of every candidate (draw x cluster) the
-        // filter saw: apex -> apex + axis * worldRadius (yellow), from
-        // the GfxConeDebug pass's line buffer — the cull chain's ACTUAL
-        // cones (baked bind-pose for static draws, this frame's deformed
-        // cones for skinned ones; GPU-driven end to end, zero latency).
-        // Missing meshlets in the shaded view but present cones here =
-        // GPU HZB cull; missing lines = the keep-cone (degenerate, no
-        // axis to draw).
-        if (m_debugCones && coneLineVerts > 0 && smvk::gfx::ConeDebugReady(m_gfxRenderer.State()) &&
-            m_gfxRenderer.DebugProgramsValid()) {
-            cmd.BindRenderPipeline(m_gfxRenderer.LineProgram(),
-                                   ::tour::vertex_layouts::DebugLine,
-                                   transparentDepth,
-                                   noStencil,
-                                   smvk::BlendSettings::Opaque(),
-                                   msaaSettings,
-                                   smvk::RasterSettings{.cullMode = smvk::CullMode::None},
-                                   smvk::PrimitiveTopology::LineList);
-            cmd.BindVertexBuffer(smvk::gfx::ConeDebugLinesBuffer(m_gfxRenderer.State()), 0, 0);
-            LineDebugPush lp{};
-            std::copy_n(glm::value_ptr(frameViewProj), 16, lp.viewProj);
-            // Same HDR/exposure path as the meshlet colors above: pre-scale
-            // so the tonemap reproduces yellow instead of black.
-            const float lineExposure = FrameExposure();
-            const float lineGain = (lineExposure > 1e-9f) ? 1.0f / lineExposure : 1.0f;
-            lp.color[0] = 1.0f * lineGain;
-            lp.color[1] = 1.0f * lineGain;
-            lp.color[2] = 0.0f;
-            lp.color[3] = 1.0f;
-            cmd.PushConstants(0, sizeof(lp), &lp, smvk::ShaderStage::All);
-            cmd.Draw(coneLineVerts, 1, 0, 0);
         }
 
         // CPU-authored immediate debug lines: same HDR target, depth,

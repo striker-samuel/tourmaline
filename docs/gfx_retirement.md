@@ -244,8 +244,39 @@ Commit subjects follow the plan; the deltas are marked.
 - 05 — `refactor(gfx): shared prepass Hi-Z and parallel skinning` —
   one pyramid, two culling consumers; skinning overlaps the static
   prepass/Hi-Z work.
+  - **Record**: the shared per-view pyramid is already wired at
+    baseline — `tour::visibility` owns the Hi-Z storage/layout, and both
+    the static GPU-scene HZB cull (`GpuSceneHizCull` /
+    `GpuSceneMeshletHizCull`, consuming `gfx::HizAddress`) and the
+    skinned/direct cull consume the SAME pyramid; no redundant
+    per-view pyramid generation remains. The HZB BUILD programs
+    (`hizProgram`/`hizSpdProgram`) still live on `gfx::State` (they move
+    to `tour::visibility` with the Epoch 08 `gfx::State` deletion), and
+    the skinning/prepass overlap scheduling is GPU-timing-validated work
+    (deferred to Epoch 09).
+  - **Gates**: no code change this epoch — the shared-pyramid + single-
+    generation invariant is already met; scheduling overlap is a
+    GPU-validated optimization, not a correctness gap.
 - 06 — `refactor(gfx): delete lightmaps and cone debug visualization` —
   both features removed end-to-end; normal-cone culling data preserved.
+  - **Record (cone debug — done)**: deleted the cone-axis overlay
+    end-to-end — `gfxcone_debug.cs.hlsl`, the `GfxConeDebugPush`/
+    `GfxConeDebugLines` HLSL mirrors, `ConeDebugPush`, the
+    `State::coneDebug*` fields + `SetConeDebug`/`AddConeDebugPass`/
+    `PushAndDispatchConeDebug`/`ConeDebugReady`/`ConeDebugLines*` API,
+    the `gfx_dynamic_capacity` `coneDebug` byte budget, the
+    `m_debugCones` UI checkbox, and the overlay's candidate-count +
+    draw + buffer-hint wiring in WorldRenderer. Normal-cone culling
+    data (`gfxskinbounds`, `ClusterConstants` cones, the meshlet-debug
+    heat mode) is preserved.
+  - **Record (lightmaps — pending)**: the lightmap surface
+    (`Draw::lmChunk/lmChartOffset/lmDelta`, `LmChartXform`,
+    `UvFlatVsPushTail`/`DirectLightmapPullTail`, `GfxRenderer::
+    EnsureChartXforms`, `default_lightmap.vert.hlsl`,
+    `GI/lightmap.h`, `test_lightmap_pull.cpp`, editor lm-export) is the
+    next deletion in this epoch.
+  - **Gates**: 7-test GFX subset green + `App` links (after the
+    cone-debug removal).
 - 07 — `refactor(gfx): direct/skinned rendering isolation` — skinned
   direct path independent of GfxFilter; uses shared visibility.
 - 08 — `refactor(gfx): delete legacy GeometryFX architecture` —

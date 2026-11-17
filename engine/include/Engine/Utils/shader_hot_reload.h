@@ -57,7 +57,7 @@
 // against each other: builders also consume lit-family modules
 // (ForwardPlus's depth VS is default.vert, bloom/DOF ride
 // tonemap.vert). STILL last-known-good (the one remaining documented
-// gap): the gfx compute chain (gfxskinbounds / gfxcone_debug / hzb —
+// gap): the gfx compute chain (gfxskinbounds / hzb —
 // the tour::gfx::State modules) and WorldRenderer's auxiliary FS sets
 // (debug views, shadow/gbuffer twins). The headless frame-safety
 // regression: TOURMALINE_SHADER_SWAP=<frame> forces the FULL swap

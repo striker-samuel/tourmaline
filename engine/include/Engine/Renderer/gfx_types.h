@@ -307,32 +307,6 @@ struct SkinBoundsPush {
 };
 static_assert(sizeof(SkinBoundsPush) == 64);
 
-// GfxConeDebug push (the cone-axis overlay's GPU leg; runs after
-// GfxSkinBounds, before Main's overlay draw). Must match HLSL
-// GfxConeDebugPush in gfxfilter.hlsli (56 bytes). One 128-thread workgroup
-// per draw; threads stride the draw's clusters and write two packed
-// DebugLineVertex float3s per candidate slot (apex -> tip), the ACTUAL
-// cull cones: baked bind-pose for static draws, this frame's deformed
-// cones (the skinBounds table) for skinned draws — zero latency,
-// GPU-driven end to end (the retired CPU readback path corrupted the host
-// heap: its download destinations dangled through vector reallocation
-// between submit and poll, and the cache never landed).
-struct ConeDebugPush {
-    uint64_t draws = 0;           // this frame (misc2.z = slot base)
-    uint64_t meshes = 0;          // static per-mesh cluster ranges
-    uint64_t clusters = 0;        // static (baked bind-pose cones)
-    uint64_t skinBounds = 0;      // deformed (this frame's table)
-    uint64_t lines = 0;           // out (2 packed verts per candidate slot)
-    uint32_t skinBoundsValid = 0; // 0: every draw reads the static table
-    uint32_t drawCount = 0;
-    // The shared line buffer's candidate-slot capacity (successor of the
-    // retired GFX_MAX_BATCH_SLOTS macro): the belt-and-braces bound for
-    // every candidate-slot write.
-    uint32_t candidateCapacity = 0;
-    uint32_t pad2 = 0;
-};
-static_assert(sizeof(ConeDebugPush) == 56);
-
 // Filtered-path VS tail push (gfxfiltered.vert.hlsl + the shared seed
 // prologue, 40 bytes). Pushed at kFilteredVsPushOffset (the main pass'
 // unused prevModel scratch, bytes 192..232) so the full 256B scene push
@@ -757,25 +731,6 @@ struct State : StaticGeometry {
     uint32_t skinBoundsDrawCap[smvk::limits::MaxFramesInFlight] = {};
     uint32_t skinBoundsCandidateWant[smvk::limits::MaxFramesInFlight] = {};
     uint32_t skinBoundsDrawWant[smvk::limits::MaxFramesInFlight] = {};
-    // GfxConeDebug (the cone-axis overlay's GPU leg): writes two packed
-    // DebugLineVertex float3s per candidate slot — the ACTUAL cull cones
-    // (baked bind-pose for static draws, this frame's deformed cones for
-    // skinned draws) — GPU-driven end to end (the retired CPU readback path
-    // corrupted the host heap and never landed). Lazily armed by the
-    // overlay's UI toggle (SetConeDebug); one shared line buffer (the
-    // candidate slot space is a dense prefix, so [0, 2*candidateTotal) is
-    // exactly the written range).
-    smvk::Holder<smvk::ShaderModuleHandle> coneDebugModule;
-    smvk::ShaderProgram coneDebugProgram{};
-    smvk::Holder<smvk::BufferHandle> coneDebugLines;
-    smvk::LogicalBufferHandle coneDebugLinesLogical{};
-    bool coneDebug = false; // the UI toggle's armed state
-    // Runtime line-buffer capacity (the dynamic cutover — ONE shared
-    // buffer, candidate-slot strided): cap = allocated capacity,
-    // want = the monotone high-water requirement (SetConeDebug sizes a
-    // fresh buffer from it; FinalizeView grows an armed one).
-    uint32_t coneDebugCap = 0;
-    uint32_t coneDebugWant = 0;
     smvk::Holder<smvk::ShaderModuleHandle> filterModule;
     smvk::ShaderProgram filterProgram{};
     smvk::Holder<smvk::ShaderModuleHandle> hizModule;
@@ -821,7 +776,6 @@ inline constexpr const char* kHizCsPath = "content/shaders/hzb.cs.hlsl.spv";
 // MIN pyramid; the base .spv is the ssgi MAX build).
 inline constexpr const char* kHizSpdCsPath = "content/shaders/hzb_spd.cs.hlsl.min.spv";
 inline constexpr const char* kGfxSkinBoundsCsPath = "content/shaders/gfxskinbounds.cs.hlsl.spv";
-inline constexpr const char* kGfxConeDebugCsPath = "content/shaders/gfxcone_debug.cs.hlsl.spv";
 
 // ---- GPU cull chain pass shells (caller sets the recording func) ----
 // Deformed cluster bounds: runs between the skinning pass and GfxBatchCull.
@@ -836,33 +790,6 @@ void PushAndDispatchSkinBounds(State& s,
                                uint32_t view);
 // Creates the per-flight skinBounds ring + module lazily (idempotent).
 bool EnsureSkinBounds(State& s, smvk::ResourceManager& ctx, smvk::RenderGraph& rg);
-// Cone-axis overlay's GPU leg: runs after GfxSkinBounds, before Main's
-// overlay draw. One 128-thread workgroup per draw; threads stride the
-// draw's clusters and write TWO packed DebugLineVertex float3s per
-// candidate slot (apex -> tip) — the ACTUAL cull cones (baked bind-pose
-// for static draws, this frame's deformed cones for skinned draws). The
-// candidate slot space is a dense prefix, so [0, 2*candidateTotal) is
-// exactly the written range; Main Draws that count over the line buffer.
-smvk::RenderPass& AddConeDebugPass(State& s, smvk::RenderGraph& rg, uint32_t view);
-void PushAndDispatchConeDebug(State& s,
-                              smvk::CommandBuffer& cmd,
-                              smvk::ResourceManager& ctx,
-                              uint32_t view);
-// Arms/disarms the overlay (the UI toggle's handler): on enable, lazily
-// creates the module/program + the shared line buffer + logical; on
-// disable, only the flag flips (the buffer stays — re-arm is free). The
-// per-frame pass is recorded only while ConeDebugReady(s).
-void SetConeDebug(State& s, smvk::ResourceManager& ctx, smvk::RenderGraph& rg, bool enable);
-[[nodiscard]] inline bool ConeDebugReady(const State& s) {
-    return s.coneDebug && s.coneDebugProgram.shaderCount != 0 && !s.coneDebugLines.empty() &&
-           !s.coneDebugLinesLogical.empty();
-}
-[[nodiscard]] inline smvk::LogicalBufferHandle ConeDebugLinesLogical(const State& s) {
-    return s.coneDebugLinesLogical;
-}
-[[nodiscard]] inline smvk::BufferHandle ConeDebugLinesBuffer(const State& s) {
-    return s.coneDebugLines; // Holder's implicit handle conversion
-}
 bool EnsureShaders(State& s, smvk::ResourceManager& ctx, const char* csPath = kGfxFilterCsPath);
 // Creates shader only; per-(view, frame) buffers are allocated on demand
 // by BeginView (pool) so unused views cost nothing.

@@ -7,7 +7,7 @@
 // final commands can only lose instances, never gain invalid references.
 // Unknown, invalid or untestable bounds always KEEP the command.
 // The pass macro + common.hlsli include follow the sibling gfxfilter.hlsli
-// consumers (gfxbatchcull/gfxdrawcull/gfxcone_debug): gfxfilter.hlsli's
+// consumers (gfxbatchcull/gfxdrawcull): gfxfilter.hlsli's
 // GfxFilterPush references MaterialsBuffer, which only common.hlsli
 // declares, and the macro keeps common.hlsli from declaring the scene-wide
 // `pc` push block alongside this kernel's own RasterHizPush.

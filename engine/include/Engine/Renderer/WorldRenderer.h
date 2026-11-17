@@ -3843,9 +3843,6 @@ class WorldRenderer : public IRenderer {
     // lines keep hidden-line removal against the prepass depth.
     bool m_wireframe = false;
     smvk::TransparentMode m_transparentMode = smvk::TransparentMode::Blended;
-    bool m_debugCones = false;        // cone-axis line overlay (the GPU leg:
-                                      // SetConeDebug arms GfxConeDebug, Main
-                                      // Draws the GPU-written candidate lines)
     bool m_dumpIndirectAudit = false; // one-shot: dump GPU indirect cmds (stderr)
     // Opt-in EVSM atlas debug dump (TOURMALINE_EVSM_DUMP=<frame>): one-shot
     // after Execute — per-stage stats (moments/temp/blurred) + a log-encoded
