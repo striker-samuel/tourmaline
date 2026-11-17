@@ -4,6 +4,14 @@
 
 project(AssetTests)
 
+# Engine-only Catmull-Rom spline asset and runtime sampler.
+add_executable(SplineTests test_spline.cpp)
+target_include_directories(SplineTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/include
+    ${CMAKE_SOURCE_DIR}/external/glm)
+add_test(NAME spline_tests COMMAND SplineTests)
+
+
 # GPUScene pipeline registry and variable-size per-pipeline pak registration (CPU only).
 add_executable(GpuScenePipelineRegistryTests test_gpu_scene_pipeline_registry.cpp)
 target_include_directories(GpuScenePipelineRegistryTests PRIVATE
