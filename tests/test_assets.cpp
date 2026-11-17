@@ -540,16 +540,16 @@ smvk::MeshData MakeQuad(); // forward (defined below the pak tests)
 void TestWorldManifestBlob() {
     using namespace smvk;
     // Round-trip the FIXED-SIZE blob format directly (offset-indexed rows).
-    std::vector<tour::asset::WorldManifestRow> rows;
+    std::vector<::tour::asset::WorldManifestRow> rows;
     {
-        tour::asset::WorldManifestRow a;
+        ::tour::asset::WorldManifestRow a;
         a.contentHash = 0xdeadbeefcafe1234ull;
         a.aabbMin = {-10.0f, 0.0f, -20.0f};
         a.aabbMax = {30.0f, 5.0f, 40.0f};
         a.nodes = 4096;
         a.meshes = 4000;
         rows.push_back(a);
-        tour::asset::WorldManifestRow b;
+        ::tour::asset::WorldManifestRow b;
         b.contentHash = 0x1234cafebeef5678ull;
         b.aabbMin = {-50.0f, 0.0f, -60.0f};
         b.aabbMax = {-20.0f, 8.0f, -30.0f};
@@ -557,10 +557,11 @@ void TestWorldManifestBlob() {
         b.meshes = 2000;
         rows.push_back(b);
     }
-    const std::vector<uint8_t> blob = tour::asset::WriteWorldManifestBlob(rows.data(), rows.size());
+    const std::vector<uint8_t> blob =
+        ::tour::asset::WriteWorldManifestBlob(rows.data(), rows.size());
     std::string err;
     // 12-byte header + two 40-byte rows, end-exact.
-    Check(blob.size() == 12 + 2 * tour::asset::WorldManifestView::kRowBytes, "worldman.size");
+    Check(blob.size() == 12 + 2 * ::tour::asset::WorldManifestView::kRowBytes, "worldman.size");
     {
         uint32_t magic = 0, version = 0, count = 0;
         memcpy(&magic, blob.data(), 4);
@@ -569,7 +570,7 @@ void TestWorldManifestBlob() {
         Check(magic == 0x4E414D57u /* "WMAN" LE */ && version == 1 && count == 2,
               "worldman.header");
         // The directly-addressable view: O(1) offset arithmetic, no copy.
-        tour::asset::WorldManifestView view;
+        ::tour::asset::WorldManifestView view;
         view.bytes = std::span<const uint8_t>(blob);
         view.sceneCount = count;
         Check(view.Valid(), "worldman.view.valid");
@@ -586,7 +587,7 @@ void TestWorldManifestBlob() {
     }
     // A size mismatch (a trailing/truncated byte) must fail closed.
     {
-        tour::asset::WorldManifestView view;
+        ::tour::asset::WorldManifestView view;
         view.bytes = std::span<const uint8_t>(blob.data(), blob.size() - 1);
         view.sceneCount = 2;
         Check(!view.Valid(), "worldman.view.truncated");
@@ -618,11 +619,12 @@ void TestWorldManifestBlob() {
     auto reader = PakReader::Open(std::span<const uint8_t>(img), openErr);
     Check(reader.has_value(), "worldman.open");
     if (reader) {
-        const auto* wm = reader->Find(PakAssetKind::WorldManifest, kPakWorldManifestPath);
+        const auto* wm =
+            reader->Find(PakAssetKind::WorldManifest, ::tour::asset::kPakWorldManifestPath);
         Check(wm != nullptr, "worldman.blob-present");
         if (wm) {
             std::string werr;
-            const auto view = tour::asset::ReadWorldManifest(*reader, &werr);
+            const auto view = ::tour::asset::ReadWorldManifest(*reader, &werr);
             Check(view.has_value() && view->sceneCount == 2, "worldman.rows");
             if (view && view->sceneCount == 2) {
                 // Rows are content-hash addressed (the scene names were the
