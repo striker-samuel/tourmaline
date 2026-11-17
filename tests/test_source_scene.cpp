@@ -172,6 +172,36 @@ int main() {
         Require(totalInstances == 8193);
     }
 
+    // PARTITIONED-FAMILY MANIFEST helpers (P1): a manifest with geometry.<part>
+    // rows is a partitioned family; GeometryPartFiles returns them ordered.
+    {
+        smvk::assets::AssetManifest m;
+        m.guid = "0123456789abcdef0123456789abcdef";
+        // Single geometry= row -> NOT partitioned, no part files.
+        smvk::assets::AssetEntry single{};
+        single.kind = smvk::assets::AssetKind::Geometry;
+        single.sourceIndex = -1;
+        single.file = "a.geometry";
+        m.entries.push_back(single);
+        Require(!smvk::assets::IsPartitionedFamily(m));
+        Require(smvk::assets::GeometryPartFiles(m).empty());
+        // Two geometry.<part> rows -> partitioned, ordered files.
+        smvk::assets::AssetEntry p0{};
+        p0.kind = smvk::assets::AssetKind::Geometry;
+        p0.sourceIndex = 0;
+        p0.file = "a_part0.geometry";
+        m.entries.push_back(p0);
+        smvk::assets::AssetEntry p1{};
+        p1.kind = smvk::assets::AssetKind::Geometry;
+        p1.sourceIndex = 1;
+        p1.file = "a_part1.geometry";
+        m.entries.push_back(p1);
+        Require(smvk::assets::IsPartitionedFamily(m));
+        const std::vector<std::string> parts = smvk::assets::GeometryPartFiles(m);
+        Require(parts.size() == 2 && parts[0] == "a_part0.geometry" &&
+                parts[1] == "a_part1.geometry");
+    }
+
     fs::remove_all(dir, ec);
     return 0;
 }

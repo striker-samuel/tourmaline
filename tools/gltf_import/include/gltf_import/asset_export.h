@@ -46,20 +46,22 @@
 // the session records the .geometry. The asset browser shows the glTF
 // as a FOLDER of the derived assets.
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <filesystem>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <glm/glm.hpp>
 
-#include <gltf_import/source_scene.h>
 #include <Engine/App/cluster.h>
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/touranim.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Scene/scene.h>
+#include <gltf_import/source_scene.h>
 
 namespace tinygltf {
 class Model;
@@ -119,6 +121,34 @@ struct AssetManifest {
     std::string stem; // the asset file stem ("<stem>.geometry" etc.)
     std::vector<AssetEntry> entries;
 };
+
+// ---- partitioned-family helpers (P1) --------------------------------------
+// A partitioned family records its geometry as geometry.<part> rows
+// (sourceIndex = the part ordinal); a single-file family keeps the legacy
+// geometry= row (sourceIndex == -1). The authoring layer stays agnostic of the
+// parts: it references one logical asset, and the runtime/build resolves the
+// parts through these manifest rows.
+inline bool IsPartitionedFamily(const AssetManifest& m) {
+    for (const AssetEntry& e : m.entries)
+        if (e.kind == AssetKind::Geometry && e.sourceIndex >= 0)
+            return true;
+    return false;
+}
+
+// The .geometry part file NAMES of a partitioned family, ordered by part
+// ordinal. Empty for an unsplit family (the single geometry= row).
+inline std::vector<std::string> GeometryPartFiles(const AssetManifest& m) {
+    std::vector<std::pair<int, std::string>> parts;
+    for (const AssetEntry& e : m.entries)
+        if (e.kind == AssetKind::Geometry && e.sourceIndex >= 0)
+            parts.emplace_back(e.sourceIndex, e.file);
+    std::sort(parts.begin(), parts.end());
+    std::vector<std::string> files;
+    files.reserve(parts.size());
+    for (auto& [idx, f] : parts)
+        files.push_back(std::move(f));
+    return files;
+}
 
 // ---- .material (the material asset) --------------------------------------
 // The PBR values (no pool handles — a scene binds them) + texture refs
@@ -417,11 +447,11 @@ bool ImportMeshSource(const std::filesystem::path& gltfPath,
 // extracted payloads (deterministic; a hand-edit of an extracted
 // sidecar flips it and the re-import regenerates it from the source).
 [[nodiscard]] std::string SourceContentDigest(const std::filesystem::path& sourcePath,
-                                const smvk::source::Scene& scene,
-                                const std::vector<std::string>& extraSourceDeps = {});
-std::string SourceContentDigest(const std::filesystem::path& gltfPath,
-                                              const tinygltf::Model& model,
+                                              const smvk::source::Scene& scene,
                                               const std::vector<std::string>& extraSourceDeps = {});
+std::string SourceContentDigest(const std::filesystem::path& gltfPath,
+                                const tinygltf::Model& model,
+                                const std::vector<std::string>& extraSourceDeps = {});
 // Single-image import (import.exe + loose-image drops): writes
 // <stem>.texture beside the source (editor CreateTextureAsset parity:
 // sRGB/rgba8/full-chain/repeat/linear defaults; the guid is the source
