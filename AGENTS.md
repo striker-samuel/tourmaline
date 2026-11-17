@@ -1000,6 +1000,31 @@ when the exposure is deliberate.
   `test_runconfig.cpp`. Never scatter `getenv`.
 - New scratch vectors: `FrameVector` (dies in scope) vs
   `UploadInFlightVector` (spans frames) — wrong choice is UAF or leak.
+- **Memory allocator policy** (the `tour::mem` memory core,
+  `core/include/Core/Memory/` + the `smvk::` compat aliases): engine scratch
+  rides bump allocators, never per-iteration `std::vector`/`std::string`/
+  `std::unordered_map` churn.
+  - `LinearAllocator` — reserved-VM bump allocator with `Mark()`/`Reset()`
+    rewind (committed pages reused, no per-object free). Lifetime-scoped
+    bulk: `ProcessAllocator()` (never reset), `FrameAllocator()`
+    (reset/frame), `TransientAllocator()` (UploadInFlight-monotonic).
+  - `Arena` — chunked string/scratch arena over a `LinearAllocator`
+    (`AllocateString`/`FormatString`/`Allocate` + `Reset()`). Per-mesh /
+    per-iteration scratch belongs here: `Allocate` + `Reset()` each iteration
+    instead of a `std::vector` per iteration.
+  - `StringViewT` — non-owning view. Never materialize a `.Str()` copy when
+    the view is arena-backed and outlives the use.
+  - `UriMap<V>` — open-addressing map over `StringViewT` keys (FNV-1a,
+    allocation-free lookups). Replace `std::unordered_map<std::string, V>`
+    keyed on URIs/paths.
+  - `ProcessVector`/`FrameVector`/`UploadInFlightVector` — STL vectors over a
+    linear allocator; pick the lifetime that matches the data (systems table
+    row above), never a bare `std::vector` for allocator-managed scratch.
+  - Streaming/file reads: `PakReader::OpenFile` (header+footer+TOC only +
+    positional page reads — the pager's primitive) and `PakWriter`'s
+    `tour::mem::LinearAllocator` flush buffer (512 MB `Mark`/`Reset` cycle).
+    Never slurp a whole pak into a `std::vector` or accumulate O(pak) blobs
+    in memory.
 - New shaders: include `push_constants.hlsli` directly when possible
   (fine-grained deps); `common.hlsli` umbrella still works.
 - New tests: plain-exe + `add_test` + `tourmaline_stage_sdl3`,
