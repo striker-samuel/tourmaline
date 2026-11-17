@@ -4,6 +4,25 @@
 
 project(AssetTests)
 
+# GPUScene pipeline registry and variable-size per-pipeline pak registration (CPU only).
+add_executable(GpuScenePipelineRegistryTests test_gpu_scene_pipeline_registry.cpp)
+target_include_directories(GpuScenePipelineRegistryTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/include)
+set_target_properties(GpuScenePipelineRegistryTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME gpu_scene_pipeline_registry_tests COMMAND GpuScenePipelineRegistryTests)
+
+
+# Pak-time draw precount and per-flight linear PSO bin packing (CPU-only).
+add_executable(PakLinearPsoBinsTests test_pak_linear_pso_bins.cpp)
+target_include_directories(PakLinearPsoBinsTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/include
+    ${CMAKE_SOURCE_DIR}/external/glm)
+set_target_properties(PakLinearPsoBinsTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME pak_linear_pso_bins_tests COMMAND PakLinearPsoBinsTests)
+
+
 # Cooked terrain + placed-object maximum-height hierarchy (GPU-free).
 add_executable(TerrainOcclusionTests test_terrain_occlusion.cpp)
 target_include_directories(TerrainOcclusionTests PRIVATE
