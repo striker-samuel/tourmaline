@@ -1668,23 +1668,11 @@ int Run(const PakArgs& c) {
                     << pak.size() << " B, compressed=" << writer.CompressedEntryCount() << ") -> "
                     << args.outPak << "\n";
         // The self-check: re-open through the production reader (the
-        // same CRC/TOC gate every runtime open runs).
+        // same CRC/TOC gate every runtime open runs). File-backed: read
+        // only the header + footer + TOC, never the whole image.
         if (args.verify) {
-            std::ifstream rf(args.outPak, std::ios::binary | std::ios::ate);
-            if (!rf) {
-                tool::err() << "Verify: cannot re-open " << args.outPak << std::endl;
-                return 1;
-            }
-            const auto sz = rf.tellg();
-            rf.seekg(0);
-            std::vector<uint8_t> image(static_cast<size_t>(sz));
-            if (!rf.read(reinterpret_cast<char*>(image.data()), sz)) {
-                tool::err() << "Verify: read failed" << std::endl;
-                return 1;
-            }
             std::string verr;
-            static std::vector<uint8_t> keepAlive = std::move(image);
-            auto reader = smvk::PakReader::Open(std::span<const uint8_t>(keepAlive), verr);
+            auto reader = smvk::PakReader::OpenFile(args.outPak, verr);
             if (!reader) {
                 tool::err() << "Verify: PakReader rejected: " << verr << std::endl;
                 return 1;
@@ -1698,20 +1686,8 @@ int Run(const PakArgs& c) {
 
     // Read-only inspection path: no VFS, no cooking, no writes.
     if (!args.dumpPak.empty()) {
-        std::ifstream rf(args.dumpPak, std::ios::binary | std::ios::ate);
-        if (!rf) {
-            tool::err() << "Cannot open pak: " << args.dumpPak << std::endl;
-            return 1;
-        }
-        const auto size = rf.tellg();
-        rf.seekg(0);
-        std::vector<uint8_t> image(static_cast<size_t>(size));
-        if (!rf.read(reinterpret_cast<char*>(image.data()), size)) {
-            tool::err() << "Read failed: " << args.dumpPak << std::endl;
-            return 1;
-        }
         std::string verr;
-        auto reader = smvk::PakReader::Open(std::span<const uint8_t>(image), verr);
+        auto reader = smvk::PakReader::OpenFile(args.dumpPak, verr);
         if (!reader) {
             tool::err() << "PakReader rejected: " << verr << std::endl;
             return 1;
@@ -3349,29 +3325,19 @@ int Run(const PakArgs& c) {
     // data sub-blobs above, append the level blob to the pak file
     // (AppendPakBlobs keeps the image valid at every step).
     if (!args.levelName.empty()) {
-        // Read the written pak (borrowed spans must outlive the image).
-        std::vector<uint8_t> pakImage;
-        {
-            std::ifstream pf(args.outPak, std::ios::binary | std::ios::ate);
-            if (!pf) {
-                tool::err() << "Level read-back failed: " << args.outPak << std::endl;
-                return 1;
-            }
-            const auto sz = pf.tellg();
-            pf.seekg(0);
-            pakImage.resize(size_t(sz));
-            if (!pf.read(reinterpret_cast<char*>(pakImage.data()), sz)) {
-                tool::err() << "Level read-back failed: " << args.outPak << std::endl;
-                return 1;
-            }
-        }
+        // File-backed read-back: OpenFile reads only the header + footer +
+        // TOC; Payload() fetches the scene blob page positionally (the
+        // reader caches it, so the span stays valid for its lifetime).
         std::string lOpenErr;
-        auto pakReader = smvk::PakReader::Open(std::span<const uint8_t>(pakImage), lOpenErr);
+        auto pakReader = smvk::PakReader::OpenFile(args.outPak, lOpenErr);
+        if (!pakReader) {
+            tool::err() << "Level read-back failed: " << lOpenErr << std::endl;
+            return 1;
+        }
         const smvk::PakTocEntry* sceneEntry = nullptr;
-        if (pakReader)
-            for (const smvk::PakTocEntry* e : pakReader->BlobsOfKind(smvk::PakAssetKind::Scene))
-                if (!sceneEntry || e->path < sceneEntry->path)
-                    sceneEntry = e; // "#scene" sorts first
+        for (const smvk::PakTocEntry* e : pakReader->BlobsOfKind(smvk::PakAssetKind::Scene))
+            if (!sceneEntry || e->path < sceneEntry->path)
+                sceneEntry = e; // "#scene" sorts first
         std::vector<smvk::LevelSubInput> subs;
         if (sceneEntry)
             subs.push_back({smvk::PakAssetKind::Scene, "scene", pakReader->Payload(*sceneEntry)});
@@ -3466,25 +3432,16 @@ int Run(const PakArgs& c) {
     }
 
     // Self-check: re-open the written file through the production reader
-    // (header/footer/CRC/TOC validation + payload spot-checks).
+    // (header/footer/CRC/TOC validation + payload spot-checks). FILE-BACKED:
+    // OpenFile reads ONLY the header + footer + TOC, and every Payload()
+    // fetch is a positional page read — the same page-loading primitive the
+    // runtime pager uses. We must NOT slurp the whole (multi-GB) image into
+    // a std::vector; that is the exact O(pak) memory the streaming writer
+    // just eliminated.
     std::optional<smvk::PakReader> verifyReader;
     if (args.verify || args.dumpManifest) {
-        std::ifstream rf(args.outPak, std::ios::binary | std::ios::ate);
-        if (!rf) {
-            tool::err() << "Verify: cannot re-open " << args.outPak << std::endl;
-            return 1;
-        }
-        const auto size = rf.tellg();
-        rf.seekg(0);
-        std::vector<uint8_t> image(static_cast<size_t>(size));
-        if (!rf.read(reinterpret_cast<char*>(image.data()), size)) {
-            tool::err() << "Verify: read failed" << std::endl;
-            return 1;
-        }
         std::string verr;
-        // The image must outlive the reader borrow; keep it static duration.
-        static std::vector<uint8_t> keepAlive = std::move(image);
-        auto reader = smvk::PakReader::Open(std::span<const uint8_t>(keepAlive), verr);
+        auto reader = smvk::PakReader::OpenFile(args.outPak, verr);
         if (!reader) {
             tool::err() << "Verify: PakReader rejected: " << verr << std::endl;
             return 1;
