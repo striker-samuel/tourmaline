@@ -4,10 +4,10 @@
 
 // Engine-owned, CPU-only spline data and runtime sampling.
 // No renderer, scene, asset registry, or editor dependency.
-#include <glm/glm.hpp>
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <glm/glm.hpp>
 #include <string>
 #include <vector>
 
@@ -24,6 +24,36 @@ struct SplineSample {
     glm::vec3 position{0.0f};
     glm::vec3 tangent{0.0f}; // unit direction, or zero for degenerate spans
 };
+
+// The SHARED uniform Catmull-Rom scalar basis. This is the single kernel both
+// the runtime spline sampler here and the editor `.shape` spline tessellation
+// (shape_asset.h) reuse, so the polynomial lives in exactly one place.
+// `t` is a segment parameter in [0, 1].
+struct CatmullRomWeights {
+    float w[4];  // position weights for (p[i-1], p[i], p[i+1], p[i+2])
+    float dw[4]; // derivative weights (the unnormalized tangent)
+};
+[[nodiscard]] inline CatmullRomWeights CatmullRomWeightsAt(float t) {
+    const float t2 = t * t, t3 = t2 * t;
+    CatmullRomWeights c;
+    c.w[0] = 0.5f * (-t + 2.0f * t2 - t3);
+    c.w[1] = 0.5f * (2.0f - 5.0f * t2 + 3.0f * t3);
+    c.w[2] = 0.5f * (t + 4.0f * t2 - 3.0f * t3);
+    c.w[3] = 0.5f * (-t2 + t3);
+    c.dw[0] = 0.5f * (-1.0f + 4.0f * t - 3.0f * t2);
+    c.dw[1] = 0.5f * (-10.0f * t + 9.0f * t2);
+    c.dw[2] = 0.5f * (1.0f + 8.0f * t - 9.0f * t2);
+    c.dw[3] = 0.5f * (-2.0f * t + 3.0f * t2);
+    return c;
+}
+
+// The SHARED control-point neighbor policy: open curves clamp their ends,
+// closed curves wrap modulo. `count` must be >= 2 (>= 3 when closed).
+[[nodiscard]] inline long long SplineWrapIndex(long long i, long long count, bool closed) {
+    if (closed)
+        return (i % count + count) % count;
+    return std::clamp(i, 0LL, count - 1);
+}
 
 // Validation is independent from rendering and keeps malformed data out of
 // callers that persist authored spline assets.
@@ -59,27 +89,18 @@ struct SplineSample {
     const float scaled = std::clamp(t, 0.0f, 1.0f) * float(spans);
     const size_t span = std::min(size_t(scaled), spans - 1);
     const float u = scaled - float(span);
-    const auto point = [&](long long index) -> const glm::vec3& {
-        if (spline.closed) {
-            const long long n = static_cast<long long>(count);
-            return spline.points[size_t((index % n + n) % n)];
-        }
-        return spline.points[size_t(std::clamp(index, 0LL,
-                                               static_cast<long long>(count - 1)))];
-    };
+
     const long long i = static_cast<long long>(span);
-    const glm::vec3& a = point(i - 1);
-    const glm::vec3& b = point(i);
-    const glm::vec3& c = point(i + 1);
-    const glm::vec3& d = point(i + 2);
-    const glm::vec3 v1 = -a + c;
-    const glm::vec3 v2 = 2.0f * a - 5.0f * b + 4.0f * c - d;
-    const glm::vec3 v3 = -a + 3.0f * b - 3.0f * c + d;
+    const long long n = static_cast<long long>(count);
+    const glm::vec3& a = spline.points[size_t(SplineWrapIndex(i - 1, n, spline.closed))];
+    const glm::vec3& b = spline.points[size_t(SplineWrapIndex(i, n, spline.closed))];
+    const glm::vec3& c = spline.points[size_t(SplineWrapIndex(i + 1, n, spline.closed))];
+    const glm::vec3& d = spline.points[size_t(SplineWrapIndex(i + 2, n, spline.closed))];
+    const CatmullRomWeights w = CatmullRomWeightsAt(u);
+
     SplineSample result;
-    result.position = 0.5f * (2.0f * b + v1 * u + v2 * (u * u) +
-                              v3 * (u * u * u));
-    const glm::vec3 derivative =
-        0.5f * (v1 + 2.0f * v2 * u + 3.0f * v3 * (u * u));
+    result.position = w.w[0] * a + w.w[1] * b + w.w[2] * c + w.w[3] * d;
+    const glm::vec3 derivative = w.dw[0] * a + w.dw[1] * b + w.dw[2] * c + w.dw[3] * d;
     const float len2 = glm::dot(derivative, derivative);
     if (len2 > 1e-12f)
         result.tangent = derivative / std::sqrt(len2);
@@ -89,14 +110,13 @@ struct SplineSample {
 // Polyline approximation in the spline's coordinate units. 'steps' controls
 // accuracy, not the parameterization of SampleSpline.
 [[nodiscard]] inline float ApproximateSplineLength(const SplineAsset& spline,
-                                                    unsigned steps = 128) {
+                                                   unsigned steps = 128) {
     if (steps == 0 || spline.points.size() < (spline.closed ? 3u : 2u))
         return 0.0f;
     glm::vec3 previous = SampleSpline(spline, 0.0f).position;
     float length = 0.0f;
     for (unsigned i = 1; i <= steps; ++i) {
-        const glm::vec3 next =
-            SampleSpline(spline, float(i) / float(steps)).position;
+        const glm::vec3 next = SampleSpline(spline, float(i) / float(steps)).position;
         length += glm::length(next - previous);
         previous = next;
     }
