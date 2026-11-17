@@ -2772,15 +2772,43 @@ std::vector<PakSceneInfo> ListPakScenes(const PakReader& reader, std::string* er
     return out;
 }
 
-std::unique_ptr<Cluster> DeserializeCluster(ResourceManager& ctx,
-                                            const PakReader& reader,
-                                            std::string* err,
-                                            uint32_t sceneIndex,
-                                            TextureStreamer* streamer,
-                                            std::shared_ptr<const std::vector<uint8_t>> imagePin,
-                                            const ExternalTextureResolver* externalTexture,
-                                            size_t sceneNodeBudget) {
-    // Failure after textures/meshes were queued in the upload streamer
+// Peek a scene blob's mesh-pair section (dense node, pak id) and return the
+// set of referenced MESH pak ids (a bitmap over the pak's mesh entries). The
+// shared blob pool writes each mesh ONCE; a scene references a SUBSET by pak
+// id, so the deserializer uploads only those — never the whole pak's mesh set
+// (which, across a partitioned multi-scene pak, would overflow the heap).
+static std::vector<uint8_t> PeekSceneMeshPakIds(std::span<const uint8_t> payload,
+                                                size_t meshCount) {
+    std::vector<uint8_t> refs(meshCount, 0);
+    Cursor c{payload, 0};
+    const uint32_t nodeCount = c.u32();
+    if (!c.ok || nodeCount == 0 || nodeCount > 16 * 1024 * 1024)
+        return refs;
+    // Skip the hierarchy (5 i32) + transforms (16 f32) sections: 84 bytes/node.
+    c.off = 4 + uint64_t(nodeCount) * 84ull;
+    if (c.off + 4 > payload.size())
+        return refs;
+    const uint32_t meshPairCount = c.u32();
+    for (uint32_t i = 0; i < meshPairCount; ++i) {
+        c.u32(); // dense node id
+        const uint32_t pakId = c.u32();
+        if (!c.ok)
+            return refs;
+        if (pakId < refs.size())
+            refs[pakId] = 1;
+    }
+    return refs;
+}
+
+std::unique_ptr<Cluster> DeserializeCluster(
+    ResourceManager& ctx,
+    const PakReader& reader,
+    std::string* err,
+    uint32_t sceneIndex,
+    TextureStreamer* streamer,
+    std::shared_ptr<const std::vector<uint8_t>> imagePin,
+    const ExternalTextureResolver* externalTexture,
+    size_t sceneNodeBudget) { // Failure after textures/meshes were queued in the upload streamer
     // leaves transfer command buffers + graphics acquire barriers
     // referencing the partial cluster's VkImages/VkBuffers. The cluster
     // is destroyed on return, so drain the streamer first: flush submits
@@ -3108,6 +3136,18 @@ std::unique_ptr<Cluster> DeserializeCluster(ResourceManager& ctx,
     // memcpy pass + one submit + one barrier set per blob instead of three
     // streamer calls per mesh). The caller issues ctx.FlushUploads().
     const auto meshEntries = reader.BlobsOfKind(PakAssetKind::Mesh);
+    // The scene's blob + the referenced-mesh set (the shared blob pool): a
+    // partitioned multi-scene pak writes each mesh once and each scene
+    // references a SUBSET by pak id. Peek the scene's mesh references up
+    // front so only ITS meshes upload — never the whole pak's mesh set.
+    const auto sceneEntries = OrderedSceneEntries(reader);
+    if (sceneEntries.empty())
+        return fail("pak contains no Scene blob");
+    if (sceneIndex >= sceneEntries.size())
+        return fail("scene index " + std::to_string(sceneIndex) + " out of range (" +
+                    std::to_string(sceneEntries.size()) + " scene(s) in pak)");
+    std::vector<uint8_t> meshReferenced =
+        PeekSceneMeshPakIds(reader.Payload(*sceneEntries[sceneIndex]), meshEntries.size());
     struct MeshMeta {
         std::string uri;
         // The owning TOC entry's file-absolute offset (Stage 6: the
@@ -3132,7 +3172,16 @@ std::unique_ptr<Cluster> DeserializeCluster(ResourceManager& ctx,
     meshMetas.reserve(meshEntries.size());
     meshByPakId.reserve(meshEntries.size());
     deferredByPakId.reserve(meshEntries.size());
-    for (const PakTocEntry* e : meshEntries) {
+    for (size_t mi = 0; mi < meshEntries.size(); ++mi) {
+        const PakTocEntry* e = meshEntries[mi];
+        // Not referenced by this scene (the shared blob pool's other
+        // scenes own it): leave an empty handle + no payload, keeping the
+        // pak-id alignment of meshByPakId.
+        if (!meshReferenced[mi]) {
+            directs.push_back(StaticGeometrySource{});
+            meshMetas.push_back(MeshMeta{});
+            continue;
+        }
         Cursor c{reader.Payload(*e), 0};
         const std::string uri = c.str();
         const uint32_t vertexCount = c.u32();
@@ -3341,21 +3390,35 @@ std::unique_ptr<Cluster> DeserializeCluster(ResourceManager& ctx,
         std::vector<ClusterStaticMeshHandle> handles;
         uploadSrcs.reserve(meshMetas.size());
         for (size_t i = 0; i < meshMetas.size(); ++i)
-            if (!defer[i])
+            if (!defer[i] && meshReferenced[i])
                 uploadSrcs.push_back(directs[i]);
         if (!uploadSrcs.empty()) {
             handles = cluster->UploadStaticMeshesDirect(
                 reader.ImageData(), std::span<const StaticGeometrySource>(uploadSrcs));
-            if (handles.empty())
-                return fail("UploadStaticMeshesDirect failed (degenerate mesh "
-                            "or full heap): " +
-                            meshMetas.front().uri);
+            if (handles.empty()) {
+                uint64_t totalVerts = 0;
+                for (const auto& s : uploadSrcs)
+                    totalVerts += s.vertexCount;
+                std::string detail =
+                    "UploadStaticMeshesDirect failed (" + std::to_string(uploadSrcs.size()) +
+                    " source(s), " + std::to_string(totalVerts) + " total verts, heap cap " +
+                    std::to_string(smvk::staticVertexFmtHeap.m_staticVertexBlock.Capacity()) +
+                    "): " + meshMetas.front().uri;
+                return fail(detail);
+            }
         }
         size_t up = 0; // cursor into handles (upload order == pak order)
         uint64_t deferredBytes = 0;
         size_t deferredCount = 0;
         for (size_t i = 0; i < meshMetas.size(); ++i) {
             MeshMeta& meta = meshMetas[i];
+            if (!meshReferenced[i]) {
+                // Shared-blob-pool mesh owned by another scene: no handle,
+                // no payload — keep the pak-id alignment.
+                deferredByPakId.emplace_back();
+                meshByPakId.push_back(ClusterStaticMeshHandle{});
+                continue;
+            }
             if (defer[i]) {
                 Cluster::DeferredMeshLod d;
                 d.uri = std::move(meta.uri);
@@ -3573,12 +3636,8 @@ std::unique_ptr<Cluster> DeserializeCluster(ResourceManager& ctx,
     }
 
     // --- Scene (indexed; 0 = default) --------------------------------------
-    const auto sceneEntries = OrderedSceneEntries(reader);
-    if (sceneEntries.empty())
-        return fail("pak contains no Scene blob");
-    if (sceneIndex >= sceneEntries.size())
-        return fail("scene index " + std::to_string(sceneIndex) + " out of range (" +
-                    std::to_string(sceneEntries.size()) + " scene(s) in pak)");
+    // (sceneEntries + the index validation resolved above, before the mesh
+    // upload; the referenced-mesh peek needed the same lookup.)
     {
         SceneLinkMaps maps{&meshByPakId, &matByPakId, &lightByPakId, &camByPakId, &decalByPakId};
         std::string sceneName, perr;

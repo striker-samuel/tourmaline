@@ -333,17 +333,21 @@ tour::mem::LinearPtr<tour::World> LoadPakWorld(PakPreload pre,
                   << " scenes)\n";
         return nullptr;
     }
-    std::cerr << "[App] loading scene[" << sceneIndex << "] '" << scenes[size_t(sceneIndex)].name
-              << "'...\n";
+    std::cerr << "[App] loading " << scenes.size() << " scene(s) "
+              << "(entry scene[" << sceneIndex << "] '" << scenes[size_t(sceneIndex)].name
+              << "')...\n";
     auto world = tour::mem::MakeProcess<tour::World>();
     world->ConfigureSceneNodeBudget(nodeBudget);
     {
         // The cluster deserialize + GPU uploads (meshes, materials,
         // textures staged through the streamer) — the dominant
-        // scene-switch cost.
+        // scene-switch cost. Load EVERY scene: a partitioned-family world
+        // ships as one scene per bounded cluster; PostLoadTail's
+        // ResolveAndFixup_clusters folds them into the merged scene.
         SMVK_PROFILE_IO("PakWorld_LoadCluster");
         try {
-            world->LoadClusterFromPak(ctx, reader, uint32_t(sceneIndex), sceneStreamer, pre.image);
+            for (size_t i = 0; i < scenes.size(); ++i)
+                world->LoadClusterFromPak(ctx, reader, uint32_t(i), sceneStreamer, pre.image);
         } catch (const std::exception& e) {
             // DeserializeCluster drains its own staged uploads on failure;
             // drain anything queued since, then fail the load.
@@ -352,7 +356,7 @@ tour::mem::LinearPtr<tour::World> LoadPakWorld(PakPreload pre,
             return nullptr;
         }
     }
-    std::cerr << "[App] pak cluster loaded\n";
+    std::cerr << "[App] pak clusters loaded (" << scenes.size() << " scene(s))\n";
     // Mount the pak backend into the overlay (the world-source
     // protocol role: the engine hands the callback a vfs, hosts
     // mount their paks) AND ADOPT it into the session's registry —
