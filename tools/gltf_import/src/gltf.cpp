@@ -2212,6 +2212,135 @@ SourceSceneImporter::DerivedMesh SourceSceneImporter::deriveMesh(int gltfMeshInd
     return out;
 }
 
+void SourceSceneImporter::uploadPreparedMeshes() {
+    if (meshesUploaded_)
+        return;
+    meshesUploaded_ = true;
+    prepareMeshes();
+
+    // Flat, deterministic (mesh, prim, sibling) order for ONE batch upload.
+    // Each slot carries its registration payload (URI/LOD/meshlets); the
+    // derived uploads are MOVED into `uploads` — the cluster retains its own
+    // copy (retainedUploads_), so the derived payload is released below like
+    // the old per-mesh path. Sibling meshlets derive BEFORE the move (they
+    // read the sibling upload).
+    struct Slot {
+        int mesh = -1;
+        int prim = -1;
+        int sibling = -1; // -1 = base
+        std::string uri;
+        smvk::LodInfo lod{};
+        smvk::CookedMeshlets meshlets; // sibling meshlets (base reads derived.cooked)
+        bool haveMeshlets = false;
+    };
+    std::vector<Slot> slots;
+    std::vector<smvk::MeshData> uploads;
+    for (size_t m = 0; m < meshDerived_.size(); ++m) {
+        auto& prims = meshDerived_[m];
+        for (size_t p = 0; p < prims.size(); ++p) {
+            DerivedMesh& d = prims[p];
+            std::string baseUri;
+            if (!modelUriBase.empty())
+                baseUri =
+                    smvk::MakeSubUri(modelUriBase,
+                                     "mesh." + std::to_string(m) + "/prim." + std::to_string(p))
+                        .Str();
+            slots.push_back(Slot{int(m), int(p), -1, baseUri, d.lod, {}, d.haveMeshlets});
+            Slot& baseSlot = slots.back();
+            baseSlot.lod.candidateCount = uint32_t(1 + d.lodChain.size());
+            baseSlot.lod.lodIndex = 0;
+            baseSlot.lod.simplifyError = 0.0f;
+            uploads.push_back(std::move(d.data));
+            for (size_t li = 0; li < d.lodChain.size(); ++li) {
+                smvk::CookedLod& kept = d.lodChain[li];
+                Slot sib;
+                sib.mesh = int(m);
+                sib.prim = int(p);
+                sib.sibling = int(li);
+                if (!baseUri.empty())
+                    sib.uri =
+                        smvk::LodSiblingUri(smvk::StringViewT(baseUri), uint32_t(li + 1)).Str();
+                sib.lod.groupId = d.lod.groupId;
+                sib.lod.lodIndex = uint32_t(li + 1);
+                sib.lod.candidateCount = baseSlot.lod.candidateCount;
+                sib.lod.simplifyError = kept.localError;
+                sib.lod.screenThreshold = -1.0f;
+                sib.lod.triCount = kept.triCount;
+                sib.lod.acmr = 0.0f;
+                if (meshletConfig.enabled &&
+                    smvk::EligibleForGpuDrivenMesh(kept.upload.indices.size() / 3) &&
+                    !kept.upload.vertices.empty() && !kept.upload.indices.empty()) {
+                    smvk::MeshletStats st;
+                    std::string merr;
+                    if (smvk::BuildMeshletsForUpload(
+                            kept.upload, meshletConfig, &sib.meshlets, &st, &merr) &&
+                        !sib.meshlets.empty())
+                        sib.haveMeshlets = true;
+                }
+                slots.push_back(std::move(sib));
+                uploads.push_back(std::move(kept.upload));
+            }
+        }
+    }
+
+    if (uploads.empty())
+        return;
+
+    // ONE batch upload (the GPU bulk-copy path, or the offline per-mesh loop).
+    std::vector<smvk::ClusterStaticMeshHandle> handles = cluster.UploadMeshes(uploads);
+    if (handles.size() != uploads.size()) {
+        // All-or-nothing batch failure (GPU mode rejects the whole batch).
+        meshOverflow_ = true;
+        meshOverflowCount_ += uploads.size();
+        return;
+    }
+
+    // Distribute handles + register URIs/LODs/meshlets. Base handles land in
+    // meshCache; siblings register by URI (the old per-mesh path did both
+    // inline). Offline mode reports a per-mesh overflow as an empty handle.
+    for (size_t i = 0; i < slots.size(); ++i) {
+        const Slot& s = slots[i];
+        const smvk::ClusterStaticMeshHandle h = handles[i];
+        if (h.empty()) {
+            meshOverflow_ = true;
+            ++meshOverflowCount_;
+            continue;
+        }
+        if (s.sibling < 0) {
+            meshCache[size_t(s.mesh)][size_t(s.prim)] = h;
+            if (!s.uri.empty()) {
+                cluster.RegisterMeshUri(smvk::StringViewT(s.uri), h);
+                cluster.RegisterMeshLod(smvk::StringViewT(s.uri), s.lod);
+                if (s.haveMeshlets) {
+                    const smvk::CookedMeshlets& cooked =
+                        meshDerived_[size_t(s.mesh)][size_t(s.prim)].cooked;
+                    cluster.RegisterMeshMeshlets(smvk::StringViewT(s.uri), cooked);
+                    if (smvk::StaticMesh* mm = cluster.staticMeshes.get(h))
+                        mm->meshlets = cooked;
+                }
+            }
+        } else if (!s.uri.empty()) {
+            cluster.RegisterMeshUri(smvk::StringViewT(s.uri), h);
+            cluster.RegisterMeshLod(smvk::StringViewT(s.uri), s.lod);
+            if (s.haveMeshlets) {
+                cluster.RegisterMeshMeshlets(smvk::StringViewT(s.uri), s.meshlets);
+                if (smvk::StaticMesh* mm = cluster.staticMeshes.get(h))
+                    mm->meshlets = s.meshlets;
+            }
+        }
+    }
+
+    // Release the derived payloads (the cluster's retained uploads own the
+    // copies) — the old per-mesh path released each after its upload.
+    for (auto& prims : meshDerived_)
+        for (auto& d : prims) {
+            d.data = smvk::MeshData{};
+            d.cooked = smvk::CookedMeshlets{};
+            d.lodChain.clear();
+            d.lodChain.shrink_to_fit();
+        }
+}
+
 smvk::ClusterStaticMeshHandle SourceSceneImporter::getOrCreateMesh(int gltfMeshIndex,
                                                                    int primitiveIndex) {
     assert(gltfMeshIndex >= 0);
@@ -2220,113 +2349,11 @@ smvk::ClusterStaticMeshHandle SourceSceneImporter::getOrCreateMesh(int gltfMeshI
     assert(static_cast<size_t>(primitiveIndex) <
            sourceScene_.meshes[gltfMeshIndex].primitives.size());
 
-    auto& slot = meshCache[gltfMeshIndex][primitiveIndex];
-    if (!slot.empty()) {
-        return slot;
-    }
-
-    // Phase A runs once, before any mesh is uploaded (the configs are set
-    // before import()).
-    prepareMeshes();
-
-    DerivedMesh& derived = meshDerived_[gltfMeshIndex][primitiveIndex];
-    smvk::MeshData& data = derived.data;
-    smvk::LodInfo& lod = derived.lod;
-    const smvk::CookedMeshlets& cooked = derived.cooked;
-    const bool haveMeshlets = derived.haveMeshlets;
-    std::vector<smvk::CookedLod>& lodChain = derived.lodChain;
-
-    slot = cluster.UploadMesh(data);
-    if (slot.empty()) {
-        // STRICT OVERFLOW: the bounded static-mesh pool filled. Record it and
-        // return empty — the derive owner fails the import (never a silent
-        // truncation) and the content is partitioned into bounded clusters.
-        meshOverflow_ = true;
-        ++meshOverflowCount_;
-        return slot;
-    }
-
-    if (!modelUriBase.empty()) {
-        const smvk::StringViewT uri = smvk::MakeSubUri(
-            modelUriBase,
-            "mesh." + std::to_string(gltfMeshIndex) + "/prim." + std::to_string(primitiveIndex));
-        lod.candidateCount = static_cast<uint32_t>(1 + lodChain.size());
-        lod.lodIndex = 0;
-        lod.simplifyError = 0.0f;
-        cluster.RegisterMeshUri(uri, slot);
-        cluster.RegisterMeshLod(uri, lod);
-        if (haveMeshlets) {
-            cluster.RegisterMeshMeshlets(uri, cooked);
-            // Attach to the uploaded mesh object too (the pak
-            // deserializer does the same on load): the GPU filter
-            // registration and the meshlet debug view read
-            // mesh->meshlets, not the URI map. Cooker-safe (the pak
-            // serializer reads the map, so output is unchanged).
-            if (smvk::StaticMesh* m = cluster.staticMeshes.get(slot))
-                m->meshlets = cooked;
-        }
-        // Siblings share the base groupId; scene keeps referencing LOD0.
-        // Each sibling gets its own meshlets (same config as LOD0) so the
-        // GPU filter can register every LOD: without them siblings draw
-        // direct, unculled by frustum/HZB (freeze-view leak).
-        for (size_t li = 0; li < lodChain.size(); ++li) {
-            const smvk::CookedLod& kept = lodChain[li];
-            const auto lh = cluster.UploadMesh(kept.upload);
-            if (!lh.valid()) {
-                // STRICT OVERFLOW: a LOD sibling failed to upload (pool full)
-                // — same loud-failure contract as the base mesh above.
-                meshOverflow_ = true;
-                ++meshOverflowCount_;
-                continue;
-            }
-            const smvk::StringViewT lodUri =
-                smvk::LodSiblingUri(uri, static_cast<uint32_t>(li + 1));
-            if (meshletConfig.enabled &&
-                smvk::EligibleForGpuDrivenMesh(kept.upload.indices.size() / 3) &&
-                !kept.upload.vertices.empty() && !kept.upload.indices.empty()) {
-                smvk::CookedMeshlets lodCooked;
-                smvk::MeshletStats lodStats;
-                std::string lodErr;
-                if (BuildMeshletsForUpload(
-                        kept.upload, meshletConfig, &lodCooked, &lodStats, &lodErr) &&
-                    !lodCooked.empty()) {
-                    cluster.RegisterMeshMeshlets(lodUri, lodCooked);
-                    // Same attach as LOD0 above: the filter registers
-                    // every LOD from mesh->meshlets (without them
-                    // siblings draw direct, unculled).
-                    if (smvk::StaticMesh* lm = cluster.staticMeshes.get(lh))
-                        lm->meshlets = lodCooked;
-                }
-#ifndef NDEBUG
-                else if (!lodErr.empty() && lodErr != "meshlets disabled") {
-                    std::cout << "Meshlets mesh." << gltfMeshIndex << "/prim." << primitiveIndex
-                              << "/lod" << (li + 1) << " skipped: " << lodErr << std::endl;
-                }
-#endif
-            }
-            cluster.RegisterMeshUri(lodUri, lh);
-            smvk::LodInfo llod;
-            llod.groupId = lod.groupId;
-            llod.lodIndex = static_cast<uint32_t>(li + 1);
-            llod.candidateCount = lod.candidateCount;
-            llod.simplifyError = kept.localError; // scaled to world in finalize
-            llod.screenThreshold = -1.0f;
-            llod.triCount = kept.triCount;
-            llod.acmr = 0.0f;
-            cluster.RegisterMeshLod(lodUri, llod);
-        }
-    }
-
-    // Release the derived payload now that the cluster retained its own copy
-    // — prepareMeshes derived every mesh up front (the parallel win), so
-    // without this the importer would hold the whole district's geometry twice
-    // (the retained upload + this pre-pass copy).
-    derived.data = smvk::MeshData{};
-    derived.cooked = smvk::CookedMeshlets{};
-    derived.lodChain.clear();
-    derived.lodChain.shrink_to_fit();
-
-    return slot;
+    // Phase A2 (uploadPreparedMeshes) batch-uploads EVERY prepared mesh +
+    // sibling in ONE Cluster::UploadMeshes call, then registers them. This is
+    // a pure cache lookup: the batch runs once on the first reference.
+    uploadPreparedMeshes();
+    return meshCache[gltfMeshIndex][primitiveIndex];
 }
 
 void SourceSceneImporter::applyPreTransform(Scene& scene, int rootNode) {

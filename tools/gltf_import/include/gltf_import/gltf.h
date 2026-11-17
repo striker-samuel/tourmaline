@@ -286,6 +286,14 @@ struct SourceSceneImporter {
     // getOrCreateMesh; the configs (meshOptConfig/meshletConfig/coordFix_)
     // must be set first (they are, before any import()).
     void prepareMeshes();
+    // Phase A2 (the batch upload): runs ONCE after prepareMeshes, uploads
+    // EVERY derived base + LOD-sibling mesh in ONE Cluster::UploadMeshes call
+    // (the GPU bulk-copy path, or the offline per-mesh loop), then registers
+    // their URIs/LODs/meshlets and releases the derived payloads. getOrCreateMesh
+    // becomes a pure cache lookup after this. Keeps the lazy semantics (nothing
+    // uploads until the first mesh is referenced) but replaces the per-mesh
+    // Cluster::UploadMesh with the batch API.
+    void uploadPreparedMeshes();
     // Derives ONE mesh's upload-ready payload. Pure over `model` + the configs
     // (never touches the cluster), so it runs safely on a worker thread.
     // `skinned` attaches the primitive's JOINTS_0/WEIGHTS_0 as a
@@ -333,6 +341,7 @@ struct SourceSceneImporter {
     // prepareMeshes before the node walk uploads anything.
     std::vector<std::vector<DerivedMesh>> meshDerived_;
     bool meshesPrepared_ = false;
+    bool meshesUploaded_ = false; // uploadPreparedMeshes ran (batch upload done)
     // STRICT OVERFLOW: set when the bounded static-mesh pool fills during
     // upload. The derive must treat this as a hard failure (fail the import,
     // never silently drop geometry) and partition the content into bounded
