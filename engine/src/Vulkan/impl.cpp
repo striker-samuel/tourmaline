@@ -3427,6 +3427,42 @@ smvk::VulkanResourceManager::VulkanResourceManager(VulkanCore::CoreConfiguration
     VmaVulkanFunctions vulkanFunctions;
     VK_CHECK(vmaImportVulkanFunctionsFromVolk(&allocatorCreateInfo, &vulkanFunctions));
     allocatorCreateInfo.pVulkanFunctions = &vulkanFunctions;
+    // Optional synthetic device-local allocation ceiling. VMA copies this
+    // array during allocator creation; non-local heaps remain unrestricted.
+    std::array<VkDeviceSize, VK_MAX_MEMORY_HEAPS> heapLimits;
+    heapLimits.fill(VK_WHOLE_SIZE);
+    if (const char* value = std::getenv("TOURMALINE_BENCH_VRAM_MB")) {
+        char* end = nullptr;
+        const long mb = std::strtol(value, &end, 10);
+        if (end == value || *end || mb < 1 || mb > 1048576)
+            throw std::runtime_error("invalid TOURMALINE_BENCH_VRAM_MB");
+        VkPhysicalDeviceMemoryProperties props{};
+        vkGetPhysicalDeviceMemoryProperties(physicalDevice_, &props);
+        VkDeviceSize remaining = VkDeviceSize(mb) * 1024 * 1024;
+        VkDeviceSize localTotal = 0;
+        for (uint32_t i = 0; i < props.memoryHeapCount; ++i)
+            if (props.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+                localTotal += props.memoryHeaps[i].size;
+        if (localTotal < remaining)
+            throw std::runtime_error("host has less device-local memory than benchmark ceiling");
+        // Split the aggregate limit proportionally across device-local heaps.
+        VkDeviceSize capacity = localTotal;
+        const VkDeviceSize requested = remaining;
+        for (uint32_t i = 0; i < props.memoryHeapCount; ++i) {
+            if (!(props.memoryHeaps[i].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT))
+                continue;
+            const auto size = props.memoryHeaps[i].size;
+            if (!size) continue;
+            const auto limit = capacity == size ? remaining :
+                static_cast<VkDeviceSize>(static_cast<long double>(remaining) * size / capacity);
+            heapLimits[i] = limit;
+            remaining -= limit;
+            capacity -= size;
+        }
+        allocatorCreateInfo.pHeapSizeLimit = heapLimits.data();
+        std::fprintf(stderr, "[Benchmark] VMA device-local limit=%llu MiB\n",
+                     static_cast<unsigned long long>(requested / (1024 * 1024)));
+    }
     VK_CHECK(vmaCreateAllocator(&allocatorCreateInfo, &m_allocator));
 
     m_submitter = smvk::mem::ProcessAllocator().Create<Submitter>(
