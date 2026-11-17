@@ -380,24 +380,16 @@ struct GfxRenderer : public smvk::IFrameRenderer {
     [[nodiscard]] std::vector<smvk::ShaderModuleHandle> ReleaseSelfModules(
         const SelfModuleSet& which);
 
-    // Walks world.meshLocations once after scene load/resolve. Meshes with
-    // cooked meshlets (pak path) register from those; meshes with retained
-    // uploads (clusters with SetRetainUploads(true)) cook at register;
-    // anything else maps to UINT32_MAX (direct-draw fallback, still
-    // rendered by the legacy path).
-    void RegisterWorldMeshes(smvk::World& world);
-    void UploadStaticData(smvk::ResourceManager& ctx, smvk::RenderGraph& rg);
+    // Static geometry registration + the world->gfx mesh identity moved to
+    // the canonical gpu_scene_static surface (tour::gfx::RegisterWorldMeshes
+    // / UploadStaticData / GfxMeshForLod on StaticGeometry); this renderer
+    // keeps only the consume side.
 
     // Consume side (caller has bound FilteredProgram() with its own PSO).
     // PushViewConstants writes the 24B VS tail push once per pass;
     // DrawRange issues one multi-draw over the material's command range.
     [[nodiscard]] const std::vector<smvk::gfx::MaterialRange>& MaterialRanges(uint32_t slot) const {
         return smvk::gfx::MaterialRanges(gfx, slot);
-    }
-    // True when the world mesh participates in filtering (false = legacy
-    // direct path still draws it; used to avoid double-draw).
-    [[nodiscard]] bool IsMeshFiltered(uint32_t worldMesh) const {
-        return worldMesh < meshMap_.size() && meshMap_[worldMesh] != UINT32_MAX;
     }
     [[nodiscard]] smvk::ShaderProgram& FilteredProgram() {
         return filteredProgram;
@@ -569,22 +561,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
     [[nodiscard]] uint64_t ChartXformsAddress() const {
         return lmXformsAddr_;
     }
-    // world mesh idx -> gfx mesh idx (UINT32_MAX = not filterable).
-    // LOD0 entry (kept for the meshlet debug view fallback + audits).
-    [[nodiscard]] uint32_t GfxMeshForWorldMesh(uint32_t worldMesh) const {
-        return worldMesh < meshMap_.size() ? meshMap_[worldMesh] : UINT32_MAX;
-    }
-    // world mesh idx + LOD -> gfx mesh idx (UINT32_MAX = that LOD draws
-    // direct). Every registered LOD sibling gets its own gfx mesh so the
-    // selected LOD stays in the HZB-culled indirect ranges.
-    [[nodiscard]] uint32_t GfxMeshForLod(uint32_t worldMesh, uint32_t lod) const {
-        if (worldMesh >= lodMeshMap_.size())
-            return UINT32_MAX;
-        const auto& chain = lodMeshMap_[worldMesh];
-        if (lod >= chain.size())
-            return UINT32_MAX;
-        return chain[lod];
-    }
     // Stable saturated color per cluster (debug view). mode 0 = hash hue,
     // mode 1 = cone-cutoff heat (red = degenerate/useless cone).
     static void DebugClusterColor(uint32_t cluster, float coneCutoff, int mode, float outRgba[4]);
@@ -594,11 +570,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
     void DumpHzb(smvk::ResourceManager& ctx, uint32_t slot);
 
   private:
-    // world mesh idx -> gfx mesh idx (UINT32_MAX = not filterable).
-    std::vector<uint32_t> meshMap_;
-    // world mesh idx -> per-LOD gfx mesh idx (lodMeshMap_[w][l], UINT32_MAX
-    // = that LOD draws direct; [w][0] always mirrors meshMap_[w]).
-    std::vector<std::vector<uint32_t>> lodMeshMap_;
     uint32_t lastSlot_ = UINT32_MAX;
     bool seededThisFrame_ = false;
     smvk::ShaderModuleHandle mainFrag_{};

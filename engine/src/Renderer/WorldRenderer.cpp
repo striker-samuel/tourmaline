@@ -2705,8 +2705,8 @@ bool WorldRenderer::onAttach() {
             // Only optional task/mesh needs the duplicate cooked cluster
             // index/meshlet streams. Vulkan 1.3 indexed raster resolves
             // physical World surfaces without registering them in Gfx.
-            m_gfxRenderer.RegisterWorldMeshes(*m_world);
-            m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
+            smvk::gfx::RegisterWorldMeshes(m_gfxRenderer.State(), *m_world);
+            smvk::gfx::UploadStaticData(m_gfxRenderer.State(), *m_context, *m_rendergraph);
         }
         ++m_gpuSceneGeometryRevision;
         RefreshGpuScenePhysicalIndexedRanges(/*nativeOnly=*/!cookedMeshletBackend);
@@ -6179,9 +6179,9 @@ void WorldRenderer::UpdateGeometryStreaming() {
         if (cookedMeshletBackend) {
             SMVK_PROFILE_STREAM("GeoStreaming_RegisterMeshes");
             smvk::gfx::ResetStaticRegistrations(m_gfxRenderer.State());
-            m_gfxRenderer.RegisterWorldMeshes(*m_world);
+            smvk::gfx::RegisterWorldMeshes(m_gfxRenderer.State(), *m_world);
             SMVK_PROFILE_STREAM("GeoStreaming_UploadStaticData");
-            m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
+            smvk::gfx::UploadStaticData(m_gfxRenderer.State(), *m_context, *m_rendergraph);
         }
         ++m_gpuSceneGeometryRevision;
         RefreshGpuScenePhysicalIndexedRanges(/*nativeOnly=*/!cookedMeshletBackend);
@@ -8914,7 +8914,7 @@ void WorldRenderer::BuildShadowDrawCandidates() {
             if (item.material == smvk::World::kInvalidIndex)
                 return;
             const uint32_t lodIdx = LodIndexForNode(item.node, item.mesh);
-            const uint32_t gfxMesh = m_gfxRenderer.GfxMeshForLod(item.mesh, lodIdx);
+            const uint32_t gfxMesh = smvk::gfx::GfxMeshForLod(m_gfxRenderer.State(), item.mesh, lodIdx);
             if (gfxMesh == UINT32_MAX)
                 return; // unfilterable: the pass direct fallback draws it
             smvk::gfx::DrawRequest d{};
@@ -8988,7 +8988,7 @@ void WorldRenderer::RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
             return;
         // Indirect path: registered casters are covered by the per-view
         // command list - only unfilterable meshes rasterize here.
-        if (skipFiltered && m_gfxRenderer.GfxMeshForLod(
+        if (skipFiltered && smvk::gfx::GfxMeshForLod(m_gfxRenderer.State(),
                                 item.mesh, LodIndexForNode(item.node, item.mesh)) != UINT32_MAX)
             return;
         // Dither-on-closeup (Scene::ditherCloseup; per frame, per draw -
@@ -10627,7 +10627,7 @@ void WorldRenderer::RefreshGpuScenePhysicalIndexedRanges(bool nativeOnly) {
             const bool multiSurface = surfaceCount > 1u;
             const uint32_t gfxId = (nativeOnly || multiSurface)
                                        ? UINT32_MAX
-                                       : m_gfxRenderer.GfxMeshForLod(worldMesh, lod);
+                                       : smvk::gfx::GfxMeshForLod(m_gfxRenderer.State(), worldMesh, lod);
             surfaceIds.resize(surfaceCount);
             for (uint32_t s = 0; s < surfaceCount; ++s) {
                 surfaceIds[s] = tour::gpu_scene::RegisterNativeIndexedRange(
@@ -14977,7 +14977,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                           !m_world->FarShadingAt(worldMesh, lodIdx, material).isDefault())
                           return false;
                       (void)node;
-                      return m_gfxRenderer.GfxMeshForLod(worldMesh, lodIdx) != UINT32_MAX;
+                      return smvk::gfx::GfxMeshForLod(m_gfxRenderer.State(), worldMesh, lodIdx) != UINT32_MAX;
                   })
             : std::function<bool(NodeId, uint32_t, uint32_t, uint32_t)>{};
     // HZB source: ALWAYS hizDepth (the fixed-cost occluder fill above
@@ -17363,7 +17363,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     // Debug the SELECTED sibling: every registered LOD has its
                     // own gfx mesh (see RegisterWorldMeshes), so the overlay
                     // shows what the filter actually culled for this instance.
-                    const uint32_t gfxMesh = m_gfxRenderer.GfxMeshForLod(
+                    const uint32_t gfxMesh = smvk::gfx::GfxMeshForLod(m_gfxRenderer.State(),
                         worldMesh, LodIndexForNode(item.node, worldMesh));
                     if (gfxMesh == UINT32_MAX || gfxMesh >= dbgState.meshes.size()) {
                         // Not filterable: white direct fallback (nothing vanishes).

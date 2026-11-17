@@ -208,6 +208,19 @@ Commit subjects follow the plan; the deltas are marked.
 - 03 — `refactor(gfx): canonical static geometry ownership` —
   registration/upload/LOD/lookup no longer depend on GfxRenderer or
   `gfx::State`; consolidate into the GPU-scene-owned geometry registry.
+  - **Record**: static registration and the world→gfx mesh identity
+    moved OFF `GfxRenderer` into the canonical `tour::gfx` static
+    surface: `StaticGeometry` gains `worldMeshMap`/`worldLodMeshMap`,
+    a `RegisterWorldMeshes(StaticGeometry&, const World&)` free
+    function (the walk previously on `GfxRenderer::RegisterWorldMeshes`,
+    minus the `#if 0`/`TOURMALINE_DUMPGFX` TMP-DIAG scaffolding), and
+    inline `GfxMeshForWorldMesh`/`GfxMeshForLod`/`IsMeshFiltered`
+    accessors. `GfxRenderer` drops `meshMap_`/`lodMeshMap_` and the
+    `RegisterWorldMeshes`/`UploadStaticData`/`GfxMeshFor*`/`IsMeshFiltered`
+    methods; `WorldRenderer` calls the free functions on the State.
+  - **Gates**: the 7-test GFX subset green (architecture/rendergraph-
+    contract/lightmap-pull/gpu_scene_{world,lod,candidates,validation});
+    text integrity 8/8; engine lib recompiles clean.
 - 04 — `refactor(gfx): capacity and startup allocation overhaul` —
   remove the 65,535/65,536 ceilings; derive reservations from world
   requirements; expose utilization/high-water/overflow.
