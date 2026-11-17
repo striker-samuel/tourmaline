@@ -373,6 +373,12 @@ std::vector<uint8_t> WriteWorldManifestBlob(const std::vector<WorldManifestScene
 bool ParseWorldManifestBlob(std::span<const uint8_t> blob,
                             std::vector<WorldManifestScene>& out,
                             std::string& err);
+// Reads the pak's "#world" manifest (the scene-list table) in scene-index
+// order. A pak without one (a pre-manifest cook) returns an empty list.
+// Used by the runtime's entrypoint + camera-based page streaming.
+class PakReader;
+std::vector<WorldManifestScene> ListPakWorldManifest(const PakReader& reader,
+                                                     std::string* err = nullptr);
 
 // Append-grow: adds blobs to a pak FILE on disk (created when missing
 // or empty), keeping the image valid for PakReader::Open at all times.
@@ -723,6 +729,7 @@ using ::tour::asset::kPakFooterMagic;
 using ::tour::asset::kPakMagic;
 using ::tour::asset::kPakMeshPlanPath;
 using ::tour::asset::kPakWorldManifestPath;
+using ::tour::asset::ListPakWorldManifest;
 using ::tour::asset::PakAppendInfo;
 using ::tour::asset::PakAssetKind;
 using ::tour::asset::PakBackend;

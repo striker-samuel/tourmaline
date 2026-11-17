@@ -1713,6 +1713,22 @@ bool ParseWorldManifestBlob(std::span<const uint8_t> blob,
     return true;
 }
 
+std::vector<WorldManifestScene> ListPakWorldManifest(const PakReader& reader, std::string* err) {
+    if (err)
+        err->clear();
+    const PakTocEntry* wm = reader.Find(PakAssetKind::WorldManifest, kPakWorldManifestPath);
+    if (!wm)
+        return {}; // a pre-manifest cook: no table, the caller falls back
+    std::vector<WorldManifestScene> rows;
+    std::string perr;
+    if (!ParseWorldManifestBlob(reader.Payload(*wm), rows, perr)) {
+        if (err)
+            *err = perr;
+        return {};
+    }
+    return rows;
+}
+
 // ---------------------------------------------------------------------------
 // PakBackend
 // ---------------------------------------------------------------------------
