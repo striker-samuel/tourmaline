@@ -3763,14 +3763,6 @@ class WorldRenderer : public IRenderer {
     // FS twins for base/sg/gi variants). False or unsupported device =
     // indexed multi-draws (CPU fallback).
     bool m_useGfxMesh = true;
-    // ---- Cooperative shadow draw lists (cascade + spot tiles) ----
-    // Candidates are prebuilt once per frame on the render thread (LOD
-    // decisions mutate the World halfrate cache — not thread-safe), then
-    // each shadow view's command list is built on a worker while the main
-    // thread records the rest of the frame. Futures join before Execute
-    // (the tile-pass lambdas read the built ranges) and the ring uploads
-    // run on the main thread right after (see UploadShadowList).
-    void BuildShadowDrawCandidates();
     // Direct caster recording, both phases (opaque VS-only + masked
     // alpha-test): the full legacy loop when the filter is off, and the
     // unfiltered-caster fallback inside the indirect tile passes
@@ -3796,7 +3788,6 @@ class WorldRenderer : public IRenderer {
                                        const IRenderer::PushConstants& pc);
     smvk::mem::LinearPtr<smvk::ThreadPool> m_shadowWorkers;
     std::vector<std::future<void>> m_shadowFutures;
-    std::vector<smvk::gfx::DrawRequest> m_shadowCandidates;
     // ---- Option A: occluder-only HZB depth ----
     // (The m_hizOccluderDepth toggle is GONE: the occluder-depth fill +
     // the HZB pyramid are a FIXED COST of the renderer - the fill is the

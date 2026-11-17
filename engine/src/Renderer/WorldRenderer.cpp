@@ -8887,57 +8887,6 @@ WorldRenderer::FarSpecPrograms* WorldRenderer::FarSpecProgramsFor(
     return &m_farSpecPrograms[key];
 }
 
-void WorldRenderer::BuildShadowDrawCandidates() {
-    SMVK_PROFILE_RENDER("ShadowDrawCandidates");
-    m_shadowCandidates.clear();
-    if (!m_world)
-        return;
-    // One pass over the caster set on the render thread: LOD decisions
-    // mutate the World halfrate cache (not thread-safe), and every
-    // shadow view consumes the same per-node LOD anyway. Workers get a
-    // read-only candidate list; the per-view cull happens later in
-    // gfx::BuildShadowList (per cluster, against each view's planes).
-    m_world->forEachRenderItem(
-        smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow |
-            smvk::IteratorFlagBit_Opaque,
-        [&](const smvk::World::RenderItem& item) {
-            if (item.material == smvk::World::kInvalidIndex)
-                return;
-            const uint32_t lodIdx = LodIndexForNode(item.node, item.mesh);
-            const uint32_t gfxMesh = smvk::gfx::GfxMeshForLod(m_gfxRenderer.State(), item.mesh, lodIdx);
-            if (gfxMesh == UINT32_MAX)
-                return; // unfilterable: the pass direct fallback draws it
-            smvk::gfx::DrawRequest d{};
-            d.mesh = gfxMesh;
-            d.material = item.material;
-            d.model = m_world->scene.globalTransform[item.node];
-            // Draw-set bucketing mirrors FilterMainView: MASK materials
-            // draw through the alpha-tested phase.
-            if (const smvk::Material* mat = m_world->GetMaterial(item.material)) {
-                if (mat->shadingModel == smvk::ShadingModel::Masked)
-                    d.drawSet = smvk::gfx::DrawSetBit_Masked;
-            }
-            // Skinned casters (the Northlight compute path): mirror the
-            // flag FilterMainView sets on the lit draw, so the shadow depth
-            // legs (gfxshadowseed) fetch the DEFORMED position instead of
-            // the bind pose. Gated on this frame's deformed heap exactly
-            // like the main path (no heap -> keep the static fetch).
-            if (m_gfxRenderer.State().skinDeformedBda != 0 &&
-                !std::getenv("TOURMALINE_KD_NOSKIN")) {
-                const smvk::StaticMesh* smesh = m_world->GetMesh(item.mesh);
-                if (smesh != nullptr && smesh->skinned)
-                    d.flags |= smvk::gfx::DrawFlagBit_Skinned;
-            }
-            // The resolved material userdata rides for record consistency
-            // (BuildShadowList copies it into the ring); the shadow depth
-            // legs never read it — the hooks are color-only by v1
-            // contract, no coverage parity.
-            d.userData = m_world->ResolvedItemUserData(item);
-            m_shadowCandidates.push_back(d);
-        });
-    SMVK_PROFILE_TAG("candidates", m_shadowCandidates.size());
-}
-
 void WorldRenderer::RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
                                               smvk::ShaderProgram& opaqueProgram,
                                               const IRenderer::PushConstants& pc,

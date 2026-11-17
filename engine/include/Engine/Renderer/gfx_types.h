@@ -435,21 +435,6 @@ struct Stats {
 // Plain state (no methods). Single instance lives in the app renderer.
 // ---------------------------------------------------------------------------
 
-struct DrawRequest {
-    uint32_t mesh = 0;
-    uint32_t material = 0;
-    glm::mat4 model{1.0f};
-    DrawFlags flags = 0;
-    DrawSetMask drawSet = DrawSetBit_Opaque;
-    // The RESOLVED per-draw material userdata (HLSL misc3.x — the
-    // material instance override or the base material default, resolved
-    // by the caller from the World's runtime state at frame build; see
-    // World::ResolvedItemUserData). 0 = none (the StandardLit no-op
-    // family ignores it entirely).
-    uint32_t userData = 0;
-    uint32_t lightLayerMask = 0xffffffffu;
-};
-
 // WorldPage / Mesh moved to gpu_scene_static.h (tour::gfx::Cluster /
 // tour::gfx::Mesh) — the render sidecar references them from StaticGeometry.
 

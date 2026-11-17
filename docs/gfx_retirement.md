@@ -293,6 +293,15 @@ Commit subjects follow the plan; the deltas are marked.
     text integrity 8/8; engine + shaders + Editor + App link clean.
 - 07 — `refactor(gfx): direct/skinned rendering isolation` — skinned
   direct path independent of GfxFilter; uses shared visibility.
+  - **Record**: removed the obsolete shadow-candidate ring — the
+    dead `BuildShadowDrawCandidates` walk + `m_shadowCandidates`
+    (`std::vector<gfx::DrawRequest>`) + the `gfx::DrawRequest` struct
+    itself. The retired filter's `gfx::BuildShadowList` consumer is
+    gone (stale-comment-only), so the ring was filled but never read
+    (only its `.size()` was profile-logged). Skinned direct rendering,
+    GPU skinning, deformed bounds, and the shared Hi-Z culling are all
+    unchanged and already independent of the GfxFilter ownership model.
+  - **Gates**: engine + test subset rebuild clean; text integrity green.
 - 08 — `refactor(gfx): delete legacy GeometryFX architecture` —
   GfxRenderer, unused gfx_types, gfx_dynamic_capacity, the legacy draw/
   candidate rings, and the retired shader compatibility interfaces.
