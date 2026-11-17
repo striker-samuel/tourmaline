@@ -455,15 +455,47 @@ bool PakWriter::AddBlob(PakAssetKind kind,
         // allocator's reserved memory), aligning it to the page boundary
         // and recording its offset. Flush once the buffer exceeds the hard
         // threshold.
+        const size_t capacity = flushAlloc_->Reserved() - flushMark_;
         const size_t used = flushAlloc_->Used() - flushMark_;
         const uint64_t cursor = written_ + used;
         const uint64_t aligned = AlignUp(size_t(cursor), kAlign);
         const size_t pad = static_cast<size_t>(aligned - cursor);
-        if (pad)
-            std::memset(flushAlloc_->Allocate(pad, 1), 0, pad);
+
+        // Flush BEFORE allocating when this blob would overrun the reserved
+        // range. Flushing preserves the logical cursor (and therefore pad).
+        if (used > capacity || pad > capacity - used ||
+            stored.size() > capacity - used - pad) {
+            if (!FlushBuffer(&streamErr_))
+                return false;
+        }
+
         meta.offset = aligned;
         meta.size = stored.size();
-        std::memcpy(flushAlloc_->Allocate(stored.size(), 1), stored.data(), stored.size());
+        if (pad > capacity || stored.size() > capacity - pad) {
+            // A single blob larger than the staging reservation must not
+            // reach LinearAllocator::Allocate (which aborts on OOM).
+            // The prior flush emptied the buffer; write directly in chunks.
+            const std::array<uint8_t, kAlign> zeros{};
+            if (pad)
+                file_.write(reinterpret_cast<const char*>(zeros.data()),
+                            static_cast<std::streamsize>(pad));
+            constexpr size_t kWriteChunk = 1024 * 1024;
+            for (size_t pos = 0; pos < stored.size() && file_; ) {
+                const size_t count = std::min(kWriteChunk, stored.size() - pos);
+                file_.write(reinterpret_cast<const char*>(stored.data() + pos),
+                            static_cast<std::streamsize>(count));
+                pos += count;
+            }
+            if (!file_) {
+                streamErr_ = "pak stream direct blob write failed";
+                return false;
+            }
+            written_ = aligned + stored.size();
+        } else {
+            if (pad)
+                std::memset(flushAlloc_->Allocate(pad, 1), 0, pad);
+            std::memcpy(flushAlloc_->Allocate(stored.size(), 1), stored.data(), stored.size());
+        }
         metas_.push_back(meta);
         if (flushAlloc_->Used() - flushMark_ > flushThreshold_ && !FlushBuffer(&streamErr_))
             return false;
@@ -509,11 +541,12 @@ bool PakWriter::BeginFile(const std::string& path, std::string* err) {
     streaming_ = true;
     written_ = kHeaderSize;
     streamErr_.clear();
-    // The staging buffer: reserved virtual memory from the engine's linear
-    // allocator (commit-on-demand, mmap-like), rewound per flush. Reserve
-    // the threshold + slack for one oversized blob.
+    // Reserve virtual memory with bounded slack. Tiny thresholds also get
+    // tiny reservations, so the tests can exercise oversized direct writes.
+    // Production's 512 MiB threshold retains the existing 256 MiB slack.
+    const size_t slack = std::min(kBlobSlack, std::max(flushThreshold_, kAlign));
     flushAlloc_ = std::make_unique<tour::mem::LinearAllocator>("PakStreamBuffer",
-                                                               flushThreshold_ + kBlobSlack);
+                                                               flushThreshold_ + slack);
     flushAlloc_->EnsureInitialized();
     flushMark_ = flushAlloc_->Mark();
     return true;

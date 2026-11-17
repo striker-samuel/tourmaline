@@ -533,6 +533,54 @@ void TestPakStreamingWrite() {
     fs::remove_all(dir, ec);
 }
 
+// Regression: pre-flush before staging runs out of capacity, and write a
+// single blob larger than the entire reservation without allocator OOM.
+void TestPakStreamingCapacity() {
+    namespace fs = std::filesystem;
+    const fs::path path = fs::temp_directory_path() / "tourmaline_pak_stream_capacity.pak";
+    const std::vector<size_t> sizes = {35, 70, 95, 1024, 3, 180, 1};
+    auto populate = [&](smvk::PakWriter& writer) {
+        for (size_t i = 0; i < sizes.size(); ++i) {
+            std::vector<uint8_t> bytes(sizes[i]);
+            for (size_t j = 0; j < bytes.size(); ++j)
+                bytes[j] = static_cast<uint8_t>((i * 13 + j * 37) & 0xff);
+            Check(writer.AddBlob(smvk::PakAssetKind::Texture,
+                                 "capacity/" + std::to_string(i), std::move(bytes)),
+                  "pak.capacity.add");
+        }
+    };
+
+    smvk::PakWriter reference;
+    populate(reference);
+    const auto expected = reference.Finalize();
+
+    // 64-byte threshold + 64-byte slack: multiple pre-flushes and
+    // direct-write blobs (1024 and 180 bytes) exceed the 128-byte reserve.
+    smvk::PakWriter streaming(/*flushThresholdBytes=*/64);
+    std::string err;
+    Check(streaming.BeginFile(path.string(), &err), "pak.capacity.begin");
+    populate(streaming);
+    Check(streaming.FinishFile(&err), "pak.capacity.finish");
+
+    std::ifstream input(path, std::ios::binary | std::ios::ate);
+    Check(static_cast<bool>(input), "pak.capacity.open");
+    const auto length = input.tellg();
+    Check(length >= 0, "pak.capacity.length");
+    std::vector<uint8_t> actual(static_cast<size_t>(length));
+    input.seekg(0);
+    input.read(reinterpret_cast<char*>(actual.data()), std::streamsize(actual.size()));
+    Check(static_cast<bool>(input), "pak.capacity.read");
+    Check(actual == expected, "pak.capacity.byte-identical");
+
+    std::string readErr;
+    auto reader = smvk::PakReader::OpenFile(path.string(), readErr);
+    Check(reader.has_value() && reader->EntryCount() == sizes.size(),
+          "pak.capacity.reader");
+    input.close();
+    std::error_code ec;
+    fs::remove(path, ec);
+}
+
 void TestPakAppend() {
     namespace fs = std::filesystem;
     const auto dir = fs::temp_directory_path() / "tourmaline_pak_append";
@@ -4297,6 +4345,7 @@ int main() {
     run("TestTextureSourceLifetime", TestTextureSourceLifetime);
     run("TestPakRoundTrip", TestPakRoundTrip);
     run("TestPakStreamingWrite", TestPakStreamingWrite);
+    run("TestPakStreamingCapacity", TestPakStreamingCapacity);
     run("TestShapePakBlobs", TestShapePakBlobs);
     run("TestPakCrcCombine", TestPakCrcCombine);
     run("TestPakCrcParallel", TestPakCrcParallel);
