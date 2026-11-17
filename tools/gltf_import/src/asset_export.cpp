@@ -455,6 +455,34 @@ bool LoadAssetManifest(const std::filesystem::path& gltfPath,
     return true;
 }
 
+std::vector<std::string> PartitionedPartFiles(const std::filesystem::path& geometryPath) {
+    std::vector<std::string> parts;
+    const std::filesystem::path stem = geometryPath.stem();
+    const std::filesystem::path dir = geometryPath.parent_path();
+    std::error_code ec;
+    static const char* kMetaExts[] = {".usd", ".usda", ".usdc", ".usdz", ".gltf", ".glb", ".obj"};
+    for (const char* ext : kMetaExts) {
+        const std::filesystem::path metaPath = dir / (stem.string() + ext + ".meta");
+        if (!std::filesystem::is_regular_file(metaPath, ec))
+            continue;
+        std::ifstream in(metaPath);
+        if (!in)
+            continue;
+        const std::string text((std::istreambuf_iterator<char>(in)),
+                               std::istreambuf_iterator<char>());
+        AssetManifest m;
+        std::string merr;
+        if (!LoadAssetManifestText(text, m, merr))
+            continue;
+        if (!IsPartitionedFamily(m))
+            return parts; // an unsplit family: no parts
+        for (const std::string& f : GeometryPartFiles(m))
+            parts.push_back((dir / f).generic_string());
+        return parts;
+    }
+    return parts;
+}
+
 bool SaveAssetManifest(const std::filesystem::path& gltfPath,
                        const AssetManifest& m,
                        std::string& err) {

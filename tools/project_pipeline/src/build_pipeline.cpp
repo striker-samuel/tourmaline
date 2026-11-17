@@ -1642,10 +1642,15 @@ bool BuildProject(const Project& project,
     const fs::path projectRoot(project.root);
     const fs::path artifactAbs = projectRoot / fs::path(refSource);
     if (!fs::is_regular_file(artifactAbs, ec)) {
-        err = "the tour's referenced artifact is missing: '" + refSource +
-              "' (import the source first: Project.exe import --project " + project.root +
-              " --source <model .gltf/.glb/.obj>)";
-        return false;
+        // A partitioned family ships <stem>_partN.geometry instead of the
+        // single <stem>.geometry (the manifest records the parts). Accept it
+        // — the cook resolves the parts through the manifest.
+        if (smvk::assets::PartitionedPartFiles(artifactAbs).empty()) {
+            err = "the tour's referenced artifact is missing: '" + refSource +
+                  "' (import the source first: Project.exe import --project " + project.root +
+                  " --source <model .gltf/.glb/.obj>)";
+            return false;
+        }
     }
     out.artifact = refSource;
 

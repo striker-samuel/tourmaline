@@ -26,6 +26,7 @@
 
 #include <Engine/Asset/tour.h>
 
+#include <gltf_import/asset_export.h>
 #include <gltf_import/source_formats.h>
 
 namespace smvk::project {
@@ -185,10 +186,20 @@ bool CollectSceneArtifacts(const Project& project,
         return false;
     }
     if (!fs::is_regular_file(fs::path(project.root) / fs::path(rootRef), ec)) {
-        err = "the tour's referenced artifact is missing: '" + rootRef + "' (" + scene + ")";
-        return false;
+        // A partitioned family ships <stem>_partN.geometry instead of the
+        // single <stem>.geometry (the manifest records the parts). Accept it
+        // and list the parts — the authoring layer stays agnostic.
+        const std::vector<std::string> parts =
+            smvk::assets::PartitionedPartFiles(fs::path(project.root) / fs::path(rootRef));
+        if (parts.empty()) {
+            err = "the tour's referenced artifact is missing: '" + rootRef + "' (" + scene + ")";
+            return false;
+        }
+        for (const std::string& part : parts)
+            artifacts.push_back(part);
+    } else {
+        artifacts.push_back(rootRef);
     }
-    artifacts.push_back(rootRef);
     for (size_t i = 1; i < doc.references.size(); ++i) {
         const smvk::tour::ReferenceCmd& ref = doc.references[i];
         if (!ref.enabled || ref.source.empty())
@@ -207,11 +218,18 @@ bool CollectSceneArtifacts(const Project& project,
             return false;
         } else if (ext == ".geometry" || smvk::assets::IsMeshSourceExtension(ext)) {
             if (!fs::is_regular_file(fs::path(project.root) / fs::path(ref.source), ec)) {
-                err = "the tour's referenced artifact is missing: '" + ref.source + "' (" + scene +
-                      ")";
-                return false;
+                const std::vector<std::string> parts = smvk::assets::PartitionedPartFiles(
+                    fs::path(project.root) / fs::path(ref.source));
+                if (parts.empty()) {
+                    err = "the tour's referenced artifact is missing: '" + ref.source + "' (" +
+                          scene + ")";
+                    return false;
+                }
+                for (const std::string& part : parts)
+                    artifacts.push_back(part);
+            } else {
+                artifacts.push_back(ref.source);
             }
-            artifacts.push_back(ref.source);
         } else {
             err = "unsupported reference '" + ref.source + "' (" + scene +
                   "): references are .geometry/"

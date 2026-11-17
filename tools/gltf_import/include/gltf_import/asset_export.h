@@ -150,6 +150,13 @@ inline std::vector<std::string> GeometryPartFiles(const AssetManifest& m) {
     return files;
 }
 
+// The .geometry part file PATHS of a partitioned family, resolved beside the
+// .geometry reference (probes <stem>.<ext>.meta for the known source
+// extensions — USD first, the same sidecar search ApplySceneReferences uses).
+// Empty when the family is unsplit or has no manifest. The recipe/cook
+// resolvers list these when the single <stem>.geometry is absent.
+std::vector<std::string> PartitionedPartFiles(const std::filesystem::path& geometryPath);
+
 // ---- .material (the material asset) --------------------------------------
 // The PBR values (no pool handles — a scene binds them) + texture refs
 // (image files beside the glTF, as-authored glTF URIs; srgb flags by the
