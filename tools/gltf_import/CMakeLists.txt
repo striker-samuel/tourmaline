@@ -74,4 +74,13 @@ if(TOURMALINE_WITH_USD)
     else()
         message(FATAL_ERROR "OpenUSD CMake package lacks supported usd/usdGeom/usdShade targets")
     endif()
+    # The OpenUSD prebuilt is a RELEASE build, but the TBB headers' empty-macro
+    # detection (`__TBB_IS_MACRO_EMPTY`) is GCC/Clang-only: on MSVC's classic
+    # preprocessor a Debug `_DEBUG` token makes `TBB_USE_ASSERT` expand to a
+    # non-constant and `#if TBB_USE_ASSERT` fails to compile, and TBB's
+    # implicit-link pragma then emits `tbb_debug.lib` (not shipped). Force the
+    # release TBB configuration + disable implicit linkage to match the
+    # prebuilt, whatever the consumer's own build type.
+    target_compile_definitions(usd_import PUBLIC TBB_USE_DEBUG=0 TBB_USE_ASSERT=0
+                                              __TBB_NO_IMPLICIT_LINKAGE=1)
 endif()
