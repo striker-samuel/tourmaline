@@ -1,7 +1,127 @@
-# GI assets: bounded volumes and infinite tiled world
+# Shared tiled WorldSerialization: GI, terrain, and world resources
 
-Status: **implementation contract / draft**. This document proposes the GI asset
-cutover; adding it does **not** mean the runtime tiled-GI bridge exists.
+Status: **implementation contract / draft**. This document proposes one common
+tiled WorldSerialization service for world resources, including the GI asset
+cutover; adding it does **not** mean the service or runtime tiled-GI bridge exists.
+
+## Decision: one tiled WorldSerialization service
+
+**WorldSerialization is the shared serialization and persistent artifact
+service** for world-owned spatial data, not a new GI-only packer. Terrain,
+GI, scene placements, environment tiles, world fields, ecology, collision,
+navigation, and later resource providers should use the same service for
+identity, indexing, artifact lookup, validation, and transactional publication.
+
+This is distinct from **WorldPartition**: WorldSerialization decides what
+durable tile records exist and how to read/write them; WorldPartition decides
+what to request and keep resident. The payload codec, bake algorithm, GPU
+allocator, and physical dimensions belong to each resource provider.
+
+There is no existing `WorldSerialization` service by that name in the
+currently inspected code. The following are existing narrower precedents,
+**not** a shared-service implementation:
+- `WorldPartition` has signed 64-bit 2D world keys, negative-coordinate
+  floor semantics, provider streaming interests and common budgets.
+- `map_tile_pak.h` writes indexed, seekable Map tiles into SMP8 paks.
+- `env_tile_pak.h` writes independently addressable environment subcell
+  pages and a scene/world manifest.
+- `WorldFieldAsset.h` writes indexed `.wfb` 3D bricks (signed XYZ + LOD)
+  and exposes an immutable cooked-brick source.
+- Terrain already has its own tile/blob serialization. The objective is
+  **convergence**, not simultaneous replacement of all working codecs.
+
+### Shared keys and records
+
+Proposed *logical* API (illustrative, **not existing C++ API**):
+
+```cpp
+struct WorldResourceKey {
+    WorldId world;             // world identity, not a scene or pak stem
+    ResourceKind kind;         // Terrain, GI, Scene, Env, Field, ...
+    AssetId resource;          // stable logical producer identity
+};
+struct WorldTileAddress {
+    WorldResourceKey owner;
+    uint32_t lod;
+    int64_t x, z;              // signed, floor-addressed world tile
+    std::optional<int64_t> y;  // 3D brick providers only
+};
+struct WorldTileRecord {
+    WorldTileAddress address;
+    ContentHash inputHash;
+    ContentHash payloadHash;
+    PayloadKind payloadKind;   // provider-specific codec/ABI
+    BlobRef bytes;             // immutable, independently addressable
+};
+```
+
+A single service indexes heterogeneous records. **A shared tile address
+does not imply identical tile dimensions or physical storage**: terrain
+heightfield pages are 2D, GI field bricks can be 3D and multi-LOD, scene
+placements are lists, environment cells hold record indices. Subsystems
+choose their grid interpretation through a registered resource descriptor
+including origin, scale, coordinate scheme, and tile schema. Provider
+identity must be included in every key so a terrain tile cannot collide
+with a GI tile at the same world coordinates.
+
+### Common service responsibilities
+
+1. Register and resolve world resources, including stable world+resource
+   identity and provider-specific schema descriptors.
+2. Build/read sparse indices of independently addressable tile records.
+   Infinite *logical* worlds require no dense world-size manifest.
+3. Validate content hashes, payload integrity, codec/schema identity,
+   dependencies, and tile-coordinate correctness; fail closed on corrupt
+   or mismatched records.
+4. Publish new resource generations transactionally. Reuse unchanged
+   content-addressed tile payloads; keep old generations alive until readers
+   finish, never publish a partial replacement index.
+5. Package selected manifest/index closures and tile payloads through the
+   existing Pak abstraction, **without running a GI baker, terrain builder,
+   mesh importer, or other producer in Pak**.
+6. Supply indexed reads of tile payloads from loose/editing storage or
+   packaged paks, with the same keys and validation rules.
+
+### Explicitly NOT the service's responsibilities
+
+- Bake GI transport, generate terrain heightmaps, or serialize each
+  provider's GPU-native payload by interpreting its content.
+- Own cameras, interests, frame budgets, asynchronous residency policy, or
+  GPU-fence retirement: those belong to WorldPartition and providers.
+- Force one codec, atlas, cell dimension, coordinate cardinality or GPU
+  resource type on heterogeneous world data.
+- Treat a package as a world: one world may span paks; one pak may contain
+  several worlds.
+
+### Integration flow
+
+```text
+Editor / world authoring / source assets
+                 |
+     +-----------+------------+--------------+
+     |           |            |              |
+   GI baker   Terrain cook  Scene cook    Env / field cooks
+     |           |            |              |
+     +-----------+------------+--------------+
+                 |
+     WorldSerialization (tile keys, indices,
+       dependency hashes, immutable blobs)
+                 |
+             Pak embedding
+                 |
+     WorldSerialization reader (VFS/Pak)
+                 |
+       WorldPartition request/admission
+                 |
+     Provider decode, upload and sampling
+```
+
+A service v1 should prove terrain + GI records share key/index/publish
+mechanics, while retaining existing specialized payload layouts and reader
+behavior. Map/environment migrations should be incremental adapters instead
+of forced format changes. Add tests for cross-kind key separation,
+negative coordinates, sparse missing tiles, deterministic index order,
+atomic publication, content-hash invalidation, and packaged/loose parity.
 
 ## Non-negotiable scope
 
@@ -67,7 +187,8 @@ GiSet (stable asset identity, scene/world reference, bake settings)
 **Do not** put an unbounded world's tiles into `GiAssetCmd` as an
 ever-growing linear list; that command is appropriate for authored
 per-volume bindings, not global tile residency. The world field is a distinct
-GI-set member backed by an index and paged tile payloads.
+GI-set member backed by the **shared WorldSerialization index and paged
+payload service**, with GI-specific resource metadata.
 
 The field should keep the WorldPartition/WorldFields addressing semantics
 (floor division for negative coordinates, signed coordinates, stable origin,
@@ -75,7 +196,7 @@ LOD keys), but its lighting payload may require a GI-specific format. Confirm
 the SG coefficient / occlusion / visibility footprint before choosing BC6H,
 `.wfb`, 3D textures, or a packed buffer representation.
 
-## Baker -> artifact store -> Pak
+## Baker -> WorldSerialization -> Pak
 
 ```text
 editor / CLI => same GiBaker implementation
@@ -85,10 +206,10 @@ editor / CLI => same GiBaker implementation
                   +--> world GI tile bakes (per-tile incremental; future bridge)
                   |
                   v
-             immutable cooked artifacts + fingerprints
+       WorldSerialization: immutable artifacts + fingerprints
                   |
                   v
-               GI set index
+              shared tile index
                   |
                   v
            Pak validates and copies artifacts
@@ -132,25 +253,33 @@ atlas slot. Fallback must remain valid during all of these transitions.
 
 ## Implementation sequence
 
-1. **Contract and characterization tests:** pin current hard scene bindings,
+1. **Shared WorldSerialization service contract:** define heterogeneous
+   resource keys, sparse tile indices, immutable blob references, producer
+   adapters, transactional publication, and Pak/VFS reads; characterize
+   existing terrain, Map, environment and field formats without changing
+   their payload ABIs.
+2. **Contract and characterization tests:** pin current hard scene bindings,
    legacy/catalog manifest behavior, Pak stale-hash rejection and editor/CLI
    parity. Specify a GI set containing bounded volumes **and** a world-field
    entry without silently dropping the latter.
-2. **GI set source/product plumbing:** stable source identity, typed
+3. **GI set source/product plumbing:** stable source identity, typed
    sub-artifact references, atomic index publication, Pak closure and
    fail-closed validation. Preserve existing .givolume scenes.
-3. **World GI tile bake format:** explicit tile/LOD keys, transport encoding,
+4. **World GI tile bake format:** explicit tile/LOD keys, transport encoding,
    per-tile dependency hashing, border/halo rules, generation-safe publication,
    and end-to-end baked-to-Pak readback. Reuse WorldFields only where the
    payload ABI actually fits.
-4. **Runtime streaming bridge:** GI-specific resident sampling through
+5. **Runtime streaming bridge:** GI-specific resident sampling through
    WorldPartition interest and existing field cache patterns; compose local
    volume override and sky fallback.
-5. **Dynamic updates:** assess direct-light change handling and incremental
+6. **Dynamic updates:** assess direct-light change handling and incremental
    re-trace/dynamic GI after the static asset and streaming contracts work.
 
 ## Must-pass acceptance matrix
 
+- Shared service round-trips independent terrain and GI records at the same
+  world/tile coordinates without collision, duplicate producer logic, or a
+  global tile-size assumption.
 - Bounded-only scene preserves its current `.givolume` output, bindings,
   and stale-bake failure behavior.
 - World-only GI set works without requiring a dummy convex volume.
