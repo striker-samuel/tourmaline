@@ -91,6 +91,7 @@ def write_recipe(project_dir: Path) -> Path:
         "\n"
         "bake gi off\n"
         "bake cubemaps off\n"
+        "bake sdf off\n"
         "\n"
         "[pak world]\n"
         "output island.pak\n"
