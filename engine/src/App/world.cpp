@@ -1404,6 +1404,11 @@ void World::MergePage(WorldPage& cluster, uint32_t clusterOrdinal, bool isIdenti
         // the live audio-source entities' merged nodes — the
         // HANDLE stays valid across the rebuild, only its internal
         // node moves (the entity-model contract).
+        // Grow the parallel map for the INCREMENTAL path (the full
+        // resolve pre-sizes it via pageMergedNodes.assign; a streamed-in
+        // page appends a fresh slot here).
+        if (clusterOrdinal >= pageMergedNodes.size())
+            pageMergedNodes.resize(clusterOrdinal + 1);
         pageMergedNodes[clusterOrdinal] = nodeMap;
         for (AudioSourceEntity& e : audioEntities)
             if (e.alive && e.owner == &cluster && e.clusterNode < nodeMap.size())
@@ -1671,6 +1676,78 @@ void World::MergePage(WorldPage& cluster, uint32_t clusterOrdinal, bool isIdenti
         // (Per-cluster merge-dirty marking is gone with the synthetic
         // root: the resolve tail's MarkAllRootsChanged marks EVERY merged
         // root, which is exactly the merge boundary now.)
+    }
+}
+
+void World::UnmergePage(WorldPage& page) {
+    if (worldSceneInstances.Count() != 0)
+        throw std::logic_error("cannot unmerge WorldPage during direct World instance lifetime");
+    // The dynamic cluster is runtime-created state, never streamed out.
+    if (page.isDynamic)
+        return;
+    for (auto it = pages.begin(); it != pages.end(); ++it) {
+        if (it->get() != &page)
+            continue;
+        const uint32_t clusterOrdinal = uint32_t(it - pages.begin());
+
+        // 1. Mark every location entry owned by this page dead (null
+        //    cluster). The derived-cache iterators (LOD chains, lightmap
+        //    charts, static BVH) all skip null-cluster entries, and no
+        //    live node references them after the retire below. Entries
+        //    are NOT compacted — surviving world indices stay stable.
+        auto dropOwned = [&page](auto& locs) {
+            for (auto& loc : locs)
+                if (loc.cluster == &page)
+                    loc.cluster = nullptr;
+        };
+        dropOwned(meshLocations);
+        dropOwned(materialLocations);
+        dropOwned(lightLocations);
+        dropOwned(cameraLocations);
+        dropOwned(decalLocations);
+
+        // 2. Retire the page's merged nodes. deleteSceneNodes does the
+        //    full discipline: collect the page's subtrees, unlink doomed
+        //    nodes from any SURVIVING parent (a bare RetireNodeSlot leaves
+        //    the parent's child/sibling chains pointing at dead slots),
+        //    retire each slot, then rebuild the node->rows index + static
+        //    cache. Survivors' node ids do not move.
+        if (clusterOrdinal < pageMergedNodes.size()) {
+            std::vector<uint32_t> doomed;
+            doomed.reserve(pageMergedNodes[clusterOrdinal].size());
+            for (NodeId node : pageMergedNodes[clusterOrdinal])
+                if (node != UINT32_MAX)
+                    doomed.push_back(node);
+            tour::transformhierarchy::deleteSceneNodes(scene, doomed);
+            pageMergedNodes[clusterOrdinal].clear();
+        }
+
+        // 3. Drop the page's material-dedup entries (keyed by its stable
+        //    pageOrdinal) so a later re-load of a fresh page cannot
+        //    collide with the stale keys.
+        const uint32_t ord = page.pageOrdinal;
+        for (auto m = worldMatByClusterMat_.begin(); m != worldMatByClusterMat_.end();) {
+            if ((m->first >> 32) == ord)
+                m = worldMatByClusterMat_.erase(m);
+            else
+                ++m;
+        }
+
+        // 4. Erase the page + its retained node map (parallel, dense-index
+        //    contract). No full resolve here — the caller rebuilds the
+        //    derived caches once per settled batch.
+        gpuScenePageIds.erase(&page);
+        pageMergedNodes.erase(pageMergedNodes.begin() + clusterOrdinal);
+        // SHARED-ASSET PARKING (mirrors UnloadCluster): live external
+        // refs keep the cluster's resource rows alive — park, don't
+        // destroy. The fold is still retired above (parked == unloaded).
+        if (page.assetRefs > 0) {
+            retainedPages.push_back(std::move(*it));
+            pages.erase(it);
+            return;
+        }
+        pages.erase(it);
+        return;
     }
 }
 

@@ -51,15 +51,35 @@ class ScenePageStreamer {
         if (viewDir != glm::vec3(0.0f))
             viewDir_ = viewDir;
         bool changed = false;
-        uint32_t loadedThisTick = 0;
-        // Load near pages (bounded per tick to avoid a multi-page hitch).
+        // Unload far pages FIRST (incremental retire; never the pinned
+        // entry). Doing this before the load pass keeps the dense page
+        // slots stable for the newly-appended pages below.
         for (uint32_t i = 0; i < manifest_.sceneCount; ++i) {
-            if (loaded_[i] || !WithinRadius(i, cameraPos))
+            if (!loaded_[i] || i == entryScene_ || WithinRadius(i, cameraPos))
+                continue;
+            try {
+                world_.UnmergePage(*loaded_[i]);
+            } catch (const std::exception& e) {
+                std::cerr << "[PageStreamer] unload page " << i << " failed: " << e.what() << "\n";
+            }
+            loaded_[i] = nullptr;
+            changed = true;
+        }
+        // Load near pages (incremental fold; the pinned entry is already
+        // loaded + folded by the host loader). Bounded per tick.
+        uint32_t loadedThisTick = 0;
+        for (uint32_t i = 0; i < manifest_.sceneCount; ++i) {
+            if (loaded_[i] || i == entryScene_ || !WithinRadius(i, cameraPos))
                 continue;
             try {
                 WorldPage& page = world_.LoadPageFromPak(
                     ctx_, backend_->Reader(), i, sceneStreamer_, imagePin_, externalTexture_);
                 loaded_[i] = &page;
+                // Incremental fold: append this page's nodes/tables into
+                // the merged scene (the page was just registered at the
+                // tail of world_.pages). No full re-fold of the resident
+                // pages — RebuildDerivedCaches runs once below.
+                world_.MergePage(page, uint32_t(world_.pages.size()) - 1, false);
                 ++loadedThisTick;
                 changed = true;
             } catch (const std::exception& e) {
@@ -68,20 +88,10 @@ class ScenePageStreamer {
             if (loadedThisTick >= kMaxLoadsPerTick)
                 break;
         }
-        // Unload far pages (never the pinned entry).
-        for (uint32_t i = 0; i < manifest_.sceneCount; ++i) {
-            if (!loaded_[i] || i == entryScene_ || WithinRadius(i, cameraPos))
-                continue;
-            try {
-                world_.UnloadCluster(*loaded_[i]);
-            } catch (const std::exception& e) {
-                std::cerr << "[PageStreamer] unload page " << i << " failed: " << e.what() << "\n";
-            }
-            loaded_[i] = nullptr;
-            changed = true;
-        }
         if (changed) {
-            world_.ResolveAndFixup_pages();
+            // One O(total) derived-cache rebuild per settled batch (not
+            // per page): iterator flags, draw list, LOD chains, static BVH.
+            world_.RebuildDerivedCaches();
             ctx_.FlushUploads();
         }
         return changed;
