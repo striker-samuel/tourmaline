@@ -1565,7 +1565,7 @@ void EditorApp::RetireCreatedNode(uint32_t n) {
             m_world->drawItems.erase(m_world->drawItems.begin() + ptrdiff_t(i));
             m_world->itemFlags.erase(m_world->itemFlags.begin() + ptrdiff_t(i));
         }
-    m_world->flagLists.clear();
+    m_world->RebuildDrawOrder();
     recalculateGlobalTransforms(scene);
     // Selection scrub: a retired id must not stay selected.
     for (size_t i = m_selection.size(); i-- > 0;)
@@ -2495,7 +2495,7 @@ void EditorApp::ExecDelete(EditCmd& c) {
         dropSelected(id);
     }
     RemoveLight(scene, n);
-    m_world->flagLists.clear();
+    m_world->RebuildDrawOrder();
     Log("Deleted '" + getNodeName(scene, int(n)) + "' (#" + std::to_string(n) +
         ") — Ctrl+Z restores it.");
 }
@@ -2566,7 +2566,7 @@ void EditorApp::ExecUndelete(EditCmd& c) {
         m_world->drawItems.insert(m_world->drawItems.begin() + ptrdiff_t(pos), item);
         m_world->itemFlags.insert(m_world->itemFlags.begin() + ptrdiff_t(pos), item.flags);
     }
-    m_world->flagLists.clear();
+    m_world->RebuildDrawOrder();
     auto git = m_terrainGroups.find(n);
     if (git != m_terrainGroups.end())
         git->second.deleted = false; // restored: paints/rebuilds live again
@@ -7112,7 +7112,7 @@ void EditorApp::ExecCreateTerrain(EditCmd& c) {
             m_world->itemFlags.push_back(m_world->flags[size_t(t)]);
             g.tileNodes[size_t(tz) * g.data.tilesX + tx] = t;
         }
-    m_world->flagLists.clear();
+    m_world->RebuildDrawOrder();
     for (uint32_t t : g.tileNodes)
         RefreshNodeDrawState(t);
     if (m_replayingTour)
@@ -7148,7 +7148,7 @@ void EditorApp::ExecUncreateTerrain(EditCmd& c) {
                 break;
             }
     }
-    m_world->flagLists.clear();
+    m_world->RebuildDrawOrder();
     Log("Undid terrain creation (#" + std::to_string(n) +
         "): hidden, ids kept stable (pool entries retained).");
 }

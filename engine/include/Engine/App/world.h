@@ -1279,6 +1279,13 @@ struct World {
     // Recomputes psoBinOffset_ from the current drawItems (which must be
     // sorted by (psoClass, material)). O(drawItems).
     void RebuildPsoBinOffsets();
+    // Reclassifies every draw item, re-sorts by (psoClass, material) and
+    // rebuilds psoBinOffset_ + the itemFlags SoA mirror. The EDITOR mutates
+    // drawItems in place (material/flag edits, add/remove) without going
+    // through RefreshRuntimeSceneCaches, so it calls this after each edit to
+    // restore the sorted+classified invariant the per-bin range consumers
+    // (forEachPsoBin / ShadowCasterRange) rely on. O(n log n) - editor-only.
+    void RebuildDrawOrder();
     // (Re)builds staticBvh_ from the current scene. Cheap no-op when
     // there are no static mesh nodes (leaves the tree empty).
     void RebuildStaticBvh();

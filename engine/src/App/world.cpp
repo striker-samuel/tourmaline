@@ -2345,6 +2345,25 @@ void World::RebuildPsoBinOffsets() {
         psoBinOffset_[c] += psoBinOffset_[c - 1];
 }
 
+void World::RebuildDrawOrder() {
+    for (RenderItem& item : drawItems)
+        item.psoClass = PsoClassFor(item);
+    std::stable_sort(
+        drawItems.begin(), drawItems.end(), [](const RenderItem& a, const RenderItem& b) {
+            if (a.psoClass != b.psoClass)
+                return a.psoClass < b.psoClass;
+            return a.material < b.material;
+        });
+    RebuildPsoBinOffsets();
+    // Rebuild the flags SoA mirror in the new order (ItemIndicesFor walks it
+    // by index, so index i must mean the same item in both arrays).
+    itemFlags.clear();
+    itemFlags.reserve(drawItems.size());
+    for (const RenderItem& item : drawItems)
+        itemFlags.push_back(item.flags);
+    flagLists.clear();
+}
+
 StaticMesh* World::GetMesh(uint32_t meshIndex) {
     if (meshIndex >= meshLocations.size())
         return nullptr;

@@ -95,15 +95,23 @@ void EditorApp::RefreshNodeDrawState(uint32_t node) {
                 m_world->itemFlags[i] = f;
         }
     }
-    m_world->flagLists.clear();
+    // Reclassify + re-sort + rebuild the PSO-bin offsets (a material/flag
+    // change shifts an item's (psoClass, material) sort key).
+    m_world->RebuildDrawOrder();
 }
 
 void EditorApp::RefreshMaterialNodes(uint32_t mat) {
     if (!m_world)
         return;
+    // Collect first: RefreshNodeDrawState re-sorts drawItems (RebuildDrawOrder),
+    // so iterating drawItems by reference while calling it would invalidate
+    // the iterator.
+    std::vector<uint32_t> nodes;
     for (const auto& item : m_world->drawItems)
         if (item.material == mat)
-            RefreshNodeDrawState(item.node);
+            nodes.push_back(item.node);
+    for (uint32_t node : nodes)
+        RefreshNodeDrawState(node);
 }
 
 // Definition + world aim for a light node (null when the node has none).
