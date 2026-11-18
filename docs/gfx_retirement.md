@@ -305,15 +305,19 @@ Commit subjects follow the plan; the deltas are marked.
 - 08 — `refactor(gfx): delete legacy GeometryFX architecture` —
   GfxRenderer, unused gfx_types, gfx_dynamic_capacity, the legacy draw/
   candidate rings, and the retired shader compatibility interfaces.
-  - **Record (partial)**: deleted the two dead skin-bounds pass shells
-    (`gfx::AddSkinBoundsPass` / `gfx::PushAndDispatchSkinBounds` — the
-    skin-bounds pass is recorded inline in WorldRenderer; only
-    `EnsureSkinBounds` is called). The remaining surface — splitting
-    `gfx::State` (StaticGeometry → GPU-scene, Hi-Z → `tour::visibility`,
-    skin-bounds → the skinned owner, texture-demand/cull-state → the
-    streamer), deleting `GfxRenderer`/`gfx_types.cpp`/`gfx_dynamic_capacity.h`
-    and the seed/mesh shaders, and shrinking the R7/R8 baselines — is the
-    deep multi-day tail and needs GPU validation.
-  - **Gates**: engine + 6-test subset rebuild clean; text integrity green.
+  - **Record (partial)**: deleted the dead skin-bounds pass shells
+    (`gfx::AddSkinBoundsPass` / `gfx::PushAndDispatchSkinBounds`), the
+    CPU HZB helpers (`gfx::HzbOccluded` / `gfx::HzbMipForRect`), and the
+    dead inline accessors (`MeshCount`, `DrawCapacity`, `CandidateCapacity`,
+    `ViewFrame`, `BatchBuffer`, `DrawBuffer`, `IndirectBuffer`, `BatchCount`,
+    `FilteredIndexBase`, `IndexHeapLogical`, `BatchLogical`, `DrawLogical`,
+    `IndirectLogical`, `FillVsSkinTail`, `FillMotionPrevTail`). The
+    remaining surface — splitting `gfx::State` (StaticGeometry → GPU-scene,
+    Hi-Z → `tour::visibility`, skin-bounds → the skinned owner,
+    texture-demand/cull-state → the streamer), deleting
+    `GfxRenderer`/`gfx_types.cpp`/`gfx_dynamic_capacity.h` and the seed/mesh
+    shaders, and shrinking the R7/R8 baselines — is the deep multi-day tail
+    and needs GPU validation.
+  - **Gates**: engine + 8-test subset rebuild clean; text integrity green.
 - 09 — `test(gfx): validation and performance certification` —
   correctness, memory stability, frame-time gains verified.

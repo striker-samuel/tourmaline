@@ -540,21 +540,6 @@ ClusterFootprint ProjectClusterFootprint(const glm::vec3& worldCenter,
                                          const glm::mat4& viewProj,
                                          uint32_t width,
                                          uint32_t height);
-// Mip whose texel covers a rectW x rectH px footprint (ceil(log2(max)),
-// clamped to [0, mips); caller guarantees mips > 0.
-uint32_t HzbMipForRect(float rectW, float rectH, uint32_t mips);
-// Conservative occlusion test over an explicit HZB image (row-major
-// floats in HzbMipOffsetFloats layout, MIN-reduced). True = provably
-// hidden (nearest point behind every covered texel). Rects missing the
-// target, behind-camera footprints and empty pyramids keep (false).
-// outBindingStored (optional): the MIN stored depth over the covered
-// texels — the value the cull decision hangs on (audit/debug).
-bool HzbOccluded(const float* hzb,
-                 uint32_t w,
-                 uint32_t h,
-                 uint32_t mips,
-                 const ClusterFootprint& f,
-                 float* outBindingStored = nullptr);
 
 // Compute push. Must match HLSL HzbPush in hzb.hlsli (48 bytes).
 // srcMip = kHizSrcDepth copies mip 0 from the depth texture instead.
@@ -723,9 +708,6 @@ void Destroy(State& s, smvk::RenderGraph& rg);
 // Mesh registration (RegisterMeshFromUpload/FromCooked), UploadStaticData
 // and ResetStaticRegistrations moved to gpu_scene_static.h (they operate on
 // tour::gfx::StaticGeometry — the static registration half — not State).
-[[nodiscard]] inline uint32_t MeshCount(const State& s) {
-    return (uint32_t)s.meshes.size();
-}
 [[nodiscard]] inline uint32_t ClusterCount(const State& s) {
     return (uint32_t)s.clusters.size();
 }
@@ -901,16 +883,6 @@ bool UploadTextureMeta(State& s,
 [[nodiscard]] inline uint32_t CullStateWords(const State& s, uint32_t view, uint32_t frameIndex) {
     return CullStateCounterWord(s, view, frameIndex) + 5u;
 }
-// Current-flight capacity accessors (the dispatch/push fill sites and
-// the audits read these; drawCapacity doubles as the counter word base).
-[[nodiscard]] inline uint32_t DrawCapacity(const State& s, uint32_t view) {
-    assert(view < s.views.size());
-    return s.views[view].drawCapacity[s.views[view].frameIndex];
-}
-[[nodiscard]] inline uint32_t CandidateCapacity(const State& s, uint32_t view) {
-    assert(view < s.views.size());
-    return s.views[view].candidateCapacity[s.views[view].frameIndex];
-}
 // Live slot count in the uploaded meta table (bounds the consumer's
 // download + forward range; 0 = demand source inactive — the shader's
 // publisher is gated off too).
@@ -924,10 +896,6 @@ bool UploadTextureMeta(State& s,
 void ClearDemand(State& s, smvk::ResourceManager& ctx, uint32_t frameIndex);
 
 // ---- Accessors (frame slices resolved from the view's frameIndex) ----
-[[nodiscard]] inline uint32_t ViewFrame(const State& s, uint32_t view) {
-    assert(view < s.views.size());
-    return s.views[view].frameIndex;
-}
 // HZB pyramid slice for this view's current flight (same rule as every
 // other per-frame mutable above).
 [[nodiscard]] inline HizResources& Hiz(State& s, uint32_t view) {
@@ -937,21 +905,6 @@ void ClearDemand(State& s, smvk::ResourceManager& ctx, uint32_t frameIndex);
 [[nodiscard]] inline const HizResources& Hiz(const State& s, uint32_t view) {
     assert(view < s.temporals.size() && view < s.views.size());
     return s.temporals[view].hiz[s.views[view].frameIndex];
-}
-[[nodiscard]] inline smvk::BufferHandle BatchBuffer(const State& s, uint32_t view) {
-    assert(view < s.views.size());
-    return s.views[view].batchBuffers[s.views[view].frameIndex];
-}
-// Fills the FilteredVsPush tail's VS-skin fields (the skinned fetch
-// swap's inputs) from the State. paramsValid gates the whole swap in
-// the HLSL (a plain pointer compare is illegal on vk::BufferPointer):
-// 1 = the frame carries a live deformed heap (the driver set
-// skinDeformedBda). The deformed pair is per-frame (the renderer's
-// skinning driver); the bind-pose heaps are the eternal static heaps.
-inline void FillVsSkinTail(FilteredVsPush& tail, const State& s) {
-    tail.vsDeformed = s.skinDeformedBda;
-    tail.vsDeformedBase = s.skinDeformedBase;
-    tail.paramsValid = (s.skinDeformedBda != 0 && s.skinDeformedBase != UINT32_MAX) ? 1u : 0u;
 }
 
 // Motion-leg PREV tail (gfxfilteredmotion.vert.hlsl bytes 240..256, the
@@ -967,50 +920,10 @@ struct FilteredMotionPrevTail {
 };
 static_assert(sizeof(FilteredMotionPrevTail) == 16);
 
-// Fills the motion leg's PREV tail from the State (the cur pair rides the
-// FilteredVsPush via FillVsSkinTail). prevValid: consecutive skinning runs
-// on the same heap — the first animated frame / a rebuild / a gap falls
-// back to zero mesh motion in the VS (prevPos == curPos).
-inline void FillMotionPrevTail(FilteredMotionPrevTail& tail, const State& s) {
-    tail.vsPrevDeformed = s.skinDeformedPrevBda;
-    tail.vsPrevValid = s.skinPrevValid;
-}
-
-[[nodiscard]] inline smvk::BufferHandle DrawBuffer(const State& s, uint32_t view) {
-    assert(view < s.views.size());
-    return s.views[view].drawBuffers[s.views[view].frameIndex];
-}
-[[nodiscard]] inline smvk::BufferHandle IndirectBuffer(const State& s, uint32_t view) {
-    assert(view < s.views.size());
-    return s.views[view].indirectBuffers[s.views[view].frameIndex];
-}
 // Static index monoblock accessor (mesh + cluster-ordered + filtered index
 // regions share one VkBuffer; draws use absolute firstIndex, offset-0 bind).
-[[nodiscard]] inline smvk::LogicalBufferHandle IndexHeapLogical(const State& s) {
-    return s.indexHeapLogical;
-}
 [[nodiscard]] inline uint32_t ClusterIndexBase(const State& s) {
     return s.clusterIndexBase;
-}
-[[nodiscard]] inline uint32_t FilteredIndexBase(const State& s, uint32_t view) {
-    assert(view < s.views.size());
-    return s.views[view].filteredBase[s.views[view].frameIndex];
-}
-[[nodiscard]] inline smvk::LogicalBufferHandle BatchLogical(const State& s, uint32_t view) {
-    assert(view < s.views.size());
-    return s.views[view].batchLogicals[s.views[view].frameIndex];
-}
-[[nodiscard]] inline smvk::LogicalBufferHandle DrawLogical(const State& s, uint32_t view) {
-    assert(view < s.views.size());
-    return s.views[view].drawLogicals[s.views[view].frameIndex];
-}
-[[nodiscard]] inline smvk::LogicalBufferHandle IndirectLogical(const State& s, uint32_t view) {
-    assert(view < s.views.size());
-    return s.views[view].indirectLogicals[s.views[view].frameIndex];
-}
-[[nodiscard]] inline uint32_t BatchCount(const State& s, uint32_t view) {
-    assert(view < s.views.size());
-    return s.views[view].batchCount;
 }
 [[nodiscard]] inline const std::vector<MaterialRange>& MaterialRanges(const State& s,
                                                                       uint32_t view) {

@@ -608,80 +608,9 @@ ClusterFootprint ProjectClusterFootprint(const glm::vec3& worldCenter,
     f.radiusY = std::max((y1 - y0) * 0.5f, 0.0f);
     f.nearestDepth = dNear;
     // Fully off-target footprints stay testable (behindCamera=false) so the
-    // audit tags them offscreen; HzbOccluded keeps them like the frustum
-    // stages would.
+    // audit tags them offscreen.
     f.behindCamera = false;
     return f;
-}
-
-uint32_t HzbMipForRect(float rectW, float rectH, uint32_t mips) {
-    assert(mips > 0);
-    const float m = std::max(rectW, rectH);
-    uint32_t level = 0;
-    float texel = 1.0f;
-    while (texel < m && level + 1 < mips) {
-        texel *= 2.0f;
-        ++level;
-    }
-    return level;
-}
-
-bool HzbOccluded(const float* hzb,
-                 uint32_t w,
-                 uint32_t h,
-                 uint32_t mips,
-                 const ClusterFootprint& f,
-                 float* outBindingStored) {
-    if (outBindingStored)
-        *outBindingStored = -1.0f;
-    if (hzb == nullptr || mips == 0 || w == 0 || h == 0)
-        return false;
-    if (f.behindCamera)
-        return false;
-    const float rectW = f.radiusX * 2.0f;
-    const float rectH = f.radiusY * 2.0f;
-    if (rectW <= 0.0f || rectH <= 0.0f)
-        return false;
-    // Rect missing the target entirely: the frustum stages own this case.
-    if (f.centerX + f.radiusX < 0.0f || f.centerX - f.radiusX > (float)w ||
-        f.centerY + f.radiusY < 0.0f || f.centerY - f.radiusY > (float)h)
-        return false;
-    const uint32_t level = HzbMipForRect(rectW, rectH, mips);
-    uint32_t lw = 0, lh = 0;
-    HzbMipDims(w, h, level, lw, lh);
-    if (lw == 0 || lh == 0)
-        return false;
-    // Conservative cover: the rect can straddle up to 2x2 texels at the
-    // covering mip (texel >= rect, but alignment is arbitrary). Hidden only
-    // if EVERY overlapped texel occludes; any far texel keeps.
-    // Clamp BEFORE the float->uint conversion: a negative edge (rect
-    // hanging off the left/top) would otherwise wrap to a huge index.
-    // Reversed-Z: hidden iff the nearest point is farther (smaller value)
-    // than every overlapped stored closest.
-    const float texelSize = (float)(1u << level);
-    const uint32_t tx0 =
-        std::min((uint32_t)std::max(std::floor((f.centerX - f.radiusX) / texelSize), 0.0f), lw - 1);
-    const uint32_t tx1 =
-        std::min((uint32_t)std::max(std::floor((f.centerX + f.radiusX) / texelSize), 0.0f), lw - 1);
-    const uint32_t ty0 =
-        std::min((uint32_t)std::max(std::floor((f.centerY - f.radiusY) / texelSize), 0.0f), lh - 1);
-    const uint32_t ty1 =
-        std::min((uint32_t)std::max(std::floor((f.centerY + f.radiusY) / texelSize), 0.0f), lh - 1);
-    // Bounded: rect <= texel guarantees at most 2 per axis; cap anyway.
-    float bindingStored = std::numeric_limits<float>::max();
-    bool occluded = true;
-    for (uint32_t ty = ty0; ty <= ty1 && ty < ty0 + 3; ++ty) {
-        for (uint32_t tx = tx0; tx <= tx1 && tx < tx0 + 3; ++tx) {
-            const float stored = hzb[HzbMipOffsetFloats(w, h, level) + ty * lw + tx];
-            bindingStored = std::min(bindingStored, stored);
-            if (f.nearestDepth >= stored) {
-                occluded = false;
-            }
-        }
-    }
-    if (outBindingStored)
-        *outBindingStored = bindingStored;
-    return occluded;
 }
 
 // SPD completion-ring layout is shared with all visibility builders.
