@@ -175,24 +175,26 @@ int main() {
         std::string trailing = std::string(good) + " ";
         Check(ParseTerrainJson(trailing, m, err), "hfield.json-trailing-ws-ok");
         Check(!ParseTerrainJson(std::string(good) + "x", m, err), "hfield.json-reject-trailing");
-        // Layout invariants: the cooked format is EXACTLY a 4x4 H-tile
-        // grid (16 min/max entries) + a 16x16 S-tile grid — anything the
-        // runtime's tilesPerAxis() math cannot address must fail closed.
+        // Layout invariants: worldSize must divide into whole H-tiles
+        // (hTileSize) and G-blocks (gBlock). A non-integer grid fails
+        // closed; a scaled-but-integer grid is accepted (the old fixed
+        // 4x4/16x16 gate is gone).
         const char* badHGrid = "{\"baseY\": -40.0, \"range\": 420.0, "
-                               "\"worldSize\": 4096.0, \"origin\": [-2048.0, -2048.0], "
-                               "\"hTileSize\": 2048.0, \"hRes\": 1024, \"gBlock\": 256.0, "
-                               "\"packing\": \"rg16\"}"; // 2x2 H-tiles
-        Check(!ParseTerrainJson(badHGrid, m, err), "hfield.json-reject-hgrid-not-4x4");
+                               "\"worldSize\": 5000.0, \"origin\": [-2048.0, -2048.0], "
+                               "\"hTileSize\": 1024.0, \"hRes\": 1024, \"gBlock\": 256.0, "
+                               "\"packing\": \"rg16\"}"; // 5000/1024 not whole
+        Check(!ParseTerrainJson(badHGrid, m, err), "hfield.json-reject-noninteger-hgrid");
         const char* badSGrid = "{\"baseY\": -40.0, \"range\": 420.0, "
                                "\"worldSize\": 4096.0, \"origin\": [-2048.0, -2048.0], "
-                               "\"hTileSize\": 1024.0, \"hRes\": 1024, \"gBlock\": 512.0, "
-                               "\"packing\": \"rg16\"}"; // 8x8 S-tiles
-        Check(!ParseTerrainJson(badSGrid, m, err), "hfield.json-reject-sgrid-not-16x16");
+                               "\"hTileSize\": 1024.0, \"hRes\": 1024, \"gBlock\": 300.0, "
+                               "\"packing\": \"rg16\"}"; // 4096/300 not whole
+        Check(!ParseTerrainJson(badSGrid, m, err), "hfield.json-reject-noninteger-sgrid");
         const char* scaled = "{\"baseY\": -40, \"range\": 420, "
                              "\"worldSize\": 8192, \"origin\": [-2048, -2048], "
                              "\"hTileSize\": 2048, \"hRes\": 1024, \"gBlock\": 512, "
                              "\"packing\": \"rg16\"}";
-        Check(!ParseTerrainJson(scaled, m, err), "hfield.json-reject-scaled-world");
+        Check(ParseTerrainJson(scaled, m, err) && Near(m.worldSize, 8192.0f, 1e-3f),
+              "hfield.json-accept-scaled-world");
         const char* overflow = "{\"baseY\": 1e999, \"range\": 420, "
                                "\"worldSize\": 4096, \"origin\": [-2048, -2048], "
                                "\"hTileSize\": 1024, \"hRes\": 1024, \"gBlock\": 256, "
@@ -215,48 +217,48 @@ int main() {
         m.hTileSize = 1024.0f;
         m.hRes = 1024;
         m.gBlock = 256.0f;
-        float mm[16][2];
+        std::vector<float> mm(16 * 2);
         for (int i = 0; i < 16; ++i) {
-            mm[i][0] = -40.0f + float(i);
-            mm[i][1] = -40.0f + float(i) + 10.0f;
+            mm[i * 2] = -40.0f + float(i);
+            mm[i * 2 + 1] = -40.0f + float(i) + 10.0f;
         }
         std::vector<uint8_t> blob;
-        SerializeTerrainMeta(m, mm, blob);
-        Check(blob.size() == kTerrainMetaBlobSize, "hfield.metablob-size");
+        SerializeTerrainMeta(m, mm.data(), blob);
+        Check(blob.size() == TerrainMetaBlobSize(4), "hfield.metablob-size");
         TerrainMeta back;
-        float mmBack[16][2] = {};
+        std::vector<float> mmBack;
         Check(ParseTerrainMetaBlob(blob, back, mmBack), "hfield.metablob-parse");
         Check(Near(back.baseY, -40.0f, 1e-6f) && Near(back.range, 420.0f, 1e-5f) &&
                   back.hRes == 1024u,
               "hfield.metablob-values");
-        Check(Near(mmBack[7][0], -33.0f, 1e-5f) && Near(mmBack[7][1], -23.0f, 1e-5f),
+        Check(mmBack.size() == 32 && Near(mmBack[7 * 2], -33.0f, 1e-5f) &&
+                  Near(mmBack[7 * 2 + 1], -23.0f, 1e-5f),
               "hfield.metablob-minmax");
         blob[0] ^= 0xFF; // corrupt magic
         Check(!ParseTerrainMetaBlob(blob, back, mmBack), "hfield.metablob-reject-magic");
-        // The SAME layout invariants on the runtime blob (the runtime
-        // never sees the json — the blob parse is its only gate).
+        // World-size-driven layout: a NON-default grid round-trips (the old
+        // fixed 4x4/16x16 gate is gone); a non-integer grid is rejected.
         {
+            TerrainMeta scaled = m;
+            scaled.worldSize = 8192.0f;
+            scaled.hTileSize = 2048.0f; // 4x4 H-tiles
+            scaled.gBlock = 512.0f;     // 16x16 S-tiles
+            std::vector<float> mm2(16 * 2, 1.0f);
+            std::vector<uint8_t> scaledBlob;
+            SerializeTerrainMeta(scaled, mm2.data(), scaledBlob);
+            Check(ParseTerrainMetaBlob(scaledBlob, back, mmBack) && back.worldSize == 8192.0f &&
+                      mmBack.size() == 32,
+                  "hfield.metablob-accept-scaled-world");
             TerrainMeta bad = m;
-            bad.hTileSize = 2048.0f; // 2x2 H-tiles: not addressable
+            bad.hTileSize = 1000.0f; // 4096/1000 is not a whole H-tile count
             std::vector<uint8_t> badBlob;
-            SerializeTerrainMeta(bad, mm, badBlob);
+            SerializeTerrainMeta(bad, mm.data(), badBlob);
             Check(!ParseTerrainMetaBlob(badBlob, back, mmBack),
-                  "hfield.metablob-reject-hgrid-not-4x4");
-            bad = m;
-            bad.gBlock = 512.0f; // 8x8 S-tiles
-            SerializeTerrainMeta(bad, mm, badBlob);
-            Check(!ParseTerrainMetaBlob(badBlob, back, mmBack),
-                  "hfield.metablob-reject-sgrid-not-16x16");
-            bad = m;
-            bad.worldSize = 8192.0f; bad.hTileSize = 2048.0f; bad.gBlock = 512.0f;
-            SerializeTerrainMeta(bad, mm, badBlob);
-            Check(!ParseTerrainMetaBlob(badBlob, back, mmBack),
-                  "hfield.metablob-reject-scaled-world");
+                  "hfield.metablob-reject-noninteger-grid");
             bad = m;
             bad.originX = std::numeric_limits<float>::infinity();
-            SerializeTerrainMeta(bad, mm, badBlob);
-            Check(!ParseTerrainMetaBlob(badBlob, back, mmBack),
-                  "hfield.metablob-reject-nonfinite");
+            SerializeTerrainMeta(bad, mm.data(), badBlob);
+            Check(!ParseTerrainMetaBlob(badBlob, back, mmBack), "hfield.metablob-reject-nonfinite");
         }
     }
 

@@ -106,13 +106,14 @@ bool World::LoadTerrainFromPak(const PakReader& reader, std::string& err) {
         return false;
     }
     terrain::TerrainMeta meta;
-    float tileMinMax[16][2];
+    std::vector<float> tileMinMax;
     if (!terrain::ParseTerrainMetaBlob(reader.Payload(*metaBlob), meta, tileMinMax)) {
         err = "terrain/meta malformed";
         return false;
     }
-    const uint32_t nH = 4;  // v1 fixed grid (cook-enforced)
-    const uint32_t nS = 16; // worldSize/gBlock = 4096/256
+    // World-size-driven grids (the old fixed 4x4 H / 16x16 S layout is gone).
+    const uint32_t nH = terrain::TilesPerAxis(meta);
+    const uint32_t nS = terrain::BlocksPerAxis(meta);
     // Legacy paks have 273 rows; newer paks add 16 shadow-height
     // rows + one max hierarchy. Validate required paths below, and
     // require either all optional occlusion rows or none.
@@ -186,7 +187,7 @@ bool World::LoadTerrainFromPak(const PakReader& reader, std::string& err) {
     terrainSource.hfield = std::move(hf);
     terrainSource.masks = std::move(masks);
     terrainSource.hasTerrain = true;
-    std::cerr << "[World] terrain harvested: 16 H + 256 S tiles\n";
+    std::cerr << "[World] terrain harvested: " << (nH * nH) << " H + " << (nS * nS) << " S tiles\n";
     return true;
 }
 

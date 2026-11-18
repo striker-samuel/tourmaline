@@ -41,6 +41,17 @@ struct TerrainMeta {
     bool packingRg16 = true;
 };
 
+// World-size-driven grid dimensions (the old fixed 4x4 H / 16x16 S grid is
+// gone): H-tiles cover worldSize/hTileSize, G-blocks worldSize/gBlock.
+[[nodiscard]] inline uint32_t TilesPerAxis(const TerrainMeta& m) noexcept {
+    return static_cast<uint32_t>(
+        std::lround(static_cast<double>(m.worldSize) / static_cast<double>(m.hTileSize)));
+}
+[[nodiscard]] inline uint32_t BlocksPerAxis(const TerrainMeta& m) noexcept {
+    return static_cast<uint32_t>(
+        std::lround(static_cast<double>(m.worldSize) / static_cast<double>(m.gBlock)));
+}
+
 // ---- tile file/blob naming (source PNGs and cooked blob paths share it) --
 inline std::string HTileName(uint32_t tx, uint32_t tz) {
     char b[32];
@@ -245,24 +256,10 @@ inline bool ParseString(std::string_view s, size_t& p, std::string& out) {
         return false;
     }
     if (!std::isfinite(baseY) || !std::isfinite(range) || !std::isfinite(ox) ||
-        !std::isfinite(oz) || !(range > 0.0) || worldSize != 4096.0 ||
-        hTileSize != 1024.0 || gBlock != 256.0) {
-        err = "terrain.json: v1 requires finite heights, positive range and fixed 4096/1024/256 layout";
-        return false;
-    }
-    // Layout invariants (v1): the cooked binary format carries EXACTLY
-    // 16 tile min/max entries (a 4x4 H-tile grid) and TerrainHField
-    // derives its tile count as worldSize/hTileSize — the two must agree
-    // or the runtime would index tiles the meta never described. Same
-    // for the 16x16 S-tile grid over gBlock (the cooker enforces both;
-    // the parser must not accept what the cooker would refuse).
-    if (uint32_t(worldSize / hTileSize + 0.5) != 4) {
-        err = "terrain.json: v1 supports exactly 4x4 H-tiles "
-              "(worldSize/hTileSize)";
-        return false;
-    }
-    if (uint32_t(worldSize / gBlock + 0.5) != 16) {
-        err = "terrain.json: v1 expects 16x16 S-tiles (worldSize/gBlock)";
+        !std::isfinite(oz) || !(range > 0.0) || !(worldSize > 0.0) || !(hTileSize > 0.0) ||
+        !(gBlock > 0.0)) {
+        err = "terrain.json: requires finite heights, positive range and positive "
+              "world/hTile/gBlock sizes";
         return false;
     }
     meta.baseY = static_cast<float>(baseY);
@@ -274,20 +271,35 @@ inline bool ParseString(std::string_view s, size_t& p, std::string& out) {
     meta.hRes = 1024;
     meta.gBlock = static_cast<float>(gBlock);
     meta.packingRg16 = true;
+    // Grid layout: worldSize must divide into whole H-tiles (hTileSize) and
+    // G-blocks (gBlock); TilesPerAxis/BlocksPerAxis are the dimensions the
+    // cooker writes and the runtime derives.
+    const uint32_t nH = TilesPerAxis(meta);
+    const uint32_t nS = BlocksPerAxis(meta);
+    if (nH < 1 || nH > 512 || nS < 1 || nS > 512 ||
+        std::abs(static_cast<double>(nH) * meta.hTileSize - meta.worldSize) > 0.5 ||
+        std::abs(static_cast<double>(nS) * meta.gBlock - meta.worldSize) > 0.5) {
+        err = "terrain.json: worldSize must divide into whole H-tiles and G-blocks";
+        return false;
+    }
     return true;
 }
 
 // ---- cooked runtime blob (terrain/meta): the ONLY form the runtime reads.
-// Little-endian, fail-closed (magic + exact size):
-//   u32 magic "TRM1" | u32 hRes | f32 baseY range worldSize originX originZ
-//   hTileSize gBlock | 16 x { f32 minY, f32 maxY } (row-major tz*4+tx)
-inline constexpr uint32_t kTerrainMetaMagic = 0x314D5254u; // "TRM1" LE
-inline constexpr size_t kTerrainMetaBlobSize = 4 + 4 + 7 * 4 + 16 * 8;
+// Little-endian, fail-closed (magic + derived size):
+//   u32 magic "TRM2" | u32 hRes | f32 baseY range worldSize originX originZ
+//   hTileSize gBlock | (tilesPerAxis^2) x { f32 minY, f32 maxY } (row-major
+//   tz*tilesPerAxis+tx), tilesPerAxis = worldSize/hTileSize.
+inline constexpr uint32_t kTerrainMetaMagic = 0x324D5254u; // "TRM2" LE
+[[nodiscard]] inline size_t TerrainMetaBlobSize(uint32_t tilesPerAxis) {
+    return 4 + 4 + 7 * 4 + size_t(tilesPerAxis) * tilesPerAxis * 8;
+}
 
 inline void SerializeTerrainMeta(const TerrainMeta& meta,
-                                 const float tileMinMax[16][2],
+                                 const float* tileMinMax, // tilesPerAxis^2 * 2
                                  std::vector<uint8_t>& out) {
-    out.resize(kTerrainMetaBlobSize);
+    const uint32_t n = TilesPerAxis(meta);
+    out.resize(TerrainMetaBlobSize(n));
     auto put32 = [&](size_t o, uint32_t v) { memcpy(out.data() + o, &v, 4); };
     auto putF = [&](size_t o, float v) { memcpy(out.data() + o, &v, 4); };
     put32(0, kTerrainMetaMagic);
@@ -299,16 +311,16 @@ inline void SerializeTerrainMeta(const TerrainMeta& meta,
     putF(24, meta.originZ);
     putF(28, meta.hTileSize);
     putF(32, meta.gBlock);
-    for (int i = 0; i < 16; ++i) {
-        putF(36 + size_t(i) * 8, tileMinMax[i][0]);
-        putF(40 + size_t(i) * 8, tileMinMax[i][1]);
+    for (uint32_t i = 0; i < n * n; ++i) {
+        putF(36 + size_t(i) * 8, tileMinMax[i * 2]);
+        putF(40 + size_t(i) * 8, tileMinMax[i * 2 + 1]);
     }
 }
 
 [[nodiscard]] inline bool ParseTerrainMetaBlob(std::span<const uint8_t> blob,
                                                TerrainMeta& meta,
-                                               float tileMinMax[16][2]) {
-    if (blob.size() != kTerrainMetaBlobSize)
+                                               std::vector<float>& tileMinMax) {
+    if (blob.size() < 4 + 4 + 7 * 4)
         return false;
     uint32_t magic = 0, hRes = 0;
     memcpy(&magic, blob.data() + 0, 4);
@@ -329,26 +341,21 @@ inline void SerializeTerrainMeta(const TerrainMeta& meta,
     meta.gBlock = getF(32);
     meta.hRes = 1024;
     meta.packingRg16 = true;
-    if (!std::isfinite(meta.baseY) || !std::isfinite(meta.range) ||
-        !std::isfinite(meta.originX) || !std::isfinite(meta.originZ) ||
-        !(meta.range > 0.0f) || meta.worldSize != 4096.0f ||
-        meta.hTileSize != 1024.0f || meta.gBlock != 256.0f)
+    if (!std::isfinite(meta.baseY) || !std::isfinite(meta.range) || !std::isfinite(meta.originX) ||
+        !std::isfinite(meta.originZ) || !(meta.range > 0.0f) || !(meta.worldSize > 0.0f) ||
+        !(meta.hTileSize > 0.0f) || !(meta.gBlock > 0.0f))
         return false;
-    // Layout invariants (v1) — the SAME pair the JSON parser enforces:
-    // the blob carries exactly 16 tile min/max entries (a 4x4 H-tile
-    // grid, what TerrainHField::tilesPerAxis() derives from
-    // worldSize/hTileSize) and the S-tile grid is 16x16 over gBlock. A
-    // blob with any other layout would index tiles the min/max table
-    // never described — refuse rather than silently mis-address.
-    if (uint32_t(meta.worldSize / meta.hTileSize + 0.5f) != 4)
+    const uint32_t n = TilesPerAxis(meta);
+    if (n < 1 || n > 512 || blob.size() != TerrainMetaBlobSize(n))
         return false;
-    if (uint32_t(meta.worldSize / meta.gBlock + 0.5f) != 16)
+    if (std::abs(static_cast<double>(n) * meta.hTileSize - meta.worldSize) > 0.5)
         return false;
-    for (int i = 0; i < 16; ++i) {
-        tileMinMax[i][0] = getF(36 + size_t(i) * 8);
-        tileMinMax[i][1] = getF(40 + size_t(i) * 8);
-        if (!std::isfinite(tileMinMax[i][0]) || !std::isfinite(tileMinMax[i][1]) ||
-            !(tileMinMax[i][1] >= tileMinMax[i][0]))
+    tileMinMax.resize(size_t(n) * n * 2);
+    for (uint32_t i = 0; i < n * n; ++i) {
+        tileMinMax[i * 2] = getF(36 + size_t(i) * 8);
+        tileMinMax[i * 2 + 1] = getF(40 + size_t(i) * 8);
+        if (!std::isfinite(tileMinMax[i * 2]) || !std::isfinite(tileMinMax[i * 2 + 1]) ||
+            !(tileMinMax[i * 2 + 1] >= tileMinMax[i * 2]))
             return false;
     }
     return true;

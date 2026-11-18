@@ -56,18 +56,10 @@ bool CookTerrainBlobs(const std::string& terrainDir,
         err = "terrain: " + err;
         return false;
     }
-    const uint32_t nH = static_cast<uint32_t>(meta.worldSize / meta.hTileSize + 0.5f);
-    if (nH != 4) {
-        err = "terrain: v1 supports exactly 4x4 H-tiles (worldSize/hTileSize)";
-        return false;
-    }
-    const uint32_t nS = static_cast<uint32_t>(meta.worldSize / meta.gBlock + 0.5f);
-    if (nS != 16) {
-        err = "terrain: v1 expects 16x16 S-tiles (worldSize/gBlock)";
-        return false;
-    }
+    const uint32_t nH = smvk::terrain::TilesPerAxis(meta);
+    const uint32_t nS = smvk::terrain::BlocksPerAxis(meta);
 
-    float tileMinMax[16][2];
+    std::vector<float> tileMinMax(size_t(nH) * nH * 2);
     uint64_t raisedSamples = 0;
     auto pyramid = smvk::terrain::NewOcclusionAtlas();
     // H-tiles: 1024 RGBA8, RG16 height.
@@ -97,8 +89,8 @@ bool CookTerrainBlobs(const std::string& terrainDir,
             {
                 float mn = 0, mx = 0;
                 smvk::terrain::TileMinMax(payload, meta.hRes, meta.baseY, meta.range, mn, mx);
-                tileMinMax[tz * 4 + tx][0] = mn;
-                tileMinMax[tz * 4 + tx][1] = mx;
+                tileMinMax[(size_t(tz) * nH + tx) * 2] = mn;
+                tileMinMax[(size_t(tz) * nH + tx) * 2 + 1] = mx;
             }
             // A distinct derived occlusion layer: terrain remains authoritative
             // for rendering, collision and placement. Scene meshes must never
@@ -119,8 +111,8 @@ bool CookTerrainBlobs(const std::string& terrainDir,
                 return false;
             }
             std::cout << "Terrain H " << smvk::terrain::HTileName(tx, tz) << " (" << bytes
-                      << " B raw, Y " << tileMinMax[tz * 4 + tx][0] << ".."
-                      << tileMinMax[tz * 4 + tx][1] << ")\n";
+                      << " B raw, Y " << tileMinMax[(size_t(tz) * nH + tx) * 2] << ".."
+                      << tileMinMax[(size_t(tz) * nH + tx) * 2 + 1] << ")\n";
         }
     }
     // One conservative hierarchy across ALL 16 tiles, including seams.
@@ -168,7 +160,7 @@ bool CookTerrainBlobs(const std::string& terrainDir,
     // Meta blob (runtime form).
     {
         std::vector<uint8_t> metaBlob;
-        smvk::terrain::SerializeTerrainMeta(meta, tileMinMax, metaBlob);
+        smvk::terrain::SerializeTerrainMeta(meta, tileMinMax.data(), metaBlob);
         if (!writer.AddBlob(smvk::PakAssetKind::Terrain,
                             smvk::terrain::kTerrainMetaBlobPath,
                             std::move(metaBlob))) {
