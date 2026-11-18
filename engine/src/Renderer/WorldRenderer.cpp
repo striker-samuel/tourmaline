@@ -9098,18 +9098,16 @@ void WorldRenderer::RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
                            msaa,
                            smvk::RasterSettings{.cullMode = smvk::CullMode::Front});
     cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &pc, smvk::ShaderStage::All);
-    // Opaque only: BLEND transparent must not cast (full-quad depth).
-    m_world->forEachRenderItem(
-        smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow |
-            smvk::IteratorFlagBit_Opaque,
-        [&](const smvk::World::RenderItem& item) { drawCaster(item, false); });
-    // Phase 2: MASK cutout casters, alpha-tested program so foliage
-    // casts leaf-shaped shadows instead of full quads. The pipeline
-    // binds lazily per material cull (ensureShadowMaskedPipeline).
-    m_world->forEachRenderItem(
-        smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow |
-            smvk::IteratorFlagBit_Opaque,
-        [&](const smvk::World::RenderItem& item) { drawCaster(item, true); });
+    // Opaque + masked casters, two phases over the raster bins (contiguous
+    // ranges, no ItemIndicesFor flag scan). CastShadow marks the caster
+    // subset; drawCaster splits the opaque vs masked/dither phase inside.
+    for (bool maskedPhase : {false, true})
+        for (uint32_t bin = 0u; bin < 8u; ++bin)
+            m_world->forEachPsoBin(bin, [&](const smvk::World::RenderItem& item) {
+                if ((item.flags & smvk::IteratorFlagBit_CastShadow) == 0)
+                    return;
+                drawCaster(item, maskedPhase);
+            });
 }
 
 void WorldRenderer::RecordVolumetricShadowCasters(smvk::CommandBuffer& cmd,
@@ -15902,16 +15900,17 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                        smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
                 cmd.PushConstants(
                     0, sizeof(IRenderer::PushConstants), &motionPC, smvk::ShaderStage::All);
-                m_world->forEachRenderItem(
-                    smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
-                        smvk::IteratorFlagBit_StaticVertexFmt,
-                    [&](const smvk::World::RenderItem& item) { drawMotionNode(item, false); });
-                // Phase 2: MASK cutout - the pipeline binds lazily per
-                // material cull (ensureMotionMaskedPipeline above).
-                m_world->forEachRenderItem(
-                    smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
-                        smvk::IteratorFlagBit_StaticVertexFmt,
-                    [&](const smvk::World::RenderItem& item) { drawMotionNode(item, true); });
+                // Opaque phase (opaque + double-sided + project-lit bins) and
+                // masked phase (masked bins), over contiguous ranges instead of
+                // the ItemIndicesFor flag scan.
+                for (uint32_t bin : {0u, 1u, 4u, 5u})
+                    m_world->forEachPsoBin(bin, [&](const smvk::World::RenderItem& item) {
+                        drawMotionNode(item, false);
+                    });
+                for (uint32_t bin : {2u, 3u, 6u, 7u})
+                    m_world->forEachPsoBin(bin, [&](const smvk::World::RenderItem& item) {
+                        drawMotionNode(item, true);
+                    });
             }
             // Phase 3: dithered transparent (screen-door, opaque state).
             // The FS dithers with the same pattern as the main view, and

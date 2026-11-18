@@ -2317,6 +2317,9 @@ std::vector<World::RenderItem> World::BuildPageDrawChunk(
 }
 
 uint8_t World::PsoClassFor(const RenderItem& item) const {
+    // Transparent (BLEND) is a separate pass, never a raster bin: class 8.
+    if ((item.flags & smvk::IteratorFlagBit_Transparent) != 0)
+        return 8u;
     uint8_t c = 0;
     if ((item.flags & smvk::IteratorFlagBit_Masked) != 0)
         c |= 2u;

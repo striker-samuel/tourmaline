@@ -426,10 +426,11 @@ struct World {
 
     // Per-PSO-bin contiguous ranges into drawItems: psoBinOffset_[c] is the
     // first drawItems index of pipeline class c, the class runs to
-    // psoBinOffset_[c+1] (or drawItems.size()). The +1 sentinel bounds the
-    // last class. drawItems is kept sorted by (psoClass, material), so each
-    // class is a contiguous range with no flag scan.
-    std::array<uint32_t, 8 + 1> psoBinOffset_{};
+    // psoBinOffset_[c+1] (or drawItems.size()). Class 8 is the transparent
+    // (BLEND) pass, not a raster bin; the +1 sentinel bounds the last class.
+    // drawItems is kept sorted by (psoClass, material), so each class is a
+    // contiguous range with no flag scan.
+    std::array<uint32_t, 9 + 1> psoBinOffset_{};
 
     // INCREMENTAL DRAW LIST (the streaming path): pages never share
     // hierarchy and materials are PER-PAGE (world material indices are a
