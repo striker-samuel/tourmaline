@@ -25,6 +25,8 @@
 #include <string_view>
 #include <vector>
 
+#include <Engine/Core/Limits.h>
+
 namespace smvk::terrain {
 
 struct TerrainMeta {
@@ -273,13 +275,17 @@ inline bool ParseString(std::string_view s, size_t& p, std::string& out) {
     meta.packingRg16 = true;
     // Grid layout: worldSize must divide into whole H-tiles (hTileSize) and
     // G-blocks (gBlock); TilesPerAxis/BlocksPerAxis are the dimensions the
-    // cooker writes and the runtime derives.
+    // cooker writes and the runtime derives. The world is bounded by the
+    // engine limit (40 km per axis) and the block-grid safety bound.
     const uint32_t nH = TilesPerAxis(meta);
     const uint32_t nS = BlocksPerAxis(meta);
-    if (nH < 1 || nH > 512 || nS < 1 || nS > 512 ||
+    if (nH < 1 || nH > engine::limits::MaxTerrainBlocksPerAxis || nS < 1 ||
+        nS > engine::limits::MaxTerrainBlocksPerAxis ||
+        meta.worldSize > engine::limits::MaxTerrainWorldSizeMeters ||
         std::abs(static_cast<double>(nH) * meta.hTileSize - meta.worldSize) > 0.5 ||
         std::abs(static_cast<double>(nS) * meta.gBlock - meta.worldSize) > 0.5) {
-        err = "terrain.json: worldSize must divide into whole H-tiles and G-blocks";
+        err = "terrain.json: worldSize must divide into whole H-tiles and G-blocks "
+              "within the engine limit";
         return false;
     }
     return true;
@@ -346,7 +352,9 @@ inline void SerializeTerrainMeta(const TerrainMeta& meta,
         !(meta.hTileSize > 0.0f) || !(meta.gBlock > 0.0f))
         return false;
     const uint32_t n = TilesPerAxis(meta);
-    if (n < 1 || n > 512 || blob.size() != TerrainMetaBlobSize(n))
+    if (n < 1 || n > engine::limits::MaxTerrainBlocksPerAxis ||
+        meta.worldSize > engine::limits::MaxTerrainWorldSizeMeters ||
+        blob.size() != TerrainMetaBlobSize(n))
         return false;
     if (std::abs(static_cast<double>(n) * meta.hTileSize - meta.worldSize) > 0.5)
         return false;

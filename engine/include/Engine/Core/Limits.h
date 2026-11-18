@@ -42,6 +42,16 @@ inline constexpr uint32_t MaxWorldEnvTilesPerAxis =
 // uint64 path: one root sentinel + 2 bits per quadtree level.
 inline constexpr uint32_t MaxWorldTileSubdivisionLevels = 31;
 
+// Terrain heightfield (Rendergraph/terrain.h): the supported worldSize for
+// ONE baked terrain field. 40 km per axis (the Caldera island is ~26x28 km,
+// so 40 km leaves headroom). The block grid is worldSize/gBlock (256 m
+// default), so 40 km is ~157 blocks per axis; the blocksPerAxis^2 x 4-LOD
+// vertex sets stay within the process/GPU budgets at that ceiling.
+inline constexpr double MaxTerrainWorldSizeMeters = 40000.0;
+// Hard safety bound on the derived block grid (independent of the 40 km
+// world ceiling, in case a future meta uses a smaller gBlock).
+inline constexpr uint32_t MaxTerrainBlocksPerAxis = 512;
+
 static_assert(WorldRootCellSizeMeters / WorldSubcellSizeMeters == 4.0);
 static_assert(double(MaxWorldEnvTilesPerAxis) * WorldSubcellSizeMeters == MaxWorldWidthMeters);
 static_assert(1u + 2u * MaxWorldTileSubdivisionLevels <= 64u);

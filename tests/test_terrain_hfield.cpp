@@ -195,6 +195,11 @@ int main() {
                              "\"packing\": \"rg16\"}";
         Check(ParseTerrainJson(scaled, m, err) && Near(m.worldSize, 8192.0f, 1e-3f),
               "hfield.json-accept-scaled-world");
+        const char* tooBig = "{\"baseY\": -40, \"range\": 420, "
+                             "\"worldSize\": 40960, \"origin\": [-2048, -2048], "
+                             "\"hTileSize\": 1024, \"hRes\": 1024, \"gBlock\": 256, "
+                             "\"packing\": \"rg16\"}"; // 40 km + 960 m: past the limit
+        Check(!ParseTerrainJson(tooBig, m, err), "hfield.json-reject-world-too-large");
         const char* overflow = "{\"baseY\": 1e999, \"range\": 420, "
                                "\"worldSize\": 4096, \"origin\": [-2048, -2048], "
                                "\"hTileSize\": 1024, \"hRes\": 1024, \"gBlock\": 256, "

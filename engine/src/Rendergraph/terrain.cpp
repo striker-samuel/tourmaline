@@ -94,8 +94,8 @@ bool TerrainField::BuildFromSource(ResourceManager& ctx,
         std::lround(static_cast<double>(hf.meta.worldSize) / static_cast<double>(hf.meta.gBlock)));
     const uint32_t tilesPerAxis = static_cast<uint32_t>(std::lround(
         static_cast<double>(hf.meta.worldSize) / static_cast<double>(hf.meta.hTileSize)));
-    if (blocksPerAxis < 1 || blocksPerAxis > 512 || tilesPerAxis < 1 ||
-        src.masks.size() != size_t(blocksPerAxis) * size_t(blocksPerAxis) ||
+    if (blocksPerAxis < 1 || blocksPerAxis > engine::limits::MaxTerrainBlocksPerAxis ||
+        tilesPerAxis < 1 || src.masks.size() != size_t(blocksPerAxis) * size_t(blocksPerAxis) ||
         !std::all_of(
             src.masks.begin(),
             src.masks.end(),
