@@ -51,6 +51,11 @@ struct RunConfig {
     std::optional<std::string> camPos; // "x,y,z"
     std::optional<float> camYawDeg;
     std::optional<float> camFovDeg; // vertical FOV degrees (overrides authored)
+    // skyColor: "x,y,z" linear RGB override for the authored sky (zenith +
+    // horizon + ground tint). A render-path diagnostic: a solid bright sky
+    // behind the world exposes geometry that fails to occlude it. Unset =
+    // authored scene sky wins.
+    std::optional<std::string> skyColor;
 
     // ---- antialiasing / filtering ----
     // aa: off|msaa2x|msaa|smaa1x|smaat2x|t2x|msaa2xcustom

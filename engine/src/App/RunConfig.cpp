@@ -119,6 +119,8 @@ RunConfig RunConfig::Parse() {
         c.camYawDeg = static_cast<float>(std::strtod(v, nullptr));
     if ((v = Get("TOURMALINE_FOV")) != nullptr)
         c.camFovDeg = static_cast<float>(std::strtod(v, nullptr));
+    if ((v = Get("TOURMALINE_SKY_COLOR")) != nullptr)
+        c.skyColor = v;
 
     // AA pin (validated once here; the snapshot re-applies after every
     // scene seed). Accepts both historical spellings (msaa2x|msaa,
@@ -791,6 +793,7 @@ void RunConfig::WarnUnknown() {
         "TOURMALINE_CAM_YAW",
         "TOURMALINE_CAM_POS",
         "TOURMALINE_FOV",
+        "TOURMALINE_SKY_COLOR",
         "TOURMALINE_VOLUMETRIC",
         "TOURMALINE_VOLUMETRIC_STEPS",
         "TOURMALINE_VOLUMETRIC_DENSITY",

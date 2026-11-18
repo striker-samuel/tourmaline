@@ -11284,6 +11284,26 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     smvk::EnvironmentSettings frameEnv =
         m_world ? MapSceneEnv(m_world->scene.environment, m_debugView == ViewMode::Unlit)
                 : smvk::EnvironmentSettings{};
+    // TOURMALINE_SKY_COLOR diagnostic: a flat linear-RGB sky override so a
+    // render-path test can paint the dome a solid color and see whether the
+    // world occludes it. Applied once per frame (after MapSceneEnv) so the
+    // authored scene env stays intact for everything else.
+    if (m_headlessPins.skyColor.has_value()) {
+        glm::vec3 rgb(0.0f);
+        if (std::sscanf(m_headlessPins.skyColor->c_str(), "%f,%f,%f", &rgb.x, &rgb.y, &rgb.z) ==
+            3) {
+            frameEnv.skyZenithColor = rgb;
+            frameEnv.skyHorizonColor = rgb;
+            frameEnv.groundColor = rgb;
+        } else {
+            static bool warned = false;
+            if (!warned) {
+                warned = true;
+                std::cerr << "[WorldRenderer] bad TOURMALINE_SKY_COLOR (want x,y,z): "
+                          << *m_headlessPins.skyColor << "\n";
+            }
+        }
+    }
     // Fog degrade (see tour::transformhierarchy::SceneEnv::fogQuality): the VOLUMETRIC tier
     // falls back to the ANALYTIC exp2 fog when the raymarched pass
     // cannot run this frame (pass off / disabled / target missing /
