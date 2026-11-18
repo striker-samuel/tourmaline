@@ -1525,6 +1525,82 @@ void TestStaticBvhAdoptionGuard() {
     }
 }
 
+// The incremental streaming fold: MergePage appends a freshly registered
+// page into the merged scene (no full re-fold), UnmergePage retires one
+// page's nodes + location entries (no survivor compaction), and a single
+// RebuildDerivedCaches per batch re-derives the caches. GPU-less.
+void TestIncrementalMergeUnmerge() {
+    using namespace smvk;
+    auto makePage = [](WorldPage*& out, int nodes) {
+        auto p = std::make_unique<WorldPage>(nullptr);
+        p->SetOfflineMode(true);
+        out = p.get();
+        for (int n = 0; n < nodes; ++n) {
+            const int root = addNode(p->scene, -1, 0);
+            const auto mh = p->staticMeshes.create(StaticMesh{});
+            SetMesh(p->scene, NodeId(root), mh.index());
+            Material matDef{};
+            matDef.rebuildPipeline();
+            const auto math = p->materials.create(std::move(matDef));
+            SetMaterial(p->scene, NodeId(root), math.index());
+        }
+        return p;
+    };
+
+    World w;
+    WorldPage* aPtr = nullptr;
+    w.RegisterPage(makePage(aPtr, 1));
+    w.ResolveAndFixup_pages();
+    const size_t aNodes = w.scene.hierarchy.size();
+    const size_t aMeshRows = w.scene.tables.meshes.size();
+    Check(aNodes >= 1 && aMeshRows == 1 && w.meshLocations.size() == 1 &&
+              w.materialLocations.size() == 1,
+          "incr.entry-resolved");
+
+    // Stream in page B (incremental fold, ordinal 1).
+    WorldPage* bPtr = nullptr;
+    w.RegisterPage(makePage(bPtr, 1));
+    w.MergePage(*bPtr, 1, false);
+    w.RebuildDerivedCaches();
+    Check(w.scene.hierarchy.size() > aNodes, "incr.merge-appended-nodes");
+    Check(w.scene.tables.meshes.size() == aMeshRows + 1, "incr.merge-appended-mesh-row");
+    Check(w.meshLocations.size() == 2 && w.materialLocations.size() == 2,
+          "incr.merge-location-tables");
+    Check(w.pageMergedNodes.size() == 2, "incr.merge-node-map-grown");
+
+    // Unmerge B: its nodes retire + its rows drop; A's entries survive.
+    w.UnmergePage(*bPtr);
+    w.RebuildDerivedCaches();
+    Check(w.pages.size() == 1 && w.pageMergedNodes.size() == 1, "incr.unmerge-erased");
+    Check(w.scene.tables.meshes.size() == aMeshRows, "incr.unmerge-dropped-rows");
+    // B's location entries are dead (null cluster), NOT compacted — A's
+    // surviving world indices stay put.
+    Check(w.meshLocations.size() == 2 && w.meshLocations[0].cluster == aPtr &&
+              w.meshLocations[1].cluster == nullptr,
+          "incr.unmerge-survivor-locations");
+    Check(w.materialLocations.size() == 2 && w.materialLocations[0].cluster == aPtr &&
+              w.materialLocations[1].cluster == nullptr,
+          "incr.unmerge-survivor-materials");
+
+    // Re-merge a FRESH page at the same ordinal B held: its stable
+    // pageOrdinal differs, so the dedup key cannot collide with B's
+    // (erased) entries.
+    WorldPage* cPtr = nullptr;
+    w.RegisterPage(makePage(cPtr, 1));
+    w.MergePage(*cPtr, 1, false);
+    w.RebuildDerivedCaches();
+    Check(w.scene.tables.meshes.size() == aMeshRows + 1, "incr.remerge-appended-mesh-row");
+    Check(w.meshLocations.size() == 3 && w.materialLocations.size() == 3,
+          "incr.remerge-location-tables");
+    // A's node still resolves its own (surviving) mesh index 0.
+    const MeshRow* aRow = nullptr;
+    for (const MeshRow& row : w.scene.tables.meshes)
+        if (row.mesh == 0)
+            aRow = &row;
+    Check(aRow != nullptr && w.meshLocations[aRow->mesh].cluster == aPtr,
+          "incr.remerge-entry-intact");
+}
+
 int main() {
     TestSingleClusterBulkResolve();
     TestSceneNodeBudget();
@@ -1544,6 +1620,7 @@ int main() {
     TestGameOwnedNodes();
     TestFlatWorldResolve();
     TestStaticBvhAdoptionGuard();
+    TestIncrementalMergeUnmerge();
     std::cout << (g_failures == 0 ? "ALL PASS" : "FAILURES") << " (" << g_checks << " checks)\n";
     return g_failures == 0 ? 0 : 1;
 }
