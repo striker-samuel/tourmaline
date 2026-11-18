@@ -73,11 +73,19 @@ class ScenePageStreamer {
             changed = true;
         }
         // Load near pages (incremental fold; the pinned entry is already
-        // loaded + folded by the host loader). Bounded per tick.
+        // loaded + folded by the host loader). Bounded per tick AND by the
+        // resident-mesh budget: a dense multi-district area can stream in
+        // more meshes than the GPU-scene admission ceiling (kMaxMeshes), so
+        // loading stops once the next page would exceed the budget. The
+        // skipped page stays unloaded and streams in when a far page evicts
+        // (or the camera leaves the dense area) - no GPU-scene spill.
         uint32_t loadedThisTick = 0;
         for (uint32_t i = 0; i < manifest_.sceneCount; ++i) {
             if (loaded_[i] || i == entryScene_ || !WithinRadius(i, cameraPos))
                 continue;
+            if (maxLoadedMeshes_ != 0 &&
+                world_.meshLocations.size() + manifest_.Meshes(i) > maxLoadedMeshes_)
+                continue; // budget exhausted this tick; retry after an eviction
             try {
                 WorldPage& page = world_.LoadPageFromPak(
                     ctx_, backend_->Reader(), i, sceneStreamer_, imagePin_, externalTexture_);
@@ -109,6 +117,9 @@ class ScenePageStreamer {
     }
     void SetRadiusMeters(float r) {
         radiusMeters_ = r;
+    }
+    void SetMaxLoadedMeshes(uint32_t n) {
+        maxLoadedMeshes_ = n;
     }
     size_t LoadedCount() const {
         size_t n = 0;
@@ -154,6 +165,11 @@ class ScenePageStreamer {
     uint32_t entryScene_ = 0;
     glm::vec3 viewDir_{0.0f}; // forward (zero = unbiased spherical radius)
     float radiusMeters_ = 256.0f;
+    // Resident-mesh budget (0 = unbounded): the load pass stops admitting
+    // pages once the merged world's mesh count would exceed this. The host
+    // sets it to the GPU-scene admission ceiling (kMaxMeshes) so streaming
+    // never oversubscribes the GPU-driven path.
+    uint32_t maxLoadedMeshes_ = 0;
 };
 
 } // namespace tour

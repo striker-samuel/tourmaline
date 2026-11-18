@@ -17,6 +17,7 @@
 #include <Engine/Asset/pak.h>
 #include <Engine/Profile/profile.h>
 #include <Engine/RHI/resource_manager.h>
+#include <Engine/Renderer/gpu_scene_static.h> // tour::gfx::kMaxMeshes (streamer budget)
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Scene/scene.h>
 #include <Engine/Utils/texture_loader.h>
@@ -372,16 +373,20 @@ tour::mem::LinearPtr<tour::World> LoadPakWorld(PakPreload pre,
     // alive for the session (a bare reader reference dangles once this
     // function returns).
     if (manifest.sceneCount > 1) {
-        world->SetPageStreamer(std::make_shared<tour::ScenePageStreamer>(*world,
-                                                                         pre.backend,
-                                                                         ctx,
-                                                                         sceneStreamer,
-                                                                         pre.image,
-                                                                         nullptr,
-                                                                         manifest,
-                                                                         uint32_t(sceneIndex),
-                                                                         pre.cameraPos,
-                                                                         pre.viewDir));
+        auto streamer = std::make_shared<tour::ScenePageStreamer>(*world,
+                                                                  pre.backend,
+                                                                  ctx,
+                                                                  sceneStreamer,
+                                                                  pre.image,
+                                                                  nullptr,
+                                                                  manifest,
+                                                                  uint32_t(sceneIndex),
+                                                                  pre.cameraPos,
+                                                                  pre.viewDir);
+        // Bound streaming to the GPU-scene mesh budget so a dense area never
+        // oversubscribes the GPU-driven path (and spills to the legacy direct).
+        streamer->SetMaxLoadedMeshes(tour::gfx::kMaxMeshes);
+        world->SetPageStreamer(std::move(streamer));
     }
     std::cerr << "[App] entry scene loaded (" << (scenes.size() - 1)
               << " page(s) deferred to the camera streamer)\n";
@@ -534,16 +539,20 @@ tour::mem::LinearPtr<tour::World> LoadProjectWorld(std::vector<PakPreload> prelo
     // The streamer owns a SHARED reference to the backend so its reader
     // (and the manifest view's borrowed payload span) stay alive.
     if (manifest.sceneCount > 1) {
-        world->SetPageStreamer(std::make_shared<tour::ScenePageStreamer>(*world,
-                                                                         entry.backend,
-                                                                         ctx,
-                                                                         sceneStreamer,
-                                                                         entry.image,
-                                                                         &resolver,
-                                                                         manifest,
-                                                                         uint32_t(entryIdx),
-                                                                         entry.cameraPos,
-                                                                         entry.viewDir));
+        auto streamer = std::make_shared<tour::ScenePageStreamer>(*world,
+                                                                  entry.backend,
+                                                                  ctx,
+                                                                  sceneStreamer,
+                                                                  entry.image,
+                                                                  &resolver,
+                                                                  manifest,
+                                                                  uint32_t(entryIdx),
+                                                                  entry.cameraPos,
+                                                                  entry.viewDir);
+        // Bound streaming to the GPU-scene mesh budget so a dense area never
+        // oversubscribes the GPU-driven path (and spills to the legacy direct).
+        streamer->SetMaxLoadedMeshes(tour::gfx::kMaxMeshes);
+        world->SetPageStreamer(std::move(streamer));
     }
     std::cerr << "[App] project entry scene loaded (" << (scenes.size() - 1)
               << " page(s) deferred to the camera streamer)\n";

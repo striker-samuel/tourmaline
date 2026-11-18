@@ -19,13 +19,11 @@
 
 namespace tour::gpu_scene {
 
-// World-level raster draw-group budget (2^20). The old 262144 ceiling
-// rejected the island's dense center (a multi-district area streams in more
-// than 2^18 indexed ranges; the excess failed admission and spilled to the
-// legacy direct path). The per-flight publisher buffers double to the actual
-// geometry count, so this is an admission ceiling, not a reservation.
+// World-level raster draw-group budget (2^18). The old 65535 ceiling
+// rejected large scenes; the per-flight publisher buffers double to the
+// actual geometry count, so this is an admission ceiling, not a reservation.
 // HLSL mirror: GS_MAX_GEO (gpu_scene_task_mesh.hlsli).
-inline constexpr uint32_t kMaxRasterDrawGroups = 1048576;
+inline constexpr uint32_t kMaxRasterDrawGroups = 262144;
 // Eight fixed PSO classes: bit 0 = double-sided, bit 1 = alpha-mask,
 // bit 2 = material shader family (ProjectLit). Classes 0-3 are StandardLit,
 // classes 4-7 are the same coverage/culling matrix with the ProjectLit
