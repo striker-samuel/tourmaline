@@ -166,10 +166,14 @@ def main(argv: list[str]) -> int:
                 rows.append(bytes(row))
             write_png_rgba(out / f"h_{tx:02d}_{tz:02d}.png", hres, hres, rows)
 
-    # S-masks: one mask tile per G-block, 256x256 RGBA8. R=255 default surface
-    # blend; A = coverage (255 land / 0 water-hole) from the coverage mask, so
-    # the water bodies and the ocean pad cut out (the vertex shader clips
-    # A<0.5). Without a --coverage mask everything is solid.
+    # S-masks: one mask tile per G-block, 256x256 RGBA8.
+    #   R = surface blend (beach/soil at low elevation -> vegetation above),
+    #       sampled from the height so the island shows relief variation
+    #       (the terrain shader lerps soil<->grass on R and rock on slope).
+    #   G/B = 0 (no authored material attributes yet).
+    #   A = coverage (255 land / 0 water-hole) from the coverage mask, so the
+    #       water bodies and the ocean pad cut out (the vertex shader clips
+    #       A<0.5). Without a --coverage mask everything is solid.
     mres = 256
     mtexel = block / float(mres)
     for bz in range(blocks_per_axis):
@@ -180,8 +184,14 @@ def main(argv: list[str]) -> int:
                 z = origin_z + (bz * mres + py + 0.5) * mtexel
                 for px in range(mres):
                     x = origin_x + (bx * mres + px + 0.5) * mtexel
+                    v = sample_world(x, z)
+                    h01 = 0.0 if v is None else (v / 65535.0)
+                    # beach/soil below ~0 m (h01 ~ 0.15), vegetation above
+                    # ~58 m (h01 ~ 0.5); the shader's slope term still exposes
+                    # rock on steep faces regardless of R.
+                    r = int(round(255.0 * min(1.0, max(0.0, (h01 - 0.15) / 0.35))))
                     a = 255 if sample_coverage(x, z) >= 0.5 else 0
-                    row += bytes((255, 0, 0, a))
+                    row += bytes((r, 0, 0, a))
                 rows.append(bytes(row))
             write_png_rgba(out / f"m_{bx:02d}_{bz:02d}.png", mres, mres, rows)
 
