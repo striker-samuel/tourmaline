@@ -8899,6 +8899,12 @@ void WorldRenderer::RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
                                               bool skipFiltered,
                                               const smvk::MSAASettings& msaa,
                                               bool skipGpuSceneOwned) {
+    // The GPU-scene cascade path owns every static caster (no legacy spill):
+    // the per-item direct fallback below is pure O(total) loop overhead with
+    // nothing left to record. Skip it wholesale instead of walking drawItems
+    // once per cascade and rejecting each GPU-owned item inside the lambda.
+    if (skipGpuSceneOwned && m_gpuSceneRasterLegacyCount == 0)
+        return;
     // Phase 2 masked pipeline: cull follows the material raster so
     // the shadow depth contains exactly the faces the main view draws
     // (cutout has no backface shadow depth — always back-face cull
@@ -15856,25 +15862,30 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // material's raster — Cull None for double-sided — so motion
             // coverage matches Main exactly; this bind is just the
             // pre-walk state, the first item rebinds through the tracker).
-            cmd.BindRenderPipeline(m_viewportResources.motionVectors.program,
-                                   ::tour::vertex_layouts::Static,
-                                   motionDepth,
-                                   smvk::StencilSettings{},
-                                   smvk::BlendSettings::Opaque(),
-                                   smvk::MSAASettings::Count1(),
-                                   smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
-            cmd.PushConstants(
-                0, sizeof(IRenderer::PushConstants), &motionPC, smvk::ShaderStage::All);
-            m_world->forEachRenderItem(
-                smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
-                    smvk::IteratorFlagBit_StaticVertexFmt,
-                [&](const smvk::World::RenderItem& item) { drawMotionNode(item, false); });
-            // Phase 2: MASK cutout - the pipeline binds lazily per
-            // material cull (ensureMotionMaskedPipeline above).
-            m_world->forEachRenderItem(
-                smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
-                    smvk::IteratorFlagBit_StaticVertexFmt,
-                [&](const smvk::World::RenderItem& item) { drawMotionNode(item, true); });
+            // The per-item direct fallback runs only when the batched
+            // indirect leg is OFF or some caster spilled to legacy — with
+            // full GPU ownership it is pure O(total) walk overhead.
+            if (!gpuSceneMotionActive || m_gpuSceneRasterLegacyCount != 0) {
+                cmd.BindRenderPipeline(m_viewportResources.motionVectors.program,
+                                       ::tour::vertex_layouts::Static,
+                                       motionDepth,
+                                       smvk::StencilSettings{},
+                                       smvk::BlendSettings::Opaque(),
+                                       smvk::MSAASettings::Count1(),
+                                       smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
+                cmd.PushConstants(
+                    0, sizeof(IRenderer::PushConstants), &motionPC, smvk::ShaderStage::All);
+                m_world->forEachRenderItem(
+                    smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
+                        smvk::IteratorFlagBit_StaticVertexFmt,
+                    [&](const smvk::World::RenderItem& item) { drawMotionNode(item, false); });
+                // Phase 2: MASK cutout - the pipeline binds lazily per
+                // material cull (ensureMotionMaskedPipeline above).
+                m_world->forEachRenderItem(
+                    smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
+                        smvk::IteratorFlagBit_StaticVertexFmt,
+                    [&](const smvk::World::RenderItem& item) { drawMotionNode(item, true); });
+            }
             // Phase 3: dithered transparent (screen-door, opaque state).
             // The FS dithers with the same pattern as the main view, and
             // culling follows the material so motion exists exactly for
