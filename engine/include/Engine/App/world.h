@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
+#include <array>
 #include <memory>
 #include <optional>
 #include <string>
@@ -400,6 +401,10 @@ struct World {
         uint32_t mesh;     // world mesh index (meshLocations)
         uint32_t material; // world material index (materialLocations)
         IteratorFlags flags;
+        // PSO pipeline class (the raster/cull/masked/family bin, see
+        // tour::gpu_scene::RasterPipelineClass). Precomputed at draw-list
+        // build so per-bin iteration is a contiguous range, no flag scan.
+        uint8_t psoClass = 0;
         // The resolved MATERIAL-INSTANCE linkage: the bound
         // instance's HANDLE VALUE (0 = none — inherit the base
         // material default). Stored as the raw handle so a
@@ -413,11 +418,18 @@ struct World {
         // rebuild, visible on the next frame build.
         uint64_t materialInstance = 0;
     };
-    std::vector<RenderItem> drawItems; // material-sorted; see above
+    std::vector<RenderItem> drawItems; // sorted by (psoClass, material); see above
 
     // SoA mirror of drawItems[].flags: a dense flags-only column the
     // SIMD scan in ItemIndicesFor walks 8 items per iteration.
     std::vector<IteratorFlags> itemFlags;
+
+    // Per-PSO-bin contiguous ranges into drawItems: psoBinOffset_[c] is the
+    // first drawItems index of pipeline class c, the class runs to
+    // psoBinOffset_[c+1] (or drawItems.size()). The +1 sentinel bounds the
+    // last class. drawItems is kept sorted by (psoClass, material), so each
+    // class is a contiguous range with no flag scan.
+    std::array<uint32_t, 8 + 1> psoBinOffset_{};
 
     // INCREMENTAL DRAW LIST (the streaming path): pages never share
     // hierarchy and materials are PER-PAGE (world material indices are a
@@ -458,6 +470,22 @@ struct World {
         }
         for (uint32_t idx : ItemIndicesFor(requiredFlags))
             func(drawItems[idx]);
+    }
+
+    // Contiguous per-pipeline-class range into drawItems: [begin, end) for
+    // class `cls`. drawItems is kept sorted by (psoClass, material), so a
+    // pass iterates the class range directly with no flag scan.
+    std::pair<uint32_t, uint32_t> PsoBinRange(uint32_t cls) const {
+        if (cls + 1 >= psoBinOffset_.size())
+            return {0u, 0u};
+        return {psoBinOffset_[cls], psoBinOffset_[cls + 1]};
+    }
+
+    // Hot-path iterator over ONE pipeline class's contiguous range.
+    template <typename Func> void forEachPsoBin(uint32_t cls, Func&& func) const {
+        const auto [b, e] = PsoBinRange(cls);
+        for (uint32_t i = b; i < e; ++i)
+            func(drawItems[i]);
     }
 
     // Resource lookup into pages
@@ -1237,6 +1265,12 @@ struct World {
         WorldPage& page,
         uint32_t ordinal,
         const std::unordered_map<NodeId, uint64_t>& entityInstanceByNode);
+    // Pipeline-class bin (bit 0 = double-sided, bit 1 = masked, bit 2 =
+    // ProjectLit) for one item — mirrors tour::gpu_scene::RasterPipelineClass.
+    uint8_t PsoClassFor(const RenderItem& item) const;
+    // Recomputes psoBinOffset_ from the current drawItems (which must be
+    // sorted by (psoClass, material)). O(drawItems).
+    void RebuildPsoBinOffsets();
     // (Re)builds staticBvh_ from the current scene. Cheap no-op when
     // there are no static mesh nodes (leaves the tree empty).
     void RebuildStaticBvh();

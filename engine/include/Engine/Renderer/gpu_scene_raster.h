@@ -38,6 +38,29 @@ inline constexpr uint32_t kRasterPipelineMasked = 2;
 inline constexpr uint32_t kRasterPipelineMaskedDoubleSided = 3;
 inline constexpr uint32_t kRasterPipelineProjectLit = 4;
 
+// Data-driven pipeline-class key (the "bin description"): the raster /
+// coverage / culling matrix that selects one PSO class. The fixed 8-class
+// encoding above is the CURRENT manifest; the key form lets the class set
+// grow (more cull modes, raster modes, blend modes, shader families) without
+// renumbering the hot path. rasterMode is reserved for the future
+// indexed-vs-meshlet / blend split.
+struct RasterPipelineKey {
+    uint32_t doubleSided = 0; // 0 = back-culled, 1 = no cull
+    uint32_t masked = 0;      // 0 = opaque, 1 = alpha-tested cutout
+    uint32_t projectLit = 0;  // 0 = StandardLit, 1 = ProjectLit family
+    uint32_t rasterMode = 0;  // reserved (future bins)
+    bool operator==(const RasterPipelineKey&) const = default;
+};
+
+// The current manifest: 8 classes = (doubleSided, masked, projectLit).
+// Extensible: a future manifest appends rasterMode / blendMode bits and
+// grows kRasterPipelineClassCount without renumbering the low 8.
+[[nodiscard]] inline constexpr uint32_t RasterPipelineClass(RasterPipelineKey k) {
+    return (k.doubleSided ? kRasterPipelineDoubleSided : 0u) |
+           (k.masked ? kRasterPipelineMasked : 0u) |
+           (k.projectLit ? kRasterPipelineProjectLit : 0u);
+}
+
 // Immutable, GPU-addressable indexed-geometry descriptor. One per compatible
 // raster geometry registration; managed separately from per-frame visibility.
 struct alignas(16) IndexedGeometry {

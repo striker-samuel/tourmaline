@@ -1068,12 +1068,19 @@ uint64_t World::InstantiateSceneHierarchy(
                 .materialInstance = 0,
             });
         }
-        const auto byMaterial = [](const RenderItem& a, const RenderItem& b) {
+        // Classify the newly appended items before the (psoClass, material)
+        // merge (they carry the default psoClass from the push_back).
+        for (size_t i = oldDrawCount; i < drawItems.size(); ++i)
+            drawItems[i].psoClass = PsoClassFor(drawItems[i]);
+        const auto byPso = [](const RenderItem& a, const RenderItem& b) {
+            if (a.psoClass != b.psoClass)
+                return a.psoClass < b.psoClass;
             return a.material < b.material;
         };
-        std::stable_sort(drawItems.begin() + oldDrawCount, drawItems.end(), byMaterial);
+        std::stable_sort(drawItems.begin() + oldDrawCount, drawItems.end(), byPso);
         std::inplace_merge(
-            drawItems.begin(), drawItems.begin() + oldDrawCount, drawItems.end(), byMaterial);
+            drawItems.begin(), drawItems.begin() + oldDrawCount, drawItems.end(), byPso);
+        RebuildPsoBinOffsets();
         itemFlags.clear();
         itemFlags.reserve(drawItems.size());
         for (const RenderItem& item : drawItems)
@@ -1117,6 +1124,7 @@ bool World::RetireSceneHierarchy(uint64_t instanceId) {
     itemFlags.reserve(drawItems.size());
     for (const RenderItem& item : drawItems)
         itemFlags.push_back(item.flags);
+    RebuildPsoBinOffsets();
     InvalidateLodCache();
     InvalidateStaticBvh();
     flagLists.clear();
@@ -2197,7 +2205,20 @@ void World::RefreshRuntimeSceneCaches() {
         }
         drawItems.insert(drawItems.end(), chunk.items.begin(), chunk.items.end());
     }
-    // SoA flags mirror, rebuilt AFTER the concat so index i means the
+    // Global sort by (psoClass, material) so each pipeline class is one
+    // CONTIGUOUS range (the per-frame iterator walks a range, never a
+    // flag-scan index list). The chunks are already (psoClass, material)-
+    // sorted within a page; this merge reorders the pages by class.
+    std::stable_sort(
+        drawItems.begin(), drawItems.end(), [](const RenderItem& a, const RenderItem& b) {
+            if (a.psoClass != b.psoClass)
+                return a.psoClass < b.psoClass;
+            return a.material < b.material;
+        });
+    // Per-bin contiguous offsets: psoBinOffset_[c]..psoBinOffset_[c+1] is
+    // class c's range (sentinel psoBinOffset_[8] == drawItems.size()).
+    RebuildPsoBinOffsets();
+    // SoA flags mirror, rebuilt AFTER the sort so index i means the
     // same item in both arrays (the SIMD scan in ItemIndicesFor
     // walks this column).
     itemFlags.clear();
@@ -2247,7 +2268,11 @@ std::vector<World::RenderItem> World::BuildPageDrawChunk(
                 .materialInstance = instanceLink,
             });
         }
+        for (RenderItem& item : chunk)
+            item.psoClass = PsoClassFor(item);
         std::stable_sort(chunk.begin(), chunk.end(), [](const RenderItem& a, const RenderItem& b) {
+            if (a.psoClass != b.psoClass)
+                return a.psoClass < b.psoClass;
             return a.material < b.material;
         });
         return chunk;
@@ -2281,10 +2306,35 @@ std::vector<World::RenderItem> World::BuildPageDrawChunk(
             .materialInstance = instanceLink,
         });
     }
+    for (RenderItem& item : chunk)
+        item.psoClass = PsoClassFor(item);
     std::stable_sort(chunk.begin(), chunk.end(), [](const RenderItem& a, const RenderItem& b) {
+        if (a.psoClass != b.psoClass)
+            return a.psoClass < b.psoClass;
         return a.material < b.material;
     });
     return chunk;
+}
+
+uint8_t World::PsoClassFor(const RenderItem& item) const {
+    uint8_t c = 0;
+    if ((item.flags & smvk::IteratorFlagBit_Masked) != 0)
+        c |= 2u;
+    if (const Material* mat = GetMaterial(item.material)) {
+        if (mat->doubleSided)
+            c |= 1u;
+    }
+    if (ShaderFamilyOf(item.material) == smvk::MaterialShaderFamily::ProjectLit)
+        c |= 4u;
+    return c;
+}
+
+void World::RebuildPsoBinOffsets() {
+    psoBinOffset_.fill(0);
+    for (const RenderItem& item : drawItems)
+        psoBinOffset_[item.psoClass + 1]++;
+    for (uint32_t c = 1; c < psoBinOffset_.size(); ++c)
+        psoBinOffset_[c] += psoBinOffset_[c - 1];
 }
 
 StaticMesh* World::GetMesh(uint32_t meshIndex) {
