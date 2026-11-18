@@ -31,18 +31,6 @@ namespace tour::gfx {
 // fully qualified instead.
 using namespace ::smvk;
 
-// 2D dispatch flattened in the corresponding HLSL entrypoints.
-static void DispatchDrawGroups(CommandBuffer& cmd, uint32_t groups) {
-    DispatchGrid grid{};
-    if (!PlanDispatchGrid(groups, grid)) {
-        std::fprintf(
-            stderr, "[GfxFilter] FATAL: dispatch requires too many workgroups (%u)\n", groups);
-        std::abort();
-    }
-    if (grid.x != 0)
-        cmd.Dispatch(grid.x, grid.y, 1);
-}
-
 // TMP-PROBE: list-mechanism breakdown for the traversal investigation.
 // Accumulates per-scope ms, prints averages every 240 BeginViews.
 // Remove once the optimization lands.
@@ -1126,24 +1114,6 @@ DeformedConeFit FitDeformedCone(const glm::vec3* triCorners,
 // ---------------------------------------------------------------------------
 // CPU-built shadow draw lists (cascade + spot tiles)
 // ---------------------------------------------------------------------------
-
-// Slot buffers for the CPU-built shadow lists: draws ring slice (VS BDA
-// model source) + indirect commands. Storage, NOT Indirect — same
-// cross-queue sharing argument as CreateSlotBuffers (uploads run on the
-// transfer queue, draws on graphics); INDIRECT usage is covered by the
-// buffer type's flags regardless.
-void AddConsumeHints(RenderPass& pass,
-                     LogicalBufferHandle filteredLogical,
-                     LogicalBufferHandle indirectLogical) {
-    BufferSyncRequest indexRead{};
-    indexRead.barrierMasks.accessMask = AccessFlags::IndexRead;
-    indexRead.barrierMasks.stageMask = PipelineStageBit_Vertex;
-    pass.AddBufferHint(filteredLogical, indexRead);
-    BufferSyncRequest indirectRead{};
-    indirectRead.barrierMasks.accessMask = AccessFlags::IndirectCommandRead;
-    indirectRead.barrierMasks.stageMask = PipelineStageBit_DrawIndirect;
-    pass.AddBufferHint(indirectLogical, indirectRead);
-}
 
 // ---------------------------------------------------------------------------
 // Draw-level texture demand (designated-publisher source)

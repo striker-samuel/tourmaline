@@ -768,10 +768,6 @@ uint64_t HizAddress(State& s, smvk::ResourceManager& ctx, uint32_t view);
 // DEBUG: Download and print HZB buffer contents for inspection.
 void DumpHzb(State& s, smvk::ResourceManager& ctx, uint32_t view);
 
-void AddConsumeHints(smvk::RenderPass& pass,
-                     smvk::LogicalBufferHandle filteredLogical,
-                     smvk::LogicalBufferHandle indirectLogical);
-
 // ---- Draw-level texture demand (designated-publisher source) ----
 // Per-frame demand inputs (app-resolved): THIS frame's materials BDA
 // slice + the streamer's mip bias. Idempotent; call once per frame before

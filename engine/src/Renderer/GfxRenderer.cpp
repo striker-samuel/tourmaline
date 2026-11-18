@@ -7,7 +7,6 @@
 #include <Engine/Rendergraph/FrameContext.h>
 
 #include <Engine/Profile/profile.h>
-#include <Engine/Renderer/gfx_dynamic_capacity.h> // the declared draw bound (DumpCullBaseline)
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 #include <Engine/debug_log.h>
@@ -486,68 +485,6 @@ void GfxRenderer::VerifyHizSpd(smvk::ResourceManager& ctx) {
     if (lastSlot_ == UINT32_MAX || lastSlot_ >= smvk::gfx::ViewCount(gfx))
         return;
     smvk::gfx::VerifyHizSpd(gfx, ctx, lastSlot_);
-}
-
-static void DumpCullBaseline(smvk::gfx::State& s,
-                             uint32_t view,
-                             uint32_t frameIndex,
-                             smvk::ResourceManager& ctx,
-                             uint64_t appFrame) {
-    smvk::gfx::View& v = s.views[view];
-    const uint32_t drawCount = v.stats.draws;
-    // Runtime cull-state word count (the dynamic cutover — the slice is
-    // drawCapacity + 5 words: verdicts + the counter/diag suffix).
-    const size_t wordCount = smvk::gfx::CullStateWords(s, view, frameIndex);
-    std::vector<uint32_t> words(wordCount, 0u);
-    if (drawCount == 0 || drawCount > smvk::gfx::kDeclaredMaxDraws ||
-        v.cullStateBuffers[frameIndex].empty() ||
-        !ctx.DownloadDataFromBuffer(
-            v.cullStateBuffers[frameIndex], words.data(), wordCount * sizeof(uint32_t))) {
-        std::fprintf(stderr,
-                     "[CullDump] FAILED: verdict readback unavailable "
-                     "(drawCount=%u)\n",
-                     drawCount);
-        return;
-    }
-    std::error_code ec;
-    std::filesystem::create_directories("exports", ec);
-    char name[64];
-    std::snprintf(name, sizeof(name), "exports/cull_dump_%llu.json", (unsigned long long)appFrame);
-    FILE* f = std::fopen(name, "wb");
-    if (!f) {
-        std::fprintf(stderr, "[CullDump] FAILED: cannot open %s\n", name);
-        return;
-    }
-    uint32_t visible = 0;
-    std::fprintf(f,
-                 "{\"schema_version\":1,\"frame\":%llu,\"view\":%u,"
-                 "\"draw_count\":%u,\"visible_draws\":[",
-                 (unsigned long long)appFrame,
-                 (unsigned)view,
-                 drawCount);
-    for (uint32_t i = 0; i < drawCount; ++i)
-        if (words[i] != 0u) {
-            std::fprintf(f, "%s%u", visible ? "," : "", i);
-            ++visible;
-        }
-    std::fprintf(f, "],\"culled_draws\":[");
-    bool first = true;
-    for (uint32_t i = 0; i < drawCount; ++i)
-        if (words[i] == 0u) {
-            std::fprintf(f, "%s%u", first ? "" : ",", i);
-            first = false;
-        }
-    std::fprintf(f,
-                 "],\"stats\":{\"draws\":%u,\"commands\":%u,"
-                 "\"triangles_processed\":%u,\"clusters_processed\":%u,"
-                 "\"clusters_culled\":%u}}\n",
-                 v.stats.draws,
-                 v.stats.commands,
-                 v.stats.trianglesProcessed,
-                 v.stats.clustersProcessed,
-                 v.stats.clustersCulled);
-    std::fclose(f);
-    std::fprintf(stderr, "[CullDump] wrote %s (%u draws, %u visible)\n", name, drawCount, visible);
 }
 
 void GfxRenderer::DumpHzb(smvk::ResourceManager& ctx, uint32_t slot) {
