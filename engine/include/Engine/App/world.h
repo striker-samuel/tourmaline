@@ -338,6 +338,10 @@ struct World {
     // recycled WorldPage* address as the permanent GPU scene key.
     uint64_t gpuSceneTopologyRevision = 0;
     uint64_t nextGpuScenePageId = 1;
+    // Monotonic stable fold id source (WorldPage::pageOrdinal): the
+    // incremental merge's stable discriminator, independent of the dense
+    // `pages` slot index (which shifts on unload).
+    uint32_t nextPageOrdinal_ = 0;
     // Gameplay nodes share the same monotonically allocated registration namespace
     // as WorldPage owners, but use World node slots/generations for identity.
     uint64_t gpuSceneGameNodeRegistration = 0;
@@ -349,8 +353,8 @@ struct World {
     std::vector<std::unique_ptr<WorldPage>> pages;
     // INCREMENTAL FOLD STATE (persists across MergePage/UnmergePage
     // deltas; reset by ResolveAndFixup_pages before a full rebuild): the
-    // material dedup map (page ordinal -> cluster-local material -> world
-    // material index) and the first-wins flags.
+    // material dedup map (stable WorldPage::pageOrdinal -> cluster-local
+    // material -> world material index) and the first-wins flags.
     std::unordered_map<uint64_t, uint32_t> worldMatByClusterMat_;
     bool envTaken_ = false;
     bool renderTaken_ = false;
@@ -863,8 +867,9 @@ struct World {
     // drawItems / LOD chains / static BVH) are NOT rebuilt here — call
     // RebuildDerivedCaches once after a settled batch of MergePage calls.
     // The page must be registered and must not already be folded.
-    // `clusterOrdinal` is the page's stable slot index in `pages` (the
-    // material-dedup + pageMergedNodes discriminator); `isIdentityPrimary`
+    // `clusterOrdinal` is the page's dense slot index in `pages` (only
+    // the pageMergedNodes parallel-index discriminator); the material
+    // dedup uses the STABLE WorldPage::pageOrdinal. `isIdentityPrimary`
     // is true only for the single-content-page bulk-copy fast path.
     void MergePage(smvk::WorldPage& page, uint32_t clusterOrdinal, bool isIdentityPrimary);
     // Retire ONE page's folded nodes + resource rows (mark its slots dead,

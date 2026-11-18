@@ -407,6 +407,13 @@ struct WorldPage {
     // semantic otherwise: resolve folds it into the merged scene like
     // any other cluster.
     bool isDynamic = false;
+    // STABLE FOLD ID (assigned once by World::RegisterPage, monotonic,
+    // never reused, never shifted by page add/remove): the incremental
+    // merge's stable discriminator for the material-dedup key + the
+    // retained page->merged-node map. Unlike a dense `pages` slot index,
+    // this survives an unload/reorder (a re-loaded page is a NEW
+    // WorldPage with a fresh id). UINT32_MAX = unregistered.
+    uint32_t pageOrdinal = UINT32_MAX;
     // ---- Shared-asset retention (the app AssetStore bridge) --------
     // EXTERNAL reference count held by ASSET-side owners (app::
     // AssetStore) on a cluster that ALSO carries shared asset rows

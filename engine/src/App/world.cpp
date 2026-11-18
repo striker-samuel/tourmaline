@@ -1132,6 +1132,7 @@ void World::RegisterPage(std::unique_ptr<WorldPage> cluster) {
             "cannot register content WorldPage during direct World instance lifetime");
     cluster->world = this;
     gpuScenePageIds[cluster.get()] = nextGpuScenePageId++;
+    cluster->pageOrdinal = nextPageOrdinal_++;
     pages.push_back(std::move(cluster));
 }
 
@@ -1500,7 +1501,8 @@ void World::MergePage(WorldPage& cluster, uint32_t clusterOrdinal, bool isIdenti
             if (row.node >= nodeMap.size() || nodeMap[row.node] == UINT32_MAX)
                 continue;
             const uint32_t worldNode = nodeMap[row.node];
-            const uint64_t matKey = (static_cast<uint64_t>(clusterOrdinal) << 32) | row.material;
+            const uint64_t matKey =
+                (static_cast<uint64_t>(cluster.pageOrdinal) << 32) | row.material;
             auto matHit = worldMatByClusterMat_.find(matKey);
             if (matHit != worldMatByClusterMat_.end()) {
                 SetMaterial(scene, worldNode, matHit->second);
@@ -1703,8 +1705,8 @@ void World::RebuildDerivedCaches() {
                 const int32_t localIdx = mat->values.layerMaterials[layer];
                 if (localIdx < 0)
                     continue;
-                const uint64_t matKey =
-                    (static_cast<uint64_t>(clusterOrdinal) << 32) | static_cast<uint32_t>(localIdx);
+                const uint64_t matKey = (static_cast<uint64_t>(cluster->pageOrdinal) << 32) |
+                                        static_cast<uint32_t>(localIdx);
                 auto hit = worldMatByClusterMat_.find(matKey);
                 uint32_t worldMatIdx = 0;
                 if (hit != worldMatByClusterMat_.end()) {
