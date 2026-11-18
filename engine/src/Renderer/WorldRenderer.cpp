@@ -4914,8 +4914,13 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
     // scene pages by camera distance BEFORE the scene is read this frame.
     // No-op when the world has no streamer (the legacy load-everything
     // shape). The streamer rebuilds the merged scene + flushes uploads.
-    if (m_world)
-        m_world->StreamPages(data.cameraPos);
+    if (m_world) {
+        // The camera forward (world space) biases the streamer toward pages
+        // the camera is facing. The view matrix's third column is the camera's
+        // -Z (backward) axis; negate it for the forward.
+        const glm::vec3 viewDir = -glm::vec3(view[0][2], view[1][2], view[2][2]);
+        m_world->StreamPages(data.cameraPos, viewDir);
+    }
 
     data.view = view;
     data.proj = proj;

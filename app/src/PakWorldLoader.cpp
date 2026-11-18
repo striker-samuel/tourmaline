@@ -379,7 +379,9 @@ tour::mem::LinearPtr<tour::World> LoadPakWorld(PakPreload pre,
                                                                          pre.image,
                                                                          nullptr,
                                                                          manifest,
-                                                                         uint32_t(sceneIndex)));
+                                                                         uint32_t(sceneIndex),
+                                                                         pre.cameraPos,
+                                                                         pre.viewDir));
     }
     std::cerr << "[App] entry scene loaded (" << (scenes.size() - 1)
               << " page(s) deferred to the camera streamer)\n";
@@ -539,7 +541,9 @@ tour::mem::LinearPtr<tour::World> LoadProjectWorld(std::vector<PakPreload> prelo
                                                                          entry.image,
                                                                          &resolver,
                                                                          manifest,
-                                                                         uint32_t(entryIdx)));
+                                                                         uint32_t(entryIdx),
+                                                                         entry.cameraPos,
+                                                                         entry.viewDir));
     }
     std::cerr << "[App] project entry scene loaded (" << (scenes.size() - 1)
               << " page(s) deferred to the camera streamer)\n";

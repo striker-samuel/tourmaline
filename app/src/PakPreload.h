@@ -8,6 +8,8 @@
 // shader loading. Consumed by PakWorldLoader.cpp's world loading.
 #include <Engine/Asset/pak.h>
 
+#include <glm/glm.hpp>
+
 #include <cstdint>
 #include <future>
 #include <memory>
@@ -26,12 +28,20 @@ struct PakPreload {
     std::shared_ptr<const std::vector<uint8_t>> image;
     std::shared_ptr<smvk::PakBackend> backend;
     std::string error;
+    // The camera the streaming planner seeds from (world space position +
+    // forward direction). Defaults to the origin: a page streamer armed from
+    // this preload starts with an unbiased (origin) camera until the renderer
+    // feeds its live position each frame.
+    glm::vec3 cameraPos{0.0f};
+    glm::vec3 viewDir{0.0f};
 };
 
 // --pak accepts host paths AND vfs-style paths ("/content/..."): try as-is,
 // then CWD-relative, then exe-relative. Empty when nothing exists.
 std::string ResolvePakOpenPath(const std::string& scenePak);
 
-std::future<PakPreload> KickPakPreload(const std::string& pakPath);
+std::future<PakPreload> KickPakPreload(const std::string& pakPath,
+                                       glm::vec3 cameraPos = {},
+                                       glm::vec3 viewDir = {});
 
 } // namespace app

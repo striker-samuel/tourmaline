@@ -76,8 +76,10 @@ std::string ResolvePakOpenPath(const std::string& scenePak) {
     return pakOpenPath;
 }
 
-std::future<PakPreload> KickPakPreload(const std::string& pakPath) {
-    return std::async(std::launch::async, [pakPath]() {
+std::future<PakPreload> KickPakPreload(const std::string& pakPath,
+                                       glm::vec3 cameraPos,
+                                       glm::vec3 viewDir) {
+    return std::async(std::launch::async, [pakPath, cameraPos, viewDir]() {
         // Optick: the async preload thread's own scope (auto-registered
         // by Optick on its first event — a transient std::async thread,
         // named only by its events). Startup latency work, not steady
@@ -86,6 +88,8 @@ std::future<PakPreload> KickPakPreload(const std::string& pakPath) {
         const auto t0 = std::chrono::steady_clock::now();
         PakPreload p;
         p.scenePak = pakPath;
+        p.cameraPos = cameraPos;
+        p.viewDir = viewDir;
         p.openPath = ResolvePakOpenPath(p.scenePak);
         if (p.openPath.empty()) {
             p.error =

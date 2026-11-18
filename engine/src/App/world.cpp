@@ -56,10 +56,10 @@ WorldPage& World::LoadPage(ResourceManager& ctx) {
     return ref;
 }
 
-bool World::StreamPages(glm::vec3 cameraPos) {
+bool World::StreamPages(glm::vec3 cameraPos, glm::vec3 viewDir) {
     if (!pageStreamer)
         return false;
-    return pageStreamer->Tick(cameraPos);
+    return pageStreamer->Tick(cameraPos, viewDir);
 }
 
 WorldPage& World::LoadPageFromPak(ResourceManager& ctx,

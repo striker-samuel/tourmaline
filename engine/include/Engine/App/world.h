@@ -603,10 +603,10 @@ struct World {
     void SetPageStreamer(std::shared_ptr<ScenePageStreamer> s) {
         pageStreamer = std::move(s);
     }
-    // Forwards the camera position to the page streamer (a no-op when
-    // streaming is disabled). Returns true when the page set changed (the
-    // merged scene was rebuilt + uploads flushed by the streamer).
-    bool StreamPages(glm::vec3 cameraPos);
+    // Forwards the camera position + forward to the page streamer (a no-op
+    // when streaming is disabled). Returns true when the page set changed
+    // (the merged scene was rebuilt + uploads flushed by the streamer).
+    bool StreamPages(glm::vec3 cameraPos, glm::vec3 viewDir = {});
     // Harvests the pak's Terrain blobs (terrain/meta + 16x H + 256x S)
     // into terrainSource (byte copies; the reader may die after). Also
     // called by LoadPageFromPak (non-fatal: scene loads even when

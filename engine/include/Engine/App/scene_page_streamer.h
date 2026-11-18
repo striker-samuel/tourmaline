@@ -36,14 +36,20 @@ class ScenePageStreamer {
                       std::shared_ptr<const std::vector<uint8_t>> imagePin,
                       const smvk::ExternalTextureResolver* externalTexture,
                       asset::WorldManifestView manifest,
-                      uint32_t entryScene)
+                      uint32_t entryScene,
+                      glm::vec3 cameraPos = {},
+                      glm::vec3 viewDir = {})
         : world_(world), backend_(std::move(backend)), ctx_(ctx), sceneStreamer_(sceneStreamer),
           imagePin_(std::move(imagePin)), externalTexture_(externalTexture), manifest_(manifest),
-          entryScene_(entryScene), loaded_(manifest.sceneCount, nullptr) {}
+          entryScene_(entryScene), viewDir_(viewDir), loaded_(manifest.sceneCount, nullptr) {}
 
     // Loads pages near the camera + unloads far pages. Returns true when the
     // page set changed (the merged scene was rebuilt + uploads flushed).
-    bool Tick(glm::vec3 cameraPos) {
+    // `viewDir` (the camera forward) biases the radius toward pages the camera
+    // is facing; pass {} for an unbiased spherical radius.
+    bool Tick(glm::vec3 cameraPos, glm::vec3 viewDir = {}) {
+        if (viewDir != glm::vec3(0.0f))
+            viewDir_ = viewDir;
         bool changed = false;
         uint32_t loadedThisTick = 0;
         // Load near pages (bounded per tick to avoid a multi-page hitch).
@@ -98,7 +104,10 @@ class ScenePageStreamer {
     static constexpr uint32_t kMaxLoadsPerTick = 4;
 
   private:
-    // Squared distance from the camera to the scene's AABB (0 when inside).
+    // Squared distance from the camera to the scene's AABB (0 when inside),
+    // plus a directional bias: when a view direction is known, a page whose
+    // AABB center sits more than a radius BEHIND the camera is not loaded
+    // (the camera is looking away from it).
     bool WithinRadius(uint32_t sceneIndex, glm::vec3 cameraPos) const {
         if (sceneIndex >= manifest_.sceneCount)
             return false;
@@ -106,7 +115,15 @@ class ScenePageStreamer {
         manifest_.Aabb(sceneIndex, mn, mx);
         const glm::vec3 closest = glm::max(mn, glm::min(cameraPos, mx));
         const float d2 = glm::dot(cameraPos - closest, cameraPos - closest);
-        return d2 <= radiusMeters_ * radiusMeters_;
+        if (d2 > radiusMeters_ * radiusMeters_)
+            return false;
+        const float viewLen2 = glm::dot(viewDir_, viewDir_);
+        if (viewLen2 > 0.0f) {
+            const glm::vec3 center = (mn + mx) * 0.5f;
+            if (glm::dot(center - cameraPos, viewDir_) < -radiusMeters_)
+                return false;
+        }
+        return true;
     }
 
     World& world_;
@@ -118,6 +135,7 @@ class ScenePageStreamer {
     asset::WorldManifestView manifest_; // fixed-size, offset-indexed (no copy)
     std::vector<WorldPage*> loaded_;    // sceneIndex -> registered page (flat index)
     uint32_t entryScene_ = 0;
+    glm::vec3 viewDir_{0.0f}; // forward (zero = unbiased spherical radius)
     float radiusMeters_ = 256.0f;
 };
 
