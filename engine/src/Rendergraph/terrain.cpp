@@ -80,23 +80,41 @@ bool TerrainField::ReloadShaders(ResourceManager& ctx, std::vector<ShaderModuleH
 bool TerrainField::BuildFromSource(ResourceManager& ctx,
                                    const TerrainSource& src,
                                    const TerrainDesc& d) {
-    if (!src.hasTerrain || !src.hfield.valid() || src.masks.size() != 256 ||
-        !std::all_of(src.masks.begin(), src.masks.end(), [](const auto& tile) {
-            return tile.size() == size_t(kMaskTileRes) * kMaskTileRes * 4;
-        })) {
+    if (!src.hasTerrain || !src.hfield.valid()) {
         std::fprintf(stderr, "[terrain] no valid terrain source (empty or broken harvest)\n");
         return false;
     }
     const TerrainHField& hf = src.hfield;
+    // World-size-driven grid: one G-block of meta.gBlock meters (default
+    // 256) per cell, so blocksPerAxis == worldSize/gBlock; the height atlas
+    // tiles likewise derive from worldSize/hTileSize. The default 4096 m
+    // world keeps the original 16 x 16 block grid, so the sampled samples
+    // and tests stay byte-identical.
+    const uint32_t blocksPerAxis = static_cast<uint32_t>(
+        std::lround(static_cast<double>(hf.meta.worldSize) / static_cast<double>(hf.meta.gBlock)));
+    const uint32_t tilesPerAxis = static_cast<uint32_t>(std::lround(
+        static_cast<double>(hf.meta.worldSize) / static_cast<double>(hf.meta.hTileSize)));
+    if (blocksPerAxis < 1 || blocksPerAxis > 512 || tilesPerAxis < 1 ||
+        src.masks.size() != size_t(blocksPerAxis) * size_t(blocksPerAxis) ||
+        !std::all_of(
+            src.masks.begin(),
+            src.masks.end(),
+            [](const auto& tile) {
+                return tile.size() == size_t(kMaskTileRes) * kMaskTileRes * 4;
+            })) {
+        std::fprintf(stderr, "[terrain] no valid terrain source (empty or broken harvest)\n");
+        return false;
+    }
 
     Destroy();
     desc = d;
     hfield = hf; // retained for queries (collision / T3 CPU)
-    blocks.resize(kTerrainBlockCount);
+    this->blocksPerAxis = blocksPerAxis;
+    blocks.resize(size_t(blocksPerAxis) * size_t(blocksPerAxis));
 
     MaskSet masks;
     masks.tiles = &src.masks;
-    masks.tilesPerAxis = 16;
+    masks.tilesPerAxis = blocksPerAxis;
     masks.res = kMaskTileRes;
 
     // ---- per-LOD shared topologies ------------------------------------
@@ -119,9 +137,9 @@ bool TerrainField::BuildFromSource(ResourceManager& ctx,
     float globalMaxY = -1e30f;
     GBlockMesh scratch;
     std::vector<TerrainFarVertex> farScratch;
-    for (uint32_t gz = 0; gz < kTerrainBlocksPerAxis; ++gz) {
-        for (uint32_t gx = 0; gx < kTerrainBlocksPerAxis; ++gx) {
-            TerrainBlockInfo& info = blocks[size_t(gz) * size_t(kTerrainBlocksPerAxis) + gx];
+    for (uint32_t gz = 0; gz < blocksPerAxis; ++gz) {
+        for (uint32_t gx = 0; gx < blocksPerAxis; ++gx) {
+            TerrainBlockInfo& info = blocks[size_t(gz) * size_t(blocksPerAxis) + gx];
             for (int l = 0; l < 3; ++l) {
                 BakeGBlockVerts(hf, masks, gx, gz, kBlockLods[l], kSkirtDepth, scratch);
                 info.vertexBase[size_t(l)] = int32_t(verts.size());
@@ -180,19 +198,24 @@ bool TerrainField::BuildFromSource(ResourceManager& ctx,
         Destroy();
         return false;
     }
-    // Height atlas: 16 H-tiles merged into ONE 4096 R16_UNORM image.
-    // RG16 bits copy verbatim (R=MSB, G=LSB -> uint16 = R*256+G), so the
-    // .r sample IS h01 and hardware linear filtering interpolates TRUE
-    // heights (packed-channel filtering would corrupt transitions).
+    // Height atlas: tilesPerAxis^2 H-tiles merged into ONE atlasRes^2
+    // R16_UNORM image. RG16 bits copy verbatim (R=MSB, G=LSB -> uint16 =
+    // R*256+G), so the .r sample IS h01 and hardware linear filtering
+    // interpolates TRUE heights (packed-channel filtering would corrupt
+    // transitions). atlasRes = tilesPerAxis * hRes (4096 for the default
+    // 4 x 1024 world, scales for a larger island).
+    const uint32_t hRes = hf.meta.hRes;
+    const uint32_t atlasRes = tilesPerAxis * hRes;
+    this->atlasRes = atlasRes;
     std::vector<uint16_t> atlasPixels;
-    atlasPixels.resize(size_t(4096) * size_t(4096));
-    for (uint32_t tz = 0; tz < 4; ++tz) {
-        for (uint32_t tx = 0; tx < 4; ++tx) {
-            const auto& px = hf.tiles[tz * 4 + tx];
-            for (uint32_t py = 0; py < 1024; ++py) {
-                for (uint32_t x = 0; x < 1024; ++x) {
-                    const size_t s = (size_t(py) * 1024 + x) * 4;
-                    atlasPixels[(size_t(tz) * 1024 + py) * 4096 + size_t(tx) * 1024 + x] =
+    atlasPixels.resize(size_t(atlasRes) * size_t(atlasRes));
+    for (uint32_t tz = 0; tz < tilesPerAxis; ++tz) {
+        for (uint32_t tx = 0; tx < tilesPerAxis; ++tx) {
+            const auto& px = hf.tiles[size_t(tz) * tilesPerAxis + tx];
+            for (uint32_t py = 0; py < hRes; ++py) {
+                for (uint32_t x = 0; x < hRes; ++x) {
+                    const size_t s = (size_t(py) * hRes + x) * 4;
+                    atlasPixels[(size_t(tz) * hRes + py) * atlasRes + size_t(tx) * hRes + x] =
                         PackHeightR16(px[s], px[s + 1]);
                 }
             }
@@ -201,7 +224,7 @@ bool TerrainField::BuildFromSource(ResourceManager& ctx,
     {
         ImageCreateInfo ci;
         ci.type = ImageType::Image2D;
-        ci.extent = Extent3D{4096, 4096, 1};
+        ci.extent = Extent3D{atlasRes, atlasRes, 1};
         ci.format = Format::R16_UNorm;
         ci.mipLevels = 1;
         ci.name = "terrain/height-atlas";
@@ -277,7 +300,7 @@ bool TerrainField::BuildFromSource(ResourceManager& ctx,
                  "[terrain] built: %u blocks x 4 LODs "
                  "(%u near verts, %u far verts, idx %u/%u/%u/%u, atlas slot %u) "
                  "heights [%.1f, %.1f]\n",
-                 kTerrainBlockCount,
+                 blocksPerAxis * blocksPerAxis,
                  vertexCount,
                  farVertexCount,
                  indicesPerLod[0],
@@ -303,6 +326,8 @@ void TerrainField::Destroy() {
     hfield = TerrainHField{};
     valid = false;
     blocks.clear();
+    blocksPerAxis = kDefaultBlocksPerAxis;
+    atlasRes = 4096;
     indicesPerLod = {0, 0, 0};
     farIndexCount = 0;
     vertexCount = 0;
@@ -402,6 +427,9 @@ uint32_t TerrainField::RecordBlocks(CommandBuffer& cmd,
     tail.range = hfield.meta.range;
     tail.hfShadow = hfShadow;
     tail.hfSteps = hfSteps;
+    tail.blockSize = hfield.meta.gBlock;
+    tail.blocksPerAxis = blocksPerAxis;
+    tail.invAtlasRes = 1.0f / static_cast<float>(atlasRes);
 
     uint32_t drawn = 0;
     // The scene pc rides every bind: pushed AFTER each pipeline bind so

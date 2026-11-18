@@ -36,8 +36,7 @@ struct VSOut
     [[vk::location(3)]] float4 color : COLOR1;
 };
 
-static const float kFarBlockSize = 256.0f;
-static const float kFarStep = 16.0f; // kBlockSize / kFarQuads
+static const float kFarQuads = 16.0f; // kFarQuads in terrain_blocks.h (block grid)
 // Skirt drop, meters — MUST equal kSkirtDepth in
 // Rendergraph/terrain_blocks.h (the bake side). No shared constant crosses
 // the HLSL/C++ boundary here; both literals are pinned by TerrainBlocksTests
@@ -55,15 +54,17 @@ VSOut mainVS(VSIn IN)
     VSOut OUT;
     FrameUniforms frame = pcT.frameUniforms.Get();
 
-    uint bx = IN.blockIdx % 16u;
-    uint bz = IN.blockIdx / 16u;
+    uint bpa = pcT.blocksPerAxis;
+    uint bx = IN.blockIdx % bpa;
+    uint bz = IN.blockIdx / bpa;
     float2 blockOrigin = float2(pcT.originX, pcT.originZ)
-        + float2((float)bx, (float)bz) * kFarBlockSize;
+        + float2((float)bx, (float)bz) * pcT.blockSize;
 
-    float2 gridXZ = blockOrigin + IN.packedGrid.xy * kFarStep;
+    float farStep = pcT.blockSize / kFarQuads;
+    float2 gridXZ = blockOrigin + IN.packedGrid.xy * farStep;
     float2 uv = (gridXZ - float2(pcT.originX, pcT.originZ))
         * pcT.invWorldSize;
-    float texelUv = pcT.invWorldSize; // 1 m texels: worldSize/4096 = 1
+    float texelUv = pcT.invAtlasRes; // one height-atlas texel in UV
 
     float hC = FarHeight01(uv);
     float hR = FarHeight01(uv + float2(texelUv, 0.0f));

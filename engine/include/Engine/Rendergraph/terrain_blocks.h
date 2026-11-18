@@ -92,9 +92,10 @@ inline void BakeGBlockVerts(const TerrainHField& hf,
                             GBlockMesh& out) {
     const TerrainMeta& meta = hf.meta;
     const float worldSize = meta.worldSize;
-    const float x0 = meta.originX + float(gx) * kBlockSize;
-    const float z0 = meta.originZ + float(gz) * kBlockSize;
-    const float step = kBlockSize / float(quads);
+    const float blockSize = meta.gBlock;
+    const float x0 = meta.originX + float(gx) * blockSize;
+    const float z0 = meta.originZ + float(gz) * blockSize;
+    const float step = blockSize / float(quads);
     const float texel = meta.hTileSize / float(meta.hRes); // normal eps
     const uint32_t row = quads + 1;
 
@@ -147,7 +148,7 @@ inline void BakeGBlockVerts(const TerrainHField& hf,
     for (uint32_t j = 0; j <= quads; ++j)
         dropRing(j * row + quads); // right
     out.bmin = glm::vec3(x0, minY - skirtDepth, z0);
-    out.bmax = glm::vec3(x0 + kBlockSize, maxY, z0 + kBlockSize);
+    out.bmax = glm::vec3(x0 + blockSize, maxY, z0 + blockSize);
 }
 
 // Shared per-LOD topology: surface quads (up-facing, legacy winding) +
@@ -220,9 +221,10 @@ inline void BakeFarBlockVerts(const TerrainHField& hf,
                               std::vector<TerrainFarVertex>& out) {
     const TerrainMeta& meta = hf.meta;
     const float worldSize = meta.worldSize;
-    const float x0 = meta.originX + float(gx) * kBlockSize;
-    const float z0 = meta.originZ + float(gz) * kBlockSize;
-    const float step = kBlockSize / float(kFarQuads);
+    const float blockSize = meta.gBlock;
+    const float x0 = meta.originX + float(gx) * blockSize;
+    const float z0 = meta.originZ + float(gz) * blockSize;
+    const float step = blockSize / float(kFarQuads);
     const uint32_t row = kFarQuads + 1;
     out.clear();
     out.reserve(size_t(row) * size_t(row) + size_t(4) * size_t(row));
@@ -248,7 +250,7 @@ inline void BakeFarBlockVerts(const TerrainHField& hf,
         const float x = x0 + float(i) * step; // top ring
         PackTerrainFarVertex(float(i),
                              float(kFarQuads),
-                             SampleMaskRGBA(masks, meta, worldSize, x, z0 + kBlockSize),
+                             SampleMaskRGBA(masks, meta, worldSize, x, z0 + blockSize),
                              true,
                              v);
         out.push_back(v);
@@ -265,7 +267,7 @@ inline void BakeFarBlockVerts(const TerrainHField& hf,
         const float z = z0 + float(j) * step; // right ring
         PackTerrainFarVertex(float(kFarQuads),
                              float(j),
-                             SampleMaskRGBA(masks, meta, worldSize, x0 + kBlockSize, z),
+                             SampleMaskRGBA(masks, meta, worldSize, x0 + blockSize, z),
                              true,
                              v);
         out.push_back(v);

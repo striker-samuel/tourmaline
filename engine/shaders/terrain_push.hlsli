@@ -52,6 +52,9 @@ struct TerrainPushBlock
     int hfShadow;
     int hfSteps;
     uint occlusionSlot;
+    float blockSize;
+    uint blocksPerAxis;
+    float invAtlasRes;
 };
 
 GPU_PUSH(TerrainPushBlock, pcT);

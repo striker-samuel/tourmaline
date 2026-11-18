@@ -5,25 +5,29 @@
 // Tiled terrain heightfield — baked from authored H-tiles (no procedural
 // fallback; see Rendergraph/terrain_pack.h + terrain_hfield.h).
 //
-// World: 4096 x 4096 m from terrain.json. 16 x 16 G-blocks of 256 m:
+// World: worldSize x worldSize m from terrain.json (default 4096 x 4096).
+// The block grid derives from the meta: blocksPerAxis = worldSize / gBlock
+// (default 16 x 16 G-blocks of 256 m), the H-tile grid from
+// tilesPerAxis = worldSize / hTileSize (default 4 x 4 of 1024 m):
 //  - near LODs L0/L1/L2 (64/32/16 quads, TerrainVertex 32 B — the article's
 //    Terrain I..III full-float layout) with skirts, one vertex buffer +
 //    one shared index buffer per LOD;
 //  - far L3 (16 quads, TerrainFarVertex 12 B half4 + RGBA8):
 //    grid coords and S-mask attributes; world XZ reconstructs in the
-//    VS from the per-block push tail, height samples the R16 atlas.
+//    VS from the per-block push tail (blockSize/blocksPerAxis), height
+//    samples the R16 atlas.
 // Heights/normals come from the H-field (computed normals; the import stub
 // stays reserved). Vertex color preserves S-tile RGBA attributes at all
 // LODs: R = default surface blend, G/B = user material attributes,
 // A < 0.5 = clipping hole (0 = hole, 255 = solid).
 //
-// Height atlas: the 16 H-tiles merged into ONE 4096x4096 R16_UNORM texture
-// (RG16 bits copied verbatim — linear filtering stays CORRECT, unlike
-// packed-RGBA filtering). One bindless slot serves the far VS, the shadow
-// raymarch, and future collision/GI. Masks bake into vertex color and are
-// dropped after the build (GPU mask textures land with the atlas in phase 4).
-// Hole masking currently applies to visual terrain only, not CPU collision
-// or heightfield-based shadow raymarching.
+// Height atlas: the tilesPerAxis^2 H-tiles merged into ONE atlasRes^2
+// R16_UNORM texture (RG16 bits copied verbatim — linear filtering stays
+// CORRECT, unlike packed-RGBA filtering). One bindless slot serves the far
+// VS, the shadow raymarch, and future collision/GI. Masks bake into vertex
+// color and are dropped after the build (GPU mask textures land with the
+// atlas in phase 4). Hole masking currently applies to visual terrain only,
+// not CPU collision or heightfield-based shadow raymarching.
 //
 // Shadows (T3): shadowmap RECEIVE (lights[0] sun convention, PCF/EVSM like
 // default_pom) times... minned with the heightfield RAYMARCHED distant
@@ -34,7 +38,7 @@
 // viewProj planes) + distance LOD, then grouped binds (3x near full-format
 // + 1x far) with one DrawIndexed per visible block. The terrain rides the
 // SAME scene push constants as the Main pass; per-draw tails (shade/far)
-// overlay bytes 192..224 like PlacementVsPush.
+// overlay bytes 192..240 like PlacementVsPush.
 
 #include <Engine/App/world.h>
 #include <Engine/Memory/pool.h>
@@ -76,16 +80,16 @@ struct TerrainBlockInfo {
     int32_t farVertexBase = 0;
 };
 
-inline constexpr uint32_t kTerrainBlocksPerAxis = 16;
-inline constexpr uint32_t kTerrainBlockCount = kTerrainBlocksPerAxis * kTerrainBlocksPerAxis;
+inline constexpr uint32_t kDefaultBlocksPerAxis = 16;
 
-// Per-draw tail @192 for ALL terrain draws (36 B; HLSL mirrors:
+// Per-draw tail @192 for ALL terrain draws (44 B; HLSL mirrors:
 // terrain.frag.hlsl TerrainFragTail reads every word, terrainfar.vert.hlsl
 // TerrainFarPushHlsl reads the world half). Words 0..5 are layout-identical
 // for both readers. The far VS takes its block id from firstInstance
-// (gl_InstanceIndex) and its skirt drop from the kFarSkirtDepth literal
-// (== kSkirtDepth in terrain_blocks.h); far draws always push hfShadow=2
-// (receive + raymarch) with the caller's steps.
+// (gl_InstanceIndex), its block coords from blockSize/blocksPerAxis, and its
+// skirt drop from the kFarSkirtDepth literal (== kSkirtDepth in
+// terrain_blocks.h); far draws always push hfShadow=2 (receive + raymarch)
+// with the caller's steps.
 struct TerrainBlockPush {
     uint32_t atlasSlot = 0xFFFFFFFFu; // R16 height-atlas bindless slot
     float originX = 0.0f;             // world origin (atlas uv00)
@@ -96,8 +100,16 @@ struct TerrainBlockPush {
     int32_t hfShadow = 1;                 // 0 off | 1 receive | 2 receive+raymarch
     int32_t hfSteps = 16;                 // legacy raymarch fallback steps
     uint32_t occlusionSlot = 0xFFFFFFFFu; // optional packed maximum height atlas
+    // World-size-driven far-block addressing (the near verts are baked
+    // world-space; the far VS reconstructs XZ from blockIdx * blockSize):
+    // blockSize == meta.gBlock, blocksPerAxis == worldSize / gBlock.
+    float blockSize = 256.0f;
+    uint32_t blocksPerAxis = 16;
+    // Height-atlas texel size in UV (1 / atlasRes, atlasRes == tilesPerAxis
+    // * hRes): the far VS's central-difference normal taps.
+    float invAtlasRes = 1.0f / 4096.0f;
 };
-static_assert(sizeof(TerrainBlockPush) == 36,
+static_assert(sizeof(TerrainBlockPush) == 48,
               "TerrainBlockPush moved - update terrain.frag.hlsl + terrainfar.vert.hlsl");
 
 inline constexpr uint32_t kTerrainPushOffset = 192;
@@ -121,8 +133,10 @@ struct TerrainField {
     uint32_t atlasSlot = 0xFFFFFFFFu;
     bool valid = false;
 
-    std::vector<TerrainBlockInfo> blocks; // 256, row-major
+    std::vector<TerrainBlockInfo> blocks; // blocksPerAxis^2, row-major
     std::array<uint32_t, 3> indicesPerLod{0, 0, 0};
+    uint32_t blocksPerAxis = kDefaultBlocksPerAxis; // worldSize / gBlock
+    uint32_t atlasRes = 4096;                       // tilesPerAxis * hRes
     uint32_t farIndexCount = 0;
     uint32_t vertexCount = 0;
     uint32_t farVertexCount = 0;
