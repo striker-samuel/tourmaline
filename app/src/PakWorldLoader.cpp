@@ -385,7 +385,13 @@ tour::mem::LinearPtr<tour::World> LoadPakWorld(PakPreload pre,
                                                                   pre.viewDir);
         // Bound streaming to the GPU-scene mesh budget so a dense area never
         // oversubscribes the GPU-driven path (and spills to the legacy direct).
-        streamer->SetMaxLoadedMeshes(tour::gfx::kMaxMeshes);
+        // TOURMALINE_COARSE_ONLY=1 (correctness-first): load only the entry
+        // scene's coarse LOD - no fine pages stream in - so the island renders
+        // at coarse detail while the representation issues are worked through.
+        const uint32_t budget = std::getenv("TOURMALINE_COARSE_ONLY")
+                                    ? uint32_t(world->meshLocations.size())
+                                    : tour::gfx::kMaxMeshes;
+        streamer->SetMaxLoadedMeshes(budget);
         world->SetPageStreamer(std::move(streamer));
     }
     std::cerr << "[App] entry scene loaded (" << (scenes.size() - 1)
@@ -551,7 +557,13 @@ tour::mem::LinearPtr<tour::World> LoadProjectWorld(std::vector<PakPreload> prelo
                                                                   entry.viewDir);
         // Bound streaming to the GPU-scene mesh budget so a dense area never
         // oversubscribes the GPU-driven path (and spills to the legacy direct).
-        streamer->SetMaxLoadedMeshes(tour::gfx::kMaxMeshes);
+        // TOURMALINE_COARSE_ONLY=1 (correctness-first): load only the entry
+        // scene's coarse LOD - no fine pages stream in - so the island renders
+        // at coarse detail while the representation issues are worked through.
+        const uint32_t budget = std::getenv("TOURMALINE_COARSE_ONLY")
+                                    ? uint32_t(world->meshLocations.size())
+                                    : tour::gfx::kMaxMeshes;
+        streamer->SetMaxLoadedMeshes(budget);
         world->SetPageStreamer(std::move(streamer));
     }
     std::cerr << "[App] project entry scene loaded (" << (scenes.size() - 1)
