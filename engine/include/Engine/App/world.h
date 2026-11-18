@@ -426,11 +426,11 @@ struct World {
 
     // Per-PSO-bin contiguous ranges into drawItems: psoBinOffset_[c] is the
     // first drawItems index of pipeline class c, the class runs to
-    // psoBinOffset_[c+1] (or drawItems.size()). Class 8 is the transparent
-    // (BLEND) pass, not a raster bin; the +1 sentinel bounds the last class.
-    // drawItems is kept sorted by (psoClass, material), so each class is a
-    // contiguous range with no flag scan.
-    std::array<uint32_t, 9 + 1> psoBinOffset_{};
+    // psoBinOffset_[c+1] (or drawItems.size()). Classes 0-7 are the opaque+
+    // masked raster bins, 8-15 the same with the shadow-caster bit (a raw
+    // caster range), 16 the transparent (BLEND) pass. The +1 sentinel bounds
+    // the last class. drawItems is kept sorted by (psoClass, material).
+    std::array<uint32_t, 17 + 1> psoBinOffset_{};
 
     // INCREMENTAL DRAW LIST (the streaming path): pages never share
     // hierarchy and materials are PER-PAGE (world material indices are a
@@ -487,6 +487,13 @@ struct World {
         const auto [b, e] = PsoBinRange(cls);
         for (uint32_t i = b; i < e; ++i)
             func(drawItems[i]);
+    }
+
+    // The contiguous shadow-caster range (classes 8-15): [begin, end) into
+    // drawItems. The shadow pass walks this raw range with no per-item
+    // CastShadow flag test.
+    std::pair<uint32_t, uint32_t> ShadowCasterRange() const {
+        return {psoBinOffset_[8], psoBinOffset_[16]};
     }
 
     // Resource lookup into pages

@@ -9098,16 +9098,16 @@ void WorldRenderer::RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
                            msaa,
                            smvk::RasterSettings{.cullMode = smvk::CullMode::Front});
     cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &pc, smvk::ShaderStage::All);
-    // Opaque + masked casters, two phases over the raster bins (contiguous
-    // ranges, no ItemIndicesFor flag scan). CastShadow marks the caster
-    // subset; drawCaster splits the opaque vs masked/dither phase inside.
+    // Opaque + masked casters over the RAW caster range (classes 8-15, a
+    // contiguous run of drawItems - no per-item CastShadow flag test). Both
+    // phases walk the whole range because ditherFade (a per-frame, per-draw
+    // runtime decision) can force an otherwise-opaque caster into the masked
+    // phase; drawCaster's internal phase test (Masked flag OR ditherFade)
+    // splits them. Transparent (class 16) is outside the range and never casts.
+    const auto [cBegin, cEnd] = m_world->ShadowCasterRange();
     for (bool maskedPhase : {false, true})
-        for (uint32_t bin = 0u; bin < 8u; ++bin)
-            m_world->forEachPsoBin(bin, [&](const smvk::World::RenderItem& item) {
-                if ((item.flags & smvk::IteratorFlagBit_CastShadow) == 0)
-                    return;
-                drawCaster(item, maskedPhase);
-            });
+        for (uint32_t i = cBegin; i < cEnd; ++i)
+            drawCaster(m_world->drawItems[i], maskedPhase);
 }
 
 void WorldRenderer::RecordVolumetricShadowCasters(smvk::CommandBuffer& cmd,
@@ -15902,12 +15902,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     0, sizeof(IRenderer::PushConstants), &motionPC, smvk::ShaderStage::All);
                 // Opaque phase (opaque + double-sided + project-lit bins) and
                 // masked phase (masked bins), over contiguous ranges instead of
-                // the ItemIndicesFor flag scan.
-                for (uint32_t bin : {0u, 1u, 4u, 5u})
+                // the ItemIndicesFor flag scan. The CastShadow bit (bit 3)
+                // splits each raster bin into a non-caster (0-7) and caster
+                // (8-15) half, so BOTH halves are walked - motion vectors are
+                // drawn for casters and non-casters alike.
+                for (uint32_t bin : {0u, 1u, 4u, 5u, 8u, 9u, 12u, 13u})
                     m_world->forEachPsoBin(bin, [&](const smvk::World::RenderItem& item) {
                         drawMotionNode(item, false);
                     });
-                for (uint32_t bin : {2u, 3u, 6u, 7u})
+                for (uint32_t bin : {2u, 3u, 6u, 7u, 10u, 11u, 14u, 15u})
                     m_world->forEachPsoBin(bin, [&](const smvk::World::RenderItem& item) {
                         drawMotionNode(item, true);
                     });

@@ -2216,7 +2216,7 @@ void World::RefreshRuntimeSceneCaches() {
             return a.material < b.material;
         });
     // Per-bin contiguous offsets: psoBinOffset_[c]..psoBinOffset_[c+1] is
-    // class c's range (sentinel psoBinOffset_[8] == drawItems.size()).
+    // class c's range (sentinel psoBinOffset_[17] == drawItems.size()).
     RebuildPsoBinOffsets();
     // SoA flags mirror, rebuilt AFTER the sort so index i means the
     // same item in both arrays (the SIMD scan in ItemIndicesFor
@@ -2317,9 +2317,12 @@ std::vector<World::RenderItem> World::BuildPageDrawChunk(
 }
 
 uint8_t World::PsoClassFor(const RenderItem& item) const {
-    // Transparent (BLEND) is a separate pass, never a raster bin: class 8.
+    // Transparent (BLEND) is a separate pass, never a raster bin: class 16.
     if ((item.flags & smvk::IteratorFlagBit_Transparent) != 0)
-        return 8u;
+        return 16u;
+    // Raster bins 0-7 (doubleSided | masked | projectLit), plus bit 3 for
+    // the shadow-caster split: classes 8-15 are the CastShadow subset, a
+    // contiguous raw range the shadow pass walks without a per-item test.
     uint8_t c = 0;
     if ((item.flags & smvk::IteratorFlagBit_Masked) != 0)
         c |= 2u;
@@ -2329,6 +2332,8 @@ uint8_t World::PsoClassFor(const RenderItem& item) const {
     }
     if (ShaderFamilyOf(item.material) == smvk::MaterialShaderFamily::ProjectLit)
         c |= 4u;
+    if ((item.flags & smvk::IteratorFlagBit_CastShadow) != 0)
+        c |= 8u;
     return c;
 }
 
