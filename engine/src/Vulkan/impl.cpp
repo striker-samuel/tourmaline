@@ -3978,6 +3978,19 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
     }
     memset(defaultDescriptorSets_, 0, sizeof(defaultDescriptorSets_));
     //
+    // The packed render-target heap (docs/target_heap_packing.md) allocates
+    // VkDeviceMemory blocks with vkAllocateMemory + a VmaVirtualBlock each;
+    // TargetHeapState is a plain struct with no destructor, so free the
+    // blocks here (before the VMA allocator) or vkDestroyDevice sees a leaked
+    // VkDeviceMemory (VUID-vkDestroyDevice-device-05137).
+    for (const auto& block : m_targetHeap.blocks) {
+        if (block.virtualBlock != VK_NULL_HANDLE)
+            vmaDestroyVirtualBlock(block.virtualBlock);
+        if (block.memory != VK_NULL_HANDLE)
+            vkFreeMemory(device_, block.memory, nullptr);
+    }
+    m_targetHeap.blocks.clear();
+
     // GPU-scene holders retire before ResourceManager teardown, and all
     // deferred buffer destroys were drained above. Release pools only
     // after their allocations, before destroying the VMA allocator.
