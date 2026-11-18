@@ -524,10 +524,6 @@ endfunction()
 # ---------------------------------------------------------------------------
 function(tourmaline_project_lit_variants OUT_VAR)
     set(_V
-        "project_lit.frag.hlsl|.sg5|SG_LM_LOBE_COUNT=5"
-        "project_lit.frag.hlsl|.sg6|SG_LM_LOBE_COUNT=6"
-        "project_lit.frag.hlsl|.sg9|SG_LM_LOBE_COUNT=9"
-        "project_lit.frag.hlsl|.sg12|SG_LM_LOBE_COUNT=12"
         "project_lit.frag.hlsl|.gi0|GI_NONE=1"
         "project_lit.frag.hlsl|.gi2|GI_REGULAR=1"
         "project_lit.frag.hlsl|.gi3|GI_VOLUMES=1"
@@ -535,10 +531,6 @@ function(tourmaline_project_lit_variants OUT_VAR)
         "project_lit.frag.hlsl|.gi0std|GI_NONE=1|MAT_STANDARD=1"
         "project_lit.frag.hlsl|.gi2std|GI_REGULAR=1|MAT_STANDARD=1"
         "project_lit.frag.hlsl|.gi3std|GI_VOLUMES=1|MAT_STANDARD=1"
-        "gfxmesh_project_lit.frag.hlsl|.sg5|SG_LM_LOBE_COUNT=5"
-        "gfxmesh_project_lit.frag.hlsl|.sg6|SG_LM_LOBE_COUNT=6"
-        "gfxmesh_project_lit.frag.hlsl|.sg9|SG_LM_LOBE_COUNT=9"
-        "gfxmesh_project_lit.frag.hlsl|.sg12|SG_LM_LOBE_COUNT=12"
         "gfxmesh_project_lit.frag.hlsl|.gi0|GI_NONE=1"
         "gfxmesh_project_lit.frag.hlsl|.gi2|GI_REGULAR=1"
         "gfxmesh_project_lit.frag.hlsl|.gi3|GI_VOLUMES=1"

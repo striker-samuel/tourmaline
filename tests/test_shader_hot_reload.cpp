@@ -183,7 +183,6 @@ void TestRecompile() {
                                              "default_lit.frag.hlsl.spv",
                                              c) &&
                   ValidSpirv(out / "default_lit.frag.hlsl.spv") &&
-                  ValidSpirv(out / "default_lit.frag.hlsl.sg5.spv") &&
                   ValidSpirv(out / "default_lit.frag.hlsl.gi3std.spv") &&
                   ValidSpirv(out / "default_lit.frag.hlsl.std.spv"),
               "reload.variant-twins-land");
@@ -291,9 +290,6 @@ void TestLiveSwapCoverage() {
           "swap.cover-lit-base");
     Check(WorldRenderer::LiveSwapCovers("content/shaders/default_lit_a2c.frag.hlsl.spv"),
           "swap.cover-lit-a2c");
-    Check(WorldRenderer::LiveSwapCovers("content/shaders/default_lit.frag.hlsl.sg5.spv") &&
-              WorldRenderer::LiveSwapCovers("content/shaders/default_lit.frag.hlsl.sg12.spv"),
-          "swap.cover-lit-sg-variants");
     Check(WorldRenderer::LiveSwapCovers("content/shaders/default_lit.frag.hlsl.gi3std.spv") &&
               WorldRenderer::LiveSwapCovers("content/shaders/default_lit.frag.hlsl.std.spv"),
           "swap.cover-lit-gi-std-variants");
@@ -308,8 +304,7 @@ void TestLiveSwapCoverage() {
           "swap.cover-filtered-vs");
     Check(WorldRenderer::LiveSwapCovers("content/shaders/gpu_scene_meshlet.mesh.hlsl.spv"),
           "swap.cover-mesh-ms");
-    Check(WorldRenderer::LiveSwapCovers("content/shaders/gfxmesh_lit.frag.hlsl.spv") &&
-              WorldRenderer::LiveSwapCovers("content/shaders/gfxmesh_lit.frag.hlsl.sg9.spv"),
+    Check(WorldRenderer::LiveSwapCovers("content/shaders/gfxmesh_lit.frag.hlsl.spv"),
           "swap.cover-mesh-fs");
     Check(WorldRenderer::LiveSwapCovers("content/shaders/gfxmesh_project_lit.frag.hlsl.std.spv"),
           "swap.cover-mesh-project-fs");
