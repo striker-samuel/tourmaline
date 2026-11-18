@@ -197,6 +197,35 @@ void WorldRendererElement::Update(float dt) {
         cam.cameraOrientation_ =
             glm::angleAxis(glm::radians(m_benchTurnRate) * dt, up) * cam.cameraOrientation_;
     }
+    // Camera auto-tour (TOURMALINE_CAM_TOUR=1): slow orbit around the
+    // world's horizontal center, looking inward. Runs in interactive mode
+    // (overrides manual camera) so a large open world shows itself without
+    // any input; the orbit parameters are captured on the first frame so
+    // streaming-in pages do not drift the path.
+    if (!m_cameraTourInit) {
+        m_cameraTourInit = true;
+        if (const char* e = std::getenv("TOURMALINE_CAM_TOUR"))
+            m_cameraTour = std::atoi(e) != 0;
+    }
+    if (m_cameraTour && m_renderer.m_world) {
+        if (m_tourRadius == 0.0f) {
+            const ::tour::Aabb b = m_renderer.m_world->ComputeSceneBounds();
+            m_tourCenter = (b.mn + b.mx) * 0.5f;
+            const float horiz = std::max(b.mx.x - b.mn.x, b.mx.z - b.mn.z);
+            m_tourRadius = std::max(horiz * 0.20f, 60.0f);
+            m_tourHeight = std::max(horiz * 0.05f, 80.0f);
+        }
+        m_tourAngle += dt * 0.05f;
+        // Spiral inward: approach the center at a steady radial speed and
+        // descend proportionally so the view angle stays roughly constant.
+        m_tourRadius = std::max(m_tourRadius - 2.0f * dt, 150.0f);
+        m_tourHeight = std::max(m_tourRadius * 0.25f, 30.0f);
+        const glm::vec3 target(m_tourCenter.x, m_tourCenter.y, m_tourCenter.z);
+        const glm::vec3 eye(target.x + m_tourRadius * std::cos(m_tourAngle),
+                            target.y + m_tourHeight,
+                            target.z + m_tourRadius * std::sin(m_tourAngle));
+        m_renderer.CameraPositioner().lookAt(eye, target, glm::vec3(0.0f, 1.0f, 0.0f));
+    }
 }
 
 // Global feature shortcuts (work in both FPS and UI modes so A/B

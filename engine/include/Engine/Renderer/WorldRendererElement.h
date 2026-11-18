@@ -117,6 +117,15 @@ class WorldRendererElement : public IAppElement {
     bool m_disableControl = false;
     float m_benchMoveSpeed = 0.0f;
     float m_benchTurnRate = 0.0f; // deg/s yaw (world up), bench window only
+    // Camera auto-tour (TOURMALINE_CAM_TOUR=1): slow orbit around the
+    // world's horizontal center, looking inward — a zero-input fly-through
+    // for large open worlds. Lazy-initialised from the env on first Update.
+    bool m_cameraTour = false;
+    bool m_cameraTourInit = false;
+    float m_tourAngle = 0.0f;
+    glm::vec3 m_tourCenter{0.0f};
+    float m_tourRadius = 0.0f;
+    float m_tourHeight = 0.0f;
     // One-second, wall-clock GPU memory pressure reporting; never uses frame dt.
     std::chrono::steady_clock::time_point m_lastGpuMemoryPoll{};
     // Virtual cursor for FPS mouselook: SDL relative mode warps the real

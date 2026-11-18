@@ -2552,7 +2552,13 @@ bool WorldRenderer::onAttach() {
                     const bool containsDefault =
                         glm::all(glm::greaterThanEqual(kDefaultSpawn, bounds.mn)) &&
                         glm::all(glm::lessThanEqual(kDefaultSpawn, bounds.mx));
-                    if (containsDefault) {
+                    // The curated default spawn is a SMALL-scene pose (the
+                    // sponza atrium). A large open world happens to contain
+                    // the point too (its bounds span it), but parking there
+                    // and clamping the far clip to 10 km would clip most of a
+                    // multi-km island — large scenes take the open-world /
+                    // interior framing below instead.
+                    if (containsDefault && radius <= 12.0f) {
                         {
                             const float fitted = radius * 4.0f;
                             m_sceneFarClip = std::clamp(fitted, 50.0f, 10000.0f);
@@ -2594,22 +2600,43 @@ bool WorldRenderer::onAttach() {
                                   << " farClip=" << m_sceneFarClip << "\n";
                     } else {
                         const glm::vec3 extent = bounds.mx - bounds.mn;
-                        const bool alongZ = extent.z <= extent.x;
-                        const float eyeY = bounds.mn.y + std::clamp(extent.y * 0.25f, 2.2f, 3.2f);
-                        const glm::vec3 eye(center.x, eyeY, center.z);
-                        const glm::vec3 fwd = glm::normalize(
-                            glm::vec3(alongZ ? 0.0f : 1.0f, -0.05f, alongZ ? -1.0f : 0.0f));
-                        m_cameraPositioner.lookAt(
-                            eye, eye + fwd * 10.0f, glm::vec3(0.0f, 1.0f, 0.0f));
-                        // Far clip: cover the interior diagonal (the
-                        // orbit fit no longer applies from inside).
-                        {
-                            const float fitted = radius * 4.0f;
-                            m_sceneFarClip = std::clamp(fitted, 50.0f, 10000.0f);
+                        const float horiz = std::max(extent.x, extent.z);
+                        // OPEN-WORLD heuristic: a large, FLAT scene (vertical
+                        // extent a small fraction of the horizontal). The
+                        // interior pose below assumes a floor at bounds.mn.y
+                        // and parks the camera underground in open terrain;
+                        // an open world parks ABOVE the terrain instead.
+                        const bool openWorld = extent.y > 0.0f && horiz > extent.y * 3.0f;
+                        if (openWorld) {
+                            const float height = std::clamp(horiz * 0.08f, 50.0f, 2000.0f);
+                            const glm::vec3 eye(center.x, bounds.mx.y + height, center.z);
+                            const glm::vec3 fwd = glm::normalize(
+                                glm::vec3(0.35f, -0.9f, -0.26f)); // gentle down-slope toward -Z
+                            m_cameraPositioner.lookAt(eye, eye + fwd, glm::vec3(0.0f, 1.0f, 0.0f));
+                            m_sceneFarClip = std::clamp(horiz * 2.0f, 500.0f, 60000.0f);
+                            std::cerr << "[Scene] camera framed: open-world eye=(" << eye.x << ","
+                                      << eye.y << "," << eye.z << ") farClip=" << m_sceneFarClip
+                                      << "\n";
+                        } else {
+                            const bool alongZ = extent.z <= extent.x;
+                            const float eyeY =
+                                bounds.mn.y + std::clamp(extent.y * 0.25f, 2.2f, 3.2f);
+                            const glm::vec3 eye(center.x, eyeY, center.z);
+                            const glm::vec3 fwd = glm::normalize(
+                                glm::vec3(alongZ ? 0.0f : 1.0f, -0.05f, alongZ ? -1.0f : 0.0f));
+                            m_cameraPositioner.lookAt(
+                                eye, eye + fwd * 10.0f, glm::vec3(0.0f, 1.0f, 0.0f));
+                            // Far clip: cover the interior diagonal (the
+                            // orbit fit no longer applies from inside).
+                            {
+                                const float fitted = radius * 4.0f;
+                                m_sceneFarClip = std::clamp(fitted, 50.0f, 10000.0f);
+                            }
+                            std::cerr << "[Scene] camera framed: interior eye=(" << eye.x << ","
+                                      << eye.y << "," << eye.z << ") looking "
+                                      << (alongZ ? "-Z" : "+X") << " farClip=" << m_sceneFarClip
+                                      << "\n";
                         }
-                        std::cerr << "[Scene] camera framed: interior eye=(" << eye.x << ","
-                                  << eye.y << "," << eye.z << ") looking " << (alongZ ? "-Z" : "+X")
-                                  << " farClip=" << m_sceneFarClip << "\n";
                     }
                 }
             }

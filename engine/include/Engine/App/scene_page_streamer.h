@@ -18,6 +18,7 @@
 #include <glm/glm.hpp>
 
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 #include <vector>
 
@@ -41,7 +42,17 @@ class ScenePageStreamer {
                       glm::vec3 viewDir = {})
         : world_(world), backend_(std::move(backend)), ctx_(ctx), sceneStreamer_(sceneStreamer),
           imagePin_(std::move(imagePin)), externalTexture_(externalTexture), manifest_(manifest),
-          entryScene_(entryScene), viewDir_(viewDir), loaded_(manifest.sceneCount, nullptr) {}
+          entryScene_(entryScene), viewDir_(viewDir), loaded_(manifest.sceneCount, nullptr) {
+        // TOURMALINE_STREAM_RADIUS=<m>: override the page-stream radius so a
+        // high/overhead camera can keep the whole visible world resident
+        // (the 256 m default is a first-person radius — a multi-km island
+        // viewed from orbit needs a much larger one).
+        if (const char* e = std::getenv("TOURMALINE_STREAM_RADIUS")) {
+            const float r = std::strtof(e, nullptr);
+            if (r > 0.0f)
+                radiusMeters_ = r;
+        }
+    }
 
     // Loads pages near the camera + unloads far pages. Returns true when the
     // page set changed (the merged scene was rebuilt + uploads flushed).
