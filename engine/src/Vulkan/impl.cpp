@@ -3945,6 +3945,22 @@ smvk::VulkanResourceManager::~VulkanResourceManager() {
     });
 #endif
 
+    // Catch-all teardown: any object still alive in a pool (a Holder the
+    // element teardown missed) is destroyed here, in dependency order, so
+    // vkDestroyDevice never sees live child objects (VUID-vkDestroyDevice-
+    // device-05137). Textures first (a texture releases its bindless + view
+    // + image through its Holder), then the remaining views, images,
+    // buffers, descriptor pools and shader modules.
+    textures_.forEachHandle([&](TextureHandle handle) { destroy(this, handle); });
+    imageViews_.forEachHandle([&](ImageViewHandle handle) { destroy(this, handle); });
+    images_.forEachHandle([&](ImageHandle handle) { destroy(this, handle); });
+    buffers_.forEachHandle([&](BufferHandle handle) { destroy(this, handle); });
+    descriptorPools_.forEachHandle([&](DescriptorPoolHandle handle) {
+        if (handle != defaultDescriptorPool)
+            destroy(this, handle);
+    });
+    shaderModules_.forEachHandle([&](ShaderModuleHandle handle) { destroy(this, handle); });
+
     vkDestroyPipelineLayout(device_, defaultPipeLayout, nullptr);
     vkDestroyDescriptorSetLayout(device_, defaultSetLayout, nullptr);
     // Samplers are owned by samplerCache – clear it and avoid double-free
