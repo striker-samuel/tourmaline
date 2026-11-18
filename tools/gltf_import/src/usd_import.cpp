@@ -22,7 +22,9 @@
 #include <pxr/usd/usd/prim.h>
 #include <pxr/usd/usd/primRange.h>
 #include <pxr/usd/usd/stage.h>
+#include <pxr/usd/usd/variantSets.h>
 #include <pxr/usd/usdGeom/camera.h>
+#include <pxr/usd/usdGeom/imageable.h>
 #include <pxr/usd/usdGeom/mesh.h>
 #include <pxr/usd/usdGeom/metrics.h>
 #include <pxr/usd/usdGeom/pointInstancer.h>
@@ -735,6 +737,14 @@ struct Converter {
         // proxies; never place them directly (that would duplicate geometry).
         if (UnderPrototype(prim))
             return true;
+        // Guide-purpose geometry (scene annotations: collision shapes, lighting
+        // volumes) is not renderable content — skip the whole subtree. The
+        // purpose is inherited, so a guide parent skips its children too.
+        if (prim.IsA<UsdGeomImageable>()) {
+            const TfToken purpose = UsdGeomImageable(prim).ComputePurpose();
+            if (purpose == UsdGeomTokens->guide)
+                return true;
+        }
 
         tinygltf::Node node{};
         if (!IdentityName(prim, node.name))
@@ -811,6 +821,25 @@ bool LoadUsdFileAsModel(tinygltf::Model& model,
     const UsdStageRefPtr stage = UsdStage::Open(path.string());
     if (!stage)
         return Fail("cannot open composed stage: " + path.string());
+
+    // Caldera authors a `districtLod` variant set on each district prim
+    // (default "proxy" = the simplified/collision-ish LOD, alternative
+    // "full" = the detailed render mesh). Import the FULL variant: the proxy
+    // is not the renderable LOD. Snapshot the prims first — a variant
+    // selection re-syncs its subtree and invalidates the iteration.
+    {
+        std::vector<UsdPrim> prims;
+        for (const UsdPrim& prim : stage->Traverse())
+            prims.push_back(prim);
+        for (const UsdPrim& prim : prims) {
+            UsdVariantSets vsets = prim.GetVariantSets();
+            if (!vsets.HasVariantSet("districtLod"))
+                continue;
+            UsdVariantSet vset = vsets.GetVariantSet("districtLod");
+            if (vset.HasAuthoredVariant("full"))
+                vset.SetVariantSelection("full");
+        }
+    }
 
     // Relative layer dependencies can be copied together into the
     // project's staging dir and included in its content fingerprint.
