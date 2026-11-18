@@ -185,7 +185,7 @@ def stitch_heightfields(sources: list[Path], out_dir: Path, env: dict[str, str],
     code = r"""
 import json, sys
 from pxr import Usd, UsdGeom, Gf
-srcs, out_png, out_json = json.loads(sys.argv[1]), sys.argv[2], sys.argv[3]
+srcs, out_png, out_json, out_cov = json.loads(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
 
 def extract_grid(path):
     stage = Usd.Stage.Open(path)
@@ -275,6 +275,17 @@ ihdr = struct.pack(">IIBBBBB", unx, uny, 16, 0, 0, 0, 0)
 png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr)
        + chunk(b"IDAT", zlib.compress(bytes(raw), 9)) + chunk(b"IEND", b""))
 open(out_png, "wb").write(png)
+# Coverage mask (8-bit gray, 255 = land, 0 = water/hole) so the terrain
+# S-mask A channel can cut the water bodies. Row-major, same layout as the
+# heightmap.
+cov_raw = bytearray()
+for y in range(uny):
+    cov_raw.append(0)
+    cov_raw += bytes(255 if union[y * unx + x] is not None else 0 for x in range(unx))
+cov_ihdr = struct.pack(">IIBBBBB", unx, uny, 8, 0, 0, 0, 0)
+cov_png = (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", cov_ihdr)
+           + chunk(b"IDAT", zlib.compress(bytes(cov_raw), 9)) + chunk(b"IEND", b""))
+open(out_cov, "wb").write(cov_png)
 stage = Usd.Stage.Open(srcs[0])
 meta = {
     "origin": [minx, miny],
@@ -296,9 +307,10 @@ print("stitched %d sections -> grid %dx%d height %.3f..%.3f holes=%d maxJump=%.1
 """
     out_png = out_dir / "island.height.png"
     out_json = out_dir / "island.height.json"
+    out_cov = out_dir / "island.coverage.png"
     proc = __import__("subprocess").run(
         [str(usd_python), "-c", code, json.dumps([str(s) for s in sources]),
-         str(out_png), str(out_json)],
+         str(out_png), str(out_json), str(out_cov)],
         env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     if proc.returncode != 0:

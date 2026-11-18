@@ -55,6 +55,8 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--block", type=float, default=256.0)
     ap.add_argument("--htile", type=float, default=1024.0)
     ap.add_argument("--hres", type=int, default=1024)
+    ap.add_argument("--coverage", help="8-bit coverage mask PNG (255=land, 0=water); "
+                                      "optional, else solid masks")
     args = ap.parse_args(argv)
 
     meta = json.loads(Path(args.meta).read_text(encoding="utf-8"))
@@ -62,6 +64,14 @@ def main(argv: list[str]) -> int:
     # 16-bit grayscale -> uint16 array (row-major, nx fast / ny slow).
     hm = list(img.getdata())  # ints 0..65535
     nx, ny = img.size
+    coverage = None
+    if args.coverage:
+        cov_img = Image.open(args.coverage)
+        coverage = list(cov_img.getdata())  # 0..255 (255=land, 0=water)
+        if cov_img.size != (nx, ny):
+            print(f"caldera_terrain_tiles: coverage mask size {cov_img.size} != "
+                  f"heightmap {img.size}; ignoring coverage", flush=True)
+            coverage = None
     mpu = float(meta["metersPerUnit"])
     origin = meta["origin"]
     spacing = meta["spacing"]
@@ -122,6 +132,23 @@ def main(argv: list[str]) -> int:
     origin_x0 = origin[0] * mpu            # USD minx -> Tourmaline min X
     origin_z0 = -(origin[1] + (ny - 1) * spacing[1]) * mpu  # min Tourmaline Z
 
+    # Coverage -> world sample (bilinear, 0 = water/hole, 255 = land).
+    def sample_coverage(x: float, z: float):
+        if coverage is None:
+            return 255  # no coverage mask: everything solid
+        spx = spacing[0] * mpu
+        spy = spacing[1] * mpu
+        hx = (x - origin_x0) / spx
+        hy = (z - origin_z0) / spy
+        if hx < 0 or hy < 0 or hx > nx - 1 or hy > ny - 1:
+            return 0  # outside the heightmap footprint = ocean
+        x0 = int(hx); y0 = int(hy)
+        x1 = min(x0 + 1, nx - 1); y1 = min(y0 + 1, ny - 1)
+        fx = hx - x0; fy = hy - y0
+        v00 = coverage[y0 * nx + x0]; v10 = coverage[y0 * nx + x1]
+        v01 = coverage[y1 * nx + x0]; v11 = coverage[y1 * nx + x1]
+        return (v00 * (1 - fx) + v10 * fx) * (1 - fy) + (v01 * (1 - fx) + v11 * fx) * fy
+
     for tz in range(tiles_per_axis):
         for tx in range(tiles_per_axis):
             rows = []
@@ -139,13 +166,24 @@ def main(argv: list[str]) -> int:
                 rows.append(bytes(row))
             write_png_rgba(out / f"h_{tx:02d}_{tz:02d}.png", hres, hres, rows)
 
-    # Solid masks (A=255 solid, R=255 default surface blend) — placeholder
-    # until authored S-tiles exist. One mask tile per G-block.
+    # S-masks: one mask tile per G-block, 256x256 RGBA8. R=255 default surface
+    # blend; A = coverage (255 land / 0 water-hole) from the coverage mask, so
+    # the water bodies and the ocean pad cut out (the vertex shader clips
+    # A<0.5). Without a --coverage mask everything is solid.
     mres = 256
+    mtexel = block / float(mres)
     for bz in range(blocks_per_axis):
         for bx in range(blocks_per_axis):
-            row = bytes((255, 0, 0, 255)) * mres
-            write_png_rgba(out / f"m_{bx:02d}_{bz:02d}.png", mres, mres, [row] * mres)
+            rows = []
+            for py in range(mres):
+                row = bytearray()
+                z = origin_z + (bz * mres + py + 0.5) * mtexel
+                for px in range(mres):
+                    x = origin_x + (bx * mres + px + 0.5) * mtexel
+                    a = 255 if sample_coverage(x, z) >= 0.5 else 0
+                    row += bytes((255, 0, 0, a))
+                rows.append(bytes(row))
+            write_png_rgba(out / f"m_{bx:02d}_{bz:02d}.png", mres, mres, rows)
 
     meta_out = {
         "baseY": base_y,
