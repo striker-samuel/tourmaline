@@ -1419,6 +1419,11 @@ void World::MergePage(WorldPage& cluster, uint32_t clusterOrdinal, bool isIdenti
         if (clusterOrdinal >= staticBvhPageRoots_.size())
             staticBvhPageRoots_.resize(clusterOrdinal + 1, UINT32_MAX);
         staticBvhPageRoots_[clusterOrdinal] = UINT32_MAX;
+        // Parallel draw-chunk bookkeeping: a freshly folded page's chunk is
+        // unbuilt — RefreshRuntimeSceneCaches builds + caches it lazily.
+        if (clusterOrdinal >= pageDrawChunks_.size())
+            pageDrawChunks_.resize(clusterOrdinal + 1);
+        pageDrawChunks_[clusterOrdinal] = PageDrawChunk{};
         for (AudioSourceEntity& e : audioEntities)
             if (e.alive && e.owner == &cluster && e.clusterNode < nodeMap.size())
                 e.mergedNode = nodeMap[e.clusterNode];
@@ -1752,6 +1757,10 @@ void World::UnmergePage(WorldPage& page) {
         // surviving page roots keep their node indices).
         if (clusterOrdinal < staticBvhPageRoots_.size())
             staticBvhPageRoots_.erase(staticBvhPageRoots_.begin() + clusterOrdinal);
+        // Drop the page's cached draw chunk (parallel to `pages`); the next
+        // RebuildDerivedCaches concatenates the survivors' chunks fresh.
+        if (clusterOrdinal < pageDrawChunks_.size())
+            pageDrawChunks_.erase(pageDrawChunks_.begin() + clusterOrdinal);
         // SHARED-ASSET PARKING (mirrors UnloadCluster): live external
         // refs keep the cluster's resource rows alive — park, don't
         // destroy. The fold is still retired above (parked == unloaded).
@@ -2165,43 +2174,30 @@ void World::RefreshRuntimeSceneCaches() {
         flags[node] = f;
     }
 
-    // Compact draw list for the hot-pass iterator (forEachRenderItem):
-    // one entry per renderable node with mesh + material indices
-    // precomputed, material-sorted so per-material pipeline binds and
-    // phase splits happen once per material per pass instead of per
-    // node. stable_sort keeps hierarchy order within a material.
+    // Compact draw list for the hot-pass iterator (forEachRenderItem): one
+    // entry per renderable node with mesh + material indices precomputed.
+    // Pages never share hierarchy and materials are PER-PAGE (contiguous
+    // world material ranges assigned in merge order), so the material sort
+    // decomposes into per-page chunks concatenated in ordinal order. Cooked
+    // pages sort + cache their chunk once; the dynamic page (runtime
+    // entities) is rebuilt every batch.
     drawItems.clear();
     drawItems.reserve(scene.tables.meshes.size());
     flagLists.clear();
-    for (const MeshRow& row : scene.tables.meshes) {
-        const NodeId node = row.node;
-        if (node >= flags.size())
+    if (pageDrawChunks_.size() < pages.size())
+        pageDrawChunks_.resize(pages.size());
+    for (uint32_t i = 0; i < (uint32_t)pages.size(); ++i) {
+        WorldPage* cluster = pages[i].get();
+        if (!cluster)
             continue;
-        if (!IsVisibleNode(scene, int(node)))
-            continue; // hidden override: not drawn, not picked, not baked-listed
-        const MaterialRow* matRow = FindMaterial(scene, node);
-        // The per-item material-instance linkage (the entity mirror
-        // block above joins bound instances by merged node; static
-        // scene nodes carry none in v1). The HANDLE VALUE, not a
-        // slot index: a destroyed instance (or a younger one that
-        // reused the slot) fails ResolvedItemUserData's generation
-        // check and cleanly falls back to the base default.
-        uint64_t instanceLink = 0;
-        if (const auto it = entityInstanceByNode.find(node); it != entityInstanceByNode.end())
-            instanceLink = it->second;
-        drawItems.push_back(RenderItem{
-            .node = node,
-            .mesh = row.mesh,
-            .material = matRow ? matRow->material : defaultMaterialIndex,
-            .flags = flags[node],
-            .materialInstance = instanceLink,
-        });
+        PageDrawChunk& chunk = pageDrawChunks_[i];
+        if (cluster->isDynamic || !chunk.built) {
+            chunk.items = BuildPageDrawChunk(*cluster, i, entityInstanceByNode);
+            chunk.built = true;
+        }
+        drawItems.insert(drawItems.end(), chunk.items.begin(), chunk.items.end());
     }
-    std::stable_sort(
-        drawItems.begin(), drawItems.end(), [](const RenderItem& a, const RenderItem& b) {
-            return a.material < b.material;
-        });
-    // SoA flags mirror, rebuilt AFTER the sort so index i means the
+    // SoA flags mirror, rebuilt AFTER the concat so index i means the
     // same item in both arrays (the SIMD scan in ItemIndicesFor
     // walks this column).
     itemFlags.clear();
@@ -2217,6 +2213,78 @@ void World::RefreshRuntimeSceneCaches() {
     RefreshStaticBvh();
     ++gpuSceneTopologyRevision; // authored/runtime topology or binding remap
     dirtyCull = true;
+}
+
+std::vector<World::RenderItem> World::BuildPageDrawChunk(
+    WorldPage& page,
+    uint32_t ordinal,
+    const std::unordered_map<NodeId, uint64_t>& entityInstanceByNode) {
+    // The dynamic page's renderable rows live on the MERGED scene as entity
+    // mirrors (the durable dyn-scene nodes carry no mesh rows — the mesh
+    // binding is cross-cluster and rides the MeshEntity). Build its chunk
+    // from the entity registry instead of the (empty) dyn-scene mesh table.
+    if (page.isDynamic) {
+        std::vector<RenderItem> chunk;
+        chunk.reserve(meshEntities.size());
+        for (const MeshEntity& e : meshEntities) {
+            if (!e.alive || e.mergedNode == UINT32_MAX || e.mergedNode >= flags.size())
+                continue;
+            if (!IsVisibleNode(scene, int(e.mergedNode)))
+                continue;
+            const MeshRow* wrow = FindMesh(scene, e.mergedNode);
+            if (!wrow)
+                continue;
+            const MaterialRow* matRow = FindMaterial(scene, e.mergedNode);
+            uint64_t instanceLink = 0;
+            if (const auto it = entityInstanceByNode.find(e.mergedNode);
+                it != entityInstanceByNode.end())
+                instanceLink = it->second;
+            chunk.push_back(RenderItem{
+                .node = e.mergedNode,
+                .mesh = wrow->mesh,
+                .material = matRow ? matRow->material : defaultMaterialIndex,
+                .flags = flags[e.mergedNode],
+                .materialInstance = instanceLink,
+            });
+        }
+        std::stable_sort(chunk.begin(), chunk.end(), [](const RenderItem& a, const RenderItem& b) {
+            return a.material < b.material;
+        });
+        return chunk;
+    }
+
+    if (ordinal >= pageMergedNodes.size())
+        return {};
+    const std::vector<NodeId>& nodeMap = pageMergedNodes[ordinal];
+    std::vector<RenderItem> chunk;
+    chunk.reserve(page.scene.tables.meshes.size());
+    for (const MeshRow& crow : page.scene.tables.meshes) {
+        if (crow.node >= nodeMap.size() || nodeMap[crow.node] == UINT32_MAX)
+            continue;
+        const NodeId node = nodeMap[crow.node];
+        if (node >= flags.size())
+            continue;
+        if (!IsVisibleNode(scene, int(node)))
+            continue; // hidden override: not drawn, not picked, not baked-listed
+        const MeshRow* wrow = FindMesh(scene, node);
+        if (!wrow)
+            continue;
+        const MaterialRow* matRow = FindMaterial(scene, node);
+        uint64_t instanceLink = 0;
+        if (const auto it = entityInstanceByNode.find(node); it != entityInstanceByNode.end())
+            instanceLink = it->second;
+        chunk.push_back(RenderItem{
+            .node = node,
+            .mesh = wrow->mesh,
+            .material = matRow ? matRow->material : defaultMaterialIndex,
+            .flags = flags[node],
+            .materialInstance = instanceLink,
+        });
+    }
+    std::stable_sort(chunk.begin(), chunk.end(), [](const RenderItem& a, const RenderItem& b) {
+        return a.material < b.material;
+    });
+    return chunk;
 }
 
 StaticMesh* World::GetMesh(uint32_t meshIndex) {

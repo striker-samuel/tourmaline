@@ -8,6 +8,7 @@
 // Hand-rolled runner (same conventions as test_assets): each check prints
 // PASS/FAIL, the process exits nonzero on any failure.
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <iostream>
@@ -1569,6 +1570,15 @@ void TestIncrementalMergeUnmerge() {
     Check(w.meshLocations.size() == 2 && w.materialLocations.size() == 2,
           "incr.merge-location-tables");
     Check(w.pageMergedNodes.size() == 2, "incr.merge-node-map-grown");
+    // The draw list is the concatenation of per-page material-sorted chunks
+    // (materials are per-page, so global material order == chunk order).
+    Check(w.drawItems.size() == 2 &&
+              std::is_sorted(w.drawItems.begin(),
+                             w.drawItems.end(),
+                             [](const World::RenderItem& a, const World::RenderItem& b) {
+                                 return a.material < b.material;
+                             }),
+          "incr.merge-draw-list");
     // Per-page static-cull subtrees: one root per page, one prim per page.
     Check(w.HasStaticBvh() && w.EnsureStaticBvh().primIndices.size() == 2 &&
               w.staticBvhPageRoots_.size() == 2 && w.staticBvhPageRoots_[0] != UINT32_MAX &&
@@ -1580,6 +1590,7 @@ void TestIncrementalMergeUnmerge() {
     w.RebuildDerivedCaches();
     Check(w.pages.size() == 1 && w.pageMergedNodes.size() == 1, "incr.unmerge-erased");
     Check(w.scene.tables.meshes.size() == aMeshRows, "incr.unmerge-dropped-rows");
+    Check(w.drawItems.size() == 1, "incr.unmerge-draw-list");
     // B's location entries are dead (null cluster), NOT compacted — A's
     // surviving world indices stay put.
     Check(w.meshLocations.size() == 2 && w.meshLocations[0].cluster == aPtr &&

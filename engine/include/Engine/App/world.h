@@ -419,6 +419,19 @@ struct World {
     // SIMD scan in ItemIndicesFor walks 8 items per iteration.
     std::vector<IteratorFlags> itemFlags;
 
+    // INCREMENTAL DRAW LIST (the streaming path): pages never share
+    // hierarchy and materials are PER-PAGE (world material indices are a
+    // contiguous range assigned in page-merge order), so the material sort
+    // decomposes into per-page chunks concatenated in ordinal order. Each
+    // cooked page's chunk is sorted ONCE and cached; the dynamic page's
+    // chunk (runtime entities) is rebuilt every batch. Parallel to `pages`
+    // (dense ordinal), erased on UnmergePage.
+    struct PageDrawChunk {
+        std::vector<RenderItem> items;
+        bool built = false;
+    };
+    std::vector<PageDrawChunk> pageDrawChunks_;
+
     // Lazily cooked index lists into drawItems, keyed by the
     // required-flags combination (call sites use ~3 distinct combos).
     // Built once per combo on first request — vectorized on AVX2
@@ -1216,6 +1229,14 @@ struct World {
     // Builds (appends) one page's static-cull subtree and returns its root
     // node index. Requires the LOD chains + global transforms to be fresh.
     uint32_t BuildPageStaticBvhSubtree(WorldPage& page);
+    // Builds ONE page's material-sorted draw chunk (its RenderItem rows),
+    // using the freshly computed per-node `flags` + the entity instance
+    // linkage. Cooked pages cache the result; the dynamic page is rebuilt
+    // every batch.
+    std::vector<RenderItem> BuildPageDrawChunk(
+        WorldPage& page,
+        uint32_t ordinal,
+        const std::unordered_map<NodeId, uint64_t>& entityInstanceByNode);
     // (Re)builds staticBvh_ from the current scene. Cheap no-op when
     // there are no static mesh nodes (leaves the tree empty).
     void RebuildStaticBvh();
