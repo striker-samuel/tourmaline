@@ -54,7 +54,7 @@
 #define GFX_POS_WORDS 134217726     // GFX_MAX_VERTICES * 3 (uint view below)
 #define GFX_MAX_CLUSTERS 262144
 #define GFX_MAX_FILTERED (65536 * 128 * 3)
-#define GFX_MAX_MESHES 262144       // mirrors kMaxMeshes (world-level mesh budget)
+#define GFX_MAX_MESHES 1048576      // mirrors kMaxMeshes (world-level mesh budget)
 #define GFX_MAX_TEXTURES MAX_TEXTURES  // shared source: engine_limits.hlsli (smvk::limits::MaxTextures)
 
 // Positions as uint words (3 per vertex): the heap is packed float3

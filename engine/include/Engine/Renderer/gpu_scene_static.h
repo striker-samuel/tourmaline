@@ -21,7 +21,7 @@
 namespace tour {
 struct MeshData;
 struct World;
-}
+} // namespace tour
 namespace smvk {
 using ::tour::MeshData;
 struct CookedMeshlets;
@@ -34,11 +34,12 @@ namespace gfx {
 // so a cluster bigger than this would drop geometry (see meshlet.h's
 // kMeshletMaxTriangles, the tighter cook-time limit).
 static constexpr uint32_t kMaxClusterTris = 128;
-// World-level mesh budget (2^18). The old 8192 cap rejected large scenes
-// (the island's ~162k valid meshes); the GPU buffers are sized by the actual
-// registered count, so this is an admission ceiling, not a reservation.
+// World-level mesh budget (2^20). The old 262144 cap rejected the island's
+// dense center (a multi-district area streams in more meshes than 2^18); the
+// GPU buffers are sized by the actual registered count, so this is an
+// admission ceiling, not a reservation.
 // HLSL mirror: GFX_MAX_MESHES (gfxfilter.hlsli).
-static constexpr uint32_t kMaxMeshes = 262144;
+static constexpr uint32_t kMaxMeshes = 1048576;
 
 // Cluster record (CPU). The task/mesh + indexed raster backends read the GPU
 // mirror (ClusterConstants below) from the cluster buffer; the filtered
@@ -100,10 +101,10 @@ struct StaticGeometry {
     std::vector<Cluster> clusters;
     std::vector<Mesh> meshes;
     std::vector<IndexedRange> indexedRanges; // one range per mesh registration
-    bool indexedRangesResident = false; // false across reset or failed upload
-    std::vector<glm::vec4> meshBounds;  // per-mesh union bound (center.xyz, radius)
-    uint32_t clusterIndexBase = 0;      // region base in uint32 indices (0 = none)
-    uint64_t clusterIndexAllocBits = 0; // VMA virtual-allocation bits
+    bool indexedRangesResident = false;      // false across reset or failed upload
+    std::vector<glm::vec4> meshBounds;       // per-mesh union bound (center.xyz, radius)
+    uint32_t clusterIndexBase = 0;           // region base in uint32 indices (0 = none)
+    uint64_t clusterIndexAllocBits = 0;      // VMA virtual-allocation bits
     smvk::LogicalBufferHandle indexHeapLogical{};
     smvk::Holder<smvk::BufferHandle> clusterBuffer;
     smvk::LogicalBufferHandle clusterLogical{};
@@ -126,9 +127,7 @@ struct StaticGeometry {
 
 // Registers one mesh's retained upload as clusters/meshlets (runtime path).
 // Returns the mesh index, or UINT32_MAX on failure.
-uint32_t RegisterMeshFromUpload(StaticGeometry& s,
-                                const MeshData& upload,
-                                uint32_t baseVertex);
+uint32_t RegisterMeshFromUpload(StaticGeometry& s, const MeshData& upload, uint32_t baseVertex);
 
 // Registers a cooked meshlet set as clusters/meshlets (pak path). Returns the
 // mesh index, or UINT32_MAX on failure.
@@ -152,8 +151,7 @@ void ResetStaticRegistrations(StaticGeometry& s);
 void RegisterWorldMeshes(StaticGeometry& s, const tour::World& world);
 
 // ---- world-mesh -> gfx-mesh identity (the canonical lookup surface) ----
-[[nodiscard]] inline uint32_t GfxMeshForWorldMesh(const StaticGeometry& s,
-                                                  uint32_t worldMesh) {
+[[nodiscard]] inline uint32_t GfxMeshForWorldMesh(const StaticGeometry& s, uint32_t worldMesh) {
     return worldMesh < s.worldMeshMap.size() ? s.worldMeshMap[worldMesh] : UINT32_MAX;
 }
 [[nodiscard]] inline uint32_t GfxMeshForLod(const StaticGeometry& s,
