@@ -120,7 +120,7 @@ or creates `content/luts/neutral.png` implicitly.
 ## Known limit: legacy streaming/cluster resolve
 
 **Epoch 6c is not complete.** The current legacy
-`ResolveAndFixup_clusters()` reconstructs the World scene. It
+`ResolveAndFixup_pages()` reconstructs the World scene. It
 invalidates game node handles and bindings created through
 `AddNode()`; the implementation explicitly clears registrations and
 preserves a high-water slot generation to guard against stale handles

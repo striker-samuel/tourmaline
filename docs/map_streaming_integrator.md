@@ -79,7 +79,7 @@ retirement before destroying the streaming adapter or releasing its assets.
 
 This direct path calls `World::InstantiateSceneHierarchy` and
 `World::RetireSceneHierarchy`, never `ProjectScenes::InstantiatePrefab`,
-`World::LoadClusterFromPak`, or `ResolveAndFixup_clusters`. It rejects
+`World::LoadClusterFromPak`, or `ResolveAndFixup_pages`. It rejects
 missing bindings and scene components for which the incremental publisher
 is not implemented; it does not silently discard them. Failed rollback
 handles remain tracked for explicit cleanup, not silently orphaned.

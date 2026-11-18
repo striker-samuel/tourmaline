@@ -19,7 +19,7 @@ Implements the first real integration of the GPUIR-style persistent database
 
 ## Update and lifetime flow
 
-1. World::ResolveAndFixup_clusters increments gpuSceneTopologyRevision
+1. World::ResolveAndFixup_pages increments gpuSceneTopologyRevision
    after rebuilding drawItems. The synchronizer reconciles the complete
    renderable set only on a new topology revision: it adds instances,
    refreshes changed bindings and writes tombstones for missing sources.

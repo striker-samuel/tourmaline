@@ -44,7 +44,7 @@ ContentRegistry/AssetStore, and persistent GPU-scene work (#224/#229).
    Mutable gameplay entities live under persistent runtime ownership.
 4. The only mutable runtime graph is `World::scene`. Streaming activates
    and retires generational world nodes incrementally; it never causes a
-   full-world `ResolveAndFixup_clusters` rebuild.
+   full-world `ResolveAndFixup_pages` rebuild.
 5. CPU-ready does not mean published. An instance becomes visible only after
    its assets, GPU uploads, descriptors and scene database entry are ready.
    Retirement waits for outstanding GPU submissions.
@@ -138,7 +138,7 @@ ContentRegistry/AssetStore, and persistent GPU-scene work (#224/#229).
 - [x] Preserve unrelated World node slots and generation validity during direct hierarchy-instance retirement; cover subtree removal with headless tests (#232).
 - [ ] Verify these guarantees in production tile unload/reload (currently using the legacy bridge).
 - [ ] Remove `clusterMergedNodes`, source scene mirrors and
-  `ResolveAndFixup_clusters` on the new loading path.
+  `ResolveAndFixup_pages` on the new loading path.
 - [ ] Support standalone prefab instances and authoring undo/reimport
   with stable document IDs distinct from runtime instance IDs.
 - [ ] Replace `EnsureDynamicCluster` with persistent world-owned runtime

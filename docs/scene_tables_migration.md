@@ -38,7 +38,7 @@ shape for them; they are NOT part of this migration.
 The twelve node-association maps (`engine/include/Engine/Scene/scene.h`),
 split by value kind:
 
-| Map | Value | Kind | Serialized in pak scene blob? | Carried by `ResolveAndFixup_clusters`? |
+| Map | Value | Kind | Serialized in pak scene blob? | Carried by `ResolveAndFixup_pages`? |
 |---|---|---|---|---|
 | `meshForNode` | pool/location index | indirection | yes (pak-local asset id) | yes (→ `meshLocations`) |
 | `materialForNode` | pool/location index | indirection | yes | yes (dedup) |
@@ -64,8 +64,8 @@ Two consequences the plan must respect:
    editor/cook-only (the current code excludes it from packed runtime
    content; preserve that).
 2. **`mergeScenes` is NOT the merge path.** It deliberately drops
-   lights/cameras/decals ("merge via World::ResolveAndFixup_clusters
-   instead", Scene.cpp:929). Epoch 6 targets `ResolveAndFixup_clusters`
+   lights/cameras/decals ("merge via World::ResolveAndFixup_pages
+   instead", Scene.cpp:929). Epoch 6 targets `ResolveAndFixup_pages`
    (world.cpp) — the wipe-and-rebuild that also explains the dynamic
    cluster (below).
 
@@ -277,7 +277,7 @@ deltas are marked.
       string-owning kinds).
 
 - 6 — `refactor(world): support table remapping and merging` —
-  targets `ResolveAndFixup_clusters`, NOT `mergeScenes`; the four
+  targets `ResolveAndFixup_pages`, NOT `mergeScenes`; the four
   never-carried maps start riding the resolve here.
 - **6b — `refactor(world): stable node slots and generations`**
   (inserted): handles survive node deletion without renumbering;
@@ -316,7 +316,7 @@ deltas are marked.
       slot — the touranim "addNode keeps every array in sync" invariant
       extended to reuse, parent re-asserted LIVE not just in range) or
       appends sequentially (a never-deleted scene is bit-identical to
-      the dense era). THE REMAP CONTRACT: ResolveAndFixup_clusters and
+      the dense era). THE REMAP CONTRACT: ResolveAndFixup_pages and
       mergeScenes swapped +nodeOffset arithmetic for explicit
       nodeMap[clusterSlot] -> worldSlot tables (numerically identical
       on dense scenes, correct on holed ones — the resolve allocates

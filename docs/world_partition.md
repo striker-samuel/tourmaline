@@ -203,7 +203,7 @@ transitional compatibility path, not something this cleanup removes.
 4. **Scene streaming** — per-cell manifests referencing SHARED assets
    (instances, not duplicated meshes); batched activation at sync
    points. Do NOT stream by loading/unloading whole clusters
-   (`World::UnloadCluster`'s `ResolveAndFixup_clusters()` is a load-time
+   (`World::UnloadCluster`'s `ResolveAndFixup_pages()` is a load-time
    path). An incremental instance registry with generational handles +
    reusable slots + deferred GPU retirement replaces per-cell fixups;
    persistent gameplay entities stay OUTSIDE disposable streamed

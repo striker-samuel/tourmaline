@@ -25,7 +25,7 @@ legacy renderer/AssetStore has already been migrated.
   draw-item material sort and flag caches incrementally. Retirement removes
   only the owned draw records. The topology revision increments, global
   transform journal runs for the new subtree, and static BVH caches become
-  invalid without a full `ResolveAndFixup_clusters` call.
+  invalid without a full `ResolveAndFixup_pages` call.
 - Untyped hierarchy nodes and existing resource-mapped mesh/material rows
   are supported. Non-render runtime components (audio, physics, schemas,
   GI/cubemaps/volumes, animations) still fail closed until their independent

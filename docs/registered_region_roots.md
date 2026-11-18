@@ -11,7 +11,7 @@ are independent from that boundary.
   a root-to-index lookup, and nearest-ancestor membership.
 - `World::regions` and its registration, removal, and query methods provide
   an explicit world-level API.
-- The transitional `ResolveAndFixup_clusters` path registers each imported
+- The transitional `ResolveAndFixup_pages` path registers each imported
   cluster subtree as a region. Registrations are discarded when that path
   rebuilds the entire Scene, preventing stale slot identity from carrying
   across a reset.

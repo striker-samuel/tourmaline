@@ -430,7 +430,7 @@ AppImpl (window, smvk::Context m_context, swapchain, frame loop)
   The editor-only passes remain active for all other viewports.
 * **World**: `m_world` GPU world + primary-cluster texture/material/light pools.
   Structural edits preserve indices (no Resolve); `RefreshNodeDrawState` mirrors
-  `ResolveAndFixup_clusters` flag rules per node.
+  `ResolveAndFixup_pages` flag rules per node.
 * **Cameras/viewports**: `EditorCam` orbit frames (target/yaw/pitch/dist + persp/ortho);
   layout Single or Quad 2×2; hovered viewport is ACTIVE (input/gizmo/shadows/framing).
   `ViewMode` is per-viewport (F-keys act on active). The shared live-preview policy
