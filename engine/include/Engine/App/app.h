@@ -79,7 +79,23 @@ class App {
     // Shutdown detaches the element stack while everything is alive.
     // Hosts override for custom boot/teardown or a custom DrawFrame
     // (EditorApp); the DEFAULT DrawFrame below is the element pump.
+    //
+    // MANUAL BOOT: Initialize() is the one-call default that runs
+    // InitializePlatform() then InitializeGraphicsCore() in order. A host
+    // that wants to control device acquisition (or interleave its own
+    // work — e.g. a pak preload — between platform boot and graphics
+    // creation) overrides Initialize() and calls these two directly, or
+    // overrides InitializeGraphicsCore() to construct the device itself.
     virtual bool Initialize();
+    // Platform boot: layer filtering, loader/DLSS init, SDL video +
+    // gamepad, the window, the input bridge, best-effort audio. No Vulkan
+    // device exists yet after this returns.
+    virtual bool InitializePlatform();
+    // Graphics core: ResourceManager (the Vulkan device) + swapchain +
+    // rendergraph + the default World. Requires InitializePlatform() to
+    // have succeeded (window non-null). Hosts override to control device
+    // acquisition/features or to defer graphics creation.
+    virtual bool InitializeGraphicsCore();
     virtual void Shutdown();
     virtual bool Run();
     void MainLoop();

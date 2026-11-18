@@ -12577,6 +12577,12 @@ VkImageView GetImageView(smvk::RenderGraph* rg, smvk::LogicalImageViewHandle log
 }
 
 bool tour::App::Initialize() {
+    if (!InitializePlatform())
+        return false;
+    return InitializeGraphicsCore();
+}
+
+bool tour::App::InitializePlatform() {
     // Loader implicit overlays load regardless of VkInstanceCreateInfo layer counts.
     // Filter crash-prone hooks before DLSS/Volk makes any Vulkan loader call.
     smvk::vulkan_layers::DisableKnownBadLayers();
@@ -12643,13 +12649,16 @@ bool tour::App::Initialize() {
         std::cerr << "[Audio] disabled: " << m_audio.LastError() << "\n";
     }
 
+    return true;
+}
+
+bool tour::App::InitializeGraphicsCore() {
     m_context = smvk::mem::MakeProcess<ResourceManager>(window);
     m_swapchain = smvk::mem::MakeProcess<Swapchain>(*m_context, window);
 
     m_rendergraph = smvk::mem::MakeProcess<RenderGraph>(*m_context);
     m_world = smvk::mem::MakeProcess<World>();
 
-    // Init imgui?s
     return true;
 }
 void tour::App::WaitForDeviceIdle() {
