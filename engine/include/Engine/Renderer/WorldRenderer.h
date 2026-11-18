@@ -3559,11 +3559,16 @@ class WorldRenderer : public IRenderer {
     // normalBias = 1 world-space texel; depth bias = 0.5 texel / actual Z range).
     float m_cascadeDepthBiasScale = 1.0f;
     float m_cascadeNormalBiasScale = 1.0f;
-    // Effective split far plane (see m_cascadeMaxDistance).
+    // Effective split far plane (see m_cascadeMaxDistance). The default
+    // (no slider) caps the CSM coverage at a sane near-range distance
+    // instead of the full far clip: a multi-km open-world far clip would
+    // stretch the cascades over the whole island and rasterize every caster
+    // (the shadow map spends its texels on kilometres of nothing). Small
+    // scenes keep their far clip unchanged (min of the two).
     float CascadeFar() const {
         if (m_cascadeMaxDistance > 0.0f)
             return std::clamp(m_cascadeMaxDistance, default_near_clip + 1.0f, m_sceneFarClip);
-        return m_sceneFarClip;
+        return std::min(m_sceneFarClip, 2000.0f);
     }
     // Live tile extent (atlas after Ensure; falls back to the selected
     // resolution before the first Ensure).
