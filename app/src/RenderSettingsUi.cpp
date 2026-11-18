@@ -1333,6 +1333,15 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                                     euler.x,
                                     euler.z);
                         ImGui::TextDisabled("quat: %.3f %.3f %.3f %.3f", q.x, q.y, q.z, q.w);
+                        // Position editor: type a world position and press
+                        // Enter (or click away) to teleport there, keeping the
+                        // current look direction. The field shows the live
+                        // position while not being edited.
+                        glm::vec3 camPos = m_cameraPositioner.getPosition();
+                        ImGui::SetNextItemWidth(320.0f);
+                        ImGui::InputFloat3("Camera position", &camPos.x, "%.1f");
+                        if (ImGui::IsItemDeactivatedAfterEdit())
+                            m_cameraPositioner.setPosition(camPos);
                     }
                     ImGui::Text("Swapchain %ux%u  framesInFlight=%u",
                                 fb.swapchain->GetExtent().width,
