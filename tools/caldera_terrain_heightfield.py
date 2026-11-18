@@ -52,8 +52,20 @@ def usd_env(usd_root: Path) -> dict[str, str]:
 
 
 def discover_terrain(caldera_root: Path) -> list[Path]:
+    # The terrain SECTION ASSEMBLY is st_<x>.usd; it references the
+    # st_<x>.terrain.usd mesh and places the `height` grid in world space via
+    # a parent xform (super_terrain_<n>). Extracting from the .terrain.usd
+    # mesh directly reads identity-space points, so every section overlaps at
+    # the origin. We therefore open the assembly and apply the height mesh's
+    # composed world transform below.
     island = caldera_root / "map_source" / "prefabs" / "br" / "wz_vg" / "mp_wz_island"
-    return sorted((island / "superterrrain").rglob("*.terrain.usd"))
+    files: list[Path] = []
+    for season in ("season_4", "season_5"):
+        for p in sorted((island / "superterrrain" / season).glob("st_*.usd")):
+            if ".terrain" in p.name or ".splined_models" in p.name:
+                continue
+            files.append(p)
+    return files
 
 
 def _png_chunk(typ: bytes, data: bytes) -> bytes:
@@ -82,19 +94,25 @@ def extract_heightfield(src: Path, out_dir: Path, env: dict[str, str],
     # interpreter USD-free).
     code = r"""
 import json, sys, math
-from pxr import Usd, UsdGeom
+from pxr import Usd, UsdGeom, Gf
 src, out_png, out_json = sys.argv[1], sys.argv[2], sys.argv[3]
 stage = Usd.Stage.Open(src)
 if not stage:
     sys.exit("cannot open stage: " + src)
 # The terrain is the single big `height` mesh (regular X/Y grid, Z = height).
+# The assembly's parent xform places it in world space; the mesh's own
+# points are identity-space. Transform to world so sections land at their
+# true island offsets (a pure translation per section here, but apply the
+# full matrix for generality).
 best = None
 for p in stage.Traverse():
     if p.IsA(UsdGeom.Mesh) and p.GetName() == "height":
         m = UsdGeom.Mesh(p)
         pts = m.GetPointsAttr().Get()
         if pts is not None and len(pts) > 0:
-            best = pts
+            world = m.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+            best = [world.Transform(Gf.Vec3d(float(q[0]), float(q[1]), float(q[2])))
+                    for q in pts]
             break
 if best is None:
     sys.exit("no `height` mesh in " + src)
@@ -166,16 +184,20 @@ def stitch_heightfields(sources: list[Path], out_dir: Path, env: dict[str, str],
     # share the 32-inch spacing, so the union is one regular grid.
     code = r"""
 import json, sys
-from pxr import Usd, UsdGeom
+from pxr import Usd, UsdGeom, Gf
 srcs, out_png, out_json = json.loads(sys.argv[1]), sys.argv[2], sys.argv[3]
 
 def extract_grid(path):
     stage = Usd.Stage.Open(path)
     for p in stage.Traverse():
         if p.IsA(UsdGeom.Mesh) and p.GetName() == "height":
-            pts = UsdGeom.Mesh(p).GetPointsAttr().Get()
+            m = UsdGeom.Mesh(p)
+            pts = m.GetPointsAttr().Get()
             if not pts or len(pts) == 0:
                 return None
+            world = m.ComputeLocalToWorldTransform(Usd.TimeCode.Default())
+            pts = [world.Transform(Gf.Vec3d(float(q[0]), float(q[1]), float(q[2])))
+                   for q in pts]
             xs = [q[0] for q in pts]; ys = [q[1] for q in pts]; zs = [q[2] for q in pts]
             ux = sorted(set(round(v, 6) for v in xs)); uy = sorted(set(round(v, 6) for v in ys))
             if len(ux) < 2 or len(uy) < 2:
