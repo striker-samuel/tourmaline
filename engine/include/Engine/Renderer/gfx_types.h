@@ -345,65 +345,6 @@ static_assert(sizeof(FilteredVsPush) == 48);
 inline constexpr const char* kProjectLitFsPath = "content/shaders/project_lit.frag.hlsl.spv";
 inline constexpr const char* kProjectLitA2CFsPath = "content/shaders/project_lit_a2c.frag.hlsl.spv";
 
-// Mesh params blob. Must match GfxMeshParamsData in gfxmesh.hlsli
-// (two matrices first for 16-alignment, then 10 BDAs, 4 uints, the
-// deformed BDA + 2 uints = 240B).
-// batchList points at this dispatch's slice of the compacted eligible
-// batch indices (base folded into the address); listCount bounds it.
-// TWO matrices (the culling-freeze contract): viewProj = the gfx view
-// record's matrix (frozen while the debug freeze holds the filter — the
-// CULL matrix), outViewProj = the live main-view matrix the rasterizer
-// projects through (the indexed VS resolves the same through the live
-// render-view slab; equal to viewProj when not frozen). indirect is this
-// flight's indirect command array — the mesh gates fully-dropped clusters
-// on the filter's own indexCount == 0 decision (exact mesh/indexed parity).
-struct GfxMeshParams {
-    glm::mat4 viewProj{};
-    glm::mat4 outViewProj{};
-    uint64_t draws = 0;
-    uint64_t clusters = 0;
-    uint64_t batches = 0;
-    uint64_t positions = 0;
-    uint64_t shading = 0;
-    // Reserved (lightmaps retired): the packed-vertex-lightmap stream BDA,
-    // always 0. Kept to preserve the 240-byte HLSL GfxMeshParamsData layout.
-    uint64_t reservedLightmap = 0;
-    uint64_t indices = 0;
-    // Reserved (lightmaps retired): the chart-transform BDA, always 0.
-    uint64_t reservedLmXforms = 0;
-    uint64_t batchList = 0;
-    // This flight's indirect commands (the filter's per-batch decisions —
-    // the mesh gates fully-dropped clusters on indexCount == 0).
-    uint64_t indirect = 0;
-    uint32_t cullFlags = 0;
-    uint32_t width = 0;
-    uint32_t height = 0;
-    uint32_t listCount = 0;
-    // The per-frame DEFORMED buffer (the Northlight compute-skinning
-    // output): skinned draws (GFX_DRAW_SKINNED) fetch pos/normal/tangent
-    // words from it (indexed vi - deformedBase), everything else from the
-    // bind-pose heaps. 0 = no skinned cluster this frame (static fetches).
-    uint64_t deformed = 0;
-    uint32_t deformedBase = 0xFFFFFFFFu; // the skinned span's heap-id base
-    uint32_t pad0 = 0;
-};
-static_assert(sizeof(GfxMeshParams) == 240);
-
-// Mesh tail push (gfxfilter.mesh.hlsl GfxMeshPush tail, 16 bytes at 224:
-// deliberately OVERLAYS the FilteredVsPush tail's VS-skin fields — the mesh
-// legs never execute a VS, and the mesh shader reads its deformed pair from
-// the GfxMeshParams blob, so the shared bytes are mutually exclusive).
-// paramsAddress is identical for every span of the frame (one params
-// upload — per-span uploads to the same buffer race transfer writes
-// against graphics reads); listBase/listCount slice this dispatch.
-static constexpr uint32_t kMeshTailPushOffset = 224;
-struct MeshTailPush {
-    uint64_t paramsAddress = 0;
-    uint32_t listBase = 0;
-    uint32_t listCount = 0;
-};
-static_assert(sizeof(MeshTailPush) == 16);
-
 // Draw-side mesh eligibility (the retired gfxfilter.mesh leg's opaque
 // draw-set gate; kept as the contract-test truth table pin): opaque only.
 inline bool MeshDrawEligible(uint32_t drawSet, uint32_t drawFlags) {
