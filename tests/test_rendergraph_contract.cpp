@@ -314,30 +314,12 @@ int main() {
     Check(sizeof(smvk::gfx::FilteredVsPush) == 48, "contract.filtered-size-48");
     Check(smvk::gfx::kFilteredVsPushOffset + sizeof(smvk::gfx::FilteredVsPush) <= kScratchEnd,
           "contract.filtered-fits-scratch");
-    Check(smvk::gfx::kMeshTailPushOffset == 224, "contract.meshtail-offset-224");
-    Check(sizeof(smvk::gfx::MeshTailPush) == 16, "contract.meshtail-size-16");
-    Check(smvk::gfx::kMeshTailPushOffset + sizeof(smvk::gfx::MeshTailPush) <= kScratchEnd,
-          "contract.meshtail-fits-scratch");
-    Check(smvk::gfx::kUvFlatVsPushOffset == kScratchStart, "contract.uvflat-offset-192");
-    Check(sizeof(smvk::gfx::UvFlatVsPushTail) == 16, "contract.uvflat-size-16");
     Check(smvk::placement::kPlacementVsPushOffset == kScratchStart,
           "contract.placement-offset-192");
     Check(sizeof(smvk::placement::PlacementVsPush) == 32, "contract.placement-size-32");
     Check(smvk::placement::kPlacementVsPushOffset + sizeof(smvk::placement::PlacementVsPush) <=
               kScratchEnd,
           "contract.placement-fits-scratch");
-    // The mesh tail OVERLAYS the filtered tail's trailing 16B (the VS-skin
-    // fields): the mesh legs never execute a VS (their deformed pair rides
-    // the GfxMeshParams blob), so the shared bytes are mutually exclusive
-    // legs — pin the exact overlay (same start, same end).
-    Check(smvk::gfx::kMeshTailPushOffset == smvk::gfx::kFilteredVsPushOffset +
-                                                sizeof(smvk::gfx::FilteredVsPush) -
-                                                sizeof(smvk::gfx::MeshTailPush),
-          "contract.meshtail-overlays-filtered-skin-tail");
-    // 240B = 2 matrices (128) + 11 BDAs (88) + 4 uints + the deformed BDA
-    // (8) + 2 uints. The lightmap BDA sits between shading and indices on
-    // BOTH sides (gfxmesh.hlsli) — never reorder one side alone.
-    Check(sizeof(smvk::gfx::GfxMeshParams) == 240, "contract.meshparams-240");
     // The filtered MOTION pass's prev-model tail owns the LAST scratch
     // word (240..256 — vsPrevDeformed spans 240..248, which is why the
     // direct legs' per-draw userdata at 244 can never leak into it: the
@@ -382,9 +364,10 @@ int main() {
     Check(offsetof(smvk::gfx::FilteredVsPush, draws) == 0, "contract.tail-draws-0");
     Check(offsetof(smvk::gfx::FilteredVsPush, renderViews) == 8, "contract.tail-renderviews-8");
     Check(offsetof(smvk::gfx::FilteredVsPush, renderViewIndex) == 16, "contract.tail-viewindex-16");
-    // lmXforms rides the trailing word (216..224) the motion VS overwrites
-    // with its FrameUniforms BDA — same offset, intentional alias.
-    Check(offsetof(smvk::gfx::FilteredVsPush, lmXforms) == 24, "contract.tail-lmxforms-24");
+    // reservedLmXforms still rides bytes 216..224 (lightmaps retired) the
+    // motion VS overwrites with its FrameUniforms BDA — same offset.
+    Check(offsetof(smvk::gfx::FilteredVsPush, reservedLmXforms) == 24,
+          "contract.tail-lmxforms-24");
 
     // Scratch invariant anchor: shared fields end exactly at 192.
     Check(offsetof(PC, prevModel) == kScratchStart, "contract.scratch-starts-192");

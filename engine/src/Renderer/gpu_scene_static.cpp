@@ -1,13 +1,19 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
+#include <Engine/App/world.h>
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Renderer/gpu_scene_static.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Renderer/static_vertex_heap.h>
+#include <Engine/debug_log.h>
 
+#include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <limits>
+#include <string>
+#include <unordered_map>
 #include <utility>
 
 namespace tour::gfx {
@@ -457,6 +463,89 @@ void UploadStaticData(StaticGeometry& s, ResourceManager& ctx, RenderGraph& rg) 
             s.meshesLogical = rg.AddExternalBuffer(s.meshesBuffer, "gpu-scene mesh ranges");
         }
     }
+}
+
+void RegisterWorldMeshes(StaticGeometry& s, const tour::World& world) {
+    s.worldMeshMap.assign(world.meshLocations.size(), UINT32_MAX);
+    s.worldLodMeshMap.clear();
+    s.worldLodMeshMap.resize(world.meshLocations.size());
+    uint32_t fromCooked = 0, fromUpload = 0, skipped = 0;
+    uint64_t skippedTris = 0;
+    // Dedupe: distinct base meshes can share one LOD sibling URI, and the
+    // same base mesh is never registered twice. Key = owning cluster +
+    // pool index (stable for the register pass; all clusters are alive).
+    struct LocKey {
+        const void* cluster = nullptr;
+        uint32_t index = 0;
+        bool operator==(const LocKey& o) const {
+            return cluster == o.cluster && index == o.index;
+        }
+    };
+    struct LocHash {
+        size_t operator()(const LocKey& k) const noexcept {
+            return std::hash<const void*>{}(k.cluster) * 31u + k.index;
+        }
+    };
+    std::unordered_map<LocKey, uint32_t, LocHash> done;
+    auto registerOne = [&](const tour::World::MeshLocation& loc) -> uint32_t {
+        if (!loc.cluster || !loc.handle.valid())
+            return UINT32_MAX;
+        const LocKey key{loc.cluster, loc.handle.index()};
+        if (auto it = done.find(key); it != done.end())
+            return it->second;
+        const smvk::StaticMesh* mesh = loc.cluster->staticMeshes.get(loc.handle);
+        if (!mesh || mesh->geometry.surfaces.empty())
+            return UINT32_MAX;
+        const uint32_t baseVertex =
+            (uint32_t)std::max<int32_t>(mesh->geometry.surfaces[0].baseVertex, 0);
+        uint32_t gfxMesh = UINT32_MAX;
+        if (mesh->meshlets && !mesh->meshlets->empty()) {
+            gfxMesh = RegisterMeshFromCooked(s, *mesh->meshlets, baseVertex);
+            if (gfxMesh != UINT32_MAX)
+                ++fromCooked;
+        } else if (const smvk::MeshData* retained =
+                       loc.cluster->GetRetainedUpload(loc.handle)) {
+            gfxMesh = RegisterMeshFromUpload(s, *retained, baseVertex);
+            if (gfxMesh != UINT32_MAX)
+                ++fromUpload;
+        }
+        if (gfxMesh == UINT32_MAX)
+            skippedTris += mesh->geometry.indexCount / 3;
+        done.emplace(key, gfxMesh);
+        return gfxMesh;
+    };
+    for (size_t i = 0; i < world.meshLocations.size(); ++i) {
+        const uint32_t chainLen = world.LodChainLength((uint32_t)i);
+        if (chainLen <= 1) {
+            const uint32_t g = registerOne(world.meshLocations[i]);
+            if (g == UINT32_MAX)
+                ++skipped;
+            s.worldMeshMap[i] = g;
+            s.worldLodMeshMap[i] = {g};
+            continue;
+        }
+        std::vector<uint32_t> perLod;
+        perLod.reserve(chainLen);
+        for (uint32_t l = 0; l < chainLen; ++l) {
+            auto hit = world.ResolveLodMesh((uint32_t)i, l);
+            const uint32_t g = hit ? registerOne(*hit) : UINT32_MAX;
+            if (g == UINT32_MAX)
+                ++skipped;
+            perLod.push_back(g);
+        }
+        s.worldMeshMap[i] = perLod.empty() ? UINT32_MAX : perLod[0];
+        s.worldLodMeshMap[i] = std::move(perLod);
+    }
+    SMVK_DEBUG_LOG(
+        "[GfxFilter] meshes: %u cooked + %u runtime-cooked = %u filtered, %u direct (%llu tris)\n",
+        fromCooked,
+        fromUpload,
+        fromCooked + fromUpload,
+        skipped,
+        (unsigned long long)skippedTris);
+    SMVK_DEBUG_LOG("[GfxFilter] clusters: %u, filter indices: %llu\n",
+                   (uint32_t)s.clusters.size(),
+                   (unsigned long long)s.filterIndices.size());
 }
 
 } // namespace tour::gfx

@@ -962,12 +962,6 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                     }
                     const char* meshletModes[] = {"Random per meshlet", "Cone-cutoff heat"};
                     ImGui::Combo("Meshlet color mode (F3)", &m_debugMeshletMode, meshletModes, 2);
-                    if (ImGui::Checkbox("Cone axes (line overlay)", &m_debugCones)) {
-                        // Arm/disarm the GPU leg (SetConeDebug lazily creates
-                        // the module + the shared line buffer on first arm).
-                        smvk::gfx::SetConeDebug(
-                            m_gfxRenderer.State(), *m_context, *m_rendergraph, m_debugCones);
-                    }
                     ImGui::Checkbox("Wireframe (P)", &m_wireframe);
                     ImGui::Checkbox("Hide transparent (bisect blending)", &m_hideTransparent);
                     if (!m_gfxRenderer.DebugProgramsValid())

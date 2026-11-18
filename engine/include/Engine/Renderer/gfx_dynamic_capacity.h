@@ -99,7 +99,6 @@ struct DynamicBytes {
     size_t kept = 0;             // two candidate parity regions
     size_t cullState = 0;        // draw verdicts + five counters
     size_t skinBounds = 0;       // candidate clusters + draw union tail
-    size_t coneDebug = 0;        // two packed float3 lines per candidate
     size_t meshBatchList = 0;
 };
 
@@ -134,7 +133,6 @@ struct DynamicBytes {
         !CheckedBytes(cap.candidates, clusterStride, plan.skinBounds) ||
         !CheckedBytes(cap.draws, 4u * sizeof(uint32_t), tail) ||
         tail > std::numeric_limits<size_t>::max() - plan.skinBounds ||
-        !CheckedBytes(cap.candidates, 6u * sizeof(uint32_t), plan.coneDebug) ||
         !CheckedBytes(cap.candidates, sizeof(uint32_t), plan.meshBatchList))
         return false;
     plan.skinBounds += tail;

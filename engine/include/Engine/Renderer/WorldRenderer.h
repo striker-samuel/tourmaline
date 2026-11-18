@@ -1391,8 +1391,6 @@ struct AppResources {
     // read by the lit FS only.
     smvk::Holder<smvk::BufferHandle> dsVizParamsBuffer;
     smvk::Holder<smvk::ShaderModuleHandle> vertShader;
-    // Only static baked direct draws bind this optional VS module.
-    smvk::Holder<smvk::ShaderModuleHandle> vertLightmapShader;
     smvk::Holder<smvk::ShaderModuleHandle> fragShader; // default_lit (F1)
     smvk::ShaderProgram mainProgram;
     // Alpha-to-coverage lit FS (default_lit_a2c): same VS, coverage-from-
@@ -3753,12 +3751,6 @@ class WorldRenderer : public IRenderer {
     // 0 is invalid/uninitialized. Transient game debug streams bypass cache.
     tour::mem::ArenaFlatArray<uint64_t> m_debugDrawGpuRevisions;
 
-    // The filtered main view is ALWAYS ON - the runtime A/B toggle (false =
-    // legacy direct draws) is gone. This latch is setup-time availability
-    // ONLY (onAttach): Ensure failure or an empty cluster heap drops the
-    // filter leg for the session (gfxSlot stays invalid; everything draws
-    // direct - graceful skip, never fatal). Never user-toggled.
-    bool m_gfxFilterAvailable = true;
     // ProjectLit family fallback diagnostic (see MaterialUsesProjectLit):
     // the "family modules not loaded" report fires once per session, not
     // per material per frame.
@@ -3772,14 +3764,6 @@ class WorldRenderer : public IRenderer {
     // FS twins for base/sg/gi variants). False or unsupported device =
     // indexed multi-draws (CPU fallback).
     bool m_useGfxMesh = true;
-    // ---- Cooperative shadow draw lists (cascade + spot tiles) ----
-    // Candidates are prebuilt once per frame on the render thread (LOD
-    // decisions mutate the World halfrate cache — not thread-safe), then
-    // each shadow view's command list is built on a worker while the main
-    // thread records the rest of the frame. Futures join before Execute
-    // (the tile-pass lambdas read the built ranges) and the ring uploads
-    // run on the main thread right after (see UploadShadowList).
-    void BuildShadowDrawCandidates();
     // Direct caster recording, both phases (opaque VS-only + masked
     // alpha-test): the full legacy loop when the filter is off, and the
     // unfiltered-caster fallback inside the indirect tile passes
@@ -3805,7 +3789,6 @@ class WorldRenderer : public IRenderer {
                                        const IRenderer::PushConstants& pc);
     smvk::mem::LinearPtr<smvk::ThreadPool> m_shadowWorkers;
     std::vector<std::future<void>> m_shadowFutures;
-    std::vector<smvk::gfx::DrawRequest> m_shadowCandidates;
     // ---- Option A: occluder-only HZB depth ----
     // (The m_hizOccluderDepth toggle is GONE: the occluder-depth fill +
     // the HZB pyramid are a FIXED COST of the renderer - the fill is the
@@ -3850,9 +3833,6 @@ class WorldRenderer : public IRenderer {
     // lines keep hidden-line removal against the prepass depth.
     bool m_wireframe = false;
     smvk::TransparentMode m_transparentMode = smvk::TransparentMode::Blended;
-    bool m_debugCones = false;        // cone-axis line overlay (the GPU leg:
-                                      // SetConeDebug arms GfxConeDebug, Main
-                                      // Draws the GPU-written candidate lines)
     bool m_dumpIndirectAudit = false; // one-shot: dump GPU indirect cmds (stderr)
     // Opt-in EVSM atlas debug dump (TOURMALINE_EVSM_DUMP=<frame>): one-shot
     // after Execute — per-stage stats (moments/temp/blurred) + a log-encoded

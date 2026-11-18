@@ -548,9 +548,7 @@ class EditorApp : public tour::App {
                         bool maskedPhase,
                         bool selectedOnly,
                         bool shadowPass,
-                        bool bakedOnly = false,  // bakedOnly: skip unbaked meshes (F8 view)
-                        bool chartTail = false); // chartTail: push the per-mesh chart tail
-    // (direct-path atlas unpack for views that sample lightmaps: F8, F10)
+                        bool bakedOnly = false); // bakedOnly: skip unbaked meshes (F8 view)
     // True when the world holds anything to draw (guards vertex bindings).
     bool HasDrawItems() const;
 
@@ -3148,14 +3146,6 @@ class EditorApp : public tour::App {
     smvk::Holder<smvk::BufferHandle>
         m_lightsBuf; // ring: frames * renderer::limits::MaxSimultaneousLights
     smvk::Holder<smvk::BufferHandle> m_cascadeBuf; // ring: frames * GpuDirDesc
-    // Scene-wide lightmap chart transforms (see World::lmChartTable):
-    // uploaded on scene version change; the flat lightmap view + PNG
-    // export index it per mesh via the uvflat VS tail push.
-    smvk::Holder<smvk::BufferHandle> m_lmXformsBuf;
-    uint64_t m_lmXformsAddr = 0;
-    uint64_t m_lmXformsVersion = ~uint64_t(0);
-    size_t m_lmXformsCap = 0;
-    uint64_t EnsureChartXforms();
     smvk::Holder<smvk::ShaderModuleHandle> m_vsModule;
     smvk::Holder<smvk::ShaderModuleHandle> m_unlitFsModule;
     smvk::Holder<smvk::ShaderModuleHandle> m_litFsModule;

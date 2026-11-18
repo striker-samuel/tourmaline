@@ -20,6 +20,7 @@
 
 namespace tour {
 struct MeshData;
+struct World;
 }
 namespace smvk {
 using ::tour::MeshData;
@@ -33,7 +34,11 @@ namespace gfx {
 // so a cluster bigger than this would drop geometry (see meshlet.h's
 // kMeshletMaxTriangles, the tighter cook-time limit).
 static constexpr uint32_t kMaxClusterTris = 128;
-static constexpr uint32_t kMaxMeshes = 8192;
+// World-level mesh budget (2^18). The old 8192 cap rejected large scenes
+// (the island's ~162k valid meshes); the GPU buffers are sized by the actual
+// registered count, so this is an admission ceiling, not a reservation.
+// HLSL mirror: GFX_MAX_MESHES (gfxfilter.hlsli).
+static constexpr uint32_t kMaxMeshes = 262144;
 
 // Cluster record (CPU). The task/mesh + indexed raster backends read the GPU
 // mirror (ClusterConstants below) from the cluster buffer; the filtered
@@ -110,6 +115,13 @@ struct StaticGeometry {
     smvk::LogicalBufferHandle meshesLogical{};
     smvk::Holder<smvk::BufferHandle> meshBoundsBuffer;
     smvk::LogicalBufferHandle meshBoundsLogical{};
+    // World mesh -> gfx mesh identity (UINT32_MAX = not filterable; that
+    // world mesh draws direct). Filled by RegisterWorldMeshes; the
+    // canonical geometry identity for the GPU-scene raster backends.
+    std::vector<uint32_t> worldMeshMap;
+    // world mesh -> per-LOD gfx mesh id (worldLodMeshMap[w][l];
+    // UINT32_MAX = that LOD draws direct; [w][0] mirrors worldMeshMap[w]).
+    std::vector<std::vector<uint32_t>> worldLodMeshMap;
 };
 
 // Registers one mesh's retained upload as clusters/meshlets (runtime path).
@@ -131,6 +143,32 @@ void UploadStaticData(StaticGeometry& s, smvk::ResourceManager& ctx, smvk::Rende
 // Clears the load-time registration state (filterIndices/clusters/meshes/
 // meshlet streams).
 void ResetStaticRegistrations(StaticGeometry& s);
+
+// Walks a World's mesh locations once: registers cooked-meshlet meshes
+// (pak path) and retained-upload meshes (runtime path) into `s`, and fills
+// worldMeshMap / worldLodMeshMap. Anything else maps to UINT32_MAX (direct
+// draw). This is the static-geometry OWNER's registration walk — it no longer
+// lives on the legacy GfxRenderer.
+void RegisterWorldMeshes(StaticGeometry& s, const tour::World& world);
+
+// ---- world-mesh -> gfx-mesh identity (the canonical lookup surface) ----
+[[nodiscard]] inline uint32_t GfxMeshForWorldMesh(const StaticGeometry& s,
+                                                  uint32_t worldMesh) {
+    return worldMesh < s.worldMeshMap.size() ? s.worldMeshMap[worldMesh] : UINT32_MAX;
+}
+[[nodiscard]] inline uint32_t GfxMeshForLod(const StaticGeometry& s,
+                                            uint32_t worldMesh,
+                                            uint32_t lod) {
+    if (worldMesh >= s.worldLodMeshMap.size())
+        return UINT32_MAX;
+    const auto& chain = s.worldLodMeshMap[worldMesh];
+    if (lod >= chain.size())
+        return UINT32_MAX;
+    return chain[lod];
+}
+[[nodiscard]] inline bool IsMeshFiltered(const StaticGeometry& s, uint32_t worldMesh) {
+    return worldMesh < s.worldMeshMap.size() && s.worldMeshMap[worldMesh] != UINT32_MAX;
+}
 
 } // namespace gfx
 } // namespace tour

@@ -19,7 +19,8 @@ leaving existing CPU LOD selection and GPU meshlet rendering unchanged.
   material) expands to several submesh rows; a single-surface mesh keeps
   submeshCount == 1. Non-filterable surfaces carry geometryId = InvalidIndex.
 - Each resident/filterable Submesh.geometryId is a snapshot of
-  GfxRenderer::GfxMeshForLod(worldMesh, level), whose indices currently
+  `tour::gfx::GfxMeshForLod(worldMesh, level)` (formerly
+  `GfxRenderer::GfxMeshForLod`), whose indices currently
   change whenever GfxFilter static registrations are reset. The
   WorldRenderer increments a geometry registration revision on each
   rebuild and refreshes these references. Persistent mesh identity

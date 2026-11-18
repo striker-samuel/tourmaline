@@ -301,8 +301,11 @@ void TestLiveSwapCoverage() {
               WorldRenderer::LiveSwapCovers("content/shaders/project_lit_a2c.frag.hlsl.spv") &&
               WorldRenderer::LiveSwapCovers("content/shaders/project_lit.frag.hlsl.gi2.spv"),
           "swap.cover-project-family");
-    // The GPU-driven legs: the mesh MS + both mesh FS families (stock +
-    // project twins, every variant).
+    // The GPU-driven legs: the filtered VS (gpu_scene_raster.vert, the
+    // renamed gfxfiltered.vert), the mesh MS + both mesh FS families
+    // (stock + project twins, every variant).
+    Check(WorldRenderer::LiveSwapCovers("content/shaders/gpu_scene_raster.vert.hlsl.spv"),
+          "swap.cover-filtered-vs");
     Check(WorldRenderer::LiveSwapCovers("content/shaders/gpu_scene_meshlet.mesh.hlsl.spv"),
           "swap.cover-mesh-ms");
     Check(WorldRenderer::LiveSwapCovers("content/shaders/gfxmesh_lit.frag.hlsl.spv") &&

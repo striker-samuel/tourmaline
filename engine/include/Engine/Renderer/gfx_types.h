@@ -189,29 +189,16 @@ static constexpr uint32_t kMaxViews = 64; // mirrors kMaxRenderViews
 // GPU cluster entry (4x uvec4) moved to gpu_scene_static.h as
 // tour::gfx::ClusterConstants.
 
-// Chart atlas transform: xy = scale, zw = offset, so atlasUv =
-// chartUv * xy + zw. One entry per (mesh chart), concatenated scene-wide
-// sorted by mesh then chart; each draw's lmChartOffset is its mesh's base.
-struct LmChartXform {
-    glm::vec4 scaleOffset{0.0f}; // xy scale, zw offset
-};
-static_assert(sizeof(LmChartXform) == 16);
-
 // Per-draw frame entry. Must match HLSL GfxDraw (112 bytes).
 struct alignas(16) Draw {
     glm::mat4 model{};
     uint32_t mesh = 0;
     uint32_t flags = 0;                   // DrawFlags (bit 2 = skinned, bit 1 = dither-closeup)
     uint32_t drawSet = DrawSetBit_Opaque; // DrawSetBits bucket (seed PSO select)
-    // Lightmap chunk (HLSL GfxDraw.misc.w; 0xFFFFFFFF = none). Cooked per
-    // mesh with --lightmap; the filtered VS passes it flat to the lit
-    // fragment (static/dynamic GI separation).
-    uint32_t lmChunk = 0xFFFFFFFFu;
-    // Base offset into the scene-wide chart transform buffer for this
-    // draw's mesh (HLSL GfxDraw.misc2.x). The filtered VS resolves the
-    // atlas UV as chartUv * xform[lmChartOffset + chartId].xy/zw.
-    // 0 when the mesh carries no lightmap.
-    uint32_t lmChartOffset = 0;
+    // Lightmaps retired: misc.w / misc2.x / misc2.w are reserved stride
+    // words (kept to preserve the 112-byte HLSL GfxDraw layout).
+    uint32_t reservedMiscW = 0xFFFFFFFFu;
+    uint32_t reservedMisc2X = 0;
     // Material id (HLSL GfxDraw.misc2.y). The designated publisher group
     // resolves the draw's 5 texture slots through the materials buffer
     // with it (PublishDrawDemand); no other stage reads it.
@@ -221,14 +208,7 @@ struct alignas(16) Draw {
     // 0xFFFFFFFF = the build dropped the draw (cap). 0 in the CPU-cull
     // legacy path (which never reads it).
     uint32_t candidateBase = 0xFFFFFFFFu;
-    // HLSL misc2.w: the ADDITIVE lightmap-heap delta (lightmapBase -
-    // meshVertexBase, both vertex units — the lightmap stream packs
-    // INDEPENDENTLY of the pos/shading windows). The mesh-shader leg
-    // fetches the chart words at (vi + lmDelta) * 2; 0xFFFFFFFF = the
-    // mesh carries no lightmap stream. Unused by the indexed-raster legs
-    // (the classic filtered VS binds the lightmapped layout per mesh
-    // when lightmaps return).
-    uint32_t lmDelta = 0xFFFFFFFFu;
+    uint32_t reservedMisc2W = 0xFFFFFFFFu;
     // HLSL misc3.x: the RESOLVED per-draw material userdata (Phase A of
     // docs/shader_library_design.md): the material instance's override
     // or the base material's default, resolved by the CPU draw producer
@@ -307,32 +287,6 @@ struct SkinBoundsPush {
 };
 static_assert(sizeof(SkinBoundsPush) == 64);
 
-// GfxConeDebug push (the cone-axis overlay's GPU leg; runs after
-// GfxSkinBounds, before Main's overlay draw). Must match HLSL
-// GfxConeDebugPush in gfxfilter.hlsli (56 bytes). One 128-thread workgroup
-// per draw; threads stride the draw's clusters and write two packed
-// DebugLineVertex float3s per candidate slot (apex -> tip), the ACTUAL
-// cull cones: baked bind-pose for static draws, this frame's deformed
-// cones (the skinBounds table) for skinned draws — zero latency,
-// GPU-driven end to end (the retired CPU readback path corrupted the host
-// heap: its download destinations dangled through vector reallocation
-// between submit and poll, and the cache never landed).
-struct ConeDebugPush {
-    uint64_t draws = 0;           // this frame (misc2.z = slot base)
-    uint64_t meshes = 0;          // static per-mesh cluster ranges
-    uint64_t clusters = 0;        // static (baked bind-pose cones)
-    uint64_t skinBounds = 0;      // deformed (this frame's table)
-    uint64_t lines = 0;           // out (2 packed verts per candidate slot)
-    uint32_t skinBoundsValid = 0; // 0: every draw reads the static table
-    uint32_t drawCount = 0;
-    // The shared line buffer's candidate-slot capacity (successor of the
-    // retired GFX_MAX_BATCH_SLOTS macro): the belt-and-braces bound for
-    // every candidate-slot write.
-    uint32_t candidateCapacity = 0;
-    uint32_t pad2 = 0;
-};
-static_assert(sizeof(ConeDebugPush) == 56);
-
 // Filtered-path VS tail push (gfxfiltered.vert.hlsl + the shared seed
 // prologue, 40 bytes). Pushed at kFilteredVsPushOffset (the main pass'
 // unused prevModel scratch, bytes 192..232) so the full 256B scene push
@@ -350,12 +304,12 @@ struct FilteredVsPush {
     // it - a plain "params != 0" compare is illegal on a
     // vk::BufferPointer, so the flag word carries the null check).
     uint32_t paramsValid = 0;
-    // BDA of the chart transform buffer (0 = none). Trailing so the
-    // 24B prefix stays byte-identical to the motion VS tail
-    // (FilteredMotionPush reads draws/renderViews/renderViewIndex from
-    // 192..216 and its own FrameUniforms BDA at 216, which simply
-    // overwrites this field the motion VS never declares).
-    uint64_t lmXforms = 0;
+    // Reserved (lightmaps retired): bytes 216..224. Kept so the 24B
+    // prefix stays byte-identical to the motion VS tail (FilteredMotionPush
+    // reads draws/renderViews/renderViewIndex from 192..216 and its own
+    // FrameUniforms BDA at 216, which simply overwrites this field the
+    // motion VS never declares). Always 0.
+    uint64_t reservedLmXforms = 0;
     // VS-leg SKIN input, carried DIRECTLY (bytes 224..240 - the free
     // scratch; the mesh dispatch's MeshTailPush re-pushes 224..240 with
     // its own paramsAddress/list fields, harmless because the mesh legs
@@ -391,65 +345,6 @@ static_assert(sizeof(FilteredVsPush) == 48);
 inline constexpr const char* kProjectLitFsPath = "content/shaders/project_lit.frag.hlsl.spv";
 inline constexpr const char* kProjectLitA2CFsPath = "content/shaders/project_lit_a2c.frag.hlsl.spv";
 
-// Mesh params blob. Must match GfxMeshParamsData in gfxmesh.hlsli
-// (two matrices first for 16-alignment, then 10 BDAs, 4 uints, the
-// deformed BDA + 2 uints = 240B).
-// batchList points at this dispatch's slice of the compacted eligible
-// batch indices (base folded into the address); listCount bounds it.
-// TWO matrices (the culling-freeze contract): viewProj = the gfx view
-// record's matrix (frozen while the debug freeze holds the filter — the
-// CULL matrix), outViewProj = the live main-view matrix the rasterizer
-// projects through (the indexed VS resolves the same through the live
-// render-view slab; equal to viewProj when not frozen). indirect is this
-// flight's indirect command array — the mesh gates fully-dropped clusters
-// on the filter's own indexCount == 0 decision (exact mesh/indexed parity).
-struct GfxMeshParams {
-    glm::mat4 viewProj{};
-    glm::mat4 outViewProj{};
-    uint64_t draws = 0;
-    uint64_t clusters = 0;
-    uint64_t batches = 0;
-    uint64_t positions = 0;
-    uint64_t shading = 0;
-    // The OPTIONAL lightmap stream (PackedVertexLightmap): fetched via the
-    // per-draw additive delta (GfxDraw.misc2.w = lightmapBase -
-    // meshVertexBase); 0 when no scene mesh carries chart data at all.
-    uint64_t lightmap = 0;
-    uint64_t indices = 0;
-    uint64_t lmXforms = 0;
-    uint64_t batchList = 0;
-    // This flight's indirect commands (the filter's per-batch decisions —
-    // the mesh gates fully-dropped clusters on indexCount == 0).
-    uint64_t indirect = 0;
-    uint32_t cullFlags = 0;
-    uint32_t width = 0;
-    uint32_t height = 0;
-    uint32_t listCount = 0;
-    // The per-frame DEFORMED buffer (the Northlight compute-skinning
-    // output): skinned draws (GFX_DRAW_SKINNED) fetch pos/normal/tangent
-    // words from it (indexed vi - deformedBase), everything else from the
-    // bind-pose heaps. 0 = no skinned cluster this frame (static fetches).
-    uint64_t deformed = 0;
-    uint32_t deformedBase = 0xFFFFFFFFu; // the skinned span's heap-id base
-    uint32_t pad0 = 0;
-};
-static_assert(sizeof(GfxMeshParams) == 240);
-
-// Mesh tail push (gfxfilter.mesh.hlsl GfxMeshPush tail, 16 bytes at 224:
-// deliberately OVERLAYS the FilteredVsPush tail's VS-skin fields — the mesh
-// legs never execute a VS, and the mesh shader reads its deformed pair from
-// the GfxMeshParams blob, so the shared bytes are mutually exclusive).
-// paramsAddress is identical for every span of the frame (one params
-// upload — per-span uploads to the same buffer race transfer writes
-// against graphics reads); listBase/listCount slice this dispatch.
-static constexpr uint32_t kMeshTailPushOffset = 224;
-struct MeshTailPush {
-    uint64_t paramsAddress = 0;
-    uint32_t listBase = 0;
-    uint32_t listCount = 0;
-};
-static_assert(sizeof(MeshTailPush) == 16);
-
 // Draw-side mesh eligibility (the retired gfxfilter.mesh leg's opaque
 // draw-set gate; kept as the contract-test truth table pin): opaque only.
 inline bool MeshDrawEligible(uint32_t drawSet, uint32_t drawFlags) {
@@ -459,46 +354,14 @@ inline bool MeshDrawEligible(uint32_t drawSet, uint32_t drawFlags) {
     return true;
 }
 
-// Per-mesh chart tail for direct-path vertex shaders (uvflat1.vert.hlsl,
-// default.vert.hlsl — 16 bytes). Pushed at kUvFlatVsPushOffset (the scene
-// push's unused prevModel scratch, bytes 192..208) per mesh. Zeroed
-// scratch reads hasXforms == 0 and selects the raw chart-uv passthrough,
-// so passes that never push a tail need no handling; chartOffset is the
-// mesh's base into the lmXforms table. Must match the HLSL tail structs.
-static constexpr uint32_t kUvFlatVsPushOffset = 192;
-struct UvFlatVsPushTail {
-    uint32_t hasXforms = 0;
-    uint32_t chartOffset = 0;
-    uint64_t lmXforms = 0;
-};
-static_assert(sizeof(UvFlatVsPushTail) == 16);
-
-// DIRECT static-geometry LM metadata at bytes 224..240. This overlaps
-// the 16-byte unused padding of DepthSkinTail (208..240). The Main
-// direct draw publishes this AFTER the per-draw skin tail. A magic word
-// makes existing non-main uses of the same vertex module fail closed.
-static constexpr uint32_t kDirectLightmapPullOffset = 224;
-static constexpr uint32_t kDirectLightmapPullMagic = 0x4C4D5055u; // 'LMPU'
-struct DirectLightmapPullTail {
-    uint32_t delta = 0;
-    uint32_t lobeCount = 0xFFFFFFFFu;
-    uint32_t magic = 0;
-    uint32_t reserved = 0;
-};
-static_assert(sizeof(DirectLightmapPullTail) == 16);
-
-// One indirect command range per (material, lightmap lobe class)
-// (commands sorted by both keys): a single multi-draw per range, and
-// the Main filtered leg binds the matching lit program (the generic
-// one, or the SG_LM_LOBE_COUNT-specialized twin for uniform-lobe
-// ranges) exactly once per range.
+// One indirect command range per material (commands sorted by material):
+// a single multi-draw per range, and the Main filtered leg binds the
+// matching lit program exactly once per range.
 struct MaterialRange {
     uint32_t material = 0;
     uint32_t firstCommand = 0;
     uint32_t commandCount = 0;
-    // Cooked SG-lightmap lobe count shared by every draw in the range
-    // (5/6/9/12; 0xFFFFFFFFu = mixed/none — bind the generic lit FS).
-    uint32_t lobeCount = 0xFFFFFFFFu;
+    uint32_t reserved = 0xFFFFFFFFu;
 };
 
 struct Stats {
@@ -512,26 +375,6 @@ struct Stats {
 // ---------------------------------------------------------------------------
 // Plain state (no methods). Single instance lives in the app renderer.
 // ---------------------------------------------------------------------------
-
-struct DrawRequest {
-    uint32_t mesh = 0;
-    uint32_t material = 0;
-    glm::mat4 model{1.0f};
-    DrawFlags flags = 0;
-    DrawSetMask drawSet = DrawSetBit_Opaque;
-    uint32_t lmChunk = 0xFFFFFFFFu; // rides the draw ring (misc.w)
-    uint32_t lmChartOffset = 0;     // base into the chart transform buffer (misc2.x)
-    // The per-draw additive lightmap-heap delta (HLSL misc2.w; see the
-    // Draw field). 0xFFFFFFFF = the mesh carries no lightmap stream.
-    uint32_t lmDelta = 0xFFFFFFFFu;
-    // The RESOLVED per-draw material userdata (HLSL misc3.x — the
-    // material instance override or the base material default, resolved
-    // by the caller from the World's runtime state at frame build; see
-    // World::ResolvedItemUserData). 0 = none (the StandardLit no-op
-    // family ignores it entirely).
-    uint32_t userData = 0;
-    uint32_t lightLayerMask = 0xffffffffu;
-};
 
 // WorldPage / Mesh moved to gpu_scene_static.h (tour::gfx::Cluster /
 // tour::gfx::Mesh) — the render sidecar references them from StaticGeometry.
@@ -638,21 +481,6 @@ ClusterFootprint ProjectClusterFootprint(const glm::vec3& worldCenter,
                                          const glm::mat4& viewProj,
                                          uint32_t width,
                                          uint32_t height);
-// Mip whose texel covers a rectW x rectH px footprint (ceil(log2(max)),
-// clamped to [0, mips); caller guarantees mips > 0.
-uint32_t HzbMipForRect(float rectW, float rectH, uint32_t mips);
-// Conservative occlusion test over an explicit HZB image (row-major
-// floats in HzbMipOffsetFloats layout, MIN-reduced). True = provably
-// hidden (nearest point behind every covered texel). Rects missing the
-// target, behind-camera footprints and empty pyramids keep (false).
-// outBindingStored (optional): the MIN stored depth over the covered
-// texels — the value the cull decision hangs on (audit/debug).
-bool HzbOccluded(const float* hzb,
-                 uint32_t w,
-                 uint32_t h,
-                 uint32_t mips,
-                 const ClusterFootprint& f,
-                 float* outBindingStored = nullptr);
 
 // Compute push. Must match HLSL HzbPush in hzb.hlsli (48 bytes).
 // srcMip = kHizSrcDepth copies mip 0 from the depth texture instead.
@@ -757,25 +585,6 @@ struct State : StaticGeometry {
     uint32_t skinBoundsDrawCap[smvk::limits::MaxFramesInFlight] = {};
     uint32_t skinBoundsCandidateWant[smvk::limits::MaxFramesInFlight] = {};
     uint32_t skinBoundsDrawWant[smvk::limits::MaxFramesInFlight] = {};
-    // GfxConeDebug (the cone-axis overlay's GPU leg): writes two packed
-    // DebugLineVertex float3s per candidate slot — the ACTUAL cull cones
-    // (baked bind-pose for static draws, this frame's deformed cones for
-    // skinned draws) — GPU-driven end to end (the retired CPU readback path
-    // corrupted the host heap and never landed). Lazily armed by the
-    // overlay's UI toggle (SetConeDebug); one shared line buffer (the
-    // candidate slot space is a dense prefix, so [0, 2*candidateTotal) is
-    // exactly the written range).
-    smvk::Holder<smvk::ShaderModuleHandle> coneDebugModule;
-    smvk::ShaderProgram coneDebugProgram{};
-    smvk::Holder<smvk::BufferHandle> coneDebugLines;
-    smvk::LogicalBufferHandle coneDebugLinesLogical{};
-    bool coneDebug = false; // the UI toggle's armed state
-    // Runtime line-buffer capacity (the dynamic cutover — ONE shared
-    // buffer, candidate-slot strided): cap = allocated capacity,
-    // want = the monotone high-water requirement (SetConeDebug sizes a
-    // fresh buffer from it; FinalizeView grows an armed one).
-    uint32_t coneDebugCap = 0;
-    uint32_t coneDebugWant = 0;
     smvk::Holder<smvk::ShaderModuleHandle> filterModule;
     smvk::ShaderProgram filterProgram{};
     smvk::Holder<smvk::ShaderModuleHandle> hizModule;
@@ -811,8 +620,8 @@ struct State : StaticGeometry {
 // The gfx-filter shader passes (gfxfilter.cs / gfxfiltered.vert) were
 // hard-deleted with the renderer; the GPU-scene raster shaders are their
 // replacements. These paths feed GfxRenderer::Ensure, which must NOT fail:
-// a deleted path here collapses the whole GPU-scene sync (m_gfxFilterAvailable
-// -> false -> no mesh registration -> the task/mesh path never activates).
+// a deleted path here collapses the whole GPU-scene sync (no filter program
+// -> no mesh registration -> the task/mesh path never activates).
 inline constexpr const char* kGfxFilterCsPath =
     "content/shaders/gpu_scene_raster_drawbuild.cs.hlsl.spv";
 inline constexpr const char* kGfxFilteredVsPath = "content/shaders/gpu_scene_raster.vert.hlsl.spv";
@@ -821,48 +630,10 @@ inline constexpr const char* kHizCsPath = "content/shaders/hzb.cs.hlsl.spv";
 // MIN pyramid; the base .spv is the ssgi MAX build).
 inline constexpr const char* kHizSpdCsPath = "content/shaders/hzb_spd.cs.hlsl.min.spv";
 inline constexpr const char* kGfxSkinBoundsCsPath = "content/shaders/gfxskinbounds.cs.hlsl.spv";
-inline constexpr const char* kGfxConeDebugCsPath = "content/shaders/gfxcone_debug.cs.hlsl.spv";
 
 // ---- GPU cull chain pass shells (caller sets the recording func) ----
-// Deformed cluster bounds: runs between the skinning pass and GfxBatchCull.
-// One 128-thread workgroup per draw; threads stride the draw's clusters and
-// write an object-space bounding sphere (cone degenerated) per candidate
-// slot from the frame's deformed heap. No-op when no skinned cluster exists
-// (the caller gates on State::skinDeformedBda).
-smvk::RenderPass& AddSkinBoundsPass(State& s, smvk::RenderGraph& rg, uint32_t view);
-void PushAndDispatchSkinBounds(State& s,
-                               smvk::CommandBuffer& cmd,
-                               smvk::ResourceManager& ctx,
-                               uint32_t view);
 // Creates the per-flight skinBounds ring + module lazily (idempotent).
 bool EnsureSkinBounds(State& s, smvk::ResourceManager& ctx, smvk::RenderGraph& rg);
-// Cone-axis overlay's GPU leg: runs after GfxSkinBounds, before Main's
-// overlay draw. One 128-thread workgroup per draw; threads stride the
-// draw's clusters and write TWO packed DebugLineVertex float3s per
-// candidate slot (apex -> tip) — the ACTUAL cull cones (baked bind-pose
-// for static draws, this frame's deformed cones for skinned draws). The
-// candidate slot space is a dense prefix, so [0, 2*candidateTotal) is
-// exactly the written range; Main Draws that count over the line buffer.
-smvk::RenderPass& AddConeDebugPass(State& s, smvk::RenderGraph& rg, uint32_t view);
-void PushAndDispatchConeDebug(State& s,
-                              smvk::CommandBuffer& cmd,
-                              smvk::ResourceManager& ctx,
-                              uint32_t view);
-// Arms/disarms the overlay (the UI toggle's handler): on enable, lazily
-// creates the module/program + the shared line buffer + logical; on
-// disable, only the flag flips (the buffer stays — re-arm is free). The
-// per-frame pass is recorded only while ConeDebugReady(s).
-void SetConeDebug(State& s, smvk::ResourceManager& ctx, smvk::RenderGraph& rg, bool enable);
-[[nodiscard]] inline bool ConeDebugReady(const State& s) {
-    return s.coneDebug && s.coneDebugProgram.shaderCount != 0 && !s.coneDebugLines.empty() &&
-           !s.coneDebugLinesLogical.empty();
-}
-[[nodiscard]] inline smvk::LogicalBufferHandle ConeDebugLinesLogical(const State& s) {
-    return s.coneDebugLinesLogical;
-}
-[[nodiscard]] inline smvk::BufferHandle ConeDebugLinesBuffer(const State& s) {
-    return s.coneDebugLines; // Holder's implicit handle conversion
-}
 bool EnsureShaders(State& s, smvk::ResourceManager& ctx, const char* csPath = kGfxFilterCsPath);
 // Creates shader only; per-(view, frame) buffers are allocated on demand
 // by BeginView (pool) so unused views cost nothing.
@@ -878,9 +649,6 @@ void Destroy(State& s, smvk::RenderGraph& rg);
 // Mesh registration (RegisterMeshFromUpload/FromCooked), UploadStaticData
 // and ResetStaticRegistrations moved to gpu_scene_static.h (they operate on
 // tour::gfx::StaticGeometry — the static registration half — not State).
-[[nodiscard]] inline uint32_t MeshCount(const State& s) {
-    return (uint32_t)s.meshes.size();
-}
 [[nodiscard]] inline uint32_t ClusterCount(const State& s) {
     return (uint32_t)s.clusters.size();
 }
@@ -1056,16 +824,6 @@ bool UploadTextureMeta(State& s,
 [[nodiscard]] inline uint32_t CullStateWords(const State& s, uint32_t view, uint32_t frameIndex) {
     return CullStateCounterWord(s, view, frameIndex) + 5u;
 }
-// Current-flight capacity accessors (the dispatch/push fill sites and
-// the audits read these; drawCapacity doubles as the counter word base).
-[[nodiscard]] inline uint32_t DrawCapacity(const State& s, uint32_t view) {
-    assert(view < s.views.size());
-    return s.views[view].drawCapacity[s.views[view].frameIndex];
-}
-[[nodiscard]] inline uint32_t CandidateCapacity(const State& s, uint32_t view) {
-    assert(view < s.views.size());
-    return s.views[view].candidateCapacity[s.views[view].frameIndex];
-}
 // Live slot count in the uploaded meta table (bounds the consumer's
 // download + forward range; 0 = demand source inactive — the shader's
 // publisher is gated off too).
@@ -1079,10 +837,6 @@ bool UploadTextureMeta(State& s,
 void ClearDemand(State& s, smvk::ResourceManager& ctx, uint32_t frameIndex);
 
 // ---- Accessors (frame slices resolved from the view's frameIndex) ----
-[[nodiscard]] inline uint32_t ViewFrame(const State& s, uint32_t view) {
-    assert(view < s.views.size());
-    return s.views[view].frameIndex;
-}
 // HZB pyramid slice for this view's current flight (same rule as every
 // other per-frame mutable above).
 [[nodiscard]] inline HizResources& Hiz(State& s, uint32_t view) {
@@ -1092,21 +846,6 @@ void ClearDemand(State& s, smvk::ResourceManager& ctx, uint32_t frameIndex);
 [[nodiscard]] inline const HizResources& Hiz(const State& s, uint32_t view) {
     assert(view < s.temporals.size() && view < s.views.size());
     return s.temporals[view].hiz[s.views[view].frameIndex];
-}
-[[nodiscard]] inline smvk::BufferHandle BatchBuffer(const State& s, uint32_t view) {
-    assert(view < s.views.size());
-    return s.views[view].batchBuffers[s.views[view].frameIndex];
-}
-// Fills the FilteredVsPush tail's VS-skin fields (the skinned fetch
-// swap's inputs) from the State. paramsValid gates the whole swap in
-// the HLSL (a plain pointer compare is illegal on vk::BufferPointer):
-// 1 = the frame carries a live deformed heap (the driver set
-// skinDeformedBda). The deformed pair is per-frame (the renderer's
-// skinning driver); the bind-pose heaps are the eternal static heaps.
-inline void FillVsSkinTail(FilteredVsPush& tail, const State& s) {
-    tail.vsDeformed = s.skinDeformedBda;
-    tail.vsDeformedBase = s.skinDeformedBase;
-    tail.paramsValid = (s.skinDeformedBda != 0 && s.skinDeformedBase != UINT32_MAX) ? 1u : 0u;
 }
 
 // Motion-leg PREV tail (gfxfilteredmotion.vert.hlsl bytes 240..256, the
@@ -1122,50 +861,10 @@ struct FilteredMotionPrevTail {
 };
 static_assert(sizeof(FilteredMotionPrevTail) == 16);
 
-// Fills the motion leg's PREV tail from the State (the cur pair rides the
-// FilteredVsPush via FillVsSkinTail). prevValid: consecutive skinning runs
-// on the same heap — the first animated frame / a rebuild / a gap falls
-// back to zero mesh motion in the VS (prevPos == curPos).
-inline void FillMotionPrevTail(FilteredMotionPrevTail& tail, const State& s) {
-    tail.vsPrevDeformed = s.skinDeformedPrevBda;
-    tail.vsPrevValid = s.skinPrevValid;
-}
-
-[[nodiscard]] inline smvk::BufferHandle DrawBuffer(const State& s, uint32_t view) {
-    assert(view < s.views.size());
-    return s.views[view].drawBuffers[s.views[view].frameIndex];
-}
-[[nodiscard]] inline smvk::BufferHandle IndirectBuffer(const State& s, uint32_t view) {
-    assert(view < s.views.size());
-    return s.views[view].indirectBuffers[s.views[view].frameIndex];
-}
 // Static index monoblock accessor (mesh + cluster-ordered + filtered index
 // regions share one VkBuffer; draws use absolute firstIndex, offset-0 bind).
-[[nodiscard]] inline smvk::LogicalBufferHandle IndexHeapLogical(const State& s) {
-    return s.indexHeapLogical;
-}
 [[nodiscard]] inline uint32_t ClusterIndexBase(const State& s) {
     return s.clusterIndexBase;
-}
-[[nodiscard]] inline uint32_t FilteredIndexBase(const State& s, uint32_t view) {
-    assert(view < s.views.size());
-    return s.views[view].filteredBase[s.views[view].frameIndex];
-}
-[[nodiscard]] inline smvk::LogicalBufferHandle BatchLogical(const State& s, uint32_t view) {
-    assert(view < s.views.size());
-    return s.views[view].batchLogicals[s.views[view].frameIndex];
-}
-[[nodiscard]] inline smvk::LogicalBufferHandle DrawLogical(const State& s, uint32_t view) {
-    assert(view < s.views.size());
-    return s.views[view].drawLogicals[s.views[view].frameIndex];
-}
-[[nodiscard]] inline smvk::LogicalBufferHandle IndirectLogical(const State& s, uint32_t view) {
-    assert(view < s.views.size());
-    return s.views[view].indirectLogicals[s.views[view].frameIndex];
-}
-[[nodiscard]] inline uint32_t BatchCount(const State& s, uint32_t view) {
-    assert(view < s.views.size());
-    return s.views[view].batchCount;
 }
 [[nodiscard]] inline const std::vector<MaterialRange>& MaterialRanges(const State& s,
                                                                       uint32_t view) {

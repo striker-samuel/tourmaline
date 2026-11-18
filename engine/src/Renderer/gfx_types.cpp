@@ -107,9 +107,6 @@ static size_t SkinBoundsBytes(uint32_t candidateCapacity, uint32_t drawCapacity)
     return size_t(candidateCapacity) * sizeof(ClusterConstants) +
            size_t(drawCapacity) * sizeof(glm::vec4);
 }
-static size_t ConeDebugLinesBytes(uint32_t candidateCapacity) {
-    return size_t(candidateCapacity) * 2u * 12u; // two packed float3 verts per slot
-}
 // First-page capacity for a stride (the minimum allocation every ring
 // starts at — BeginView claims slots before the frame's counts exist, so
 // the logicals are always live and the first FinalizeView grows to the
@@ -519,15 +516,6 @@ void Destroy(State& s, RenderGraph& rg) {
         s.skinBoundsDrawWant[f] = 0;
     }
     s.skinBoundsReady = false;
-    // The cone-debug line buffer's logical (same Holder/logical split; the
-    // buffer retires via its Holder).
-    if (!s.coneDebugLinesLogical.empty())
-        rg.FreeBuffer(s.coneDebugLinesLogical);
-    s.coneDebugLinesLogical = {};
-    s.coneDebugLines = {};
-    s.coneDebug = false;
-    s.coneDebugCap = 0;
-    s.coneDebugWant = 0;
     s.indexHeapLogical = {};
     s.clusterLogical = {};
     s.meshBoundsLogical = {};
@@ -620,80 +608,9 @@ ClusterFootprint ProjectClusterFootprint(const glm::vec3& worldCenter,
     f.radiusY = std::max((y1 - y0) * 0.5f, 0.0f);
     f.nearestDepth = dNear;
     // Fully off-target footprints stay testable (behindCamera=false) so the
-    // audit tags them offscreen; HzbOccluded keeps them like the frustum
-    // stages would.
+    // audit tags them offscreen.
     f.behindCamera = false;
     return f;
-}
-
-uint32_t HzbMipForRect(float rectW, float rectH, uint32_t mips) {
-    assert(mips > 0);
-    const float m = std::max(rectW, rectH);
-    uint32_t level = 0;
-    float texel = 1.0f;
-    while (texel < m && level + 1 < mips) {
-        texel *= 2.0f;
-        ++level;
-    }
-    return level;
-}
-
-bool HzbOccluded(const float* hzb,
-                 uint32_t w,
-                 uint32_t h,
-                 uint32_t mips,
-                 const ClusterFootprint& f,
-                 float* outBindingStored) {
-    if (outBindingStored)
-        *outBindingStored = -1.0f;
-    if (hzb == nullptr || mips == 0 || w == 0 || h == 0)
-        return false;
-    if (f.behindCamera)
-        return false;
-    const float rectW = f.radiusX * 2.0f;
-    const float rectH = f.radiusY * 2.0f;
-    if (rectW <= 0.0f || rectH <= 0.0f)
-        return false;
-    // Rect missing the target entirely: the frustum stages own this case.
-    if (f.centerX + f.radiusX < 0.0f || f.centerX - f.radiusX > (float)w ||
-        f.centerY + f.radiusY < 0.0f || f.centerY - f.radiusY > (float)h)
-        return false;
-    const uint32_t level = HzbMipForRect(rectW, rectH, mips);
-    uint32_t lw = 0, lh = 0;
-    HzbMipDims(w, h, level, lw, lh);
-    if (lw == 0 || lh == 0)
-        return false;
-    // Conservative cover: the rect can straddle up to 2x2 texels at the
-    // covering mip (texel >= rect, but alignment is arbitrary). Hidden only
-    // if EVERY overlapped texel occludes; any far texel keeps.
-    // Clamp BEFORE the float->uint conversion: a negative edge (rect
-    // hanging off the left/top) would otherwise wrap to a huge index.
-    // Reversed-Z: hidden iff the nearest point is farther (smaller value)
-    // than every overlapped stored closest.
-    const float texelSize = (float)(1u << level);
-    const uint32_t tx0 =
-        std::min((uint32_t)std::max(std::floor((f.centerX - f.radiusX) / texelSize), 0.0f), lw - 1);
-    const uint32_t tx1 =
-        std::min((uint32_t)std::max(std::floor((f.centerX + f.radiusX) / texelSize), 0.0f), lw - 1);
-    const uint32_t ty0 =
-        std::min((uint32_t)std::max(std::floor((f.centerY - f.radiusY) / texelSize), 0.0f), lh - 1);
-    const uint32_t ty1 =
-        std::min((uint32_t)std::max(std::floor((f.centerY + f.radiusY) / texelSize), 0.0f), lh - 1);
-    // Bounded: rect <= texel guarantees at most 2 per axis; cap anyway.
-    float bindingStored = std::numeric_limits<float>::max();
-    bool occluded = true;
-    for (uint32_t ty = ty0; ty <= ty1 && ty < ty0 + 3; ++ty) {
-        for (uint32_t tx = tx0; tx <= tx1 && tx < tx0 + 3; ++tx) {
-            const float stored = hzb[HzbMipOffsetFloats(w, h, level) + ty * lw + tx];
-            bindingStored = std::min(bindingStored, stored);
-            if (f.nearestDepth >= stored) {
-                occluded = false;
-            }
-        }
-    }
-    if (outBindingStored)
-        *outBindingStored = bindingStored;
-    return occluded;
 }
 
 // SPD completion-ring layout is shared with all visibility builders.
@@ -1226,200 +1143,6 @@ void AddConsumeHints(RenderPass& pass,
     indirectRead.barrierMasks.accessMask = AccessFlags::IndirectCommandRead;
     indirectRead.barrierMasks.stageMask = PipelineStageBit_DrawIndirect;
     pass.AddBufferHint(indirectLogical, indirectRead);
-}
-
-// ---------------------------------------------------------------------------
-// GPU cull chain (GfxBatchCull + GfxDrawCull)
-// ---------------------------------------------------------------------------
-
-RenderPass& AddSkinBoundsPass(State& s, RenderGraph& rg, uint32_t view) {
-    assert(view < s.viewCount);
-    View& v = s.views[view];
-    const uint32_t f = v.frameIndex;
-    RenderPass& pass = rg.AddComputePass("GfxSkinBounds");
-    BufferSyncRequest computeRead{};
-    computeRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
-    computeRead.barrierMasks.stageMask = PipelineStageBit_Compute;
-    pass.AddBufferHint(v.drawLogicals[f], computeRead);
-    if (!s.meshesLogical.empty())
-        pass.AddBufferHint(s.meshesLogical, computeRead);
-    pass.AddBufferHint(s.clusterLogical, computeRead);
-    // The cluster-ordered index stream (region of the static monoblock).
-    if (!s.indexHeapLogical.empty())
-        pass.AddBufferHint(s.indexHeapLogical, computeRead);
-    // The output table (GfxSkinBoundsTable: the per-candidate-slot cluster
-    // entries + the per-draw drawBound tail — ONE buffer): written here,
-    // read by GfxBatchCull + GfxDrawCull below (the hint pairs are the
-    // cross-pass ordering edges). The DEFORMED heap is BDA-only (no graph
-    // handle): the skinning pass's trailing ALL_COMMANDS barrier orders
-    // that read, exactly like the draw passes' deformed fetches.
-    BufferSyncRequest computeRW{};
-    computeRW.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
-    computeRW.barrierMasks.stageMask = PipelineStageBit_Compute;
-    pass.AddBufferHint(s.skinBoundsLogicals[f], computeRW);
-    return pass;
-}
-
-void PushAndDispatchSkinBounds(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_t view) {
-    if (!s.skinBoundsReady)
-        return;
-    assert(view < s.views.size());
-    View& v = s.views[view];
-    if (s.skinBoundsProgram.shaderCount == 0 || s.skinBoundsModule.empty())
-        return;
-    const uint32_t drawCount = (uint32_t)v.drawConstants.size();
-    if (drawCount == 0 || drawCount > kDeclaredMaxDraws)
-        return;
-    const uint32_t f = v.frameIndex;
-    SkinBoundsPush push{};
-    push.draws = ctx.GetBufferDeviceAddress(v.drawBuffers[f]);
-    push.meshes = ctx.GetBufferDeviceAddress(s.meshesBuffer);
-    push.clusters = ctx.GetBufferDeviceAddress(s.clusterBuffer);
-    const uint64_t indexHeapAddr =
-        ctx.GetBufferDeviceAddress(staticVertexFmtHeap.m_staticIndexBuffer);
-    push.indices = indexHeapAddr + (uint64_t)s.clusterIndexBase * sizeof(uint32_t);
-    push.deformed = s.skinDeformedBda;
-    push.skinBounds = ctx.GetBufferDeviceAddress(s.skinBoundsBuffers[f]);
-    push.deformedBase = s.skinDeformedBase;
-    push.drawCount = drawCount;
-    // The table's candidate-slot capacity (this flight's allocation).
-    push.candidateCapacity = s.skinBoundsCandidateCap[f];
-    // The cone rebuild ALWAYS runs (the honest cones feed the cone-axis
-    // overlay + the SkinDump cross-check + the TOURMALINE_SKIN_CONE=1
-    // consumer lever in gfxbatchcull; the conservative default lives on
-    // the CONSUMER side where the cull behavior actually is).
-    push.coneEnabled = 1u;
-    // MMU-fault rule: never dispatch on a null BDA (no fallback; the batch
-    // cull reads the static table for a slot the pass never wrote ... which
-    // is exactly the bind-pose hole this pass exists to fix, so skip loudly).
-    if (push.draws == 0 || push.meshes == 0 || push.clusters == 0 || push.indices == 0 ||
-        push.deformed == 0 || push.skinBounds == 0) {
-        static uint64_t s_nullBdaWarns = 0;
-        if ((s_nullBdaWarns++ % 300) == 0)
-            std::fprintf(stderr, "[GfxSkinBounds] refusing dispatch: null BDA\n");
-        return;
-    }
-    cmd.BindComputePipeline(s.skinBoundsProgram);
-    cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
-    DispatchDrawGroups(cmd, drawCount);
-}
-
-// ---------------------------------------------------------------------------
-// Cone-axis debug lines (the overlay's GPU leg)
-// ---------------------------------------------------------------------------
-
-void SetConeDebug(State& s, ResourceManager& ctx, RenderGraph& rg, bool enable) {
-    if (enable == s.coneDebug && !enable)
-        return; // already off
-    if (enable) {
-        // Lazily create the module/program + the shared line buffer (the
-        // candidate-space prefix, pre-sized to the cap — one allocation for
-        // the State's lifetime; the per-frame pass writes exactly the used
-        // slots [0, candidateTotal)).
-        if (s.coneDebugProgram.shaderCount == 0 || s.coneDebugModule.empty()) {
-            try {
-                if (s.coneDebugModule.empty())
-                    s.coneDebugModule = ctx.CreateShaderModule(
-                        smvk::shaders::Read(kGfxConeDebugCsPath), "gfxConeDebugCS");
-            } catch (...) {
-                return; // broken install: the overlay stays dark
-            }
-            if (s.coneDebugModule.empty())
-                return;
-            Shader cs{
-                .module = s.coneDebugModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute};
-            s.coneDebugProgram = {.shaders = {cs}, .shaderCount = 1};
-        }
-        if (s.coneDebugLines.empty()) {
-            // The dynamic cutover: sized from the high-water want (the
-            // minimum page before the first FinalizeView), grown by
-            // GrowViewCapacity from here. The candidate slot space is a
-            // dense prefix, so [0, 2*candidateTotal) stays exactly the
-            // written range whatever the capacity.
-            size_t cap = 0;
-            if (!RoundCapacity(std::max<size_t>(s.coneDebugWant, 1u), 2u * 12u, cap))
-                return;
-            s.coneDebugLines = ctx.CreateBuffer(
-                ConeDebugLinesBytes(uint32_t(cap)), BufferType_Storage, "gfx coneDebug lines");
-            if (s.coneDebugLines.empty())
-                return;
-            s.coneDebugCap = uint32_t(cap);
-        }
-        if (s.coneDebugLinesLogical.empty()) {
-            s.coneDebugLinesLogical = rg.AddExternalBuffer(s.coneDebugLines, "gfx coneDebug lines");
-            if (s.coneDebugLinesLogical.empty()) {
-                s.coneDebugLines = {};
-                return;
-            }
-        }
-    }
-    s.coneDebug = enable;
-}
-
-RenderPass& AddConeDebugPass(State& s, RenderGraph& rg, uint32_t view) {
-    assert(view < s.viewCount);
-    View& v = s.views[view];
-    const uint32_t f = v.frameIndex;
-    RenderPass& pass = rg.AddComputePass("GfxConeDebug");
-    BufferSyncRequest computeRead{};
-    computeRead.barrierMasks.accessMask = AccessFlags::ShaderRead;
-    computeRead.barrierMasks.stageMask = PipelineStageBit_Compute;
-    pass.AddBufferHint(v.drawLogicals[f], computeRead);
-    if (!s.meshesLogical.empty())
-        pass.AddBufferHint(s.meshesLogical, computeRead);
-    pass.AddBufferHint(s.clusterLogical, computeRead);
-    // The deformed cones (GfxSkinBounds' output, written earlier this frame):
-    // the hint pair is the cross-pass ordering edge.
-    if (s.skinBoundsReady && !s.skinBoundsLogicals[f].empty())
-        pass.AddBufferHint(s.skinBoundsLogicals[f], computeRead);
-    // The line output: compute-write here, vertex-attribute-read by Main's
-    // overlay draw (the stage pair carries the cross-stage transition, the
-    // same pattern AddFilterPass uses for the filtered index monoblock).
-    BufferSyncRequest linesRW{};
-    linesRW.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
-    linesRW.barrierMasks.stageMask = PipelineStageBit_Compute | PipelineStageBit_Vertex;
-    pass.AddBufferHint(s.coneDebugLinesLogical, linesRW);
-    return pass;
-}
-
-void PushAndDispatchConeDebug(State& s, CommandBuffer& cmd, ResourceManager& ctx, uint32_t view) {
-    if (!ConeDebugReady(s))
-        return;
-    assert(view < s.views.size());
-    View& v = s.views[view];
-    const uint32_t drawCount = (uint32_t)v.drawConstants.size();
-    if (drawCount == 0 || drawCount > kDeclaredMaxDraws)
-        return;
-    const uint32_t f = v.frameIndex;
-    ConeDebugPush push{};
-    push.draws = ctx.GetBufferDeviceAddress(v.drawBuffers[f]);
-    push.meshes = ctx.GetBufferDeviceAddress(s.meshesBuffer);
-    push.clusters = ctx.GetBufferDeviceAddress(s.clusterBuffer);
-    push.lines = ctx.GetBufferDeviceAddress(s.coneDebugLines);
-    // The deformed cones (GfxSkinBounds output, written just before this
-    // pass) — the same gate as the batch cull's.
-    if (s.skinBoundsReady && !s.skinBoundsBuffers[f].empty()) {
-        const uint64_t bda = ctx.GetBufferDeviceAddress(s.skinBoundsBuffers[f]);
-        if (bda != 0) {
-            push.skinBounds = bda;
-            push.skinBoundsValid = 1;
-        }
-    }
-    // MMU-fault rule: never dispatch on a null BDA (skip loudly; the
-    // overlay draws nothing rather than faulting the device).
-    if (push.draws == 0 || push.meshes == 0 || push.clusters == 0 || push.lines == 0) {
-        static uint64_t s_nullBdaWarns = 0;
-        if ((s_nullBdaWarns++ % 300) == 0)
-            std::fprintf(stderr, "[GfxConeDebug] refusing dispatch: null BDA\n");
-        return;
-    }
-    push.drawCount = drawCount;
-    // The shared line buffer's candidate-slot capacity.
-    push.candidateCapacity = s.coneDebugCap;
-    cmd.BindComputePipeline(s.coneDebugProgram);
-    cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
-    // One 128-thread workgroup per draw (the GfxBatchCull dispatch shape).
-    DispatchDrawGroups(cmd, drawCount);
 }
 
 // ---------------------------------------------------------------------------

@@ -251,16 +251,16 @@ bool WorldRenderer::LiveSwapCovers(std::string_view spvPath) {
     // permutation (base/a2c/sgN/giN/std/giNstd) + the project family
     // twins. The starts_with matches cover the whole variant matrix
     // (the .sgN/.giN/.std/.giNstd suffixes ride the same stems).
-    if (spvPath == "content/shaders/default.vert.hlsl.spv" ||
-        spvPath == "content/shaders/default_lightmap.vert.hlsl.spv")
+    if (spvPath == "content/shaders/default.vert.hlsl.spv")
         return true;
     if (spvPath.starts_with("content/shaders/default_lit"))
         return true;
     if (spvPath.starts_with("content/shaders/project_lit"))
         return true;
-    // The GPU-driven legs: the filtered VS, the task/mesh mesh MS, and both
+    // The GPU-driven legs: the filtered VS (now gpu_scene_raster.vert, the
+    // renamed gfxfiltered.vert), the task/mesh mesh MS, and both
     // mesh FS families (stock + project twins, every .sg/.gi/.std variant).
-    if (spvPath == "content/shaders/gfxfiltered.vert.hlsl.spv")
+    if (spvPath == "content/shaders/gpu_scene_raster.vert.hlsl.spv")
         return true;
     if (spvPath == "content/shaders/gpu_scene_meshlet.mesh.hlsl.spv")
         return true;
@@ -338,7 +338,7 @@ bool WorldRenderer::ReloadLitShaders(const std::vector<std::string>& recompiled)
     for (const std::string& p : recompiled) {
         if (!LiveSwapCovers(p))
             continue;
-        if (p == "content/shaders/gfxfiltered.vert.hlsl.spv")
+        if (p == "content/shaders/gpu_scene_raster.vert.hlsl.spv")
             filteredVs = true;
         else
             litSet = true;
@@ -367,9 +367,6 @@ bool WorldRenderer::ReloadLitShaders(const std::vector<std::string>& recompiled)
     const bool familyLoaded = !m_resources.fragProjectLitModule.empty();
     if (litSet) {
         swapModule(m_resources.vertShader, "content/shaders/default.vert.hlsl.spv", "vert");
-        swapModule(m_resources.vertLightmapShader,
-                   "content/shaders/default_lightmap.vert.hlsl.spv",
-                   "vertLightmap");
         swapModule(m_resources.fragShader, "content/shaders/default_lit.frag.hlsl.spv", "fragLit");
         swapModule(m_resources.fragA2CShader,
                    "content/shaders/default_lit_a2c.frag.hlsl.spv",
@@ -440,13 +437,12 @@ bool WorldRenderer::ReloadLitShaders(const std::vector<std::string>& recompiled)
         FeedGfxRendererShaderModules();
         m_gfxRenderer.InvalidateDerivedPrograms();
         if (!m_gfxRenderer.Ensure(*m_context, *m_rendergraph)) {
-            // Latch the filter leg OFF (the direct draws cover the
-            // frame — the same graceful degradation as an attach-time
-            // Ensure failure; an empty filteredProgram must never
-            // reach a bind).
+            // A failed Ensure leaves every filtered program empty; the
+            // direct draws cover the frame (the same graceful degradation
+            // as an attach-time Ensure failure — an empty filteredProgram
+            // must never reach a bind).
             std::cerr << "[shader-reload] GfxFilter Ensure failed"
                          " after the swap - direct draws cover the frame\n";
-            m_gfxFilterAvailable = false;
         }
     }
     // Retirement: the shared tail (pipeline eviction + deferred
@@ -1714,12 +1710,6 @@ bool WorldRenderer::onAttach() {
     auto vertCode = smvk::shaders::Read("content/shaders/default.vert.hlsl.spv");
     auto fragCode = smvk::shaders::Read("content/shaders/default_lit.frag.hlsl.spv");
     m_resources.vertShader = m_context->CreateShaderModule(vertCode, "vert");
-    try {
-        m_resources.vertLightmapShader = m_context->CreateShaderModule(
-            smvk::shaders::Read("content/shaders/default_lightmap.vert.hlsl.spv"), "vertLightmap");
-    } catch (...) {
-        std::cerr << "[WorldRenderer] optional direct lightmap VS unavailable\n";
-    }
     m_resources.fragShader = m_context->CreateShaderModule(fragCode, "fragLit");
 
     auto vert = smvk::Shader{.module = m_resources.vertShader,
@@ -2697,7 +2687,6 @@ bool WorldRenderer::onAttach() {
             m_gfxRenderer.ConfigureWireFrag(m_resources.fragWireShader);
         if (!m_gfxRenderer.Ensure(*m_context, *m_rendergraph)) {
             std::cerr << "[WorldRenderer] GfxFilter unavailable - direct draws\n";
-            m_gfxFilterAvailable = false;
         }
         // Static geometry is GPU-scene raster's physical publisher, even
         // when the retired filter has no valid program or initial clusters.
@@ -2706,8 +2695,8 @@ bool WorldRenderer::onAttach() {
             // Only optional task/mesh needs the duplicate cooked cluster
             // index/meshlet streams. Vulkan 1.3 indexed raster resolves
             // physical World surfaces without registering them in Gfx.
-            m_gfxRenderer.RegisterWorldMeshes(*m_world);
-            m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
+            smvk::gfx::RegisterWorldMeshes(m_gfxRenderer.State(), *m_world);
+            smvk::gfx::UploadStaticData(m_gfxRenderer.State(), *m_context, *m_rendergraph);
         }
         ++m_gpuSceneGeometryRevision;
         RefreshGpuScenePhysicalIndexedRanges(/*nativeOnly=*/!cookedMeshletBackend);
@@ -2736,7 +2725,6 @@ bool WorldRenderer::onAttach() {
                       << std::endl;
             if (smvk::gfx::ClusterCount(m_gfxRenderer.State()) == 0) {
                 std::cerr << "[WorldRenderer] GfxFilter: no clusters - direct draws\n";
-                m_gfxFilterAvailable = false;
             }
         }
     }
@@ -6186,9 +6174,9 @@ void WorldRenderer::UpdateGeometryStreaming() {
         if (cookedMeshletBackend) {
             SMVK_PROFILE_STREAM("GeoStreaming_RegisterMeshes");
             smvk::gfx::ResetStaticRegistrations(m_gfxRenderer.State());
-            m_gfxRenderer.RegisterWorldMeshes(*m_world);
+            smvk::gfx::RegisterWorldMeshes(m_gfxRenderer.State(), *m_world);
             SMVK_PROFILE_STREAM("GeoStreaming_UploadStaticData");
-            m_gfxRenderer.UploadStaticData(*m_context, *m_rendergraph);
+            smvk::gfx::UploadStaticData(m_gfxRenderer.State(), *m_context, *m_rendergraph);
         }
         ++m_gpuSceneGeometryRevision;
         RefreshGpuScenePhysicalIndexedRanges(/*nativeOnly=*/!cookedMeshletBackend);
@@ -8904,57 +8892,6 @@ WorldRenderer::FarSpecPrograms* WorldRenderer::FarSpecProgramsFor(
     return &m_farSpecPrograms[key];
 }
 
-void WorldRenderer::BuildShadowDrawCandidates() {
-    SMVK_PROFILE_RENDER("ShadowDrawCandidates");
-    m_shadowCandidates.clear();
-    if (!m_world)
-        return;
-    // One pass over the caster set on the render thread: LOD decisions
-    // mutate the World halfrate cache (not thread-safe), and every
-    // shadow view consumes the same per-node LOD anyway. Workers get a
-    // read-only candidate list; the per-view cull happens later in
-    // gfx::BuildShadowList (per cluster, against each view's planes).
-    m_world->forEachRenderItem(
-        smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow |
-            smvk::IteratorFlagBit_Opaque,
-        [&](const smvk::World::RenderItem& item) {
-            if (item.material == smvk::World::kInvalidIndex)
-                return;
-            const uint32_t lodIdx = LodIndexForNode(item.node, item.mesh);
-            const uint32_t gfxMesh = m_gfxRenderer.GfxMeshForLod(item.mesh, lodIdx);
-            if (gfxMesh == UINT32_MAX)
-                return; // unfilterable: the pass direct fallback draws it
-            smvk::gfx::DrawRequest d{};
-            d.mesh = gfxMesh;
-            d.material = item.material;
-            d.model = m_world->scene.globalTransform[item.node];
-            // Draw-set bucketing mirrors FilterMainView: MASK materials
-            // draw through the alpha-tested phase.
-            if (const smvk::Material* mat = m_world->GetMaterial(item.material)) {
-                if (mat->shadingModel == smvk::ShadingModel::Masked)
-                    d.drawSet = smvk::gfx::DrawSetBit_Masked;
-            }
-            // Skinned casters (the Northlight compute path): mirror the
-            // flag FilterMainView sets on the lit draw, so the shadow depth
-            // legs (gfxshadowseed) fetch the DEFORMED position instead of
-            // the bind pose. Gated on this frame's deformed heap exactly
-            // like the main path (no heap -> keep the static fetch).
-            if (m_gfxRenderer.State().skinDeformedBda != 0 &&
-                !std::getenv("TOURMALINE_KD_NOSKIN")) {
-                const smvk::StaticMesh* smesh = m_world->GetMesh(item.mesh);
-                if (smesh != nullptr && smesh->skinned)
-                    d.flags |= smvk::gfx::DrawFlagBit_Skinned;
-            }
-            // The resolved material userdata rides for record consistency
-            // (BuildShadowList copies it into the ring); the shadow depth
-            // legs never read it — the hooks are color-only by v1
-            // contract, no coverage parity.
-            d.userData = m_world->ResolvedItemUserData(item);
-            m_shadowCandidates.push_back(d);
-        });
-    SMVK_PROFILE_TAG("candidates", m_shadowCandidates.size());
-}
-
 void WorldRenderer::RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
                                               smvk::ShaderProgram& opaqueProgram,
                                               const IRenderer::PushConstants& pc,
@@ -8995,8 +8932,10 @@ void WorldRenderer::RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
             return;
         // Indirect path: registered casters are covered by the per-view
         // command list - only unfilterable meshes rasterize here.
-        if (skipFiltered && m_gfxRenderer.GfxMeshForLod(
-                                item.mesh, LodIndexForNode(item.node, item.mesh)) != UINT32_MAX)
+        if (skipFiltered &&
+            smvk::gfx::GfxMeshForLod(m_gfxRenderer.State(),
+                                     item.mesh,
+                                     LodIndexForNode(item.node, item.mesh)) != UINT32_MAX)
             return;
         // Dither-on-closeup (TransformHierarchy::ditherCloseup; per frame, per draw -
         // the MAIN camera is the anchor eye even in light-view passes,
@@ -10633,9 +10572,10 @@ void WorldRenderer::RefreshGpuScenePhysicalIndexedRanges(bool nativeOnly) {
                     *mesh, indexWords, vertexLimit, physical) != surfaceCount)
                 continue;
             const bool multiSurface = surfaceCount > 1u;
-            const uint32_t gfxId = (nativeOnly || multiSurface)
-                                       ? UINT32_MAX
-                                       : m_gfxRenderer.GfxMeshForLod(worldMesh, lod);
+            const uint32_t gfxId =
+                (nativeOnly || multiSurface)
+                    ? UINT32_MAX
+                    : smvk::gfx::GfxMeshForLod(m_gfxRenderer.State(), worldMesh, lod);
             surfaceIds.resize(surfaceCount);
             for (uint32_t s = 0; s < surfaceCount; ++s) {
                 surfaceIds[s] = tour::gpu_scene::RegisterNativeIndexedRange(
@@ -14985,7 +14925,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                           !m_world->FarShadingAt(worldMesh, lodIdx, material).isDefault())
                           return false;
                       (void)node;
-                      return m_gfxRenderer.GfxMeshForLod(worldMesh, lodIdx) != UINT32_MAX;
+                      return smvk::gfx::GfxMeshForLod(m_gfxRenderer.State(), worldMesh, lodIdx) !=
+                             UINT32_MAX;
                   })
             : std::function<bool(NodeId, uint32_t, uint32_t, uint32_t)>{};
     // HZB source: ALWAYS hizDepth (the fixed-cost occluder fill above
@@ -15587,57 +15528,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     const smvk::RenderView liveMainCullView = m_renderViews.Get(mainRenderView);
 
     // ---------------------------------------------------------------------
-    // Cone-axis debug lines (the overlay's GPU leg): the toggle armed the
-    // GfxConeDebug pass (SetConeDebug — the UI handler), which writes two
-    // packed DebugLineVertex float3s per candidate slot from the cull
-    // chain's ACTUAL cones — baked bind-pose cones for static draws, THIS
-    // frame's deformed cones for skinned ones — GPU-driven end to end:
-    // zero latency, no readback (the retired CPU readback path corrupted
-    // the host heap — its download destinations dangled through vector
-    // reallocation between submit and poll — and the cache never landed,
-    // leaving the overlay dark on exactly the skinned meshes it existed
-    // to inspect).
-    // The candidate slot space is a DENSE prefix over the pushed draws'
-    // clusters (misc2.z is the build's prefix sum), so the pass writes
-    // exactly [0, candidateTotal) slots and Main Draws 2*candidateTotal
-    // verts over the line buffer — the count mirrors the pass's slot
-    // loop (the CPU batch list is not the source of truth here).
-    // ---------------------------------------------------------------------
-    uint32_t coneLineVerts = 0;
-    {
-        // Headless pin (TOURMALINE_CONE_DEBUG=1): arm the overlay for
-        // capture/A-B runs without the UI (the Debug-panel checkbox
-        // toggles the same state interactively; the env arms it once).
-        static const bool s_coneDebugEnv = [] {
-            const char* e = std::getenv("TOURMALINE_CONE_DEBUG");
-            return e && *e && *e != '0';
-        }();
-        if (s_coneDebugEnv && !m_debugCones) {
-            m_debugCones = true;
-            smvk::gfx::SetConeDebug(m_gfxRenderer.State(), *m_context, *m_rendergraph, true);
-        }
-    }
-    if (m_debugCones && gfxSlot != UINT32_MAX && gfxSlot < m_gfxRenderer.State().views.size() &&
-        smvk::gfx::ConeDebugReady(m_gfxRenderer.State())) {
-        const smvk::gfx::State& st = m_gfxRenderer.State();
-        const smvk::gfx::View& v = st.views[gfxSlot];
-        // The runtime candidate capacity of this view's current flight
-        // (the dynamic cutover — the retired fixed kMaxBatchSlots bound
-        // died with it).
-        const uint32_t slotCap = smvk::gfx::CandidateCapacity(st, gfxSlot);
-        uint64_t candidateTotal = 0;
-        for (const smvk::gfx::Draw& d : v.drawConstants) {
-            if (d.candidateBase == UINT32_MAX || d.mesh >= st.meshes.size())
-                continue;
-            const uint64_t count = st.meshes[d.mesh].clusterCount;
-            if (d.candidateBase + count > slotCap)
-                continue; // corrupt slot layout: the pass skips it too
-            candidateTotal += count;
-        }
-        coneLineVerts = (uint32_t)std::min<uint64_t>(candidateTotal * 2, (uint64_t)slotCap * 2);
-    }
-
-    // ---------------------------------------------------------------------
     // Motion vectors - per-pixel prevUV - currUV into RG16F (motionvector.h)
     // Re-rasterizes opaque geometry depth-tested READ-ONLY against the 1x
     // prepass depth (reversed-Z GreaterEqual, no writes) - identical in
@@ -16119,11 +16009,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     if (mainInputCount == 2)
         mainInputs[1] = m_viewportResources.spotShadows.logicalView;
     const auto rfTM = bench_clk::now();
-    // The GPU filter normally publishes chart xforms, but direct
-    // fallback draws must also work when no filtered slot exists.
-    // Ensure caches by scene version; this does not upload each frame.
-    if (m_world && !m_world->lmChartTable.empty())
-        m_gfxRenderer.EnsureChartXforms(*m_world, *m_context);
     auto& mainPass = m_rendergraph->AddPass("Main")
                          .SetOffset(0, 0)
                          .SetInputImages(std::span<const smvk::LogicalImageViewHandle>(
@@ -16143,18 +16028,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         csRead.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
         csRead.layout = smvk::ImageLayout::ShaderReadOnlyOptimal;
         mainPass.AddImageHint(m_viewportResources.contactShadows.OutputLogical(), csRead);
-    }
-    // The GPU-written cone debug lines (vertex-attribute read by the
-    // overlay draw below): the vertex-stage read pairs with
-    // GfxConeDebug's compute write — the rendergraph's cross-stage
-    // ordering edge (the same pattern the filtered index monoblock's
-    // compute write + index read use).
-    if (coneLineVerts > 0) {
-        smvk::BufferSyncRequest coneLinesRead{};
-        coneLinesRead.barrierMasks.accessMask = smvk::AccessFlags::VertexAttributeRead;
-        coneLinesRead.barrierMasks.stageMask = smvk::PipelineStageBit_Vertex;
-        mainPass.AddBufferHint(smvk::gfx::ConeDebugLinesLogical(m_gfxRenderer.State()),
-                               coneLinesRead);
     }
     // Shader failure and missing multisample sampling support degrade to hardware AVERAGE.
     const bool customMsaaResolve = useMsaa && m_aaMode == AaMode::Msaa2xCustom &&
@@ -16554,7 +16427,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                sceneRasterVsPush,
                                renderViewsAddress,
                                mainRenderView,
-                               coneLineVerts,
                                selectionLineVerts,
                                frameViewProj,
                                debugDrawRanges,
@@ -16644,50 +16516,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             return prog;
         };
 
-        // The optional direct LM variant is only considered for STATIC
-        // selected LODs with a resident packed chart stream. Fast-fail
-        // an unbaked scene without touching the GPU program cache.
-        auto directLmEligible = [&](NodeId node, uint32_t meshId) -> bool {
-            if (m_resources.vertLightmapShader.empty() || m_wireframe || !m_world ||
-                m_world->lmChartTable.empty() || m_gfxRenderer.ChartXformsAddress() == 0)
-                return false;
-            const smvk::StaticMesh* mesh = LodMeshForNode(node, meshId);
-            if (!mesh || mesh->skinned || mesh->lmChunk == UINT32_MAX ||
-                mesh->lightmapBase == UINT32_MAX || mesh->lmChartXforms.empty())
-                return false;
-            const uint32_t lod = LodIndexForNode(node, meshId);
-            if (auto loc = m_world->ResolveLodMesh(meshId, lod))
-                return loc->cluster->GetMeshHeapVertexBase(loc->handle) != UINT32_MAX;
-            return false;
-        };
-        // Opt-in VS/FS pairs are created only after a baked direct draw
-        // appears. The regular VS + PSO selection is untouched otherwise.
-        using LmCacheEntry = std::pair<const smvk::ShaderProgram* const, smvk::ShaderProgram>;
-        std::unordered_map<const smvk::ShaderProgram*,
-                           smvk::ShaderProgram,
-                           std::hash<const smvk::ShaderProgram*>,
-                           std::equal_to<const smvk::ShaderProgram*>,
-                           tour::mem::LinearAllocatorSTL<LmCacheEntry>>
-            lmDirectPrograms{
-                0,
-                std::hash<const smvk::ShaderProgram*>{},
-                std::equal_to<const smvk::ShaderProgram*>{},
-                tour::mem::LinearAllocatorSTL<LmCacheEntry>{&tour::mem::FrameAllocator()}};
-        auto directLmProgram = [&](smvk::ShaderProgram& regular,
-                                   bool withLightmap) -> smvk::ShaderProgram& {
-            if (!withLightmap || regular.shaderCount != 2)
-                return regular;
-            auto [it, inserted] = lmDirectPrograms.try_emplace(&regular, regular);
-            if (inserted)
-                it->second.shaders[0].module = m_resources.vertLightmapShader;
-            return it->second;
-        };
-
         auto drawNode = [&](NodeId node,
                             uint32_t meshId,
                             uint32_t materialId,
-                            uint32_t userData = 0,
-                            bool withLightmap = false) {
+                            uint32_t userData = 0) {
             auto& model = m_world->scene.globalTransform[node];
             smvk::StaticMesh* meshDesc = LodMeshForNode(node, meshId);
             if (!meshDesc)
@@ -16705,38 +16537,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             }
             cmd.PushConstants(
                 kDepthSkinTailOffset, sizeof(DepthSkinTail), &skinTail, smvk::ShaderStage::All);
-            // The normal shader never reads these tail bytes and never
-            // pays for the two additional push-constant writes.
-            if (withLightmap && !meshDesc->skinned) {
-                smvk::gfx::UvFlatVsPushTail chartTail{};
-                smvk::gfx::DirectLightmapPullTail lmTail{};
-                const uint32_t lod = LodIndexForNode(node, meshId);
-                if (auto loc = m_world->ResolveLodMesh(meshId, lod)) {
-                    const auto h = loc->handle;
-                    if (const smvk::StaticMesh* lmMesh = loc->cluster->staticMeshes.get(h);
-                        lmMesh && !lmMesh->skinned && lmMesh->lmChunk != UINT32_MAX &&
-                        lmMesh->lightmapBase != UINT32_MAX && !lmMesh->lmChartXforms.empty() &&
-                        m_gfxRenderer.ChartXformsAddress() != 0) {
-                        const uint32_t vertexBase = loc->cluster->GetMeshHeapVertexBase(h);
-                        if (vertexBase != UINT32_MAX) {
-                            chartTail.hasXforms = 1u;
-                            chartTail.chartOffset = m_world->ChartOffsetFor(meshId, lod);
-                            chartTail.lmXforms = m_gfxRenderer.ChartXformsAddress();
-                            lmTail.delta = lmMesh->lightmapBase - vertexBase;
-                            lmTail.lobeCount = lmMesh->lmChunk;
-                            lmTail.magic = smvk::gfx::kDirectLightmapPullMagic;
-                        }
-                    }
-                }
-                cmd.PushConstants(smvk::gfx::kUvFlatVsPushOffset,
-                                  sizeof(chartTail),
-                                  &chartTail,
-                                  smvk::ShaderStage::All);
-                cmd.PushConstants(smvk::gfx::kDirectLightmapPullOffset,
-                                  sizeof(lmTail),
-                                  &lmTail,
-                                  smvk::ShaderStage::All);
-            }
             // Dither-on-closeup (TransformHierarchy::ditherCloseup; per frame, per
             // draw): Hidden draws never reach here (the leg loops skip
             // them below); Fade draws carry the per-draw flag
@@ -17354,12 +17154,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     // (covers the filterable + white-fallback branches below).
                     pushMeshDebugSkinTail(worldMesh, item.node);
                     // Heat-mode cone source: SKINNED items have no CPU-visible
-                    // deformed cutoffs (the skinBounds table is GPU-resident —
-                    // the axis overlay reads it GPU-side via GfxConeDebug, but
-                    // this per-cluster CPU-recorded color loop cannot without
-                    // a readback, which the overlay's retired path proved too
-                    // fragile to keep). They draw the sentinel deep-blue "no
-                    // deformed data" instead of the bind-pose cutoff — the
+                    // deformed cutoffs (the skinBounds table is GPU-resident;
+                    // this per-cluster CPU-recorded color loop cannot read it
+                    // without a readback, which the retired overlay path proved
+                    // too fragile to keep). They draw the sentinel deep-blue
+                    // "no deformed data" instead of the bind-pose cutoff — the
                     // exact lie the heat mode exists to expose. Static items
                     // keep the baked cutoffs — their actual cull input.
                     // (Skinned-heat-from-GPU: the F4 todo.)
@@ -17371,8 +17170,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     // Debug the SELECTED sibling: every registered LOD has its
                     // own gfx mesh (see RegisterWorldMeshes), so the overlay
                     // shows what the filter actually culled for this instance.
-                    const uint32_t gfxMesh = m_gfxRenderer.GfxMeshForLod(
-                        worldMesh, LodIndexForNode(item.node, worldMesh));
+                    const uint32_t gfxMesh = smvk::gfx::GfxMeshForLod(
+                        m_gfxRenderer.State(), worldMesh, LodIndexForNode(item.node, worldMesh));
                     if (gfxMesh == UINT32_MAX || gfxMesh >= dbgState.meshes.size()) {
                         // Not filterable: white direct fallback (nothing vanishes).
                         // Mesh-local surfaces address the same index monoblock.
@@ -17588,8 +17387,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     const uint32_t materialId = item.material;
                     const bool itemProjectLit =
                         !shadingDbg && !vertexLitLevel && MaterialUsesProjectLit(materialId);
-                    const bool useDirectLm =
-                        !vertexLitLevel && directLmEligible(item.node, item.mesh);
                     // The GI-aware pick (ProjectLit family + the GI/std
                     // twins) is MainLitProgramFor; the direct leg must NOT
                     // hardcode the base mainProgram or it silently drops the
@@ -17606,8 +17403,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         : (farSpec && farSpec->a2c.shaderCount == 2) ? farSpec->a2c
                         : itemProjectLit ? m_resources.mainProjectProgramA2C
                                          : m_resources.mainProgramA2C;
-                    smvk::ShaderProgram& prog = directLmProgram(baseProg, useDirectLm);
-                    smvk::ShaderProgram& progA2c = directLmProgram(baseA2c, useDirectLm);
+                    smvk::ShaderProgram& prog = baseProg;
+                    smvk::ShaderProgram& progA2c = baseA2c;
                     if (materialId != boundMaterial ||
                         (&prog != boundProgram && &progA2c != boundProgram)) {
                         smvk::ShaderProgram& bound =
@@ -17622,8 +17419,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                              materialId,
                              // The resolved material userdata (instance override
                              // or base default — the lit hooks' runtime input).
-                             m_world->ResolvedItemUserData(item),
-                             useDirectLm);
+                             m_world->ResolvedItemUserData(item));
                 });
         }
 
@@ -17885,12 +17681,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     ++m_lodShaderDraws;
                     continue;
                 }
-                // Ordinary transparent direct materials get exactly the
-                // same opt-in static lightmap VS as opaque direct ones.
+                // Ordinary transparent direct materials.
                 // Vertex-lit and far-quality branches remain unchanged.
-                const bool useDirectLm = directLmEligible(d.node, d.meshId);
-                smvk::ShaderProgram* const prog =
-                    &directLmProgram(litTransProg(d.materialId), useDirectLm);
+                smvk::ShaderProgram* const prog = &litTransProg(d.materialId);
                 if (d.materialId != boundMaterial || boundProgram != prog) {
                     if (ditheredTransp) {
                         // Opaque state: the shader discard did the work.
@@ -17925,44 +17718,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                          // material default is the resolved value
                          // (instances bind to mesh entities, which ride
                          // the opaque paths in v1).
-                         m_world->MaterialUserData(d.materialId),
-                         useDirectLm);
+                         m_world->MaterialUserData(d.materialId));
             }
-        }
-
-        // ---- Cone-axis debug overlay (LineList over the GPU-written
-        // candidate lines) ----
-        // Shows the normal cone of every candidate (draw x cluster) the
-        // filter saw: apex -> apex + axis * worldRadius (yellow), from
-        // the GfxConeDebug pass's line buffer — the cull chain's ACTUAL
-        // cones (baked bind-pose for static draws, this frame's deformed
-        // cones for skinned ones; GPU-driven end to end, zero latency).
-        // Missing meshlets in the shaded view but present cones here =
-        // GPU HZB cull; missing lines = the keep-cone (degenerate, no
-        // axis to draw).
-        if (m_debugCones && coneLineVerts > 0 && smvk::gfx::ConeDebugReady(m_gfxRenderer.State()) &&
-            m_gfxRenderer.DebugProgramsValid()) {
-            cmd.BindRenderPipeline(m_gfxRenderer.LineProgram(),
-                                   ::tour::vertex_layouts::DebugLine,
-                                   transparentDepth,
-                                   noStencil,
-                                   smvk::BlendSettings::Opaque(),
-                                   msaaSettings,
-                                   smvk::RasterSettings{.cullMode = smvk::CullMode::None},
-                                   smvk::PrimitiveTopology::LineList);
-            cmd.BindVertexBuffer(smvk::gfx::ConeDebugLinesBuffer(m_gfxRenderer.State()), 0, 0);
-            LineDebugPush lp{};
-            std::copy_n(glm::value_ptr(frameViewProj), 16, lp.viewProj);
-            // Same HDR/exposure path as the meshlet colors above: pre-scale
-            // so the tonemap reproduces yellow instead of black.
-            const float lineExposure = FrameExposure();
-            const float lineGain = (lineExposure > 1e-9f) ? 1.0f / lineExposure : 1.0f;
-            lp.color[0] = 1.0f * lineGain;
-            lp.color[1] = 1.0f * lineGain;
-            lp.color[2] = 0.0f;
-            lp.color[3] = 1.0f;
-            cmd.PushConstants(0, sizeof(lp), &lp, smvk::ShaderStage::All);
-            cmd.Draw(coneLineVerts, 1, 0, 0);
         }
 
         // CPU-authored immediate debug lines: same HDR target, depth,
