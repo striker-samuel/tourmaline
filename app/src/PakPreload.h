@@ -25,7 +25,7 @@ namespace app {
 struct PakPreload {
     std::string scenePak; // display name (also the VFS mount name)
     std::string openPath; // resolved host path (empty = not found)
-    std::shared_ptr<const std::vector<uint8_t>> image;
+    std::shared_ptr<const tour::asset::PakImage> image;
     std::shared_ptr<smvk::PakBackend> backend;
     std::string error;
     // The camera the streaming planner seeds from (world space position +

@@ -198,7 +198,7 @@ std::unique_ptr<WorldPage> DeserializeCluster(
     std::string* err = nullptr,
     uint32_t sceneIndex = 0,
     TextureStreamer* streamer = nullptr,
-    std::shared_ptr<const std::vector<uint8_t>> imagePin = {},
+    std::shared_ptr<const tour::asset::PakImage> imagePin = {},
     const ExternalTextureResolver* externalTexture = nullptr,
     size_t sceneNodeBudget = 0);
 

@@ -365,7 +365,7 @@ void WorldPage::ReleaseTextureSources() {
     textureSources_.Clear();
 }
 
-void WorldPage::PinPakImage(std::shared_ptr<const std::vector<uint8_t>> image) {
+void WorldPage::PinPakImage(std::shared_ptr<const tour::asset::PakImage> image) {
     pakImagePin_ = std::move(image);
 }
 

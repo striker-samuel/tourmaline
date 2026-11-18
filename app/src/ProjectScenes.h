@@ -137,7 +137,7 @@ class ProjectScenes {
                                        const tour::asset::PakReader& reader,
                                        uint32_t sceneIndex,
                                        tour::TextureStreamer* streamer,
-                                       std::shared_ptr<const std::vector<uint8_t>> imagePin,
+                                       std::shared_ptr<const tour::asset::PakImage> imagePin,
                                        const smvk::ExternalTextureResolver* externalTexture,
                                        std::string& err)>;
 

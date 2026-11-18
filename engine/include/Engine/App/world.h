@@ -660,7 +660,7 @@ struct World {
                                const asset::PakReader& reader,
                                uint32_t sceneIndex = 0,
                                TextureStreamer* streamer = nullptr,
-                               std::shared_ptr<const std::vector<uint8_t>> imagePin = {},
+                               std::shared_ptr<const asset::PakImage> imagePin = {},
                                const smvk::ExternalTextureResolver* externalTexture = nullptr);
     // The camera-driven page streamer (null until the host loader installs
     // one; see scene_page_streamer.h). The renderer ticks it once per frame.

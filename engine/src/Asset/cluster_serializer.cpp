@@ -2871,7 +2871,7 @@ std::unique_ptr<WorldPage> DeserializeCluster(
     std::string* err,
     uint32_t sceneIndex,
     TextureStreamer* streamer,
-    std::shared_ptr<const std::vector<uint8_t>> imagePin,
+    std::shared_ptr<const tour::asset::PakImage> imagePin,
     const ExternalTextureResolver* externalTexture,
     size_t sceneNodeBudget) { // Failure after textures/meshes were queued in the upload streamer
     // leaves transfer command buffers + graphics acquire barriers

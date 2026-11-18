@@ -30,6 +30,10 @@ namespace tour {
 
 struct World;
 
+namespace asset {
+class PakImage; // pak.h (forward: PinPakImage / pakImagePin_ need only the pointer)
+} // namespace asset
+
 template <typename HandleT> struct AssetRef;
 
 // Backend-defined record of a static mesh's renderer allocations
@@ -536,7 +540,7 @@ struct WorldPage {
     // keeps the payloads alive as long as the cluster — the streamer
     // contract for RegisterExisting (payload must outlive the
     // registration) is satisfied while the cluster lives.
-    void PinPakImage(std::shared_ptr<const std::vector<uint8_t>> image);
+    void PinPakImage(std::shared_ptr<const tour::asset::PakImage> image);
 
     // ---- Geometry LOD streaming (Renderer/geometry_streamer.h) ----------
     // A DEFERRED LOD sibling: cooked, metadata-registered (GetMeshLod
@@ -657,7 +661,7 @@ struct WorldPage {
     bool retainUploads_ = false;
     std::unordered_map<uint32_t, MeshData> retainedUploads_;
     // Pak-image pin for borrowed texture payloads (see PinPakImage).
-    std::shared_ptr<const std::vector<uint8_t>> pakImagePin_;
+    std::shared_ptr<const tour::asset::PakImage> pakImagePin_;
     // Bake payloads by VFS path (see the public block): borrowed spans
     // point into pakImagePin_, owned vectors cover LZ4 entries +
     // runtime injections.

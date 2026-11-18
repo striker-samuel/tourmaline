@@ -734,7 +734,7 @@ int main() {
             // forward-uses it through the compat using-declaration).
             {"Asset/cluster_serializer.h", 3, 0},
             {"Asset/mesh_optimizer.h", 1, 0},
-            {"Asset/pak.h", 34, 0}, // world-manifest surface (+5: kPakWorldManifestPath/ReadWorldManifest/WorldManifestRow/WorldManifestView/WriteWorldManifestBlob)
+            {"Asset/pak.h", 29, 0},
             {"Asset/tour.h", 1, 1},     // namespace tour = ::tour::asset
             {"Asset/touranim.h", 0, 1}, // namespace touranim = ::tour::asset
             {"Asset/meshlet.h", 1, 0},  // MeshData fwd-becomes-using (mesh.h move)

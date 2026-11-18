@@ -33,7 +33,7 @@ class ScenePageStreamer {
                       std::shared_ptr<const smvk::PakBackend> backend,
                       smvk::ResourceManager& ctx,
                       smvk::TextureStreamer* sceneStreamer,
-                      std::shared_ptr<const std::vector<uint8_t>> imagePin,
+                      std::shared_ptr<const asset::PakImage> imagePin,
                       const smvk::ExternalTextureResolver* externalTexture,
                       asset::WorldManifestView manifest,
                       uint32_t entryScene,
@@ -147,7 +147,7 @@ class ScenePageStreamer {
     std::shared_ptr<const smvk::PakBackend> backend_;
     smvk::ResourceManager& ctx_;
     smvk::TextureStreamer* sceneStreamer_;
-    std::shared_ptr<const std::vector<uint8_t>> imagePin_;
+    std::shared_ptr<const asset::PakImage> imagePin_;
     const smvk::ExternalTextureResolver* externalTexture_;
     asset::WorldManifestView manifest_; // fixed-size, offset-indexed (no copy)
     std::vector<WorldPage*> loaded_;    // sceneIndex -> registered page (flat index)

@@ -1086,7 +1086,7 @@ void TestProjectScenes() {
                               const smvk::PakReader& reader,
                               uint32_t sceneIndex,
                               smvk::TextureStreamer* streamer,
-                              std::shared_ptr<const std::vector<uint8_t>> imagePin,
+                              std::shared_ptr<const tour::asset::PakImage> imagePin,
                               const smvk::ExternalTextureResolver* externalTexture,
                               std::string& loadErr) -> smvk::WorldPage* {
         (void)ctx;
@@ -1269,7 +1269,7 @@ void TestProjectScenes() {
                                   const smvk::PakReader&,
                                   uint32_t,
                                   smvk::TextureStreamer*,
-                                  std::shared_ptr<const std::vector<uint8_t>>,
+                                  std::shared_ptr<const tour::asset::PakImage>,
                                   const smvk::ExternalTextureResolver*,
                                   std::string& loadErr) -> smvk::WorldPage* {
             loadErr = "injected loader failure";
@@ -1593,7 +1593,7 @@ void TestAssetManager() {
                                   const smvk::PakReader& reader,
                                   uint32_t sceneIndex,
                                   smvk::TextureStreamer* streamer,
-                                  std::shared_ptr<const std::vector<uint8_t>> imagePin,
+                                  std::shared_ptr<const tour::asset::PakImage> imagePin,
                                   const smvk::ExternalTextureResolver* externalTexture,
                                   std::string& loadErr) -> smvk::WorldPage* {
             (void)ctx;

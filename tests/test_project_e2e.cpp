@@ -478,7 +478,7 @@ int main(int argc, char** argv) {
                                   const smvk::PakReader& reader,
                                   uint32_t sceneIndex,
                                   smvk::TextureStreamer* streamer,
-                                  std::shared_ptr<const std::vector<uint8_t>> imagePin,
+                                  std::shared_ptr<const tour::asset::PakImage> imagePin,
                                   const smvk::ExternalTextureResolver* externalTexture,
                                   std::string& loadErr) -> smvk::WorldPage* {
             (void)ctx;

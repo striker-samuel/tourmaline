@@ -66,7 +66,7 @@ WorldPage& World::LoadPageFromPak(ResourceManager& ctx,
                                   const PakReader& reader,
                                   uint32_t sceneIndex,
                                   ::smvk::TextureStreamer* streamer,
-                                  std::shared_ptr<const std::vector<uint8_t>> imagePin,
+                                  std::shared_ptr<const asset::PakImage> imagePin,
                                   const ExternalTextureResolver* externalTexture) {
     std::string err;
     auto cluster = DeserializeCluster(ctx,

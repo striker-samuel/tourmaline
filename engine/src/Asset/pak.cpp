@@ -22,6 +22,17 @@
 #include <Engine/Asset/compression.h>
 #include <Engine/Utils/thread_pool.h>
 
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <Windows.h> // CreateFileMappingW / MapViewOfFile (PakImage::MapFile)
+#else
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
 namespace tour::asset {
 // (namespace/RHI boundary audit) TU-LOCAL escape hatch: this impl TU
 // still spells the smvk names unqualified (ThreadPool,
@@ -1686,20 +1697,119 @@ std::optional<WorldManifestView> ReadWorldManifest(const PakReader& reader, std:
 }
 
 // ---------------------------------------------------------------------------
+// PakImage (owned copy vs memory-mapped file)
+// ---------------------------------------------------------------------------
+
+std::shared_ptr<const PakImage> PakImage::FromMemory(
+    std::shared_ptr<const std::vector<uint8_t>> bytes) {
+    if (!bytes)
+        return nullptr;
+    auto img = std::shared_ptr<PakImage>(new PakImage());
+    img->owned_ = std::move(bytes);
+    img->data_ = img->owned_->data();
+    img->size_ = img->owned_->size();
+    return img;
+}
+
+std::shared_ptr<const PakImage> PakImage::MapFile(const std::string& path, std::string& err) {
+#ifdef _WIN32
+    std::wstring wpath;
+    wpath.assign(path.begin(), path.end());
+    HANDLE hFile = CreateFileW(wpath.c_str(),
+                               GENERIC_READ,
+                               FILE_SHARE_READ | FILE_SHARE_WRITE,
+                               nullptr,
+                               OPEN_EXISTING,
+                               FILE_ATTRIBUTE_NORMAL,
+                               nullptr);
+    if (hFile == INVALID_HANDLE_VALUE) {
+        err = "open failed (winerr " + std::to_string(GetLastError()) + "): " + path;
+        return nullptr;
+    }
+    LARGE_INTEGER sz{};
+    if (!GetFileSizeEx(hFile, &sz) || sz.QuadPart <= 0) {
+        CloseHandle(hFile);
+        err = "empty file: " + path;
+        return nullptr;
+    }
+    HANDLE hMap = CreateFileMappingW(hFile, nullptr, PAGE_READONLY, 0, 0, nullptr);
+    CloseHandle(hFile); // the mapping keeps the file open
+    if (!hMap) {
+        err = "mapping failed: " + path;
+        return nullptr;
+    }
+    void* view = MapViewOfFile(hMap, FILE_MAP_READ, 0, 0, 0);
+    if (!view) {
+        CloseHandle(hMap);
+        err = "map view failed: " + path;
+        return nullptr;
+    }
+    auto img = std::shared_ptr<PakImage>(new PakImage());
+    img->data_ = static_cast<const uint8_t*>(view);
+    img->size_ = static_cast<size_t>(sz.QuadPart);
+    img->view_ = view;
+    img->handle_ = reinterpret_cast<uintptr_t>(hMap);
+    return img;
+#else
+    const int fd = ::open(path.c_str(), O_RDONLY);
+    if (fd < 0) {
+        err = "open failed: " + path;
+        return nullptr;
+    }
+    struct stat st{};
+    if (fstat(fd, &st) != 0 || st.st_size <= 0) {
+        ::close(fd);
+        err = "empty file: " + path;
+        return nullptr;
+    }
+    void* view = ::mmap(nullptr, static_cast<size_t>(st.st_size), PROT_READ, MAP_PRIVATE, fd, 0);
+    ::close(fd); // the mapping keeps the file open
+    if (view == MAP_FAILED) {
+        err = "mmap failed: " + path;
+        return nullptr;
+    }
+    auto img = std::shared_ptr<PakImage>(new PakImage());
+    img->data_ = static_cast<const uint8_t*>(view);
+    img->size_ = static_cast<size_t>(st.st_size);
+    img->view_ = view;
+    return img;
+#endif
+}
+
+PakImage::~PakImage() {
+    if (!view_)
+        return;
+#ifdef _WIN32
+    UnmapViewOfFile(view_);
+    if (handle_)
+        CloseHandle(reinterpret_cast<HANDLE>(handle_));
+#else
+    ::munmap(view_, size_);
+#endif
+}
+
+// ---------------------------------------------------------------------------
 // PakBackend
 // ---------------------------------------------------------------------------
 
 std::shared_ptr<PakBackend> PakBackend::Open(std::shared_ptr<const std::vector<uint8_t>> image,
                                              std::string name,
                                              std::string& outError) {
-    if (!image || image->empty()) {
+    return Open(PakImage::FromMemory(std::move(image)), std::move(name), outError);
+}
+
+std::shared_ptr<PakBackend> PakBackend::Open(std::shared_ptr<const PakImage> image,
+                                             std::string name,
+                                             std::string& outError) {
+    if (!image || image->size() == 0) {
         outError = "empty pak image";
         return nullptr;
     }
     auto backend = std::shared_ptr<PakBackend>(new PakBackend());
     backend->image_ = std::move(image);
     backend->name_ = std::move(name);
-    auto reader = PakReader::Open(std::span<const uint8_t>(*backend->image_), outError);
+    auto reader = PakReader::Open(
+        std::span<const uint8_t>(backend->image_->data(), backend->image_->size()), outError);
     if (!reader)
         return nullptr;
     backend->reader_ = std::move(reader);

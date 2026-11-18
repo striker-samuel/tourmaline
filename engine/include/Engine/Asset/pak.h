@@ -627,6 +627,42 @@ class PakWriter {
 // explicit whole-image policy (deployment gates). A reader opened over
 // a FILE (OpenFile) has no resident image: every fetch is a positional
 // page read + verify + cache - the pager's container primitive.
+// Shared, read-only contiguous bytes for a loaded pak: either an owned RAM
+// copy (the classic preload) or a MEMORY-MAPPED file (the OS pages in only
+// the bytes actually touched, so a multi-GB archive is not slurped into RAM).
+// Exposes the same data()/size() surface the loader's direct-addressed mesh
+// upload reads from with pure offset math; the mapping outlives every span
+// borrowed from it.
+class PakImage {
+  public:
+    // Owned-copy form (the caller keeps the bytes alive via `bytes`).
+    static std::shared_ptr<const PakImage> FromMemory(
+        std::shared_ptr<const std::vector<uint8_t>> bytes);
+    // Memory-mapped form: maps `path` read-only. Null + `err` on failure.
+    static std::shared_ptr<const PakImage> MapFile(const std::string& path, std::string& err);
+    ~PakImage();
+    PakImage(PakImage&&) = delete;
+    PakImage(const PakImage&) = delete;
+
+    const uint8_t* data() const noexcept {
+        return data_;
+    }
+    size_t size() const noexcept {
+        return size_;
+    }
+    bool empty() const noexcept {
+        return size_ == 0;
+    }
+
+  private:
+    PakImage() = default;
+    const uint8_t* data_ = nullptr;
+    size_t size_ = 0;
+    std::shared_ptr<const std::vector<uint8_t>> owned_; // memory form
+    void* view_ = nullptr;                              // mapped view base (null = memory)
+    uintptr_t handle_ = 0;                              // platform mapping handle / fd
+};
+
 class PakReader {
   public:
     // Validates magic/header/footer/TOC (small + cheap). Nullopt on
@@ -725,8 +761,14 @@ class PakReader {
 // are invisible to VFS file reads (Exists() == false) — load them via PakReader.
 class PakBackend final : public smvk::IVfsBackend {
   public:
-    // Takes shared ownership of the pak image bytes.
+    // Owned-copy convenience overload: wraps `image` in PakImage::FromMemory
+    // and delegates to the PakImage form. Kept so existing memory-backed
+    // call sites (tests, the registry) compile unchanged.
     static std::shared_ptr<PakBackend> Open(std::shared_ptr<const std::vector<uint8_t>> image,
+                                            std::string name,
+                                            std::string& outError);
+    // Takes shared ownership of the pak image (memory-backed OR mapped).
+    static std::shared_ptr<PakBackend> Open(std::shared_ptr<const PakImage> image,
                                             std::string name,
                                             std::string& outError);
 
@@ -743,12 +785,12 @@ class PakBackend final : public smvk::IVfsBackend {
     // The shared pak image (the reader borrows it; cluster loads pin it
     // so tail-borrowed payloads outlive the backend). Never null on a
     // successfully opened backend.
-    [[nodiscard]] std::shared_ptr<const std::vector<uint8_t>> Image() const {
+    [[nodiscard]] std::shared_ptr<const PakImage> Image() const {
         return image_;
     }
 
   private:
-    std::shared_ptr<const std::vector<uint8_t>> image_;
+    std::shared_ptr<const PakImage> image_;
     std::optional<PakReader> reader_;
     std::string name_;
 };

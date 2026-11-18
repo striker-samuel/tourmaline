@@ -97,28 +97,17 @@ std::future<PakPreload> KickPakPreload(const std::string& pakPath,
             return p;
         }
         {
-            // Stage 1: the whole-file read (disk I/O — the dominant
-            // cost on big archives, overlapping renderer init by
-            // design).
-            SMVK_PROFILE_IO("PakPreload_Read");
-            std::ifstream pakFile(p.openPath, std::ios::binary | std::ios::ate);
-            if (!pakFile) {
-                p.error = "pak open failed: '" + p.openPath + "'";
+            // Stage 1: MEMORY-MAP the file (no full-file read — the OS
+            // pages in only the bytes the loader actually touches, so a
+            // multi-GB archive is not slurped into RAM). The mapping still
+            // backs the direct-addressed mesh upload (ImageData).
+            SMVK_PROFILE_IO("PakPreload_Map");
+            std::string mapErr;
+            p.image = tour::asset::PakImage::MapFile(p.openPath, mapErr);
+            if (!p.image) {
+                p.error = mapErr;
                 return p;
             }
-            const auto pakEnd = pakFile.tellg();
-            if (pakEnd == std::ifstream::pos_type(-1)) {
-                p.error = "pak unreadable: '" + p.openPath + "'";
-                return p;
-            }
-            pakFile.seekg(0);
-            auto image = std::make_shared<std::vector<uint8_t>>(static_cast<size_t>(pakEnd));
-            if (!pakFile.read(reinterpret_cast<char*>(image->data()),
-                              static_cast<std::streamsize>(image->size()))) {
-                p.error = "pak read failed: '" + p.openPath + "'";
-                return p;
-            }
-            p.image = std::move(image);
             SMVK_PROFILE_TAG("imageMB", p.image->size() / (1024 * 1024));
         }
         const auto t1 = std::chrono::steady_clock::now();
@@ -140,7 +129,7 @@ std::future<PakPreload> KickPakPreload(const std::string& pakPath,
                 p.error = "pak parse failed: " + pakErr;
                 return p;
             }
-            std::cerr << "[App] pak preloaded (read "
+            std::cerr << "[App] pak preloaded (map "
                       << std::chrono::duration<double>(t1 - t0).count() << "s, open "
                       << std::chrono::duration<double>(t2 - t1).count()
                       << "s): " << p.backend->Reader().EntryCount() << " entries, "
