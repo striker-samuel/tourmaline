@@ -2,23 +2,22 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
-// Tiled-terrain metadata (cook-boundary schema, no JSON dependency).
+// Tiled-terrain metadata (cook-boundary, the engine TEXT convention — no
+// JSON). terrain.meta is a flat key=value file the cooker validates strictly
+// and the runtime never sees (the cooked TerrainMeta blob is the runtime
+// form). Only this header + the cooker know the text shape; everything past
+// the cooker speaks TerrainMeta.
 //
-// terrain.json is a FLAT object the cooker validates strictly and the
-// runtime never sees (the cooked TerrainMeta blob is the runtime form).
-// Only this header + the cooker know the .json shape; everything past
-// the cooker speaks TerrainMeta. Replacing .json later touches only the
-// Parse function below.
-//
-// Schema (all required):
-//   baseY, range, worldSize, hTileSize, gBlock : number
-//   origin : [x, z]                             : number pair
-//   hRes                                        : 1024
-//   packing : "rg16"
+// Schema (all required, one key=value per line, '#' comments):
+//   baseY range worldSize hTileSize gBlock : number
+//   originX originZ                        : number
+//   hRes                                   : 1024
+//   packing                                : rg16
 
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <span>
 #include <string>
@@ -73,194 +72,129 @@ inline std::string STileBlobPath(uint32_t tx, uint32_t tz) {
 }
 inline constexpr const char* kTerrainMetaBlobPath = "terrain/meta";
 
-// ---- minimal flat-JSON parser (strict, cook-side) -------------------------
-namespace detail {
-inline void SkipWs(std::string_view s, size_t& p) {
-    while (p < s.size() && (s[p] == ' ' || s[p] == '\t' || s[p] == '\r' || s[p] == '\n'))
-        ++p;
-}
-// Parses one JSON number at p (no hex/inf/nan); advances p past it.
-inline bool ParseNum(std::string_view s, size_t& p, double& out) {
-    SkipWs(s, p);
-    const size_t start = p;
-    if (p < s.size() && (s[p] == '-' || s[p] == '+'))
-        ++p;
-    bool any = false;
-    while (p < s.size() && s[p] >= '0' && s[p] <= '9') {
-        ++p;
-        any = true;
-    }
-    if (p < s.size() && s[p] == '.') {
-        ++p;
-        while (p < s.size() && s[p] >= '0' && s[p] <= '9') {
-            ++p;
-            any = true;
-        }
-    }
-    if (p < s.size() && (s[p] == 'e' || s[p] == 'E')) {
-        ++p;
-        if (p < s.size() && (s[p] == '-' || s[p] == '+'))
-            ++p;
-        bool eany = false;
-        while (p < s.size() && s[p] >= '0' && s[p] <= '9') {
-            ++p;
-            eany = true;
-        }
-        if (!eany)
-            return false;
-    }
-    if (!any || p == start)
-        return false;
-    try {
-        out = std::stod(std::string(s.substr(start, p - start)));
-    } catch (...) {
-        return false;
-    }
-    return true;
-}
-inline bool ParseLit(std::string_view s, size_t& p, const char* lit) {
-    SkipWs(s, p);
-    for (const char* q = lit; *q; ++q, ++p) {
-        if (p >= s.size() || s[p] != *q)
-            return false;
-    }
-    return true;
-}
-inline bool ParseString(std::string_view s, size_t& p, std::string& out) {
-    SkipWs(s, p);
-    if (p >= s.size() || s[p] != '"')
-        return false;
-    ++p;
-    out.clear();
-    while (p < s.size() && s[p] != '"') {
-        if (s[p] == '\\' && p + 1 < s.size()) {
-            ++p;
-            out.push_back(s[p++]);
-        } else {
-            out.push_back(s[p++]);
-        }
-    }
-    if (p >= s.size())
-        return false;
-    ++p;
-    return true;
-}
-} // namespace detail
-
-// Parses the flat terrain.json schema into meta. Strict: unknown keys fail
+// Parses the flat terrain meta (the engine TEXT convention: key=value lines
+// like .material/.meta, '#' comments) into meta. Strict: unknown keys fail
 // (typos must not silently cook), missing keys fail, hRes must be 1024,
 // packing must be "rg16".
-[[nodiscard]] inline bool ParseTerrainJson(std::string_view text,
-                                           TerrainMeta& meta,
-                                           std::string& err) {
-    using namespace detail;
-    size_t p = 0;
-    if (!ParseLit(text, p, "{")) {
-        err = "terrain.json: expected '{'";
-        return false;
-    }
-    bool seenBaseY = false, seenRange = false, seenWorld = false, seenOx = false, seenHSize = false,
-         seenHRes = false, seenGBlock = false, seenPacking = false;
+[[nodiscard]] inline bool ParseTerrainMetaText(std::string_view text,
+                                               TerrainMeta& meta,
+                                               std::string& err) {
+    bool seenBaseY = false, seenRange = false, seenWorld = false, seenOx = false, seenOz = false,
+         seenHSize = false, seenHRes = false, seenGBlock = false, seenPacking = false;
     double worldSize = 0, hTileSize = 0, gBlock = 0, baseY = 0, range = 0, hRes = 0;
     double ox = 0, oz = 0;
-    bool first = true;
-    while (true) {
-        SkipWs(text, p);
-        if (p < text.size() && text[p] == '}') {
-            ++p;
-            break;
-        }
-        if (!first) {
-            if (!ParseLit(text, p, ",")) {
-                err = "terrain.json: expected ',' between keys";
-                return false;
-            }
-        }
-        first = false;
-        std::string key;
-        if (!ParseString(text, p, key)) {
-            err = "terrain.json: expected string key";
+
+    size_t pos = 0;
+    size_t lineNo = 0;
+    auto parseNum = [](std::string_view val, double& out) {
+        std::string s(val);
+        char* end = nullptr;
+        out = std::strtod(s.c_str(), &end);
+        return end != s.c_str() && *end == '\0';
+    };
+    while (pos < text.size()) {
+        size_t nl = text.find('\n', pos);
+        std::string_view line =
+            text.substr(pos, (nl == std::string_view::npos ? text.size() : nl) - pos);
+        pos = (nl == std::string_view::npos ? text.size() : nl + 1);
+        ++lineNo;
+        if (!line.empty() && line.back() == '\r')
+            line.remove_suffix(1);
+        // Trim the whole line.
+        size_t b = 0, e = line.size();
+        while (b < e && (line[b] == ' ' || line[b] == '\t'))
+            ++b;
+        while (e > b && (line[e - 1] == ' ' || line[e - 1] == '\t'))
+            --e;
+        line = line.substr(b, e - b);
+        if (line.empty() || line[0] == '#')
+            continue;
+        size_t eq = line.find('=');
+        if (eq == std::string_view::npos) {
+            err = "terrain meta: expected 'key=value' on line " + std::to_string(lineNo);
             return false;
         }
-        if (!ParseLit(text, p, ":")) {
-            err = "terrain.json: expected ':' after key '" + key + "'";
-            return false;
-        }
-        double num = 0;
-        if (key == "origin") {
-            if (!ParseLit(text, p, "[")) {
-                err = "terrain.json: origin must be [x, z]";
-                return false;
-            }
-            if (!ParseNum(text, p, ox) || !ParseLit(text, p, ",") || !ParseNum(text, p, oz) ||
-                !ParseLit(text, p, "]")) {
-                err = "terrain.json: origin must be [x, z] numbers";
-                return false;
-            }
-            seenOx = true;
-        } else if (key == "packing") {
-            std::string v;
-            if (!ParseString(text, p, v) || v != "rg16") {
-                err = "terrain.json: packing must be \"rg16\"";
-                return false;
-            }
-            seenPacking = true;
-        } else if (key == "baseY") {
-            if (!ParseNum(text, p, baseY)) {
-                err = "terrain.json: baseY must be a number";
+        std::string_view key = line.substr(0, eq);
+        std::string_view val = line.substr(eq + 1);
+        auto trim = [](std::string_view v) {
+            size_t b = 0, e = v.size();
+            while (b < e && (v[b] == ' ' || v[b] == '\t'))
+                ++b;
+            while (e > b && (v[e - 1] == ' ' || v[e - 1] == '\t'))
+                --e;
+            return v.substr(b, e - b);
+        };
+        key = trim(key);
+        val = trim(val);
+
+        if (key == "baseY") {
+            if (!parseNum(val, baseY)) {
+                err = "terrain meta: bad baseY";
                 return false;
             }
             seenBaseY = true;
         } else if (key == "range") {
-            if (!ParseNum(text, p, range)) {
-                err = "terrain.json: range must be a number";
+            if (!parseNum(val, range)) {
+                err = "terrain meta: bad range";
                 return false;
             }
             seenRange = true;
         } else if (key == "worldSize") {
-            if (!ParseNum(text, p, worldSize)) {
-                err = "terrain.json: worldSize must be a number";
+            if (!parseNum(val, worldSize)) {
+                err = "terrain meta: bad worldSize";
                 return false;
             }
             seenWorld = true;
+        } else if (key == "originX") {
+            if (!parseNum(val, ox)) {
+                err = "terrain meta: bad originX";
+                return false;
+            }
+            seenOx = true;
+        } else if (key == "originZ") {
+            if (!parseNum(val, oz)) {
+                err = "terrain meta: bad originZ";
+                return false;
+            }
+            seenOz = true;
         } else if (key == "hTileSize") {
-            if (!ParseNum(text, p, hTileSize)) {
-                err = "terrain.json: hTileSize must be a number";
+            if (!parseNum(val, hTileSize)) {
+                err = "terrain meta: bad hTileSize";
                 return false;
             }
             seenHSize = true;
         } else if (key == "hRes") {
-            if (!ParseNum(text, p, hRes) || hRes != 1024.0) {
-                err = "terrain.json: hRes must be 1024";
+            if (!parseNum(val, hRes) || hRes != 1024.0) {
+                err = "terrain meta: hRes must be 1024";
                 return false;
             }
             seenHRes = true;
         } else if (key == "gBlock") {
-            if (!ParseNum(text, p, gBlock)) {
-                err = "terrain.json: gBlock must be a number";
+            if (!parseNum(val, gBlock)) {
+                err = "terrain meta: bad gBlock";
                 return false;
             }
             seenGBlock = true;
+        } else if (key == "packing") {
+            if (val != "rg16") {
+                err = "terrain meta: packing must be rg16";
+                return false;
+            }
+            seenPacking = true;
         } else {
-            err = "terrain.json: unknown key '" + key + "'";
+            err = "terrain meta: unknown key '" + std::string(key) + "'";
             return false;
         }
-        (void)num;
     }
-    SkipWs(text, p);
-    if (p != text.size()) {
-        err = "terrain.json: trailing bytes after '}'";
-        return false;
-    }
-    if (!seenBaseY || !seenRange || !seenWorld || !seenOx || !seenHSize || !seenHRes ||
+    if (!seenBaseY || !seenRange || !seenWorld || !seenOx || !seenOz || !seenHSize || !seenHRes ||
         !seenGBlock || !seenPacking) {
-        err = "terrain.json: missing required key";
+        err = "terrain meta: missing required key";
         return false;
     }
     if (!std::isfinite(baseY) || !std::isfinite(range) || !std::isfinite(ox) ||
         !std::isfinite(oz) || !(range > 0.0) || !(worldSize > 0.0) || !(hTileSize > 0.0) ||
         !(gBlock > 0.0)) {
-        err = "terrain.json: requires finite heights, positive range and positive "
+        err = "terrain meta: requires finite heights, positive range and positive "
               "world/hTile/gBlock sizes";
         return false;
     }
@@ -284,7 +218,7 @@ inline bool ParseString(std::string_view s, size_t& p, std::string& out) {
         meta.worldSize > engine::limits::MaxTerrainWorldSizeMeters ||
         std::abs(static_cast<double>(nH) * meta.hTileSize - meta.worldSize) > 0.5 ||
         std::abs(static_cast<double>(nS) * meta.gBlock - meta.worldSize) > 0.5) {
-        err = "terrain.json: worldSize must divide into whole H-tiles and G-blocks "
+        err = "terrain meta: worldSize must divide into whole H-tiles and G-blocks "
               "within the engine limit";
         return false;
     }

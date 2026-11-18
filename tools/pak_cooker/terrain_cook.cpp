@@ -45,14 +45,15 @@ bool CookTerrainBlobs(const std::string& terrainDir,
                       smvk::PakWriter& writer,
                       std::string& err,
                       const std::vector<const smvk::WorldPage*>& scenes) {
-    // terrain.json (the flat schema; .json never reaches the runtime).
-    std::string jsonText;
-    if (!ReadFile(terrainDir + "/terrain.json", jsonText)) {
-        err = "terrain: cannot read " + terrainDir + "/terrain.json";
+    // terrain.meta (the engine text convention; the .meta never reaches the
+    // runtime).
+    std::string metaText;
+    if (!ReadFile(terrainDir + "/terrain.meta", metaText)) {
+        err = "terrain: cannot read " + terrainDir + "/terrain.meta";
         return false;
     }
     smvk::terrain::TerrainMeta meta;
-    if (!smvk::terrain::ParseTerrainJson(jsonText, meta, err)) {
+    if (!smvk::terrain::ParseTerrainMetaText(metaText, meta, err)) {
         err = "terrain: " + err;
         return false;
     }

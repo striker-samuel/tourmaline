@@ -2,7 +2,7 @@
 # Copyright (c) 2026 Samuel Martin
 # SPDX-License-Identifier: MIT
 """caldera_terrain_tiles: convert the stitched island heightmap into the
-terrain system's H-tile source (terrain.json + h_XX_ZZ.png RG16 tiles + solid
+terrain system's H-tile source (terrain.meta + h_XX_ZZ.png RG16 tiles + solid
 m_XX_ZZ.png masks).
 
 The caldera_terrain_heightfield.py --stitch output is a 16-bit grayscale PNG
@@ -13,7 +13,7 @@ height). This tool:
   - maps USD -> Tourmaline (X_t = X_usd * mpu, Z_t = -Y_usd * mpu, the -Y flip),
   - resamples the heightmap onto the square atlas (bilinear),
   - pads the uncovered (ocean) margin with baseY,
-  - emits terrain.json + h_XX_ZZ.png + solid m_XX_ZZ.png masks.
+  - emits terrain.meta + h_XX_ZZ.png + solid m_XX_ZZ.png masks.
 
 Usage:
   python tools/caldera_terrain_tiles.py \
@@ -195,19 +195,22 @@ def main(argv: list[str]) -> int:
                 rows.append(bytes(row))
             write_png_rgba(out / f"m_{bx:02d}_{bz:02d}.png", mres, mres, rows)
 
-    meta_out = {
-        "baseY": base_y,
-        "range": range_y,
-        "worldSize": world_size,
-        "origin": [origin_x, origin_z],
-        "hTileSize": htile,
-        "hRes": hres,
-        "gBlock": block,
-        "packing": "rg16",
-    }
-    (out / "terrain.json").write_text(json.dumps(meta_out, indent=2), encoding="utf-8")
+    meta_lines = [
+        "# Tourmaline terrain source (engine text convention)",
+        f"baseY={base_y}",
+        f"range={range_y}",
+        f"worldSize={world_size}",
+        f"originX={origin_x}",
+        f"originZ={origin_z}",
+        f"hTileSize={htile}",
+        f"hRes={hres}",
+        f"gBlock={block}",
+        "packing=rg16",
+        "",
+    ]
+    (out / "terrain.meta").write_text("\n".join(meta_lines), encoding="utf-8")
     print(f"  wrote {tiles_per_axis*tiles_per_axis} H-tiles + {blocks_per_axis*blocks_per_axis} "
-          f"masks + terrain.json -> {out}")
+          f"masks + terrain.meta -> {out}")
     return 0
 
 

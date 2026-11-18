@@ -201,7 +201,7 @@ struct Args {
     // Scene pinpoint: with --dump-pak, restrict the scene print to these
     // node ids (repeatable) and include their local translation.
     std::vector<uint32_t> dumpNodes;
-    // Tiled terrain source dir (host path with terrain.json +
+    // Tiled terrain source dir (host path with terrain.meta +
     // h_XX_ZZ.png + m_XX_ZZ.png; see Rendergraph/terrain_meta.h).
     // Terrain blobs ride the same pak (or a terrain-only pak with no
     // artifacts/tour); empty = no terrain.
@@ -3275,7 +3275,7 @@ int Run(const PakArgs& c) {
             tool::out() << "Embedded sound " << vfsPath << " (" << wavBytes << " B wav)\n";
         }
     }
-    // Tiled terrain (optional, independent of clusters): terrain.json +
+    // Tiled terrain (optional, independent of clusters): terrain.meta +
     // H/S PNGs -> Terrain blobs. Runs for mixed and terrain-only paks;
     // empty scenePages serialize to zero scene blobs (valid: the
     // runtime loads terrain straight from the Terrain blobs).

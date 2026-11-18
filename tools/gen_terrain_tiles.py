@@ -5,8 +5,8 @@
 """Synthetic tiled-terrain source generator (T0 test data).
 
 Writes, with stdlib only (no PIL):
-  out/ terrain.json + h_XX_ZZ.png (16x, 1024 RGBA8, RG16 height, B/A=0)
-                  + m_XX_ZZ.png (256x, 256 RGBA8, checker-in-R test mask)
+  out/ terrain.meta + h_XX_ZZ.png (16x, 1024 RGBA8, RG16 height, B/A=0)
+                   + m_XX_ZZ.png (256x, 256 RGBA8, checker-in-R test mask)
 
 World: 4096x4096m, origin (-2048,-2048). H-tile 1024m, G-block 256m.
 Mapping: worldY = -40 + h01*420. Synthetic hills (deterministic):
@@ -16,7 +16,6 @@ Checker: 32px squares in R, G/B/A = 0.
 Usage: python3 tools/gen_terrain_tiles.py --out content/terrain_src
 """
 import argparse
-import json
 import math
 import os
 import struct
@@ -94,18 +93,21 @@ def main():
                 rows.append(bytes(row))
             write_png_rgba(os.path.join(args.out, f"m_{tx:02d}_{tz:02d}.png"), S_RES, S_RES, rows)
 
-    meta = {
-        "baseY": BASE_Y,
-        "range": RANGE,
-        "worldSize": WORLD,
-        "origin": [ORIGIN, ORIGIN],
-        "hTileSize": H_SIZE,
-        "hRes": H_RES,
-        "gBlock": 256.0,
-        "packing": "rg16",
-    }
-    with open(os.path.join(args.out, "terrain.json"), "w") as f:
-        json.dump(meta, f, indent=2)
+    meta_lines = [
+        "# Tourmaline terrain source (engine text convention)",
+        f"baseY={BASE_Y}",
+        f"range={RANGE}",
+        f"worldSize={WORLD}",
+        f"originX={ORIGIN}",
+        f"originZ={ORIGIN}",
+        f"hTileSize={H_SIZE}",
+        f"hRes={H_RES}",
+        "gBlock=256",
+        "packing=rg16",
+        "",
+    ]
+    with open(os.path.join(args.out, "terrain.meta"), "w") as f:
+        f.write("\n".join(meta_lines))
     print(f"wrote 16 H + {g*g} S tiles to {args.out}")
 
 

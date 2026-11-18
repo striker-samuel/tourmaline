@@ -5,7 +5,7 @@
 // Tiled terrain heightfield — baked from authored H-tiles (no procedural
 // fallback; see Rendergraph/terrain_pack.h + terrain_hfield.h).
 //
-// World: worldSize x worldSize m from terrain.json (default 4096 x 4096).
+// World: worldSize x worldSize m from terrain.meta (default 4096 x 4096).
 // The block grid derives from the meta: blocksPerAxis = worldSize / gBlock
 // (default 16 x 16 G-blocks of 256 m), the H-tile grid from
 // tilesPerAxis = worldSize / hTileSize (default 4 x 4 of 1024 m):

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
-// --terrain cook: terrain_src dir (terrain.json + h_XX_ZZ.png + m_XX_ZZ.png)
+// --terrain cook: terrain_src dir (terrain.meta + h_XX_ZZ.png + m_XX_ZZ.png)
 // -> PakAssetKind::Terrain blobs (16x height RGBA8 raw, 256x mask RGBA8 raw,
 // 1x terrain/meta). Host-path inputs, validated strictly; B/A channels of
 // height tiles are preserved verbatim (free for future use).

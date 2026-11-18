@@ -143,68 +143,64 @@ int main() {
         Check(Near(mn, -40.0f + 0.75f * 420.0f, 0.1f) && Near(mx, mn, 0.01f),
               "hfield.minmax-const");
     }
-    // Meta JSON: accept the generator schema, reject mutations.
+    // Meta text (engine convention: key=value lines, '#' comments): accept
+    // the generator schema, reject mutations.
     {
         TerrainMeta m;
         std::string err;
-        const char* good = "{\"baseY\": -40.0, \"range\": 420.0, "
-                           "\"worldSize\": 4096.0, \"origin\": [-2048.0, -2048.0], "
-                           "\"hTileSize\": 1024.0, \"hRes\": 1024, \"gBlock\": 256.0, "
-                           "\"packing\": \"rg16\"}";
-        Check(ParseTerrainJson(good, m, err), "hfield.json-good");
+        const char* good = "baseY=-40.0\nrange=420.0\nworldSize=4096.0\n"
+                           "originX=-2048.0\noriginZ=-2048.0\nhTileSize=1024.0\n"
+                           "hRes=1024\ngBlock=256.0\npacking=rg16\n";
+        Check(ParseTerrainMetaText(good, m, err), "hfield.meta-good");
         Check(Near(m.baseY, -40.0f, 1e-5f) && Near(m.range, 420.0f, 1e-5f) &&
                   Near(m.originX, -2048.0f, 1e-4f) && m.hRes == 1024u && m.packingRg16,
-              "hfield.json-values");
-        const char* unknown = "{\"baseY\": -40.0, \"range\": 420.0, "
-                              "\"worldSize\": 4096.0, \"origin\": [-2048.0, -2048.0], "
-                              "\"hTileSize\": 1024.0, \"hRes\": 1024, \"gBlock\": 256.0, "
-                              "\"packing\": \"rg16\", \"oops\": 1}";
-        Check(!ParseTerrainJson(unknown, m, err), "hfield.json-reject-unknown");
-        const char* badRes = "{\"baseY\": -40.0, \"range\": 420.0, "
-                             "\"worldSize\": 4096.0, \"origin\": [-2048.0, -2048.0], "
-                             "\"hTileSize\": 1024.0, \"hRes\": 512, \"gBlock\": 256.0, "
-                             "\"packing\": \"rg16\"}";
-        Check(!ParseTerrainJson(badRes, m, err), "hfield.json-reject-hres");
-        const char* badPack = "{\"baseY\": -40.0, \"range\": 420.0, "
-                              "\"worldSize\": 4096.0, \"origin\": [-2048.0, -2048.0], "
-                              "\"hTileSize\": 1024.0, \"hRes\": 1024, \"gBlock\": 256.0, "
-                              "\"packing\": \"ra16\"}";
-        Check(!ParseTerrainJson(badPack, m, err), "hfield.json-reject-packing");
-        const char* missing = "{\"baseY\": -40.0, \"range\": 420.0}";
-        Check(!ParseTerrainJson(missing, m, err), "hfield.json-reject-missing");
-        std::string trailing = std::string(good) + " ";
-        Check(ParseTerrainJson(trailing, m, err), "hfield.json-trailing-ws-ok");
-        Check(!ParseTerrainJson(std::string(good) + "x", m, err), "hfield.json-reject-trailing");
+              "hfield.meta-values");
+        const char* unknown = "baseY=-40.0\nrange=420.0\nworldSize=4096.0\n"
+                              "originX=-2048.0\noriginZ=-2048.0\nhTileSize=1024.0\n"
+                              "hRes=1024\ngBlock=256.0\npacking=rg16\noops=1\n";
+        Check(!ParseTerrainMetaText(unknown, m, err), "hfield.meta-reject-unknown");
+        const char* badRes = "baseY=-40.0\nrange=420.0\nworldSize=4096.0\n"
+                             "originX=-2048.0\noriginZ=-2048.0\nhTileSize=1024.0\n"
+                             "hRes=512\ngBlock=256.0\npacking=rg16\n";
+        Check(!ParseTerrainMetaText(badRes, m, err), "hfield.meta-reject-hres");
+        const char* badPack = "baseY=-40.0\nrange=420.0\nworldSize=4096.0\n"
+                              "originX=-2048.0\noriginZ=-2048.0\nhTileSize=1024.0\n"
+                              "hRes=1024\ngBlock=256.0\npacking=ra16\n";
+        Check(!ParseTerrainMetaText(badPack, m, err), "hfield.meta-reject-packing");
+        const char* missing = "baseY=-40.0\nrange=420.0\n";
+        Check(!ParseTerrainMetaText(missing, m, err), "hfield.meta-reject-missing");
+        // '#' comments and blank lines are tolerated (the .material convention).
+        const char* withComment = "# generated terrain\nbaseY=-40.0\n\nrange=420.0\n"
+                                  "worldSize=4096.0\noriginX=-2048.0\noriginZ=-2048.0\n"
+                                  "hTileSize=1024.0\nhRes=1024\ngBlock=256.0\npacking=rg16\n";
+        Check(ParseTerrainMetaText(withComment, m, err), "hfield.meta-comment-ok");
+        Check(!ParseTerrainMetaText(std::string(good) + "junk-without-equals\n", m, err),
+              "hfield.meta-reject-badline");
         // Layout invariants: worldSize must divide into whole H-tiles
         // (hTileSize) and G-blocks (gBlock). A non-integer grid fails
         // closed; a scaled-but-integer grid is accepted (the old fixed
         // 4x4/16x16 gate is gone).
-        const char* badHGrid = "{\"baseY\": -40.0, \"range\": 420.0, "
-                               "\"worldSize\": 5000.0, \"origin\": [-2048.0, -2048.0], "
-                               "\"hTileSize\": 1024.0, \"hRes\": 1024, \"gBlock\": 256.0, "
-                               "\"packing\": \"rg16\"}"; // 5000/1024 not whole
-        Check(!ParseTerrainJson(badHGrid, m, err), "hfield.json-reject-noninteger-hgrid");
-        const char* badSGrid = "{\"baseY\": -40.0, \"range\": 420.0, "
-                               "\"worldSize\": 4096.0, \"origin\": [-2048.0, -2048.0], "
-                               "\"hTileSize\": 1024.0, \"hRes\": 1024, \"gBlock\": 300.0, "
-                               "\"packing\": \"rg16\"}"; // 4096/300 not whole
-        Check(!ParseTerrainJson(badSGrid, m, err), "hfield.json-reject-noninteger-sgrid");
-        const char* scaled = "{\"baseY\": -40, \"range\": 420, "
-                             "\"worldSize\": 8192, \"origin\": [-2048, -2048], "
-                             "\"hTileSize\": 2048, \"hRes\": 1024, \"gBlock\": 512, "
-                             "\"packing\": \"rg16\"}";
-        Check(ParseTerrainJson(scaled, m, err) && Near(m.worldSize, 8192.0f, 1e-3f),
-              "hfield.json-accept-scaled-world");
-        const char* tooBig = "{\"baseY\": -40, \"range\": 420, "
-                             "\"worldSize\": 40960, \"origin\": [-2048, -2048], "
-                             "\"hTileSize\": 1024, \"hRes\": 1024, \"gBlock\": 256, "
-                             "\"packing\": \"rg16\"}"; // 40 km + 960 m: past the limit
-        Check(!ParseTerrainJson(tooBig, m, err), "hfield.json-reject-world-too-large");
-        const char* overflow = "{\"baseY\": 1e999, \"range\": 420, "
-                               "\"worldSize\": 4096, \"origin\": [-2048, -2048], "
-                               "\"hTileSize\": 1024, \"hRes\": 1024, \"gBlock\": 256, "
-                               "\"packing\": \"rg16\"}";
-        Check(!ParseTerrainJson(overflow, m, err), "hfield.json-reject-nonfinite");
+        const char* badHGrid = "baseY=-40\nrange=420\nworldSize=5000\noriginX=-2048\n"
+                               "originZ=-2048\nhTileSize=1024\nhRes=1024\ngBlock=256\n"
+                               "packing=rg16\n"; // 5000/1024 not whole
+        Check(!ParseTerrainMetaText(badHGrid, m, err), "hfield.meta-reject-noninteger-hgrid");
+        const char* badSGrid = "baseY=-40\nrange=420\nworldSize=4096\noriginX=-2048\n"
+                               "originZ=-2048\nhTileSize=1024\nhRes=1024\ngBlock=300\n"
+                               "packing=rg16\n"; // 4096/300 not whole
+        Check(!ParseTerrainMetaText(badSGrid, m, err), "hfield.meta-reject-noninteger-sgrid");
+        const char* scaled = "baseY=-40\nrange=420\nworldSize=8192\noriginX=-2048\n"
+                             "originZ=-2048\nhTileSize=2048\nhRes=1024\ngBlock=512\n"
+                             "packing=rg16\n";
+        Check(ParseTerrainMetaText(scaled, m, err) && Near(m.worldSize, 8192.0f, 1e-3f),
+              "hfield.meta-accept-scaled-world");
+        const char* tooBig = "baseY=-40\nrange=420\nworldSize=40960\noriginX=-2048\n"
+                             "originZ=-2048\nhTileSize=1024\nhRes=1024\ngBlock=256\n"
+                             "packing=rg16\n"; // 40 km + 960 m: past the limit
+        Check(!ParseTerrainMetaText(tooBig, m, err), "hfield.meta-reject-world-too-large");
+        const char* overflow = "baseY=1e999\nrange=420\nworldSize=4096\noriginX=-2048\n"
+                               "originZ=-2048\nhTileSize=1024\nhRes=1024\ngBlock=256\n"
+                               "packing=rg16\n";
+        Check(!ParseTerrainMetaText(overflow, m, err), "hfield.meta-reject-nonfinite");
     }
     // Naming helpers match the generator.
     Check(HTileName(0, 0) == "h_00_00", "hfield.name-h");
