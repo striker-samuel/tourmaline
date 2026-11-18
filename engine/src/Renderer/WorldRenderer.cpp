@@ -15649,7 +15649,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     ? m_context->GetBufferDeviceAddress(m_gpuScenePrevViewBuffers[flight])
                     : 0u,
                 gpuSceneMotionHistoryReady ? 1u : 0u,
-                0u,
+                gpuSceneMotionHistoryReady ? m_prevGpuSceneTransformCount : 0u,
             };
             motionCommands = m_gpuSceneRasterIndirect;
         }

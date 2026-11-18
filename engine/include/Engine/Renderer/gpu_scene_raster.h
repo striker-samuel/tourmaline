@@ -183,7 +183,11 @@ struct RasterMotionVsPush {
     uint64_t prevTransforms = 0; // GpuScenePrevTransform[] by slot
     uint64_t prevView = 0;       // RasterViewData (previous origin + relative VP)
     uint32_t prevValid = 0;      // 1 = previous history is usable
-    uint32_t pad = 0;
+    // Number of entries the prevTransforms buffer actually holds (the previous
+    // frame's instance count). Streaming can grow the instance set between the
+    // snapshot and this frame, so the VS must bound the prev read by THIS, not
+    // the (larger) current instanceSlots — an out-of-bounds read faults the GPU.
+    uint32_t prevSlots = 0;
 };
 static_assert(sizeof(RasterMotionVsPush) == 56);
 

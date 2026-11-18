@@ -43,7 +43,7 @@ struct RasterMotionVsPush {
     GPU_PTR_READ(PrevTransformBuffer) prevTransforms;
     GPU_PTR_READ(RasterViewData) prevView;
     uint prevValid;
-    uint pad;
+    uint prevSlots;
 };
 GPU_PUSH(RasterMotionVsPush, pcMV);
 
@@ -97,8 +97,11 @@ VSOut mainVS(VSIn IN) {
 
     // Previous transform, generation-validated. A slot whose generation
     // changed since the snapshot (retired/recycled) keeps zero motion
-    // rather than ghosting the previous owner's transform.
-    if (pcMV.prevValid != 0u) {
+    // rather than ghosting the previous owner's transform. slot is also
+    // bounded by prevSlots (the snapshot's instance count): streaming can
+    // grow the current instance set beyond it, and reading a newly-streamed
+    // slot past the prev buffer's end would fault the GPU.
+    if (pcMV.prevValid != 0u && slot < pcMV.prevSlots) {
         const GpuScenePrevTransform prev = pcMV.prevTransforms.Get().rows[slot];
         if (prev.generation.x == generation) {
             const float3 pa = prev.basisX.xyz;
