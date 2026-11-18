@@ -1410,11 +1410,6 @@ struct AppResources {
     smvk::ShaderProgram mainProgramStd;
     smvk::Holder<smvk::ShaderModuleHandle> fragLitGiStdModules[4];
     smvk::ShaderProgram mainProgramGiStd[4];
-    // Fixed-lobe lit FS twins (default_lit SG_LM_LOBE_COUNT variants):
-    // same VS + per-count SG evaluation, bound per filtered material
-    // range (see GfxRenderer::FilteredLitProgram). Missing modules leave
-    // that count on the generic lit program.
-    smvk::Holder<smvk::ShaderModuleHandle> fragLitSgModules[4];
     // GI permutation lit FS variants (default_lit GI_NONE/OCTREE/REGULAR/FULL):
     // same VS + per-permutation GI path. Missing modules leave the base
     // mainProgram as fallback. See SPEC_GI_VARIANT in common.hlsli.
@@ -1433,7 +1428,6 @@ struct AppResources {
     smvk::ShaderProgram mainProjectProgram;
     smvk::Holder<smvk::ShaderModuleHandle> fragProjectLitA2CModule;
     smvk::ShaderProgram mainProjectProgramA2C;
-    smvk::Holder<smvk::ShaderModuleHandle> fragProjectLitSgModules[4];
     smvk::Holder<smvk::ShaderModuleHandle> fragProjectLitGiModules[4];
     smvk::ShaderProgram mainProjectProgramGi[4];
     smvk::Holder<smvk::ShaderModuleHandle> fragProjectLitStdModule;

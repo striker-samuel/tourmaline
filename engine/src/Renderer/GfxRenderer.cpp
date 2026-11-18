@@ -148,21 +148,6 @@ bool GfxRenderer::Ensure(smvk::ResourceManager& ctx, smvk::RenderGraph& rg) {
             .module = wireFrag_, .entryPoint = "mainPS", .stage = smvk::ShaderStage::Fragment};
         filteredWireProgram = {.shaders = {vs, fs}, .shaderCount = 2};
     }
-    // Fixed-lobe lit twins (same filtered VS + the SG-permuted lit FS):
-    // built only for configured modules; Main falls back to the generic
-    // filtered program per missing range class.
-    for (uint32_t li = 0; li < 4; ++li) {
-        if (filteredLitSg_[li].shaderCount == 0 && !filteredVsModule.empty() &&
-            !litFragSgModules_[li].empty()) {
-            smvk::Shader vs{.module = filteredVsModule,
-                            .entryPoint = "mainVS",
-                            .stage = smvk::ShaderStage::Vertex};
-            smvk::Shader fs{.module = litFragSgModules_[li],
-                            .entryPoint = "mainPS",
-                            .stage = smvk::ShaderStage::Fragment};
-            filteredLitSg_[li] = {.shaders = {vs, fs}, .shaderCount = 2};
-        }
-    }
     // GI permutation twins (same filtered VS + the .giN lit FS — the
     // same modules the direct draws bind as mainProgramGi). Built only
     // for configured modules; the batch bind falls back to the generic
@@ -224,18 +209,6 @@ bool GfxRenderer::Ensure(smvk::ResourceManager& ctx, smvk::RenderGraph& rg) {
                         .entryPoint = "mainPS",
                         .stage = smvk::ShaderStage::Fragment};
         filteredProjectProgramA2C = {.shaders = {vs, fs}, .shaderCount = 2};
-    }
-    for (uint32_t li = 0; li < 4; ++li) {
-        if (filteredProjectLitSg_[li].shaderCount == 0 && !filteredVsModule.empty() &&
-            !projectLitFragSgModules_[li].empty()) {
-            smvk::Shader vs{.module = filteredVsModule,
-                            .entryPoint = "mainVS",
-                            .stage = smvk::ShaderStage::Vertex};
-            smvk::Shader fs{.module = projectLitFragSgModules_[li],
-                            .entryPoint = "mainPS",
-                            .stage = smvk::ShaderStage::Fragment};
-            filteredProjectLitSg_[li] = {.shaders = {vs, fs}, .shaderCount = 2};
-        }
     }
     for (uint32_t gi = 0; gi < 4; ++gi) {
         if (filteredProjectProgramGi_[gi].shaderCount == 0 && !filteredVsModule.empty() &&

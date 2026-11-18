@@ -85,15 +85,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
     // MSAASettings::Count2A2C(). Zero discard in the FS module so the
     // driver keeps the early depth test.
     smvk::ShaderProgram filteredProgramA2C{};
-    // Fixed-lobe-count twins of filteredProgram (same filtered VS + the
-    // SG_LM_LOBE_COUNT-specialized lit FS, index 0..3 = counts 5/6/9/12):
-    // the Main filtered leg binds the twin matching each material range's
-    // cooked lobe count, so the SG evaluation folds to literals. A missing
-    // module (Ensure builds only configured ones) leaves shaderCount 0
-    // and that count falls back to the generic FilteredProgram(). The A2C
-    // leg, the direct leg and the debug views intentionally stay generic.
-    smvk::ShaderModuleHandle litFragSgModules_[4]{};
-    smvk::ShaderProgram filteredLitSg_[4]{};
     // GI permutation twins of filteredProgram (same filtered VS + the
     // .giN lit FS — the SAME modules the direct draws bind as
     // mainProgramGi[variant]). Without a built twin the filtered batches
@@ -121,7 +112,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
     // fallback LOUDLY, never a silent effect drop).
     smvk::ShaderProgram filteredProjectProgram{};
     smvk::ShaderProgram filteredProjectProgramA2C{};
-    smvk::ShaderProgram filteredProjectLitSg_[4]{};
     smvk::ShaderProgram filteredProjectProgramGi_[4]{};
     smvk::ShaderProgram filteredProjectProgramStd{};
     smvk::ShaderProgram filteredProjectProgramGiStd_[4]{};
@@ -219,17 +209,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
     void ConfigureFrag(smvk::ShaderModuleHandle mainFrag) {
         mainFrag_ = mainFrag;
     }
-    // Fixed-lobe lit FS module for one cooked lobe count (variantIndex
-    // 0..3 = counts 5/6/9/12, see LitSgVariantLobes; other inputs are
-    // rejected). Called once per available variant module at init; missing
-    // variants stay empty and fall back to the generic lit FS per range.
-    void ConfigureLitFragSg(uint32_t variantIndex, smvk::ShaderModuleHandle frag) {
-        if (variantIndex < 4)
-            litFragSgModules_[variantIndex] = frag;
-    }
-    static constexpr uint32_t LitSgVariantCount() {
-        return 4;
-    }
     // GI permutation lit FS module (variantIndex 0..3 = NONE/OCTREE/
     // REGULAR/FULL, the .giN.spv suffixes — see WorldRenderer's
     // fragLitGiModules load loop). Called once per loaded variant module
@@ -241,11 +220,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
     }
     static constexpr uint32_t LitGiVariantCount() {
         return 4;
-    }
-    // Cooked lobe counts in variant order (matches the .sgN.spv suffixes
-    // and the scene's module load loop).
-    static constexpr uint32_t LitSgVariantLobes(uint32_t variantIndex) {
-        return variantIndex == 0 ? 5u : variantIndex == 1 ? 6u : variantIndex == 2 ? 9u : 12u;
     }
     // A2C lit FS module (default_lit_a2c.frag): pairs with the filtered VS
     // for Masked material ranges in 2x MSAA Main.
@@ -310,10 +284,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
     void ConfigureProjectFragA2C(smvk::ShaderModuleHandle frag) {
         projectA2CFrag_ = frag;
     }
-    void ConfigureProjectLitFragSg(uint32_t variantIndex, smvk::ShaderModuleHandle frag) {
-        if (variantIndex < 4)
-            projectLitFragSgModules_[variantIndex] = frag;
-    }
     void ConfigureProjectLitFragGi(uint32_t variantIndex, smvk::ShaderModuleHandle frag) {
         if (variantIndex < 4)
             projectLitFragGiModules_[variantIndex] = frag;
@@ -349,8 +319,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
         filteredProgram = smvk::ShaderProgram();
         filteredProgramA2C = smvk::ShaderProgram();
         filteredWireProgram = smvk::ShaderProgram();
-        for (auto& p : filteredLitSg_)
-            p = smvk::ShaderProgram();
         for (auto& p : filteredProgramGi_)
             p = smvk::ShaderProgram();
         filteredProgramStd = smvk::ShaderProgram();
@@ -358,8 +326,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
             p = smvk::ShaderProgram();
         filteredProjectProgram = smvk::ShaderProgram();
         filteredProjectProgramA2C = smvk::ShaderProgram();
-        for (auto& p : filteredProjectLitSg_)
-            p = smvk::ShaderProgram();
         for (auto& p : filteredProjectProgramGi_)
             p = smvk::ShaderProgram();
         filteredProjectProgramStd = smvk::ShaderProgram();
@@ -412,26 +378,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
                    ? filteredProgram
                    : (filteredProgramStd.shaderCount == 2 ? filteredProgramStd : filteredProgram);
     }
-    // Lit program for a material range's cooked lobe count: the matching
-    // fixed-count twin when built, else the generic FilteredProgram()
-    // (unknown/mixed counts incl. 0xFFFFFFFFu = unlightmapped draws).
-    // layered=false prefers the .std base twin over the generic monolith
-    // (the sgN twins stay monolith-only — lightmap lobe specialization
-    // only binds in no-GI scenes, and std materials fall back safely).
-    [[nodiscard]] smvk::ShaderProgram& FilteredLitProgram(uint32_t lobeCount, bool layered = true) {
-        const uint32_t li = lobeCount == 5u    ? 0u
-                            : lobeCount == 6u  ? 1u
-                            : lobeCount == 9u  ? 2u
-                            : lobeCount == 12u ? 3u
-                                               : UINT32_MAX;
-        if (li <= 3 && filteredLitSg_[li].shaderCount == 2 && layered)
-            return filteredLitSg_[li];
-        if (!layered && filteredProgramStd.shaderCount == 2)
-            return filteredProgramStd;
-        if (li <= 3 && filteredLitSg_[li].shaderCount == 2)
-            return filteredLitSg_[li];
-        return filteredProgram;
-    }
     // ---- the PROJECT-LIT family picks (mirror the stock picks above;
     // reached only for materials the family resolver marks ProjectLit) --
     // The GI pick: the family's .giN twin when built (with the .giNstd
@@ -452,25 +398,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
         }
         return FilteredProgramGi(giVariant, layered);
     }
-    // The lobe-count pick (no-GI scenes): the family's .sgN twin when
-    // built (monolith family only — same stock rule), else the family
-    // base/.std, else the STOCK pick.
-    [[nodiscard]] smvk::ShaderProgram& FilteredProjectLitProgram(uint32_t lobeCount,
-                                                                 bool layered = true) {
-        const uint32_t li = lobeCount == 5u    ? 0u
-                            : lobeCount == 6u  ? 1u
-                            : lobeCount == 9u  ? 2u
-                            : lobeCount == 12u ? 3u
-                                               : UINT32_MAX;
-        if (li <= 3 && filteredProjectLitSg_[li].shaderCount == 2)
-            return filteredProjectLitSg_[li];
-        if (filteredProjectProgram.shaderCount == 2) {
-            if (!layered && filteredProjectProgramStd.shaderCount == 2)
-                return filteredProjectProgramStd;
-            return filteredProjectProgram;
-        }
-        return FilteredLitProgram(lobeCount, layered);
-    }
     // The family A2C twin (project_lit_a2c + the filtered VS): invalid
     // when the family was never compiled — bindForMaterial's useA2c
     // check then keeps Masked ProjectLit ranges on the family's DISCARD
@@ -478,16 +405,13 @@ struct GfxRenderer : public smvk::IFrameRenderer {
     [[nodiscard]] smvk::ShaderProgram& FilteredProjectProgramA2C() {
         return filteredProjectProgramA2C;
     }
-    // True for the generic lit program, its A2C twin, every built lobe-count
-    // twin and every std twin — the wireframe override resolves all of them
-    // to the flat twin (wireTwinOf in the Main pass).
+    // True for the generic lit program, its A2C twin and every std twin —
+    // the wireframe override resolves all of them to the flat twin
+    // (wireTwinOf in the Main pass).
     [[nodiscard]] bool IsFilteredLitProgram(const smvk::ShaderProgram& prog) const {
         if (&prog == &filteredProgram || &prog == &filteredProgramA2C ||
             &prog == &filteredProgramStd)
             return true;
-        for (uint32_t li = 0; li < 4; ++li)
-            if (&prog == &filteredLitSg_[li])
-                return true;
         for (uint32_t gi = 0; gi < 4; ++gi) {
             if (&prog == &filteredProgramGi_[gi])
                 return true;
@@ -500,9 +424,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
         if (&prog == &filteredProjectProgram || &prog == &filteredProjectProgramA2C ||
             &prog == &filteredProjectProgramStd)
             return true;
-        for (uint32_t li = 0; li < 4; ++li)
-            if (&prog == &filteredProjectLitSg_[li])
-                return true;
         for (uint32_t gi = 0; gi < 4; ++gi) {
             if (&prog == &filteredProjectProgramGi_[gi])
                 return true;
@@ -579,7 +500,6 @@ struct GfxRenderer : public smvk::IFrameRenderer {
     // ConfigureProject*/ConfigureMaterialFamily block above).
     smvk::ShaderModuleHandle projectFrag_{};
     smvk::ShaderModuleHandle projectA2CFrag_{};
-    smvk::ShaderModuleHandle projectLitFragSgModules_[4]{};
     smvk::ShaderModuleHandle projectLitFragGiModules_[4]{};
     smvk::ShaderModuleHandle projectFragStd_{};
     smvk::ShaderModuleHandle projectLitFragGiStdModules_[4]{};

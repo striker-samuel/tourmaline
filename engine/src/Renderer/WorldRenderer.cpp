@@ -309,8 +309,6 @@ void WorldRenderer::ForgeLitPrograms() {
 
 void WorldRenderer::FeedGfxRendererShaderModules() {
     m_gfxRenderer.ConfigureFrag(m_resources.fragShader);
-    for (uint32_t li = 0; li < engine::GfxRenderer::LitSgVariantCount(); ++li)
-        m_gfxRenderer.ConfigureLitFragSg(li, m_resources.fragLitSgModules[li]);
     for (uint32_t gi = 0; gi < engine::GfxRenderer::LitGiVariantCount(); ++gi)
         m_gfxRenderer.ConfigureLitFragGi(gi, m_resources.fragLitGiModules[gi]);
     m_gfxRenderer.ConfigureFragStd(m_resources.fragStdModule);
@@ -321,8 +319,6 @@ void WorldRenderer::FeedGfxRendererShaderModules() {
     if (!m_resources.fragProjectLitModule.empty()) {
         m_gfxRenderer.ConfigureProjectFrag(m_resources.fragProjectLitModule);
         m_gfxRenderer.ConfigureProjectFragA2C(m_resources.fragProjectLitA2CModule);
-        for (uint32_t li = 0; li < engine::GfxRenderer::LitSgVariantCount(); ++li)
-            m_gfxRenderer.ConfigureProjectLitFragSg(li, m_resources.fragProjectLitSgModules[li]);
         for (uint32_t gi = 0; gi < engine::GfxRenderer::LitGiVariantCount(); ++gi)
             m_gfxRenderer.ConfigureProjectLitFragGi(gi, m_resources.fragProjectLitGiModules[gi]);
         m_gfxRenderer.ConfigureProjectFragStd(m_resources.fragProjectLitStdModule);
@@ -371,12 +367,6 @@ bool WorldRenderer::ReloadLitShaders(const std::vector<std::string>& recompiled)
         swapModule(m_resources.fragA2CShader,
                    "content/shaders/default_lit_a2c.frag.hlsl.spv",
                    "fragLitA2C");
-        for (uint32_t li = 0; li < engine::GfxRenderer::LitSgVariantCount(); ++li) {
-            const std::string path = "content/shaders/default_lit.frag.hlsl.sg" +
-                                     std::to_string(engine::GfxRenderer::LitSgVariantLobes(li)) +
-                                     ".spv";
-            swapModule(m_resources.fragLitSgModules[li], path.c_str(), "fragLitSg");
-        }
         for (uint32_t gi = 0; gi < 4; ++gi) {
             if (gi == 1u)
                 continue; // the retired octree permutation (ABI-reserved)
@@ -398,13 +388,6 @@ bool WorldRenderer::ReloadLitShaders(const std::vector<std::string>& recompiled)
                        "fragProjectLitA2C");
             const std::string stem = std::string(smvk::gfx::kProjectLitFsPath)
                                          .substr(0, strlen(smvk::gfx::kProjectLitFsPath) - 4);
-            for (uint32_t li = 0; li < engine::GfxRenderer::LitSgVariantCount(); ++li) {
-                const std::string path =
-                    stem + ".sg" + std::to_string(engine::GfxRenderer::LitSgVariantLobes(li)) +
-                    ".spv";
-                swapModule(
-                    m_resources.fragProjectLitSgModules[li], path.c_str(), "fragProjectLitSg");
-            }
             for (uint32_t gi = 0; gi < 4; ++gi) {
                 if (gi == 1u)
                     continue;
@@ -1730,21 +1713,6 @@ bool WorldRenderer::onAttach() {
         std::cerr
             << "[WorldRenderer] default_lit_a2c unavailable - masked MSAA keeps the discard test\n";
     }
-    // Fixed-lobe lit FS twins (SG permutations for the Main filtered
-    // leg): per-count SG evaluation without the runtime basis dispatch.
-    // Non-fatal: a missing variant keeps that count on the generic lit.
-    for (uint32_t li = 0; li < engine::GfxRenderer::LitSgVariantCount(); ++li) {
-        try {
-            const std::string path = std::string("content/shaders/default_lit.frag.hlsl.sg") +
-                                     std::to_string(engine::GfxRenderer::LitSgVariantLobes(li)) +
-                                     ".spv";
-            auto sgCode = smvk::shaders::Read(path);
-            m_resources.fragLitSgModules[li] = m_context->CreateShaderModule(sgCode, "fragLitSg");
-        } catch (...) {
-            std::cerr << "[WorldRenderer] SG lobe-count lit variant " << li
-                      << " unavailable - count falls back to generic lit\n";
-        }
-    }
 
     // GI permutation lit FS variants: each permutation compiles a
     // different GI path (none/[retired]/regular/volumes — index 1
@@ -1857,20 +1825,6 @@ bool WorldRenderer::onAttach() {
             if (!m_resources.fragProjectLitA2CModule.empty())
                 m_resources.mainProjectProgramA2C =
                     familyProgram(m_resources.fragProjectLitA2CModule);
-            // SG lobe-count twins (the filtered leg's modules).
-            for (uint32_t li = 0; li < engine::GfxRenderer::LitSgVariantCount(); ++li) {
-                m_resources.fragProjectLitSgModules[li] = tryLoadModule(
-                    std::string(smvk::gfx::kProjectLitFsPath)
-                            .substr(0, strlen(smvk::gfx::kProjectLitFsPath) - 4) +
-                        ".sg" + std::to_string(engine::GfxRenderer::LitSgVariantLobes(li)) + ".spv",
-                    "fragProjectLitSg");
-                if (m_resources.fragProjectLitSgModules[li].empty())
-                    std::cerr << "[WorldRenderer] ProjectLit SG lobe-count"
-                                 " variant "
-                              << li
-                              << " unavailable - that count"
-                                 " falls back inside the family\n";
-            }
             // GI permutation twins (index 1 = the retired octree ID).
             for (uint32_t gi = 0; gi < 4; ++gi) {
                 if (gi == 1u)
