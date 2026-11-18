@@ -541,6 +541,26 @@ tour::mem::LinearPtr<tour::World> LoadProjectWorld(std::vector<PakPreload> prelo
             return nullptr;
         }
     }
+    // Terrain rides ANY session pak, not just the entry pak: when the entry
+    // carries no Terrain blobs (the island mesh pak) but another mounted pak
+    // does (a separate terrain pak), harvest from the first such pak so the
+    // heightfield ground joins the world without re-cooking the mesh pak.
+    if (!world->terrainSource.hasTerrain) {
+        for (const PakPreload& p : preloads) {
+            if (!p.backend)
+                continue;
+            const smvk::PakReader& r = p.backend->Reader();
+            if (r.BlobsOfKind(smvk::PakAssetKind::Terrain).empty())
+                continue;
+            std::string terrErr;
+            if (!world->LoadTerrainFromPak(r, terrErr)) {
+                std::cerr << "[App] terrain harvest failed: " << terrErr << "\n";
+            } else {
+                std::cerr << "[App] terrain harvested from '" << p.scenePak << "'\n";
+            }
+            break;
+        }
+    }
     // Arm the camera-driven page streamer (manifest-carrying paks only).
     // The streamer owns a SHARED reference to the backend so its reader
     // (and the manifest view's borrowed payload span) stay alive.
