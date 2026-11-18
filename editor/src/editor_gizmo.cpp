@@ -176,7 +176,7 @@ static void AddGrid(LineBatch& minor, LineBatch& major, const EditorAppViewGizmo
     }
 }
 
-glm::vec3 GizmoOrigin(const Scene& scene, uint32_t node) {
+glm::vec3 GizmoOrigin(const TransformHierarchy& scene, uint32_t node) {
     return glm::vec3(scene.globalTransform[node][3]);
 }
 
@@ -388,7 +388,7 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
     // LIGHTING mode only — locators carry no mesh to raycast.
     if (lightSetVisible && m_world && m_world->scene.hierarchy.size() > 0) {
         const glm::vec3 eye = EditorCamEye(ActiveCam());
-        const Scene& scene = m_world->scene;
+        const TransformHierarchy& scene = m_world->scene;
         for (uint32_t node = 0; node < scene.hierarchy.size(); ++node) {
             if (!IsNodeAlive(scene, node))
                 continue; // retired slot (Epoch 6b): a hole, not a locator
@@ -496,17 +496,19 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
     // draws bright gold like every other volume kind. Disabled rooms
     // draw dim. LIGHTING mode only — room nodes carry no mesh.
     if (lightSetVisible && m_showAudioRoomGizmos && !m_world->scene.tables.audioRooms.empty()) {
-        for (const tour::scene::AudioRoomRow& _row : m_world->scene.tables.audioRooms) {
+        for (const tour::transformhierarchy::AudioRoomRow& _row :
+             m_world->scene.tables.audioRooms) {
             const NodeId node = _row.node;
             const auto& def = _row.room;
             if (node >= m_world->scene.globalTransform.size())
                 continue;
-            const tour::scene::SpatialVolumeBox box =
-                tour::scene::VolumeBoxFromGlobalTransform(m_world->scene.globalTransform[node]);
+            const tour::transformhierarchy::SpatialVolumeBox box =
+                tour::transformhierarchy::VolumeBoxFromGlobalTransform(
+                    m_world->scene.globalTransform[node]);
             if (!box.Valid())
                 continue;
             glm::vec3 corners[8];
-            tour::scene::SpatialVolumeCorners(box, corners);
+            tour::transformhierarchy::SpatialVolumeCorners(box, corners);
             LineBatch b;
             b.depthTest = false; // X-ray: author shapes against walls
             if (node == m_selected)
@@ -535,22 +537,23 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
     // without an existing GI/Audio gizmo. Shares spatial_volume.h's
     // OBB convention and avoids superimposed duplicate boxes.
     if (lightSetVisible && m_showGiVolumeGizmos) {
-        const Scene& scene = m_world->scene;
+        const TransformHierarchy& scene = m_world->scene;
         for (uint32_t node = 0; node < scene.hierarchy.size(); ++node) {
             if (m_deletedNodes.contains(node) || node >= scene.globalTransform.size() ||
-                FindGiVolume(scene, node) || tour::scene::FindAudioRoom(scene, node))
+                FindGiVolume(scene, node) || tour::transformhierarchy::FindAudioRoom(scene, node))
                 continue;
-            const bool hasTrigger = tour::scene::FindTriggerVolume(scene, node) != nullptr;
+            const bool hasTrigger =
+                tour::transformhierarchy::FindTriggerVolume(scene, node) != nullptr;
             const std::string name = getNodeName(scene, int(node));
             const bool authoredSpatial = name.rfind("SpatialVolume", 0) == 0;
             if (!hasTrigger && !authoredSpatial)
                 continue;
             const auto shape =
-                tour::scene::VolumeBoxFromGlobalTransform(scene.globalTransform[node]);
+                tour::transformhierarchy::VolumeBoxFromGlobalTransform(scene.globalTransform[node]);
             if (!shape.Valid())
                 continue;
             glm::vec3 corners[8];
-            tour::scene::SpatialVolumeCorners(shape, corners);
+            tour::transformhierarchy::SpatialVolumeCorners(shape, corners);
             LineBatch b;
             b.depthTest = false;
             b.color = (node == m_selected) ? glm::vec4(1.0f, 0.9f, 0.3f, 1.0f)

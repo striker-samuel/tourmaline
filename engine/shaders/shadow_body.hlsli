@@ -31,7 +31,7 @@ struct ShadowPSIn
 {
     [[vk::location(0)]] float4 color : COLOR0;
     [[vk::location(1)]] float2 uv : TEXCOORD0;
-    // Dither-on-closeup inputs (Scene::ditherCloseup; the flat flag from
+    // Dither-on-closeup inputs (TransformHierarchy::ditherCloseup; the flat flag from
     // shadow.vert's pc word / the gfx seed twins' Draw-ring bit, + the
     // world position for the per-pixel camera-distance factor — the MAIN
     // camera is the fade's anchor even in light-view passes). Declared by
@@ -66,7 +66,7 @@ ShadowPSOut mainPS(float4 clipPos : SV_Position, ShadowPSIn IN)
 {
     ShadowPSOut OUT;
 
-    // Dither-on-closeup (Scene::ditherCloseup; see common.hlsli Closeup-
+    // Dither-on-closeup (TransformHierarchy::ditherCloseup; see common.hlsli Closeup-
     // DitherKeep): the depth screen-doors in step with the lit pass's
     // fade, so the holes keep the REAL background depth (solid depth
     // would leave black holes through the fading subtree) and the

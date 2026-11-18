@@ -510,14 +510,15 @@ class AudioRuntimeElement final : public engine::IAppElement {
             tour::WorldPage* cluster;
             size_t clusterIndex;  // world.pages slot (the map key)
             uint32_t clusterNode; // the durable (cluster, node) key
-            const tour::scene::SceneAudioRoom* def;
+            const tour::transformhierarchy::SceneAudioRoom* def;
         };
         std::vector<RoomRef> rooms;
         for (size_t ci = 0; ci < world.pages.size(); ++ci) {
             tour::WorldPage* cluster = world.pages[ci].get();
             if (!cluster || cluster->isDynamic)
                 continue; // authored rooms only (v1)
-            for (const tour::scene::AudioRoomRow& row : cluster->scene.tables.audioRooms)
+            for (const tour::transformhierarchy::AudioRoomRow& row :
+                 cluster->scene.tables.audioRooms)
                 if (row.room.enabled)
                     rooms.push_back({cluster, ci, row.node, &row.room});
         }
@@ -548,12 +549,13 @@ class AudioRuntimeElement final : public engine::IAppElement {
             const uint32_t m = r.clusterNode < merged.size() ? merged[r.clusterNode] : UINT32_MAX;
             if (m == UINT32_MAX || m >= world.scene.globalTransform.size())
                 continue;
-            const tour::scene::SpatialVolumeBox box =
-                tour::scene::VolumeBoxFromGlobalTransform(world.scene.globalTransform[m]);
+            const tour::transformhierarchy::SpatialVolumeBox box =
+                tour::transformhierarchy::VolumeBoxFromGlobalTransform(
+                    world.scene.globalTransform[m]);
             if (!box.Valid())
                 continue; // degenerate/flat: covers nothing
             anyShape = true;
-            const float w = tour::scene::SpatialVolumeWeight(
+            const float w = tour::transformhierarchy::SpatialVolumeWeight(
                 box, listener.position, r.def->insideFade, r.def->outsideFade);
             if (w <= 0.0f)
                 continue;

@@ -24,7 +24,7 @@
 #include <Engine/Scene/scene_payloads.h>
 #include <Engine/Scene/scene_tables.h>
 
-namespace tour::scene {
+namespace tour::transformhierarchy {
 
 using glm::mat4;
 constexpr const int MAX_NODE_LEVEL = 16;
@@ -32,7 +32,7 @@ constexpr const int MAX_NODE_LEVEL = 16;
 // This was lifted from
 // https://github.com/PacktPublishing/Mastering-Graphics-Programming-with-Vulkan But cahnges has
 // been made trought so its not 1:1 to the original
-struct Hierarchy {
+struct NodeLinks {
     // parent for this node (or -1 for root)
     int parent = -1;
     // first child for a node (or -1)
@@ -183,8 +183,8 @@ inline glm::mat4 DecalNodeFrame(const glm::vec3& center,
 // out of SceneEnv (they rode the env block historically): the look is a
 // GLOBAL scene grade, never zoned — env nodes/zone blocks own sky/sun/
 // fog/volumetrics ONLY, this struct owns what the App's panels expose.
-// Authored once per scene (Scene::defaultRenderSettings), resolved into
-// Scene::renderSettings, saved forward tour (render.* keys) -> pak ->
+// Authored once per scene (TransformHierarchy::defaultRenderSettings), resolved into
+// TransformHierarchy::renderSettings, saved forward tour (render.* keys) -> pak ->
 // App (the renderer seeds its pass state from it once per scene load;
 // panels/keys stay live afterwards). Headless TOURMALINE_* pins win over
 // the seed (see ApplyHeadlessPostfxOverrides).
@@ -235,7 +235,7 @@ struct SceneRenderSettings {
 // Booleans are stored as 0/1 floats; enum values are stored numerically.
 inline constexpr int kSceneRenderFloatCount = 27;
 
-struct Scene {
+struct TransformHierarchy {
     // Explicit per-scene slot budget (0 = unbudgeted editor/tool scene).
     // Runtime callers configure this before loading any nodes. No growth
     // beyond the bound: budget exhaustion is a fatal configuration error.
@@ -267,7 +267,7 @@ struct Scene {
     // Offline builds only need final transforms, never a GPU change journal.
     bool skipGpuSceneChangeJournal = false;
 
-    tour::mem::ArenaFlatArray<Hierarchy> hierarchy;
+    tour::mem::ArenaFlatArray<NodeLinks> hierarchy;
 
     // ---- stable node slots (Epoch 6b, docs/scene_tables_migration.md) ----
     // The hierarchy/transform/flag/metadata vectors above are SLOT
@@ -484,33 +484,33 @@ inline constexpr uint32_t kNodeSlotAliveBit = 0x80000000u;
 
 // A slot beyond nodeGeneration.size() was created by a wholesale
 // resize and is live (see the Scene member comment).
-inline bool IsLiveSlot(const Scene& scene, uint32_t slot) {
+inline bool IsLiveSlot(const TransformHierarchy& scene, uint32_t slot) {
     return slot < scene.hierarchy.size() && (slot >= scene.nodeGeneration.size() ||
                                              (scene.nodeGeneration[slot] & kNodeSlotAliveBit) != 0);
 }
 // Node-id validity: range + alive (a retired/reused slot answers false
 // even though the index is in bounds — the whole point of 6b).
-inline bool IsNodeAlive(const Scene& scene, NodeId node) {
+inline bool IsNodeAlive(const TransformHierarchy& scene, NodeId node) {
     return IsLiveSlot(scene, node);
 }
 // The slot's current generation (0 when untracked — matches a fresh slot).
-inline uint32_t NodeGenerationOf(const Scene& scene, NodeId node) {
+inline uint32_t NodeGenerationOf(const TransformHierarchy& scene, NodeId node) {
     return (node < scene.nodeGeneration.size()) ? (scene.nodeGeneration[node] & kNodeGenMask) : 0u;
 }
 // Live node count (slots minus holes; O(n) — writers/validators, not
 // hot paths).
-uint32_t LiveNodeCount(const Scene& scene);
+uint32_t LiveNodeCount(const TransformHierarchy& scene);
 
 // Generational handle for LONG-LIVED references: the slot plus the
 // generation it was minted at. Valid until the node retires — and
 // STAYS invalid after the slot is reused (the ABA guard the bare id
 // cannot give). See scene_node_id.h for the packing.
-inline NodeHandle MakeNodeHandle(const Scene& scene, NodeId node) {
+inline NodeHandle MakeNodeHandle(const TransformHierarchy& scene, NodeId node) {
     if (!IsNodeAlive(scene, node))
         return kNodeInvalidHandle;
     return PackNodeHandle(node, NodeGenerationOf(scene, node));
 }
-inline bool NodeHandleValid(const Scene& scene, NodeHandle handle) {
+inline bool NodeHandleValid(const TransformHierarchy& scene, NodeHandle handle) {
     if (handle == kNodeInvalidHandle)
         return false;
     const uint32_t slot = NodeHandleSlot(handle);
@@ -523,12 +523,12 @@ inline bool NodeHandleValid(const Scene& scene, NodeHandle handle) {
 // Ascending-slot == the old stable_partition compaction order, so a
 // never-deleted scene writes byte-identical bytes to the pre-6b
 // serializer.
-std::vector<uint32_t> BuildSlotToDenseMap(const Scene& scene);
+std::vector<uint32_t> BuildSlotToDenseMap(const TransformHierarchy& scene);
 
 // Detach one node from its parent's child list (sibling links repaired,
 // the node's parent/nextSibling cleared). No-op for root nodes. The
 // retirement pair: UnlinkNodeFromParent then RetireNodeSlot.
-void UnlinkNodeFromParent(Scene& scene, int node);
+void UnlinkNodeFromParent(TransformHierarchy& scene, int node);
 
 // Retire one node's slot: drops every association row (the rows-never-
 // outlive-nodes discipline), clears the slot's per-node state (flags,
@@ -538,7 +538,7 @@ void UnlinkNodeFromParent(Scene& scene, int node);
 // every OTHER node are untouched. Does NOT touch World-level caches
 // (drawItems/flags/lod chains) — those are the caller's contract
 // (re-resolve, or clean the entries like the editor's uncreate paths).
-void RetireNodeSlot(Scene& scene, NodeId node);
+void RetireNodeSlot(TransformHierarchy& scene, NodeId node);
 
 // autoName (default true): allocation names the node "node<id>" (the
 // authoring invariant - importers may replace it). The cooked-blob parse
@@ -547,20 +547,20 @@ void RetireNodeSlot(Scene& scene, NodeId node);
 // million to_string names for a flat stress grid (or leaking them into
 // the table as garbage next to the recorded names) serves nobody.
 [[noreturn]] void CrashNodeBudget(const char* stage, size_t requested, size_t budget);
-int addNode(Scene& scene, int parent, int level, bool autoName = true);
+int addNode(TransformHierarchy& scene, int parent, int level, bool autoName = true);
 
 // Generation-checked scene transform mutation. The setter marks affected
 // descendants for the GPU-scene journal via the existing recalc path.
 // Returns false for a retired/stale handle without writing the new slot.
-bool SetLocalTransform(Scene& scene, NodeHandle handle, const glm::mat4& transform);
-bool SetLocalTransform(Scene& scene, NodeHandle handle, const glm::dmat4& transform);
-glm::dmat4 GlobalTransformDouble(const Scene& scene, NodeId node);
+bool SetLocalTransform(TransformHierarchy& scene, NodeHandle handle, const glm::mat4& transform);
+bool SetLocalTransform(TransformHierarchy& scene, NodeHandle handle, const glm::dmat4& transform);
+glm::dmat4 GlobalTransformDouble(const TransformHierarchy& scene, NodeId node);
 
-void markAsChanged(Scene& scene, int node);
+void markAsChanged(TransformHierarchy& scene, int node);
 // Dynamic-only variant: skips static nodes so frozen subtrees never enter
 // changedAtThisFrame after the initial build. Prefer this on the per-frame
 // path; use markAsChanged for initial builds / collapse baking.
-void markAsChangedDynamic(Scene& scene, int node);
+void markAsChangedDynamic(TransformHierarchy& scene, int node);
 // Full-recalc marking for load/merge/collapse boundaries: marks EVERY
 // ROOT node (parent == -1) as changed - each root's subtree follows via
 // markAsChanged. The old markAsChanged(scene, 0) idiom assumed node 0 is
@@ -568,16 +568,16 @@ void markAsChangedDynamic(Scene& scene, int node);
 // addNode(scene, -1, 1)) falls outside node 0's subtree and kept an
 // identity global transform (the horizon-sun bug: the WorldSun frame
 // decoded az=0/el=0).
-void MarkAllRootsChanged(Scene& scene);
+void MarkAllRootsChanged(TransformHierarchy& scene);
 
-inline bool IsStaticNode(const Scene& scene, int node) {
+inline bool IsStaticNode(const TransformHierarchy& scene, int node) {
     return node >= 0 && (size_t)node < scene.staticNode.size() &&
            scene.staticNode[(size_t)node] != 0;
 }
 
 // Lightmap opt-in for a node or any ancestor (subtree inclusion).
 // Empty or size-mismatched == skip (default off).
-inline bool IsLightmapNode(const Scene& scene, int node) {
+inline bool IsLightmapNode(const TransformHierarchy& scene, int node) {
     for (int n = node; n >= 0 && n < int(scene.hierarchy.size());) {
         if ((size_t)n < scene.lightmap.size() && scene.lightmap[(size_t)n] != 0)
             return true;
@@ -587,7 +587,7 @@ inline bool IsLightmapNode(const Scene& scene, int node) {
 }
 
 // Lightmap opt-out for a node or any ancestor (subtree exclusion).
-inline bool IsNoLightmapNode(const Scene& scene, int node) {
+inline bool IsNoLightmapNode(const TransformHierarchy& scene, int node) {
     for (int n = node; n >= 0 && n < int(scene.hierarchy.size());) {
         if ((size_t)n < scene.noLightmap.size() && scene.noLightmap[(size_t)n] != 0)
             return true;
@@ -597,7 +597,7 @@ inline bool IsNoLightmapNode(const Scene& scene, int node) {
 }
 
 // Dither-on-closeup for a node or any ancestor (subtree flag).
-inline bool IsDitherCloseupNode(const Scene& scene, int node) {
+inline bool IsDitherCloseupNode(const TransformHierarchy& scene, int node) {
     for (int n = node; n >= 0 && n < int(scene.hierarchy.size());) {
         if ((size_t)n < scene.ditherCloseup.size() && scene.ditherCloseup[(size_t)n] != 0)
             return true;
@@ -634,7 +634,7 @@ inline constexpr float kDitherCloseupSolidM = 3.0f;
 // Fast path: an empty flag table answers Off for every node (one branch —
 // unflagged scenes pay nothing).
 enum class DitherCloseupState { Off = 0, Fade = 1, Hidden = 2 };
-inline DitherCloseupState DitherCloseupStateFor(const Scene& scene,
+inline DitherCloseupState DitherCloseupStateFor(const TransformHierarchy& scene,
                                                 int node,
                                                 const glm::vec3& eye) {
     if (scene.ditherCloseup.empty())
@@ -666,13 +666,13 @@ inline DitherCloseupState DitherCloseupStateFor(const Scene& scene,
 // Visibility (Clarisse-style hierarchical override): true when the node
 // itself is marked hidden. Effective visibility walks ancestors — a
 // hidden parent hides the whole subtree (see IsVisibleNode).
-inline bool IsHiddenNode(const Scene& scene, int node) {
+inline bool IsHiddenNode(const TransformHierarchy& scene, int node) {
     return node >= 0 && (size_t)node < scene.hidden.size() && scene.hidden[(size_t)node] != 0;
 }
 
 // Effective visibility: visible only when neither the node nor any
 // ancestor carries the hidden flag. Size-mismatched/empty == visible.
-inline bool IsVisibleNode(const Scene& scene, int node) {
+inline bool IsVisibleNode(const TransformHierarchy& scene, int node) {
     for (int n = node; n >= 0 && n < int(scene.hierarchy.size());) {
         if ((size_t)n < scene.hidden.size() && scene.hidden[(size_t)n] != 0)
             return false;
@@ -681,7 +681,7 @@ inline bool IsVisibleNode(const Scene& scene, int node) {
     return true;
 }
 
-// ---- Env zones (see SceneEnv + Scene::envForNode + EnvVolume) -----------
+// ---- Env zones (see SceneEnv + TransformHierarchy::envForNode + EnvVolume) -----------
 // A zone = an env node whose transform defines COVERAGE: translation +
 // rotation = the placement, scale = half extents per LOCAL axis. The
 // unit cube [-1,1]^3 maps onto the box; an EnvVolume entry (when present)
@@ -689,28 +689,28 @@ inline bool IsVisibleNode(const Scene& scene, int node) {
 // slabs), while a legacy INFINITE scale component unbounds the whole
 // axis. A disabled volume covers nothing. True when `p` lands inside
 // the zone's (possibly unbounded) oriented box.
-bool ZoneCovers(const Scene& scene, NodeId zone, const glm::vec3& p);
+bool ZoneCovers(const TransformHierarchy& scene, NodeId zone, const glm::vec3& p);
 // The zone covering `p`: PRIORITY descending (the volume entry's priority
 // when present, else the look block's zonePriority), then smallest
 // bounded volume (innermost wins ties; an unbounded face/axis counts as
 // unbounded volume and loses against bounded zones); the node id breaks
 // remaining ties for determinism. UINT32_MAX = no zone covers the point
 // (the resolved default environment stands).
-NodeId ZoneAtPosition(const Scene& scene, const glm::vec3& p);
+NodeId ZoneAtPosition(const TransformHierarchy& scene, const glm::vec3& p);
 // Effective priority of an env node: the volume entry wins when present,
 // else the look block's zonePriority (legacy zones).
-float ZonePriority(const Scene& scene, NodeId zone, const SceneEnv& env);
+float ZonePriority(const TransformHierarchy& scene, NodeId zone, const SceneEnv& env);
 
 // Marks node hidden (self flag; subtree effect via IsVisibleNode).
 // Grows the array if needed.
-inline void MarkHidden(Scene& scene, int node) {
+inline void MarkHidden(TransformHierarchy& scene, int node) {
     if (node < 0 || (size_t)node >= scene.hierarchy.size())
         return;
     if (scene.hidden.size() != scene.hierarchy.size())
         scene.hidden.assign(scene.hierarchy.size(), 0);
     scene.hidden[(size_t)node] = 1;
 }
-inline void ClearHidden(Scene& scene, int node) {
+inline void ClearHidden(TransformHierarchy& scene, int node) {
     if (node < 0 || (size_t)node >= scene.hierarchy.size())
         return;
     if (scene.hidden.size() != scene.hierarchy.size())
@@ -719,14 +719,14 @@ inline void ClearHidden(Scene& scene, int node) {
 }
 
 // Marks node for dither-on-closeup (subtree). Grows the array if needed.
-inline void MarkDitherCloseup(Scene& scene, int node) {
+inline void MarkDitherCloseup(TransformHierarchy& scene, int node) {
     if (node < 0 || (size_t)node >= scene.hierarchy.size())
         return;
     if (scene.ditherCloseup.size() != scene.hierarchy.size())
         scene.ditherCloseup.assign(scene.hierarchy.size(), 0);
     scene.ditherCloseup[(size_t)node] = 1;
 }
-inline void ClearDitherCloseup(Scene& scene, int node) {
+inline void ClearDitherCloseup(TransformHierarchy& scene, int node) {
     if (node < 0 || (size_t)node >= scene.hierarchy.size())
         return;
     if (scene.ditherCloseup.size() != scene.hierarchy.size())
@@ -736,14 +736,14 @@ inline void ClearDitherCloseup(Scene& scene, int node) {
 
 // Volumetric-shadow caster mark (SELF flag - see the table's comment):
 // the node's mesh joins the coarse fog shadow pass. Grows if needed.
-inline void MarkCastsVolumetricShadow(Scene& scene, int node) {
+inline void MarkCastsVolumetricShadow(TransformHierarchy& scene, int node) {
     if (node < 0 || (size_t)node >= scene.hierarchy.size())
         return;
     if (scene.castsVolumetricShadow.size() != scene.hierarchy.size())
         scene.castsVolumetricShadow.assign(scene.hierarchy.size(), 0);
     scene.castsVolumetricShadow[(size_t)node] = 1;
 }
-inline void ClearCastsVolumetricShadow(Scene& scene, int node) {
+inline void ClearCastsVolumetricShadow(TransformHierarchy& scene, int node) {
     if (node < 0 || (size_t)node >= scene.hierarchy.size())
         return;
     if (scene.castsVolumetricShadow.size() != scene.hierarchy.size())
@@ -751,20 +751,20 @@ inline void ClearCastsVolumetricShadow(Scene& scene, int node) {
     scene.castsVolumetricShadow[(size_t)node] = 0;
 }
 // Self-flag predicate (empty/mismatched == off).
-inline bool IsCastsVolumetricShadowNode(const Scene& scene, int node) {
+inline bool IsCastsVolumetricShadowNode(const TransformHierarchy& scene, int node) {
     return node >= 0 && (size_t)node < scene.castsVolumetricShadow.size() &&
            scene.castsVolumetricShadow[(size_t)node] != 0;
 }
 
 // Marks node as lightmap-excluded (subtree). Grows the array if needed.
-inline void MarkNoLightmap(Scene& scene, int node) {
+inline void MarkNoLightmap(TransformHierarchy& scene, int node) {
     if (node < 0 || (size_t)node >= scene.hierarchy.size())
         return;
     if (scene.noLightmap.size() != scene.hierarchy.size())
         scene.noLightmap.assign(scene.hierarchy.size(), 0);
     scene.noLightmap[(size_t)node] = 1;
 }
-inline void ClearNoLightmap(Scene& scene, int node) {
+inline void ClearNoLightmap(TransformHierarchy& scene, int node) {
     if (node < 0 || (size_t)node >= scene.hierarchy.size())
         return;
     if (scene.noLightmap.size() != scene.hierarchy.size())
@@ -773,14 +773,14 @@ inline void ClearNoLightmap(Scene& scene, int node) {
 }
 
 // Marks node as lightmap-opted-in (subtree). Grows the array if needed.
-inline void MarkLightmap(Scene& scene, int node) {
+inline void MarkLightmap(TransformHierarchy& scene, int node) {
     if (node < 0 || (size_t)node >= scene.hierarchy.size())
         return;
     if (scene.lightmap.size() != scene.hierarchy.size())
         scene.lightmap.assign(scene.hierarchy.size(), 0);
     scene.lightmap[(size_t)node] = 1;
 }
-inline void ClearLightmap(Scene& scene, int node) {
+inline void ClearLightmap(TransformHierarchy& scene, int node) {
     if (node < 0 || (size_t)node >= scene.hierarchy.size())
         return;
     if (scene.lightmap.size() != scene.hierarchy.size())
@@ -788,26 +788,28 @@ inline void ClearLightmap(Scene& scene, int node) {
     scene.lightmap[(size_t)node] = 0;
 }
 
-inline bool IsStaticSubtreeRoot(const Scene& scene, int node) {
+inline bool IsStaticSubtreeRoot(const TransformHierarchy& scene, int node) {
     return node >= 0 && (size_t)node < scene.staticRoot.size() &&
            scene.staticRoot[(size_t)node] != 0;
 }
 
 // Marks node as a static-subtree root and rebuilds the staticNode cache.
-void MarkSubtreeStatic(Scene& scene, int node);
+void MarkSubtreeStatic(TransformHierarchy& scene, int node);
 // Clears the root mark and rebuilds the cache.
-void ClearSubtreeStatic(Scene& scene, int node);
+void ClearSubtreeStatic(TransformHierarchy& scene, int node);
 // Re-derives staticNode[] from staticRoot[] via hierarchy walk.
-void RebuildStaticCache(Scene& scene);
+void RebuildStaticCache(TransformHierarchy& scene);
 
-int findNodeByName(const Scene& scene, const std::string& name);
+int findNodeByName(const TransformHierarchy& scene, const std::string& name);
 
 // Every live node has a non-empty name. Names are unique among siblings,
 // but can be reused in other branches; DAG paths carry the ancestry.
 // addNode assigns an initial deterministic name, and import/authoring may
 // replace it. Like Maya, a collision is resolved by a numeric suffix.
-std::string UniqueSiblingNodeName(const Scene& scene, int node, const std::string& requested);
-inline std::string getNodeName(const Scene& scene, int node) {
+std::string UniqueSiblingNodeName(const TransformHierarchy& scene,
+                                  int node,
+                                  const std::string& requested);
+inline std::string getNodeName(const TransformHierarchy& scene, int node) {
     if (scene.namesStripped)
         return {};
     if (node < 0 || size_t(node) >= scene.hierarchy.size())
@@ -823,7 +825,10 @@ inline std::string getNodeName(const Scene& scene, int node) {
 // names, reference placeholders) pass false to avoid the O(siblings) scan —
 // the scan made every name assignment in an instanced scene O(N), i.e.
 // O(N^2) over the cook.
-inline void setNodeName(Scene& scene, int node, const std::string& name, bool dedupe = true) {
+inline void setNodeName(TransformHierarchy& scene,
+                        int node,
+                        const std::string& name,
+                        bool dedupe = true) {
     if (scene.namesStripped)
         return;
     assert(!name.empty() && "every scene node must have a name");
@@ -835,24 +840,24 @@ inline void setNodeName(Scene& scene, int node, const std::string& name, bool de
     SetNodeNameIndex(scene, NodeId(node), stringID);
 }
 
-int getNodeLevel(const Scene& scene, int n);
+int getNodeLevel(const TransformHierarchy& scene, int n);
 
-bool recalculateGlobalTransforms(Scene& scene);
+bool recalculateGlobalTransforms(TransformHierarchy& scene);
 // Dynamic-only variant: recomputes globals for non-static changed nodes.
 // Static nodes keep their baked globals (already correct from the initial
 // full build). Returns true if any dynamic node was updated.
-bool recalculateGlobalTransformsDynamic(Scene& scene);
+bool recalculateGlobalTransformsDynamic(TransformHierarchy& scene);
 
-void loadScene(const char* fileName, Scene& scene);
-void saveScene(const char* fileName, const Scene& scene);
+void loadScene(const char* fileName, TransformHierarchy& scene);
+void saveScene(const char* fileName, const TransformHierarchy& scene);
 
-void dumpTransforms(const char* fileName, const Scene& scene);
-void printChangedNodes(const Scene& scene);
+void dumpTransforms(const char* fileName, const TransformHierarchy& scene);
+void printChangedNodes(const TransformHierarchy& scene);
 
-void dumpSceneToDot(const char* fileName, const Scene& scene, int* visited = nullptr);
+void dumpSceneToDot(const char* fileName, const TransformHierarchy& scene, int* visited = nullptr);
 
-void mergeScenes(Scene& scene,
-                 const std::vector<Scene*>& scenes,
+void mergeScenes(TransformHierarchy& scene,
+                 const std::vector<TransformHierarchy*>& scenes,
                  const std::vector<glm::mat4>& rootTransforms,
                  const std::vector<uint32_t>& meshCounts,
                  bool mergeMeshes = true,
@@ -865,77 +870,77 @@ void mergeScenes(Scene& scene,
 // circulation through addNode with a bumped generation. Rows of the
 // deleted nodes drop; rows of survivors keep their node ids verbatim
 // (no remap, no shift helpers — those died with the compaction).
-void deleteSceneNodes(Scene& scene, const std::vector<uint32_t>& nodesToDelete);
+void deleteSceneNodes(TransformHierarchy& scene, const std::vector<uint32_t>& nodesToDelete);
 
-} // namespace tour::scene
+} // namespace tour::transformhierarchy
 
 // GLOBAL compat aliases (the migration bridge - retire with the call
 // sites; the boundary scanner guards against NEW globals, these are
 // the tracked pre-existing set).
 using glm::mat4;
-using tour::scene::addNode;
-using tour::scene::BuildSlotToDenseMap;
-using tour::scene::ClearCastsVolumetricShadow;
-using tour::scene::ClearDitherCloseup;
-using tour::scene::ClearHidden;
-using tour::scene::ClearLightmap;
-using tour::scene::ClearNoLightmap;
-using tour::scene::ClearSubtreeStatic;
-using tour::scene::DecalNodeFrame;
-using tour::scene::deleteSceneNodes;
-using tour::scene::DitherCloseupState;
-using tour::scene::DitherCloseupStateFor;
-using tour::scene::dumpSceneToDot;
-using tour::scene::dumpTransforms;
-using tour::scene::findNodeByName;
-using tour::scene::getNodeLevel;
-using tour::scene::getNodeName;
-using tour::scene::Hierarchy;
-using tour::scene::IsCastsVolumetricShadowNode;
-using tour::scene::IsDitherCloseupNode;
-using tour::scene::IsHiddenNode;
-using tour::scene::IsLightmapNode;
-using tour::scene::IsLiveSlot;
-using tour::scene::IsNodeAlive;
-using tour::scene::IsNoLightmapNode;
-using tour::scene::IsStaticNode;
-using tour::scene::IsStaticSubtreeRoot;
-using tour::scene::IsVisibleNode;
-using tour::scene::kDecalBloodAlbedoUri;
-using tour::scene::kDecalBloodNormalUri;
-using tour::scene::kDitherCloseupHideM;
-using tour::scene::kDitherCloseupSolidM;
-using tour::scene::kNodeSlotAliveBit;
-using tour::scene::kSceneRenderFloatCount;
-using tour::scene::LiveNodeCount;
-using tour::scene::loadScene;
-using tour::scene::MakeNodeHandle;
-using tour::scene::MarkAllRootsChanged;
-using tour::scene::markAsChanged;
-using tour::scene::markAsChangedDynamic;
-using tour::scene::MarkCastsVolumetricShadow;
-using tour::scene::MarkDitherCloseup;
-using tour::scene::MarkHidden;
-using tour::scene::MarkLightmap;
-using tour::scene::MarkNoLightmap;
-using tour::scene::MarkSubtreeStatic;
-using tour::scene::MAX_NODE_LEVEL;
-using tour::scene::mergeScenes;
-using tour::scene::NodeGenerationOf;
-using tour::scene::NodeHandleValid;
-using tour::scene::printChangedNodes;
-using tour::scene::RebuildStaticCache;
-using tour::scene::recalculateGlobalTransforms;
-using tour::scene::recalculateGlobalTransformsDynamic;
-using tour::scene::RetireNodeSlot;
-using tour::scene::saveScene;
-using tour::scene::Scene;
-using tour::scene::SceneCamera;
-using tour::scene::SceneDecal;
-using tour::scene::SceneLight;
-using tour::scene::SceneRenderSettings;
-using tour::scene::setNodeName;
-using tour::scene::UnlinkNodeFromParent;
-using tour::scene::ZoneAtPosition;
-using tour::scene::ZoneCovers;
-using tour::scene::ZonePriority;
+using tour::transformhierarchy::addNode;
+using tour::transformhierarchy::BuildSlotToDenseMap;
+using tour::transformhierarchy::ClearCastsVolumetricShadow;
+using tour::transformhierarchy::ClearDitherCloseup;
+using tour::transformhierarchy::ClearHidden;
+using tour::transformhierarchy::ClearLightmap;
+using tour::transformhierarchy::ClearNoLightmap;
+using tour::transformhierarchy::ClearSubtreeStatic;
+using tour::transformhierarchy::DecalNodeFrame;
+using tour::transformhierarchy::deleteSceneNodes;
+using tour::transformhierarchy::DitherCloseupState;
+using tour::transformhierarchy::DitherCloseupStateFor;
+using tour::transformhierarchy::dumpSceneToDot;
+using tour::transformhierarchy::dumpTransforms;
+using tour::transformhierarchy::findNodeByName;
+using tour::transformhierarchy::getNodeLevel;
+using tour::transformhierarchy::getNodeName;
+using tour::transformhierarchy::IsCastsVolumetricShadowNode;
+using tour::transformhierarchy::IsDitherCloseupNode;
+using tour::transformhierarchy::IsHiddenNode;
+using tour::transformhierarchy::IsLightmapNode;
+using tour::transformhierarchy::IsLiveSlot;
+using tour::transformhierarchy::IsNodeAlive;
+using tour::transformhierarchy::IsNoLightmapNode;
+using tour::transformhierarchy::IsStaticNode;
+using tour::transformhierarchy::IsStaticSubtreeRoot;
+using tour::transformhierarchy::IsVisibleNode;
+using tour::transformhierarchy::kDecalBloodAlbedoUri;
+using tour::transformhierarchy::kDecalBloodNormalUri;
+using tour::transformhierarchy::kDitherCloseupHideM;
+using tour::transformhierarchy::kDitherCloseupSolidM;
+using tour::transformhierarchy::kNodeSlotAliveBit;
+using tour::transformhierarchy::kSceneRenderFloatCount;
+using tour::transformhierarchy::LiveNodeCount;
+using tour::transformhierarchy::loadScene;
+using tour::transformhierarchy::MakeNodeHandle;
+using tour::transformhierarchy::MarkAllRootsChanged;
+using tour::transformhierarchy::markAsChanged;
+using tour::transformhierarchy::markAsChangedDynamic;
+using tour::transformhierarchy::MarkCastsVolumetricShadow;
+using tour::transformhierarchy::MarkDitherCloseup;
+using tour::transformhierarchy::MarkHidden;
+using tour::transformhierarchy::MarkLightmap;
+using tour::transformhierarchy::MarkNoLightmap;
+using tour::transformhierarchy::MarkSubtreeStatic;
+using tour::transformhierarchy::MAX_NODE_LEVEL;
+using tour::transformhierarchy::mergeScenes;
+using tour::transformhierarchy::NodeGenerationOf;
+using tour::transformhierarchy::NodeHandleValid;
+using tour::transformhierarchy::NodeLinks;
+using tour::transformhierarchy::printChangedNodes;
+using tour::transformhierarchy::RebuildStaticCache;
+using tour::transformhierarchy::recalculateGlobalTransforms;
+using tour::transformhierarchy::recalculateGlobalTransformsDynamic;
+using tour::transformhierarchy::RetireNodeSlot;
+using tour::transformhierarchy::saveScene;
+using tour::transformhierarchy::SceneCamera;
+using tour::transformhierarchy::SceneDecal;
+using tour::transformhierarchy::SceneLight;
+using tour::transformhierarchy::SceneRenderSettings;
+using tour::transformhierarchy::setNodeName;
+using tour::transformhierarchy::TransformHierarchy;
+using tour::transformhierarchy::UnlinkNodeFromParent;
+using tour::transformhierarchy::ZoneAtPosition;
+using tour::transformhierarchy::ZoneCovers;
+using tour::transformhierarchy::ZonePriority;

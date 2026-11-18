@@ -7,10 +7,10 @@
 
 #include <vector>
 
-namespace tour::scene {
+namespace tour::transformhierarchy {
 
 struct StaticExportHierarchy {
-    std::vector<Hierarchy> hierarchy;
+    std::vector<NodeLinks> hierarchy;
     std::vector<glm::mat4> transforms;
     std::vector<uint8_t> staticRoots;
 };
@@ -18,7 +18,7 @@ struct StaticExportHierarchy {
 // Static subtrees have no runtime transform dependencies: emit each member
 // as an independent root with its complete authored world transform. Dynamic
 // nodes retain their hierarchy, including original sibling order.
-inline StaticExportHierarchy BuildStaticExportHierarchy(const Scene& scene) {
+inline StaticExportHierarchy BuildStaticExportHierarchy(const TransformHierarchy& scene) {
     const size_t count = scene.hierarchy.size();
     StaticExportHierarchy out{
         scene.hierarchy, scene.localTransform, std::vector<uint8_t>(count, 0)};
@@ -47,7 +47,7 @@ inline StaticExportHierarchy BuildStaticExportHierarchy(const Scene& scene) {
         flattened[s] = 1;
         out.staticRoots[s] = 1;
         out.transforms[s] = world;
-        out.hierarchy[s] = Hierarchy{
+        out.hierarchy[s] = NodeLinks{
             .parent = -1, .firstChild = -1, .nextSibling = -1, .lastSibling = -1, .level = 0};
     }
 
@@ -80,4 +80,4 @@ inline StaticExportHierarchy BuildStaticExportHierarchy(const Scene& scene) {
     return out;
 }
 
-} // namespace tour::scene
+} // namespace tour::transformhierarchy

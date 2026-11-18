@@ -14,7 +14,7 @@
 //   * ONE row per node per table (the current at-most-one map
 //     semantics); different tables coexist on the same node freely —
 //     a node is not typed, it ASSOCIATES.
-//   * `Scene::rowsForNode` is a DERIVED per-node index over the tables
+//   * `TransformHierarchy::rowsForNode` is a DERIVED per-node index over the tables
 //     — an acceleration structure, never a second source of truth.
 //     Rebuild it after any direct table manipulation; the mutators
 //     below keep it incrementally correct themselves.
@@ -43,10 +43,10 @@
 #include <Engine/Scene/scene_node_id.h>
 #include <Engine/Scene/scene_payloads.h>
 
-namespace tour::scene {
-struct Scene;
-} // namespace tour::scene
-namespace tour::scene {
+namespace tour::transformhierarchy {
+struct TransformHierarchy;
+} // namespace tour::transformhierarchy
+namespace tour::transformhierarchy {
 
 // Row index into a SceneTables member vector. InvalidRow = no row.
 using RowId = uint32_t;
@@ -240,7 +240,7 @@ struct NodeRows {
 // Dense per-node IDENTITY metadata (Epoch 5: replaced nameForNode +
 // uuidForNode). Names are near-universal and uuids are node identity,
 // not associations — a dense array indexed by node (like the flag
-// tables), NOT an optional table. `name` indexes Scene::nodeNames
+// tables), NOT an optional table. `name` indexes TransformHierarchy::nodeNames
 // (UINT32_MAX = unnamed); `uuid` is the 32-hex tour UUID ("" = none).
 // NOT trivially copyable (uuid owns a string); the cooked META chunk
 // (Epoch 7) serializes it field-wise.
@@ -257,160 +257,163 @@ struct NodeMetadata {
 // Full rebuild of scene.rowsForNode from scene.tables (also resizes it
 // to the current node count). Call after direct table manipulation;
 // the Set/Remove mutators below keep the index correct incrementally.
-void RebuildNodeRows(Scene& scene);
+void RebuildNodeRows(TransformHierarchy& scene);
 
 // Row access. Null when the node has no row of that kind (or the node
 // is out of range).
-MeshRow* FindMesh(Scene& scene, NodeId node);
-const MeshRow* FindMesh(const Scene& scene, NodeId node);
-MaterialRow* FindMaterial(Scene& scene, NodeId node);
-const MaterialRow* FindMaterial(const Scene& scene, NodeId node);
-LightRow* FindLight(Scene& scene, NodeId node);
-const LightRow* FindLight(const Scene& scene, NodeId node);
-CameraRow* FindCamera(Scene& scene, NodeId node);
-const CameraRow* FindCamera(const Scene& scene, NodeId node);
-DecalRow* FindDecal(Scene& scene, NodeId node);
-const DecalRow* FindDecal(const Scene& scene, NodeId node);
-GiVolumeRow* FindGiVolume(Scene& scene, NodeId node);
-const GiVolumeRow* FindGiVolume(const Scene& scene, NodeId node);
-CubemapRow* FindCubemap(Scene& scene, NodeId node);
-const CubemapRow* FindCubemap(const Scene& scene, NodeId node);
-ExportRow* FindExport(Scene& scene, NodeId node);
-const ExportRow* FindExport(const Scene& scene, NodeId node);
-EnvRow* FindEnv(Scene& scene, NodeId node);
-const EnvRow* FindEnv(const Scene& scene, NodeId node);
-EnvVolumeRow* FindEnvVolume(Scene& scene, NodeId node);
-const EnvVolumeRow* FindEnvVolume(const Scene& scene, NodeId node);
-AudioSourceRow* FindAudioSource(Scene& scene, NodeId node);
-const AudioSourceRow* FindAudioSource(const Scene& scene, NodeId node);
-AudioRoomRow* FindAudioRoom(Scene& scene, NodeId node);
-PhysicsBodyRow* FindPhysicsBody(Scene& scene, NodeId node);
-const PhysicsBodyRow* FindPhysicsBody(const Scene& scene, NodeId node);
-TriggerVolumeRow* FindTriggerVolume(Scene& scene, NodeId node);
-const TriggerVolumeRow* FindTriggerVolume(const Scene& scene, NodeId node);
-const AudioRoomRow* FindAudioRoom(const Scene& scene, NodeId node);
-SchemaAssocRow* FindSchemaAssoc(Scene& scene, NodeId node);
-const SchemaAssocRow* FindSchemaAssoc(const Scene& scene, NodeId node);
+MeshRow* FindMesh(TransformHierarchy& scene, NodeId node);
+const MeshRow* FindMesh(const TransformHierarchy& scene, NodeId node);
+MaterialRow* FindMaterial(TransformHierarchy& scene, NodeId node);
+const MaterialRow* FindMaterial(const TransformHierarchy& scene, NodeId node);
+LightRow* FindLight(TransformHierarchy& scene, NodeId node);
+const LightRow* FindLight(const TransformHierarchy& scene, NodeId node);
+CameraRow* FindCamera(TransformHierarchy& scene, NodeId node);
+const CameraRow* FindCamera(const TransformHierarchy& scene, NodeId node);
+DecalRow* FindDecal(TransformHierarchy& scene, NodeId node);
+const DecalRow* FindDecal(const TransformHierarchy& scene, NodeId node);
+GiVolumeRow* FindGiVolume(TransformHierarchy& scene, NodeId node);
+const GiVolumeRow* FindGiVolume(const TransformHierarchy& scene, NodeId node);
+CubemapRow* FindCubemap(TransformHierarchy& scene, NodeId node);
+const CubemapRow* FindCubemap(const TransformHierarchy& scene, NodeId node);
+ExportRow* FindExport(TransformHierarchy& scene, NodeId node);
+const ExportRow* FindExport(const TransformHierarchy& scene, NodeId node);
+EnvRow* FindEnv(TransformHierarchy& scene, NodeId node);
+const EnvRow* FindEnv(const TransformHierarchy& scene, NodeId node);
+EnvVolumeRow* FindEnvVolume(TransformHierarchy& scene, NodeId node);
+const EnvVolumeRow* FindEnvVolume(const TransformHierarchy& scene, NodeId node);
+AudioSourceRow* FindAudioSource(TransformHierarchy& scene, NodeId node);
+const AudioSourceRow* FindAudioSource(const TransformHierarchy& scene, NodeId node);
+AudioRoomRow* FindAudioRoom(TransformHierarchy& scene, NodeId node);
+PhysicsBodyRow* FindPhysicsBody(TransformHierarchy& scene, NodeId node);
+const PhysicsBodyRow* FindPhysicsBody(const TransformHierarchy& scene, NodeId node);
+TriggerVolumeRow* FindTriggerVolume(TransformHierarchy& scene, NodeId node);
+const TriggerVolumeRow* FindTriggerVolume(const TransformHierarchy& scene, NodeId node);
+const AudioRoomRow* FindAudioRoom(const TransformHierarchy& scene, NodeId node);
+SchemaAssocRow* FindSchemaAssoc(TransformHierarchy& scene, NodeId node);
+const SchemaAssocRow* FindSchemaAssoc(const TransformHierarchy& scene, NodeId node);
 
 // Association mutators. At most one row per node per kind: Set REPLACES
 // the existing row (duplicate rejection with replacement semantics).
 // Returns false when the node index is invalid (>= node count); a Set
 // on a valid node always succeeds.
-bool SetMesh(Scene& scene, NodeId node, uint32_t mesh);
-bool SetMaterial(Scene& scene, NodeId node, uint32_t material);
-bool SetLight(Scene& scene, NodeId node, uint32_t light);
-bool SetCamera(Scene& scene, NodeId node, uint32_t camera);
-bool SetDecal(Scene& scene, NodeId node, uint32_t decal);
-bool SetGiVolume(Scene& scene, NodeId node, const SceneGiVolume& volume);
-bool SetCubemap(Scene& scene, NodeId node, const SceneCubemap& cubemap);
-bool SetExport(Scene& scene, NodeId node, const SceneExportSettings& settings);
-bool SetEnv(Scene& scene, NodeId node, const SceneEnv& environment);
-bool SetEnvVolume(Scene& scene, NodeId node, const EnvVolume& volume);
-bool SetAudioSource(Scene& scene, NodeId node, const SceneAudioSource& source);
-bool SetAudioRoom(Scene& scene, NodeId node, const SceneAudioRoom& room);
-bool SetPhysicsBody(Scene& scene, NodeId node, const ScenePhysicsBody& body);
-bool SetTriggerVolume(Scene& scene, NodeId node, const SceneTriggerVolume& trigger);
+bool SetMesh(TransformHierarchy& scene, NodeId node, uint32_t mesh);
+bool SetMaterial(TransformHierarchy& scene, NodeId node, uint32_t material);
+bool SetLight(TransformHierarchy& scene, NodeId node, uint32_t light);
+bool SetCamera(TransformHierarchy& scene, NodeId node, uint32_t camera);
+bool SetDecal(TransformHierarchy& scene, NodeId node, uint32_t decal);
+bool SetGiVolume(TransformHierarchy& scene, NodeId node, const SceneGiVolume& volume);
+bool SetCubemap(TransformHierarchy& scene, NodeId node, const SceneCubemap& cubemap);
+bool SetExport(TransformHierarchy& scene, NodeId node, const SceneExportSettings& settings);
+bool SetEnv(TransformHierarchy& scene, NodeId node, const SceneEnv& environment);
+bool SetEnvVolume(TransformHierarchy& scene, NodeId node, const EnvVolume& volume);
+bool SetAudioSource(TransformHierarchy& scene, NodeId node, const SceneAudioSource& source);
+bool SetAudioRoom(TransformHierarchy& scene, NodeId node, const SceneAudioRoom& room);
+bool SetPhysicsBody(TransformHierarchy& scene, NodeId node, const ScenePhysicsBody& body);
+bool SetTriggerVolume(TransformHierarchy& scene, NodeId node, const SceneTriggerVolume& trigger);
 // The schema association (node_schema.h): the cooked value block is
 // stored verbatim — the schema id names the layout (the pak's
 // registry); `values` may be empty (defaults decode at read time).
-bool SetSchemaAssoc(Scene& scene, NodeId node, uint32_t schemaId, std::vector<uint8_t> values);
+bool SetSchemaAssoc(TransformHierarchy& scene,
+                    NodeId node,
+                    uint32_t schemaId,
+                    std::vector<uint8_t> values);
 
 // Removes the node's row of that kind (swap-and-pop + lookup repair).
 // Returns whether a row existed.
-bool RemoveMesh(Scene& scene, NodeId node);
-bool RemoveMaterial(Scene& scene, NodeId node);
-bool RemoveLight(Scene& scene, NodeId node);
-bool RemoveCamera(Scene& scene, NodeId node);
-bool RemoveDecal(Scene& scene, NodeId node);
-bool RemoveGiVolume(Scene& scene, NodeId node);
-bool RemoveCubemap(Scene& scene, NodeId node);
-bool RemoveExport(Scene& scene, NodeId node);
-bool RemoveEnv(Scene& scene, NodeId node);
-bool RemoveEnvVolume(Scene& scene, NodeId node);
-bool RemoveAudioSource(Scene& scene, NodeId node);
-bool RemoveAudioRoom(Scene& scene, NodeId node);
-bool RemovePhysicsBody(Scene& scene, NodeId node);
-bool RemoveTriggerVolume(Scene& scene, NodeId node);
-bool RemoveSchemaAssoc(Scene& scene, NodeId node);
+bool RemoveMesh(TransformHierarchy& scene, NodeId node);
+bool RemoveMaterial(TransformHierarchy& scene, NodeId node);
+bool RemoveLight(TransformHierarchy& scene, NodeId node);
+bool RemoveCamera(TransformHierarchy& scene, NodeId node);
+bool RemoveDecal(TransformHierarchy& scene, NodeId node);
+bool RemoveGiVolume(TransformHierarchy& scene, NodeId node);
+bool RemoveCubemap(TransformHierarchy& scene, NodeId node);
+bool RemoveExport(TransformHierarchy& scene, NodeId node);
+bool RemoveEnv(TransformHierarchy& scene, NodeId node);
+bool RemoveEnvVolume(TransformHierarchy& scene, NodeId node);
+bool RemoveAudioSource(TransformHierarchy& scene, NodeId node);
+bool RemoveAudioRoom(TransformHierarchy& scene, NodeId node);
+bool RemovePhysicsBody(TransformHierarchy& scene, NodeId node);
+bool RemoveTriggerVolume(TransformHierarchy& scene, NodeId node);
+bool RemoveSchemaAssoc(TransformHierarchy& scene, NodeId node);
 
 // ---- dense node metadata (name/uuid; see NodeMetadata) ----
 // Grows scene.metadata to the node count on demand (addNode does not
 // touch it — same lazy contract as rowsForNode).
-void EnsureNodeMetadata(Scene& scene);
-// Name access (index into Scene::nodeNames; UINT32_MAX = unnamed).
-uint32_t GetNodeNameIndex(const Scene& scene, NodeId node);
-void SetNodeNameIndex(Scene& scene, NodeId node, uint32_t nameIndex);
+void EnsureNodeMetadata(TransformHierarchy& scene);
+// Name access (index into TransformHierarchy::nodeNames; UINT32_MAX = unnamed).
+uint32_t GetNodeNameIndex(const TransformHierarchy& scene, NodeId node);
+void SetNodeNameIndex(TransformHierarchy& scene, NodeId node, uint32_t nameIndex);
 // Uuid access ("" = none).
-const std::string& GetNodeUuid(const Scene& scene, NodeId node);
-void SetNodeUuidRaw(Scene& scene, NodeId node, const std::string& uuid);
+const std::string& GetNodeUuid(const TransformHierarchy& scene, NodeId node);
+void SetNodeUuidRaw(TransformHierarchy& scene, NodeId node, const std::string& uuid);
 
 // Drops EVERY row the node holds (all kinds at once — the node-
 // deletion hook the editor/tour paths adopt). Returns
 // whether anything was removed.
-bool RemoveNodeRows(Scene& scene, NodeId node);
+bool RemoveNodeRows(TransformHierarchy& scene, NodeId node);
 
-} // namespace tour::scene
+} // namespace tour::transformhierarchy
 
 // GLOBAL compat aliases (the migration bridge - retire with the call
 // sites; the boundary scanner guards against NEW globals, these are
 // the tracked pre-existing set).
-using RowId = tour::scene::RowId;
-using tour::scene::AudioSourceRow;
-using tour::scene::CameraRow;
-using tour::scene::CubemapRow;
-using tour::scene::DecalRow;
-using tour::scene::EnsureNodeMetadata;
-using tour::scene::EnvRow;
-using tour::scene::EnvVolumeRow;
-using tour::scene::ExportRow;
-using tour::scene::FindAudioSource;
-using tour::scene::FindCamera;
-using tour::scene::FindCubemap;
-using tour::scene::FindDecal;
-using tour::scene::FindEnv;
-using tour::scene::FindEnvVolume;
-using tour::scene::FindExport;
-using tour::scene::FindGiVolume;
-using tour::scene::FindLight;
-using tour::scene::FindMaterial;
-using tour::scene::FindMesh;
-using tour::scene::FindSchemaAssoc;
-using tour::scene::GetNodeNameIndex;
-using tour::scene::GetNodeUuid;
-using tour::scene::GiVolumeRow;
-using tour::scene::InvalidRow;
-using tour::scene::LightRow;
-using tour::scene::MaterialRow;
-using tour::scene::MeshRow;
-using tour::scene::NodeMetadata;
-using tour::scene::NodeRows;
-using tour::scene::RebuildNodeRows;
-using tour::scene::RemoveAudioSource;
-using tour::scene::RemoveCamera;
-using tour::scene::RemoveCubemap;
-using tour::scene::RemoveDecal;
-using tour::scene::RemoveEnv;
-using tour::scene::RemoveEnvVolume;
-using tour::scene::RemoveExport;
-using tour::scene::RemoveGiVolume;
-using tour::scene::RemoveLight;
-using tour::scene::RemoveMaterial;
-using tour::scene::RemoveMesh;
-using tour::scene::RemoveNodeRows;
-using tour::scene::RemoveSchemaAssoc;
-using tour::scene::SceneTables;
-using tour::scene::SchemaAssocRow;
-using tour::scene::SetAudioSource;
-using tour::scene::SetCamera;
-using tour::scene::SetCubemap;
-using tour::scene::SetDecal;
-using tour::scene::SetEnv;
-using tour::scene::SetEnvVolume;
-using tour::scene::SetExport;
-using tour::scene::SetGiVolume;
-using tour::scene::SetLight;
-using tour::scene::SetMaterial;
-using tour::scene::SetMesh;
-using tour::scene::SetNodeNameIndex;
-using tour::scene::SetNodeUuidRaw;
-using tour::scene::SetSchemaAssoc;
+using RowId = tour::transformhierarchy::RowId;
+using tour::transformhierarchy::AudioSourceRow;
+using tour::transformhierarchy::CameraRow;
+using tour::transformhierarchy::CubemapRow;
+using tour::transformhierarchy::DecalRow;
+using tour::transformhierarchy::EnsureNodeMetadata;
+using tour::transformhierarchy::EnvRow;
+using tour::transformhierarchy::EnvVolumeRow;
+using tour::transformhierarchy::ExportRow;
+using tour::transformhierarchy::FindAudioSource;
+using tour::transformhierarchy::FindCamera;
+using tour::transformhierarchy::FindCubemap;
+using tour::transformhierarchy::FindDecal;
+using tour::transformhierarchy::FindEnv;
+using tour::transformhierarchy::FindEnvVolume;
+using tour::transformhierarchy::FindExport;
+using tour::transformhierarchy::FindGiVolume;
+using tour::transformhierarchy::FindLight;
+using tour::transformhierarchy::FindMaterial;
+using tour::transformhierarchy::FindMesh;
+using tour::transformhierarchy::FindSchemaAssoc;
+using tour::transformhierarchy::GetNodeNameIndex;
+using tour::transformhierarchy::GetNodeUuid;
+using tour::transformhierarchy::GiVolumeRow;
+using tour::transformhierarchy::InvalidRow;
+using tour::transformhierarchy::LightRow;
+using tour::transformhierarchy::MaterialRow;
+using tour::transformhierarchy::MeshRow;
+using tour::transformhierarchy::NodeMetadata;
+using tour::transformhierarchy::NodeRows;
+using tour::transformhierarchy::RebuildNodeRows;
+using tour::transformhierarchy::RemoveAudioSource;
+using tour::transformhierarchy::RemoveCamera;
+using tour::transformhierarchy::RemoveCubemap;
+using tour::transformhierarchy::RemoveDecal;
+using tour::transformhierarchy::RemoveEnv;
+using tour::transformhierarchy::RemoveEnvVolume;
+using tour::transformhierarchy::RemoveExport;
+using tour::transformhierarchy::RemoveGiVolume;
+using tour::transformhierarchy::RemoveLight;
+using tour::transformhierarchy::RemoveMaterial;
+using tour::transformhierarchy::RemoveMesh;
+using tour::transformhierarchy::RemoveNodeRows;
+using tour::transformhierarchy::RemoveSchemaAssoc;
+using tour::transformhierarchy::SceneTables;
+using tour::transformhierarchy::SchemaAssocRow;
+using tour::transformhierarchy::SetAudioSource;
+using tour::transformhierarchy::SetCamera;
+using tour::transformhierarchy::SetCubemap;
+using tour::transformhierarchy::SetDecal;
+using tour::transformhierarchy::SetEnv;
+using tour::transformhierarchy::SetEnvVolume;
+using tour::transformhierarchy::SetExport;
+using tour::transformhierarchy::SetGiVolume;
+using tour::transformhierarchy::SetLight;
+using tour::transformhierarchy::SetMaterial;
+using tour::transformhierarchy::SetMesh;
+using tour::transformhierarchy::SetNodeNameIndex;
+using tour::transformhierarchy::SetNodeUuidRaw;
+using tour::transformhierarchy::SetSchemaAssoc;

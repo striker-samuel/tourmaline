@@ -65,11 +65,11 @@
 #include <glm/glm.hpp>
 
 // (namespace/RHI boundary audit) the old GLOBAL `struct Scene;` fwd is
-// GONE — it declared a ::Scene distinct from tour::scene::Scene and
+// GONE — it declared a ::Scene distinct from tour::transformhierarchy::Scene and
 // was a C2874 landmine against scene.h's global compat alias in any TU
-// including them in the wrong order. Qualify through tour::scene.
-namespace tour::scene {
-struct Scene;
+// including them in the wrong order. Qualify through tour::transformhierarchy.
+namespace tour::transformhierarchy {
+struct TransformHierarchy;
 }
 
 namespace tour::asset {
@@ -165,19 +165,19 @@ glm::vec4 SampleTrack(const Track& track, double t);
 // The pose pass writes sampled joint locals into scene.localTransform
 // (composed as T * R * S) before the scene's regular transform update,
 // then this rides the existing global-transform walk (see scene.h).
-void BuildSkinPalette(const scene::Scene& scene,
+void BuildSkinPalette(const transformhierarchy::TransformHierarchy& scene,
                       const Skeleton& skeleton,
                       std::vector<glm::mat4>& palette);
-void BuildSkinPalette(const scene::Scene& scene,
+void BuildSkinPalette(const transformhierarchy::TransformHierarchy& scene,
                       const Skeleton& skeleton,
                       std::span<glm::mat4> palette);
 // Non-owning output permits the caller to choose frame-arena backing.
-void BuildSkinPaletteInto(const scene::Scene& scene,
+void BuildSkinPaletteInto(const transformhierarchy::TransformHierarchy& scene,
                           const Skeleton& skeleton,
                           std::span<glm::mat4> palette);
 
 template <typename Allocator>
-void BuildSkinPalette(const scene::Scene& scene,
+void BuildSkinPalette(const transformhierarchy::TransformHierarchy& scene,
                       const Skeleton& skeleton,
                       std::vector<glm::mat4, Allocator>& palette) {
     palette.resize(skeleton.Count());

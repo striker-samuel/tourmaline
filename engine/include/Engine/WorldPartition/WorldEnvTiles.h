@@ -5,12 +5,12 @@
 // WorldEnvTiles: exact static OBB geometry accelerated by a 64m spatial
 // index. A tile contains references to all overlapping candidates, not a
 // sampled winner. The shading position determines coverage and falloff.
-#include <cstdint>
-#include <vector>
-#include <glm/glm.hpp>
 #include <Engine/Core/Limits.h>
 #include <Engine/Rendergraph/envzones.h>
 #include <Engine/Scene/scene.h>
+#include <cstdint>
+#include <glm/glm.hpp>
+#include <vector>
 
 namespace engine::worldpartition {
 
@@ -59,7 +59,8 @@ struct EnvGridBounds {
     glm::vec3 mn{};
     glm::vec3 mx{};
 };
-EnvGridExtent ComputeEnvGridExtent(const Scene& scene, const EnvGridBounds& sceneBounds);
+EnvGridExtent ComputeEnvGridExtent(const TransformHierarchy& scene,
+                                   const EnvGridBounds& sceneBounds);
 
 // The bake. Rebuildable; the caller drives dirtiness (the renderer hashes
 // the zone tables + transforms per frame — cheap — and rebuilds on
@@ -71,7 +72,7 @@ class WorldEnvTiles {
     // the tile counts (clamped to kEnvTileMaxDim). yMin/yMax frame the
     // vertical split search (the scene bounds). Returns false for invalid
     // extents; a scene with no env entities bakes the pure-base grid.
-    bool Build(const Scene& scene,
+    bool Build(const TransformHierarchy& scene,
                glm::vec2 gridMin,
                uint32_t dimX,
                uint32_t dimZ,
@@ -89,7 +90,9 @@ class WorldEnvTiles {
     // Load the immutable metadata cooked into an SMP8 environment manifest.
     // The provider supplies individual cell pages on demand; the CPU cell
     // address table initially contains only base fallback entries.
-    bool LoadCooked(glm::vec2 gridMin, uint32_t dimX, uint32_t dimZ,
+    bool LoadCooked(glm::vec2 gridMin,
+                    uint32_t dimX,
+                    uint32_t dimZ,
                     const EnvTileRecord* looks,
                     const smvk::envzones::EnvZoneGpu* shapes,
                     uint32_t count);
@@ -114,21 +117,33 @@ class WorldEnvTiles {
     // scan — by design: the scene env (the base block) IS a zone
     // author, and the env table owns the look.
     bool AnyVolumetricFog() const;
-    const smvk::envzones::EnvZoneGpu* Shapes() const { return shapes_.data(); }
-    const uint32_t* CandidateIndices() const { return candidateIndices_.data(); }
-    uint32_t CandidateIndexCount() const { return uint32_t(candidateIndices_.size()); }
+    const smvk::envzones::EnvZoneGpu* Shapes() const {
+        return shapes_.data();
+    }
+    const uint32_t* CandidateIndices() const {
+        return candidateIndices_.data();
+    }
+    uint32_t CandidateIndexCount() const {
+        return uint32_t(candidateIndices_.size());
+    }
     // Static far field: important large/unbounded volumes in exact winner
     // order, evaluated only when a detailed page is not resident.
-    const uint32_t* FarCandidates() const { return farCandidates_.data(); }
-    uint32_t FarCandidateCount() const { return uint32_t(farCandidates_.size()); }
+    const uint32_t* FarCandidates() const {
+        return farCandidates_.data();
+    }
+    uint32_t FarCandidateCount() const {
+        return uint32_t(farCandidates_.size());
+    }
     bool SetCookedFarCandidates(const uint32_t* ids, uint32_t count) {
         if (count > kEnvTileMaxRecords - 1 || (count && !ids))
             return false;
         for (uint32_t i = 0; i < count; ++i)
             if (ids[i] >= recordCount_)
                 return false;
-        if (count) farCandidates_.assign(ids, ids + count);
-        else farCandidates_.clear();
+        if (count)
+            farCandidates_.assign(ids, ids + count);
+        else
+            farCandidates_.clear();
         return true;
     }
     const EnvTileCell* Cells() const {
@@ -152,10 +167,10 @@ class WorldEnvTiles {
 
   private:
     struct Candidate {
-        smvk::envzones::EnvZoneGpu zone{}; // the sanitized OBB + look
-        uint32_t record = 0;               // the assigned record index
+        smvk::envzones::EnvZoneGpu zone{};  // the sanitized OBB + look
+        uint32_t record = 0;                // the assigned record index
         glm::vec2 xzMin{0.0f}, xzMax{0.0f}; // conservative falloff AABB
-        double boundedVolume = 0.0;        // finite product; +inf for any unbounded face
+        double boundedVolume = 0.0;         // finite product; +inf for any unbounded face
         uint32_t nodeId = 0;
         float priority = 0.0f;
     };
@@ -165,9 +180,9 @@ class WorldEnvTiles {
     Lookup Evaluate(const glm::vec3& p) const;
 
     std::vector<smvk::envzones::EnvZoneGpu> shapes_; // record-indexed OBBs
-    std::vector<uint32_t> candidateIndices_; // ordered per-cell references
-    std::vector<uint32_t> farCandidates_; // sorted far-tier candidate IDs
-    std::vector<EnvTileRecord> records_; // [0] = the base
+    std::vector<uint32_t> candidateIndices_;         // ordered per-cell references
+    std::vector<uint32_t> farCandidates_;            // sorted far-tier candidate IDs
+    std::vector<EnvTileRecord> records_;             // [0] = the base
     uint32_t recordCount_ = 0;
     std::vector<EnvTileCell> cells_;    // dimX * dimZ
     std::vector<Candidate> candidates_; // sorted, includes the base at [0]

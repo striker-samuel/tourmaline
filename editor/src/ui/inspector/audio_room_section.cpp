@@ -59,13 +59,14 @@ void EditorApp::DrawAudioRoomSection(uint32_t node) {
     const attr::ScopedID componentId("audio_room");
     if (!m_world)
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     if (node >= scene.hierarchy.size())
         return;
-    const tour::scene::AudioRoomRow* row = tour::scene::FindAudioRoom(scene, node);
+    const tour::transformhierarchy::AudioRoomRow* row =
+        tour::transformhierarchy::FindAudioRoom(scene, node);
     if (!row)
         return;
-    const tour::scene::SceneAudioRoom& def = row->room;
+    const tour::transformhierarchy::SceneAudioRoom& def = row->room;
     if (attr::ComponentHeader("Audio Room")) {
         EditCmd cmd{};
         cmd.verb = EditVerb::RemoveAudioRoomVerb;

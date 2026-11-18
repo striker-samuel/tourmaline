@@ -136,7 +136,7 @@ BakeCellGrid BuildBakeCellGrid(WorldPage& cluster);
 // color, sky I + color — the EnvForBake set; exposure is a view setting,
 // not a bake input; fog is not traced by bakes). Folded into EVERY unit
 // hash.
-std::string BakeEnvHash(const Scene& scene);
+std::string BakeEnvHash(const TransformHierarchy& scene);
 
 // Every static-marked AUTHORED light (the bake light set), sorted by node
 // id: flags/type/transform/color/intensity/range/cones/cookie. Also

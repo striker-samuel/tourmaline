@@ -137,8 +137,8 @@ bool EditorApp::HasLocalPlugOverride(uint32_t node, const std::string& plug) con
 
 bool EditorApp::AddPlugOverrideRule(const std::string& pattern,
                                     const std::string& plug,
-                                    const tour::scene::plugs::Value& value) {
-    if (!m_world || pattern.empty() || !tour::scene::plugs::ValidValue(plug, value))
+                                    const tour::transformhierarchy::plugs::Value& value) {
+    if (!m_world || pattern.empty() || !tour::transformhierarchy::plugs::ValidValue(plug, value))
         return false;
     try {
         std::regex rx(pattern, std::regex::ECMAScript | std::regex::optimize);
@@ -172,7 +172,7 @@ std::vector<uint32_t> EditorApp::MatchOverrideNodes(const std::string& pattern,
         errOut = e.what();
         return out;
     }
-    const Scene& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->scene;
     for (uint32_t n = 0; n < uint32_t(scene.hierarchy.size()); ++n) {
         const std::string nm = getNodeName(scene, int(n));
         if (nm.empty())
@@ -194,7 +194,7 @@ int EditorApp::CountOverrideMatches(const std::string& pattern) const {
         return 0;
     try {
         std::regex rx(pattern, std::regex::ECMAScript | std::regex::optimize);
-        const Scene& scene = m_world->scene;
+        const TransformHierarchy& scene = m_world->scene;
         int count = 0;
         for (uint32_t n = 0; n < uint32_t(scene.hierarchy.size()); ++n) {
             const std::string nm = getNodeName(scene, int(n));
@@ -226,7 +226,7 @@ void EditorApp::ApplyOverrideRule(OverrideRule& r) {
         r.lastError = err;
         return;
     }
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     int touched = 0;
     for (uint32_t n : hits) {
         if (r.attr == smvk::tour::OverrideAttr::Plug ? HasLocalPlugOverride(n, r.plug)
@@ -236,9 +236,10 @@ void EditorApp::ApplyOverrideRule(OverrideRule& r) {
         a.node = n;
         switch (r.attr) {
         case smvk::tour::OverrideAttr::Plug: {
-            tour::scene::plugs::Value before;
-            if (!tour::scene::plugs::Read(scene, n, r.plug, before) || before == r.value ||
-                !tour::scene::plugs::Write(scene, n, r.plug, r.value))
+            tour::transformhierarchy::plugs::Value before;
+            if (!tour::transformhierarchy::plugs::Read(scene, n, r.plug, before) ||
+                before == r.value ||
+                !tour::transformhierarchy::plugs::Write(scene, n, r.plug, r.value))
                 break;
             a.beforeValue = std::move(before);
             r.applied.push_back(a);
@@ -349,7 +350,7 @@ void EditorApp::UnapplyOverrideRule(OverrideRule& r) {
         r.applied.clear();
         return;
     }
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     for (auto it = r.applied.rbegin(); it != r.applied.rend(); ++it) {
         const uint32_t n = it->node;
         if (n >= scene.hierarchy.size())
@@ -359,9 +360,10 @@ void EditorApp::UnapplyOverrideRule(OverrideRule& r) {
             continue; // a local owns this node now: never clobber
         switch (r.attr) {
         case smvk::tour::OverrideAttr::Plug: {
-            tour::scene::plugs::Value current;
-            if (tour::scene::plugs::Read(scene, n, r.plug, current) && current == r.value &&
-                tour::scene::plugs::Write(scene, n, r.plug, it->beforeValue))
+            tour::transformhierarchy::plugs::Value current;
+            if (tour::transformhierarchy::plugs::Read(scene, n, r.plug, current) &&
+                current == r.value &&
+                tour::transformhierarchy::plugs::Write(scene, n, r.plug, it->beforeValue))
                 RefreshNodeDrawState(n);
             break;
         }
@@ -625,7 +627,7 @@ void EditorApp::SaveOverridesToDoc(smvk::tour::Doc& doc) const {
 }
 
 void EditorApp::LoadOverridesFromDoc(const smvk::tour::Doc& doc) {
-    m_plugGraph = tour::scene::plugs::Graph{};
+    m_plugGraph = tour::transformhierarchy::plugs::Graph{};
     for (const auto& link : doc.connections)
         if (!m_plugGraph.Connect(link))
             Log("tour: rejected cyclic or incompatible connectAttr");
@@ -638,7 +640,7 @@ void EditorApp::LoadOverridesFromDoc(const smvk::tour::Doc& doc) {
         r.attr = tr.attr;
         r.pattern = tr.pattern;
         if (tr.attr == smvk::tour::OverrideAttr::Plug) {
-            if (!tour::scene::plugs::ValidValue(tr.plug, tr.value)) {
+            if (!tour::transformhierarchy::plugs::ValidValue(tr.plug, tr.value)) {
                 --m_nextOverrideId;
                 continue;
             }
@@ -705,14 +707,15 @@ void EditorApp::ReassertWideOverrides(uint32_t node) {
         if (!hit)
             continue;
         // Capture before + write (same guards as ApplyOverrideRule).
-        Scene& scene = m_world->scene;
+        TransformHierarchy& scene = m_world->scene;
         OverrideApplied a{};
         a.node = node;
         switch (r.attr) {
         case smvk::tour::OverrideAttr::Plug: {
-            tour::scene::plugs::Value before;
-            if (!tour::scene::plugs::Read(scene, node, r.plug, before) || before == r.value ||
-                !tour::scene::plugs::Write(scene, node, r.plug, r.value))
+            tour::transformhierarchy::plugs::Value before;
+            if (!tour::transformhierarchy::plugs::Read(scene, node, r.plug, before) ||
+                before == r.value ||
+                !tour::transformhierarchy::plugs::Write(scene, node, r.plug, r.value))
                 break;
             a.beforeValue = std::move(before);
             r.applied.push_back(a);
@@ -862,7 +865,7 @@ void EditorApp::DrawInspectorOverrides(uint32_t node) {
     using smvk::tour::OverrideAttr;
     if (!m_world || node >= m_world->scene.hierarchy.size())
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     const std::string nm = getNodeName(scene, int(node));
     ImGui::Separator();
     ImGui::Text("Overrides (Clarisse-style)");
@@ -1030,7 +1033,7 @@ void EditorApp::DrawOverridesPanel() {
             ImGui::EndCombo();
         }
     } else if (m_overrideAttrSel == 7) {
-        using namespace tour::scene::plugs;
+        using namespace tour::transformhierarchy::plugs;
         m_overridePlugSel = std::clamp(m_overridePlugSel, 0, int(std::size(kDescriptors)) - 1);
         const Descriptor& selected = kDescriptors[m_overridePlugSel];
         ImGui::SameLine();
@@ -1106,7 +1109,7 @@ void EditorApp::DrawOverridesPanel() {
         const bool flag = m_overrideAttrSel == 0 ? !m_overrideFlagVal : m_overrideFlagVal;
         bool added = false;
         if (attr == OverrideAttr::Plug) {
-            using namespace tour::scene::plugs;
+            using namespace tour::transformhierarchy::plugs;
             const Descriptor& d =
                 kDescriptors[std::clamp(m_overridePlugSel, 0, int(std::size(kDescriptors)) - 1)];
             Value value;
@@ -1138,7 +1141,7 @@ void EditorApp::DrawOverridesPanel() {
         ImGui::SetNextItemWidth(90.0f);
         ImGui::InputInt("Destination node", &m_connectDestNode);
         const auto choose = [](const char* id, int& selected) {
-            using namespace tour::scene::plugs;
+            using namespace tour::transformhierarchy::plugs;
             selected = std::clamp(selected, 0, int(std::size(kDescriptors)) - 1);
             ImGui::SetNextItemWidth(250.0f);
             if (ImGui::BeginCombo(id, kDescriptors[selected].path.data())) {
@@ -1151,7 +1154,7 @@ void EditorApp::DrawOverridesPanel() {
         choose("Source plug", m_connectSourcePlug);
         choose("Destination plug", m_connectDestPlug);
         if (ImGui::Button("Connect")) {
-            using namespace tour::scene::plugs;
+            using namespace tour::transformhierarchy::plugs;
             if (m_connectSourceNode < 0 || m_connectDestNode < 0 || !m_world ||
                 uint32_t(m_connectSourceNode) >= m_world->scene.hierarchy.size() ||
                 uint32_t(m_connectDestNode) >= m_world->scene.hierarchy.size()) {
@@ -1259,7 +1262,7 @@ void EditorApp::DrawOverridesPanel() {
             // Value (bool attrs flip in place; material is fixed).
             ImGui::TableNextColumn();
             if (r.attr == OverrideAttr::Plug) {
-                using tour::scene::plugs::Kind;
+                using tour::transformhierarchy::plugs::Kind;
                 switch (r.value.kind) {
                 case Kind::Boolean:
                     ImGui::TextUnformatted(r.value.boolean ? "on" : "off");

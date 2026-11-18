@@ -119,7 +119,7 @@ typedef enum CullFlagBits {
 typedef uint32_t CullFlags;
 
 // Per-draw flags (stored in Draw::flags / HLSL GfxDraw misc.y).
-// Scene::ditherCloseup fade band this frame (DitherCloseupStateFor ==
+// TransformHierarchy::ditherCloseup fade band this frame (DitherCloseupStateFor ==
 // Fade at PushDraw time; see DrawSetBit_Masked - Fade draws also route
 // into the masked bucket so the alpha-tested depth/shadow legs can
 // screen-door with them). HLSL mirror: GFX_DRAW_DITHER_CLOSEUP

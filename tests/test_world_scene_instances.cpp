@@ -48,14 +48,15 @@ int main() {
     CHECK(unchanged.size() == 2 && !store.IsHeld(5));
     CHECK(loads == 3 && unloads == 1);
 
-    Scene source;
+    TransformHierarchy source;
     const int sr = addNode(source, -1, 0);
     const int child = addNode(source, sr, 1);
     setNodeName(source, sr, "Building");
     setNodeName(source, child, "Room");
     glm::dmat4 local(1.0);
     local[3][0] = 3.0;
-    CHECK(tour::scene::SetLocalTransform(source, MakeNodeHandle(source, NodeId(child)), local));
+    CHECK(tour::transformhierarchy::SetLocalTransform(
+        source, MakeNodeHandle(source, NodeId(child)), local));
 
     tour::World world;
     CHECK(world.SetActiveMapIdentity(100));
@@ -90,7 +91,7 @@ int main() {
     // Refuse unknown/stale instance IDs and incomplete component publication.
     CHECK(!world.RetireSceneHierarchy(a));
     CHECK(!world.SetActiveMapIdentity(101));
-    Scene drawable;
+    TransformHierarchy drawable;
     int meshNode = addNode(drawable, -1, 0);
     CHECK(SetMesh(drawable, NodeId(meshNode), 0));
     const size_t before = world.scene.hierarchy.size();
@@ -101,13 +102,13 @@ int main() {
         // Exercise the generic Scene -> World row remapper without a GPU.
         // World::InstantiateSceneHierarchy additionally verifies that each
         // World index resolves to an actually resident mesh/material.
-        Scene mappedTarget;
+        TransformHierarchy mappedTarget;
         tour::RegionRegistry regionStore;
-        tour::scene::WorldSceneInstances direct;
+        tour::transformhierarchy::WorldSceneInstances direct;
         CHECK(direct.SetActiveMap(200));
-        tour::scene::WorldSceneResourceMap remap;
+        tour::transformhierarchy::WorldSceneResourceMap remap;
         remap.mesh = {77};
-        Scene drawable2;
+        TransformHierarchy drawable2;
         const int node = addNode(drawable2, -1, 0);
         CHECK(SetMesh(drawable2, NodeId(node), 0));
         const uint64_t instance = direct.Instantiate(
@@ -123,7 +124,7 @@ int main() {
         CHECK(mappedTarget.tables.meshes.empty());
     }
     {
-        Scene cyclic;
+        TransformHierarchy cyclic;
         const int root = addNode(cyclic, -1, 0);
         const int nested = addNode(cyclic, root, 1);
         cyclic.hierarchy[root].parent = nested;
@@ -133,7 +134,7 @@ int main() {
         CHECK(world.scene.hierarchy.size() == countBefore);
     }
     {
-        Scene dangling;
+        TransformHierarchy dangling;
         const int root = addNode(dangling, -1, 0);
         dangling.hierarchy[root].parent = 9999;
         const size_t countBefore = world.scene.hierarchy.size();
@@ -165,7 +166,7 @@ int main() {
     {
         namespace wp = engine::worldpartition;
         tour::World mapWorld;
-        auto directSource = std::make_shared<Scene>();
+        auto directSource = std::make_shared<TransformHierarchy>();
         addNode(*directSource, -1, 0);
         int resolveCalls = 0;
         wp::DirectMapSceneStreaming stream(
@@ -234,7 +235,7 @@ int main() {
         // reduced to a hierarchy-only scene.
         namespace wp = engine::worldpartition;
         tour::World mapWorld;
-        auto unsupported = std::make_shared<Scene>();
+        auto unsupported = std::make_shared<TransformHierarchy>();
         const int node = addNode(*unsupported, -1, 0);
         CHECK(SetMesh(*unsupported, NodeId(node), 0));
         wp::DirectMapSceneStreaming stream(

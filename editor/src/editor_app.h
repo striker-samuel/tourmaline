@@ -13,7 +13,7 @@
 //   - move/rotate/scale them with a selection gizmo (highlight drawn as a
 //     wireframe overlay + AABB lines),
 //   - reassign materials per node (combo over all imported materials),
-//   - flag subtrees to skip lightmap baking (Scene::noLightmap),
+//   - flag subtrees to skip lightmap baking (TransformHierarchy::noLightmap),
 //   - reparent nodes (drag&drop / detach),
 //   - undo/redo everything (CRUD command stack),
 //   - save it all to an ASCII .tour file (Maya-style, no blobs) and cook
@@ -1679,7 +1679,7 @@ class EditorApp : public tour::App {
     // by the outliner tag, the gizmo marker, and the click pick. NOTE:
     // imported empty group nodes ALSO match; they are the same concept
     // (a named anchor with no payload — the tag is honest for both).
-    static bool IsLocatorNode(const Scene& scene, uint32_t node);
+    static bool IsLocatorNode(const TransformHierarchy& scene, uint32_t node);
     // First camera node in the live world, or UINT32_MAX (World panel,
     // viewport camera bindings).
     uint32_t FindCameraNode() const;
@@ -1918,7 +1918,7 @@ class EditorApp : public tour::App {
         uint32_t node = UINT32_MAX;
         bool beforeFlag = false;
         uint32_t beforeMaterial = UINT32_MAX;
-        tour::scene::plugs::Value beforeValue;
+        tour::transformhierarchy::plugs::Value beforeValue;
     };
     struct OverrideRule {
         uint32_t id = 0;
@@ -1928,7 +1928,7 @@ class EditorApp : public tour::App {
         bool flag = true;                    // Visibility/NoLightmap/Dither value
         uint32_t materialWorld = UINT32_MAX; // Material: world mat idx (UI)
         std::string plug;
-        tour::scene::plugs::Value value;
+        tour::transformhierarchy::plugs::Value value;
         std::vector<OverrideApplied> applied; // nodes written by this rule
         std::string lastError;                // regex compile error, else empty
         int lastMatches = 0;                  // nodes matched on last apply (pre local-skip)
@@ -1936,7 +1936,7 @@ class EditorApp : public tour::App {
     bool HasLocalPlugOverride(uint32_t node, const std::string& plug) const;
     bool AddPlugOverrideRule(const std::string& pattern,
                              const std::string& plug,
-                             const tour::scene::plugs::Value& value);
+                             const tour::transformhierarchy::plugs::Value& value);
     bool HasLocalOverride(uint32_t node,
                           smvk::tour::OverrideAttr attr) const; // history scan (cursor range)
     // Regex over node names (ECMAScript, search). Returns matched world
@@ -1985,7 +1985,7 @@ class EditorApp : public tour::App {
     char m_overridePlugString[256] = "";
     std::vector<OverrideRule> m_overrideRules;
     // Directed typed plug wiring shares the cooked scene's graph model.
-    tour::scene::plugs::Graph m_plugGraph;
+    tour::transformhierarchy::plugs::Graph m_plugGraph;
     int m_connectSourceNode = 0, m_connectDestNode = 0;
     int m_connectSourcePlug = 0, m_connectDestPlug = 0;
     uint32_t m_nextOverrideId = 1;
@@ -2219,7 +2219,7 @@ class EditorApp : public tour::App {
     void FrameAll();
 
     // ---- environment (scene definition, NEVER a render setting) ----
-    // The authored look lives in the SCENE (smvktour::scene::SceneEnv, see
+    // The authored look lives in the SCENE (smvktour::transformhierarchy::SceneEnv, see
     // Engine/Scene/scene.h): the resolved ACTIVE block in
     // scene.environment, the default block in scene.defaultEnvironment
     // and the per-node alternatives in the env table — saved to the
@@ -2229,7 +2229,7 @@ class EditorApp : public tour::App {
     // renders, like the active camera) and resolves it into
     // scene.environment on every change; the renderers never receive
     // the environment through any other channel.
-    using EditorEnv = tour::scene::SceneEnv;
+    using EditorEnv = tour::transformhierarchy::SceneEnv;
     uint32_t m_envCurrent = UINT32_MAX; // UINT32_MAX = default block renders
     daynight::Settings m_dayNight;      // authored clock/solar parameters; playback is preview-only
 
@@ -3104,7 +3104,7 @@ class EditorApp : public tour::App {
     float m_menuH = 19.0f;
 
     // ---- sun/ambient (viewport lighting) ----
-    // ---- viewport lighting (see tour::scene::SceneEnv: the live values live in the
+    // ---- viewport lighting (see tour::transformhierarchy::SceneEnv: the live values live in the
     // scene — CurrentEnv() reads the default block or the selected node
     // block; RebuildCookedLights seeds the scene default from the cooked
     // directional sun when the scene has one, else the defaults stand in).

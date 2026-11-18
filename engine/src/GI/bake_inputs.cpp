@@ -95,13 +95,13 @@ std::string BakeInputHash(const void* data, size_t size) {
 // The env + static-lights hashes (GLOBAL inputs — fold into every unit)
 // ---------------------------------------------------------------------------
 
-std::string BakeEnvHash(const Scene& scene) {
+std::string BakeEnvHash(const TransformHierarchy& scene) {
     // The bake env inputs (EnvForBake's set): the resolved ACTIVE block's
     // sun (az/el/I + color) + sky (I + color), raw float BITS. Exposure
     // is a view setting, not a bake input; fog is not traced by bakes.
     Hasher hs;
     hs.feed("env");
-    const tour::scene::SceneEnv& e = scene.environment;
+    const tour::transformhierarchy::SceneEnv& e = scene.environment;
     hs.feedPod(e.skyColor);
     hs.feedPod(e.skyIntensity);
     hs.feedPod(e.sunColor);
@@ -116,7 +116,7 @@ std::string BakeLightsHash(const WorldPage& cluster) {
     // the light's own fields + the node's global transform bits (the
     // position/direction ride the transform) + the cookie uri. Non-static
     // lights are runtime-only — never bake inputs.
-    const ::Scene& scene = cluster.scene;
+    const ::TransformHierarchy& scene = cluster.scene;
     if (scene.tables.lights.empty())
         return BakeInputHash(std::string("lights-none"));
     std::vector<uint32_t> nodes;
@@ -183,7 +183,7 @@ std::string BakeLightsHash(const WorldPage& cluster) {
 
 BakeCellGrid BuildBakeCellGrid(WorldPage& cluster) {
     BakeCellGrid grid;
-    ::Scene& scene = cluster.scene;
+    ::TransformHierarchy& scene = cluster.scene;
     recalculateGlobalTransforms(scene);
 
     // Membership mirrors BuildTraceSceneFromCluster's SUPerset (masked

@@ -17,12 +17,12 @@
 #include <type_traits>
 #include <vector>
 
-namespace tour::scene::memory {
+namespace tour::transformhierarchy::memory {
 
 enum class Semantic : uint32_t {
     LocalTransform,
     GlobalTransform,
-    Hierarchy,
+    NodeLinks,
     NodeGeneration,
     NodeFreeList,
     NodeMetadata,
@@ -117,26 +117,26 @@ template <class Container>
 // The five hierarchy fields are signed int32 on Tourmaline's supported
 // platforms. Indices refer to stable scene slots; -1 means no relative.
 // The nodeGeneration stream identifies retired/reused slots.
-static_assert(sizeof(int) == 4, "Hierarchy requires 32-bit int fields");
-static_assert(std::is_standard_layout_v<Hierarchy>);
+static_assert(sizeof(int) == 4, "NodeLinks requires 32-bit int fields");
+static_assert(std::is_standard_layout_v<NodeLinks>);
 inline constexpr Field HierarchyFields[] = {
-    {"PARENT", uint32_t(offsetof(Hierarchy, parent)), ScalarFormat::Int32},
-    {"FIRST_CHILD", uint32_t(offsetof(Hierarchy, firstChild)), ScalarFormat::Int32},
-    {"NEXT_SIBLING", uint32_t(offsetof(Hierarchy, nextSibling)), ScalarFormat::Int32},
-    {"LAST_SIBLING", uint32_t(offsetof(Hierarchy, lastSibling)), ScalarFormat::Int32},
-    {"LEVEL", uint32_t(offsetof(Hierarchy, level)), ScalarFormat::Int32}};
+    {"PARENT", uint32_t(offsetof(NodeLinks, parent)), ScalarFormat::Int32},
+    {"FIRST_CHILD", uint32_t(offsetof(NodeLinks, firstChild)), ScalarFormat::Int32},
+    {"NEXT_SIBLING", uint32_t(offsetof(NodeLinks, nextSibling)), ScalarFormat::Int32},
+    {"LAST_SIBLING", uint32_t(offsetof(NodeLinks, lastSibling)), ScalarFormat::Int32},
+    {"LEVEL", uint32_t(offsetof(NodeLinks, level)), ScalarFormat::Int32}};
 
 inline constexpr uint32_t InvalidHierarchyLink = 0xFFFFFFFFu;
 
 // Descriptors remain useful even when a stream is empty. The caller must
 // re-query after array growth, scene merging, node retirement, or reload.
-[[nodiscard]] inline View GetView(const Scene& scene, Semantic semantic) noexcept {
+[[nodiscard]] inline View GetView(const TransformHierarchy& scene, Semantic semantic) noexcept {
     switch (semantic) {
     case Semantic::LocalTransform:
         return MakeView(semantic, scene.localTransform, ScalarFormat::Mat4x4Float32);
     case Semantic::GlobalTransform:
         return MakeView(semantic, scene.globalTransform, ScalarFormat::Mat4x4Float32);
-    case Semantic::Hierarchy:
+    case Semantic::NodeLinks:
         return MakeView(semantic, scene.hierarchy);
     case Semantic::NodeGeneration:
         return MakeView(semantic, scene.nodeGeneration, ScalarFormat::UInt32);
@@ -218,11 +218,11 @@ struct Layout {
     bool externalBindingSupported = false;
 };
 
-[[nodiscard]] inline Layout Describe(const Scene& scene, Semantic semantic) noexcept {
+[[nodiscard]] inline Layout Describe(const TransformHierarchy& scene, Semantic semantic) noexcept {
     const View view = GetView(scene, semantic);
     Layout info{semantic, view.stride, view.alignment, view.format};
     switch (semantic) {
-    case Semantic::Hierarchy:
+    case Semantic::NodeLinks:
         info.fields = HierarchyFields;
         info.fieldCount = std::size(HierarchyFields);
         info.nodeIndexed = true;
@@ -256,7 +256,7 @@ struct Layout {
 
 inline constexpr auto AllSemantics = std::to_array<Semantic>({Semantic::LocalTransform,
                                                               Semantic::GlobalTransform,
-                                                              Semantic::Hierarchy,
+                                                              Semantic::NodeLinks,
                                                               Semantic::NodeGeneration,
                                                               Semantic::NodeFreeList,
                                                               Semantic::NodeMetadata,
@@ -286,7 +286,8 @@ inline constexpr auto AllSemantics = std::to_array<Semantic>({Semantic::LocalTra
                                                               Semantic::PhysicsBodyRows,
                                                               Semantic::SchemaAssocRows});
 
-template <typename Visitor> inline void ForEachView(const Scene& scene, Visitor&& visit) {
+template <typename Visitor>
+inline void ForEachView(const TransformHierarchy& scene, Visitor&& visit) {
     for (Semantic semantic : AllSemantics)
         visit(GetView(scene, semantic), Describe(scene, semantic));
 }
@@ -323,7 +324,7 @@ struct ExternalBinding {
 // Bind exact-layout, writable caller storage. Existing scene values are
 // copied into the supplied memory. The caller retains ownership and MUST
 // detach before freeing it. Growth beyond its capacity aborts (OOM policy).
-[[nodiscard]] inline bool BindExternal(Scene& scene, const ExternalBinding& b) {
+[[nodiscard]] inline bool BindExternal(TransformHierarchy& scene, const ExternalBinding& b) {
     if (!Validate(b) || b.access != Access::ReadWrite || !b.capacity ||
         b.count != GetView(scene, b.semantic).count)
         return false;
@@ -334,15 +335,15 @@ struct ExternalBinding {
     case Semantic::GlobalTransform:
         return b.stride == sizeof(glm::mat4) && b.alignment >= alignof(glm::mat4) &&
                scene.globalTransform.BindExternal(static_cast<glm::mat4*>(b.data), b.capacity);
-    case Semantic::Hierarchy:
-        return b.stride == sizeof(Hierarchy) && b.alignment >= alignof(Hierarchy) &&
-               scene.hierarchy.BindExternal(static_cast<Hierarchy*>(b.data), b.capacity);
+    case Semantic::NodeLinks:
+        return b.stride == sizeof(NodeLinks) && b.alignment >= alignof(NodeLinks) &&
+               scene.hierarchy.BindExternal(static_cast<NodeLinks*>(b.data), b.capacity);
     default:
         return false;
     }
 }
 
-[[nodiscard]] inline bool DetachExternal(Scene& scene, Semantic semantic) {
+[[nodiscard]] inline bool DetachExternal(TransformHierarchy& scene, Semantic semantic) {
     switch (semantic) {
     case Semantic::LocalTransform:
         scene.localTransform.DetachExternal();
@@ -350,7 +351,7 @@ struct ExternalBinding {
     case Semantic::GlobalTransform:
         scene.globalTransform.DetachExternal();
         return true;
-    case Semantic::Hierarchy:
+    case Semantic::NodeLinks:
         scene.hierarchy.DetachExternal();
         return true;
     default:
@@ -358,4 +359,4 @@ struct ExternalBinding {
     }
 }
 
-} // namespace tour::scene::memory
+} // namespace tour::transformhierarchy::memory

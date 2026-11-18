@@ -219,7 +219,7 @@ void PostLoadTail(tour::World& world, const std::string& pakStem, app::ProjectRu
 // STATIC-FLAG APPLICATION (public seam: PakHostTests drives it on
 // hand-built value worlds — the loader's decision logic without the
 // pak/GPU plumbing). Cooked detection is SECTION PRESENCE
-// (Scene::staticRootsSerialized — set by the cluster deserializer when
+// (TransformHierarchy::staticRootsSerialized — set by the cluster deserializer when
 // the scene blob carried the trailing static section), NEVER
 // any_of(staticRoot): a serialized ALL-ZERO array is authored
 // all-dynamic data and must be honored — the any_of form misread

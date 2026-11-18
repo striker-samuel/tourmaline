@@ -113,7 +113,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    ::Scene& scene = cluster->scene;
+    ::TransformHierarchy& scene = cluster->scene;
 
     // Buckets: [match?] x [alphaMode] x [castsShadows].
     struct Row {

@@ -489,7 +489,8 @@ class WorldSynchronizer {
                 record.mesh = {owner->second, loc.handle.index(), loc.handle.gen()};
                 std::construct_at(scratchMeshes + meshCount++,
                                   MeshSourceEntry{record.mesh, item.mesh});
-                record.globalModel = tour::scene::GlobalTransformDouble(world.scene, item.node);
+                record.globalModel =
+                    tour::transformhierarchy::GlobalTransformDouble(world.scene, item.node);
                 record.material = item.material; // interim World index
                 record.userData = world.ResolvedItemUserData(item);
                 // Closeup fades need a discarding MASK depth pass, even if the
@@ -498,7 +499,7 @@ class WorldSynchronizer {
                 // required for the fade band.
                 record.flags = WithCloseupDitherRasterFlags(
                     static_cast<uint32_t>(item.flags),
-                    tour::scene::IsDitherCloseupNode(world.scene, int(item.node)));
+                    tour::transformhierarchy::IsDitherCloseupNode(world.scene, int(item.node)));
                 // Per-instance pipeline classification, independent of
                 // mesh sharing. Keep legacy admission until both raster
                 // and depth PSO bins are wired end-to-end.
@@ -616,7 +617,9 @@ class WorldSynchronizer {
         for (NodeId node : dirty) {
             if (node < nodeKeyCount_ && node < world.scene.globalTransform.size() &&
                 registry_.UpdateGlobal(
-                    nodeKeys_[node], tour::scene::GlobalTransformDouble(world.scene, node), db))
+                    nodeKeys_[node],
+                    tour::transformhierarchy::GlobalTransformDouble(world.scene, node),
+                    db))
                 ++stats.updated;
         }
         for (NodeId node : dirty)

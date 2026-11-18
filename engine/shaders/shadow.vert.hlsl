@@ -76,7 +76,7 @@ struct VSOut
     // the declared interface must agree.
     [[vk::location(0)]] float4 color : COLOR0;
     [[vk::location(1)]] float2 uv : TEXCOORD0;
-    // Dither-on-closeup inputs for shadow_body's screen-door (Scene::
+    // Dither-on-closeup inputs for shadow_body's screen-door (TransformHierarchy::
     // ditherCloseup; see common.hlsli CloseupDitherKeep): the world
     // position for the per-pixel camera-distance factor (the MAIN camera
     // is the fade's anchor even in light-view passes) + the per-draw

@@ -86,7 +86,7 @@ typedef enum IteratorFlagBits {
     IteratorFlagBit_LightDirectional = 1u << 6,
     IteratorFlagBit_LightSpot = 1u << 7,
     IteratorFlagBit_LightPoint = 1u << 8,
-    // Set when the node sits inside a static subtree (see Scene::
+    // Set when the node sits inside a static subtree (see TransformHierarchy::
     // staticRoot/staticNode). Static nodes skip per-frame transform
     // updates and dynamic BVH rebuilds; collapsed mega-mesh nodes keep
     // this flag as well.
@@ -97,7 +97,7 @@ typedef enum IteratorFlagBits {
     // fetching the material per node per pass.
     IteratorFlagBit_Masked = 1u << 10,
     // Volumetric-shadow caster (the coarse fog tile's marked large
-    // occluders - see Scene::castsVolumetricShadow): set alongside
+    // occluders - see TransformHierarchy::castsVolumetricShadow): set alongside
     // Opaque/CastShadow for flagged nodes so the coarse fog-shadow
     // pass iterates a prefiltered list (forEachRenderItem's exact
     // flag-match walk). Material-independent - the SCENE owns the
@@ -146,7 +146,8 @@ struct World {
             return;
         }
         if (!pages.empty() || !scene.hierarchy.empty())
-            tour::scene::CrashNodeBudget("late World budget", scene.hierarchy.size(), slots);
+            tour::transformhierarchy::CrashNodeBudget(
+                "late World budget", scene.hierarchy.size(), slots);
         scene.ReserveNodeSlots(slots);
     }
 
@@ -222,7 +223,7 @@ struct World {
             return;
         for (const auto& [handle, resource] : gameMeshBindings_)
             if (IsGameNode(handle))
-                (void)tour::scene::RemoveMesh(scene, NodeHandleSlot(handle));
+                (void)tour::transformhierarchy::RemoveMesh(scene, NodeHandleSlot(handle));
         gameMeshBindings_.clear();
         RefreshRuntimeSceneCaches();
     }
@@ -245,13 +246,13 @@ struct World {
         bool SetLightLayerMask(uint32_t mask) const {
             if (!owner_.IsGameNode(handle_))
                 return false;
-            tour::scene::EnsureNodeMetadata(owner_.scene);
+            tour::transformhierarchy::EnsureNodeMetadata(owner_.scene);
             owner_.scene.metadata[NodeHandleSlot(handle_)].lightLayerMask = mask;
             return true;
         }
         bool SetLocalTransform(const glm::mat4& frame) const {
             return owner_.IsGameNode(handle_) &&
-                   tour::scene::SetLocalTransform(owner_.scene, handle_, frame);
+                   tour::transformhierarchy::SetLocalTransform(owner_.scene, handle_, frame);
         }
         bool SetPosition(const glm::vec3& position) const {
             return owner_.SetNodePosition(handle_, position);
@@ -262,17 +263,18 @@ struct World {
         bool SetScale(const glm::vec3& scale) const {
             return owner_.SetNodeScale(handle_, scale);
         }
-        bool SetPhysicsBody(const tour::scene::ScenePhysicsBody& body) const {
-            return owner_.IsGameNode(handle_) &&
-                   tour::scene::SetPhysicsBody(owner_.scene, NodeHandleSlot(handle_), body);
+        bool SetPhysicsBody(const tour::transformhierarchy::ScenePhysicsBody& body) const {
+            return owner_.IsGameNode(handle_) && tour::transformhierarchy::SetPhysicsBody(
+                                                     owner_.scene, NodeHandleSlot(handle_), body);
         }
-        bool SetAudioRoom(const tour::scene::SceneAudioRoom& room) const {
-            return owner_.IsGameNode(handle_) &&
-                   tour::scene::SetAudioRoom(owner_.scene, NodeHandleSlot(handle_), room);
+        bool SetAudioRoom(const tour::transformhierarchy::SceneAudioRoom& room) const {
+            return owner_.IsGameNode(handle_) && tour::transformhierarchy::SetAudioRoom(
+                                                     owner_.scene, NodeHandleSlot(handle_), room);
         }
-        bool SetTriggerVolume(const tour::scene::SceneTriggerVolume& trigger) const {
+        bool SetTriggerVolume(const tour::transformhierarchy::SceneTriggerVolume& trigger) const {
             return owner_.IsGameNode(handle_) &&
-                   tour::scene::SetTriggerVolume(owner_.scene, NodeHandleSlot(handle_), trigger);
+                   tour::transformhierarchy::SetTriggerVolume(
+                       owner_.scene, NodeHandleSlot(handle_), trigger);
         }
 
       private:
@@ -297,14 +299,14 @@ struct World {
 
     // Merged runtime scene graph. Imported WorldPage scenes are folded into
     // this via ResolveAndFixup_pages().
-    Scene scene;
+    TransformHierarchy scene;
     // Registered streaming/ownership subtree roots in the authoritative
     // world hierarchy. Registration does not take ownership of assets:
     // cluster-backed resource pools remain the transitional asset layer.
     RegionRegistry regions;
     // Direct World-owned hierarchy instances do not create Pages or
     // duplicate authoring Scenes. Asset leases are instance-independent.
-    tour::scene::WorldSceneInstances worldSceneInstances;
+    tour::transformhierarchy::WorldSceneInstances worldSceneInstances;
     // One active authored Map lives in this runtime World.
     bool SetActiveMapIdentity(uint64_t id) {
         return worldSceneInstances.SetActiveMap(id);
@@ -313,12 +315,12 @@ struct World {
         return worldSceneInstances.ActiveMap();
     }
     uint64_t InstantiateSceneHierarchy(
-        const Scene& source,
+        const TransformHierarchy& source,
         uint64_t sceneAssetId,
         const glm::dmat4& placement,
         std::vector<tour::asset::AssetLease> assets,
         std::string& err,
-        const tour::scene::WorldSceneResourceMap* bindings = nullptr);
+        const tour::transformhierarchy::WorldSceneResourceMap* bindings = nullptr);
     bool RetireSceneHierarchy(uint64_t instanceId);
 
     // Registration of a region root is separate from node lifetime;
@@ -1150,7 +1152,7 @@ struct World {
     }
 
     // ---- Static BVH for CPU frustum culling ---------------------
-    // Built once from frozen static-subtree nodes (see Scene::
+    // Built once from frozen static-subtree nodes (see TransformHierarchy::
     // staticNode) at the end of ResolveAndFixup_pages(); static
     // globals never move per frame so the tree stays valid until the
     // next resolve. Bounds are the LOD-chain union per instance so any

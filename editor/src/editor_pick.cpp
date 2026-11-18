@@ -308,7 +308,7 @@ std::optional<EditorApp::PickHit> EditorApp::PickGizmoMarker(int vpIdx,
     const glm::mat4 viewProj = m_viewports[std::clamp(vpIdx, 0, kMaxViewports - 1)].viewProj;
     glm::vec3 origin;
     const glm::vec3 dir = MouseRay(mouseX, mouseY, extent, viewProj, origin);
-    const Scene& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->scene;
     PickHit best{};
     best.t = FLT_MAX;
     bool found = false;
@@ -359,12 +359,12 @@ std::optional<EditorApp::PickHit> EditorApp::PickGizmoMarker(int vpIdx,
     if (m_showAudioRoomGizmos) {
         // Audio rooms: pick by the OBB's center (the same shape decode
         // the gizmo draws).
-        for (const tour::scene::AudioRoomRow& _row : scene.tables.audioRooms) {
+        for (const tour::transformhierarchy::AudioRoomRow& _row : scene.tables.audioRooms) {
             const NodeId node = _row.node;
             if (node >= scene.globalTransform.size())
                 continue;
-            const tour::scene::SpatialVolumeBox box =
-                tour::scene::VolumeBoxFromGlobalTransform(scene.globalTransform[node]);
+            const tour::transformhierarchy::SpatialVolumeBox box =
+                tour::transformhierarchy::VolumeBoxFromGlobalTransform(scene.globalTransform[node]);
             if (!box.Valid())
                 continue;
             consider(node, box.center);

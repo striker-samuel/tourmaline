@@ -17,7 +17,7 @@ struct PSIn
 {
     [[vk::location(1)]] float2 uv : TEXCOORD0;
     [[vk::location(3)]] float3 normal : TEXCOORD2;
-    // Dither-on-closeup inputs (Scene::ditherCloseup): pairs with
+    // Dither-on-closeup inputs (TransformHierarchy::ditherCloseup): pairs with
     // default.vert, which forwards the direct legs' per-draw pc word
     // (byte 240) flat here + the world position for the distance term
     // (the MAIN camera via FrameUniforms). Holes keep the loaded G-buffer
@@ -63,7 +63,7 @@ PSOut mainPS(float4 pos : SV_Position, PSIn IN)
 {
     PSOut OUT;
 
-    // Dither-on-closeup (Scene::ditherCloseup; see common.hlsli Closeup-
+    // Dither-on-closeup (TransformHierarchy::ditherCloseup; see common.hlsli Closeup-
     // DitherKeep): the G-buffer screen-doors in step with the depth and
     // the lit fade. First: discarded fragments skip the material fetch.
     if (IN.ditherCloseup != 0u)

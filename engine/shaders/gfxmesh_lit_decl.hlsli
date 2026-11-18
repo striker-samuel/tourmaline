@@ -35,7 +35,7 @@ struct PSIn
     [[vk::location(6)]] nointerpolation uint lmChunk : TEXCOORD4;
     // Mesh-only: per-draw material (misc2.y) for the multi-material dispatch.
     [[vk::location(7)]] nointerpolation uint meshMaterial : TEXCOORD5;
-    // Dither-on-closeup flag (flat; Scene::ditherCloseup — the ring's
+    // Dither-on-closeup flag (flat; TransformHierarchy::ditherCloseup — the ring's
     // GFX_DRAW_DITHER_CLOSEUP forwarded by the mesh MS; see the body's
     // discard + common.hlsli CloseupDitherKeep). EXPLICIT location 8
     // (pinned like every ditherCloseup declaration — the mesh MS writes

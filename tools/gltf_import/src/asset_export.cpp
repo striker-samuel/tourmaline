@@ -813,7 +813,7 @@ void WriteMeshAsset(const std::filesystem::path& path, const MeshAsset& m, std::
     b.reserve(1 << 16);
     PutU32(b, kMeshMagic);
     PutU32(b, kMeshVersion);
-    // Hierarchy (raw parents/levels; firstChild/next rebuilt at load).
+    // NodeLinks (raw parents/levels; firstChild/next rebuilt at load).
     const uint32_t nodeCount = uint32_t(m.nodes.size());
     PutU32(b, nodeCount);
     for (const MeshAsset::Node& n : m.nodes) {
@@ -1604,7 +1604,7 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
         // cluster material URIs carry "<...>#mat.<gltf index>").
         MeshAsset mesh;
         {
-            const Scene& scene = partCluster->scene;
+            const TransformHierarchy& scene = partCluster->scene;
             const size_t nodeCount = scene.hierarchy.size();
             mesh.nodes.resize(nodeCount);
             for (size_t i = 0; i < nodeCount; ++i) {

@@ -65,7 +65,7 @@ inline constexpr uint32_t InstanceFlagDoubleSided = 1u << 12;
 // World::IteratorFlagBit_Masked = 1u << 10; preserve the source's
 // material alpha-mode classification on the persistent instance.
 inline constexpr uint32_t InstanceFlagMasked = 1u << 10;
-// Scene::ditherCloseup is subtree-inherited. Keep this independent of the
+// TransformHierarchy::ditherCloseup is subtree-inherited. Keep this independent of the
 // MASK bit: the fragment shader needs to know whether to screen-door, while
 // the depth and main passes must choose MASK pipelines even for opaque mats.
 inline constexpr uint32_t InstanceFlagDitherCloseup = 1u << 13;

@@ -39,7 +39,7 @@ namespace editor {
 // preview and the borrowed renderer must see the same current paths.
 void EditorApp::ApplyGiAssetBindingsToScene() {
     if (m_world) {
-        Scene& liveScene = m_world->scene;
+        TransformHierarchy& liveScene = m_world->scene;
         liveScene.giWorldSource.clear();
         liveScene.giWorldGuid.clear();
         liveScene.giWorldInputHash.clear();
@@ -334,7 +334,7 @@ int EditorApp::PageMatToWorld(uint32_t poolIdx) const {
 void EditorApp::ExecCmd(EditCmd& c, bool forward) {
     if (!m_world)
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     switch (c.verb) {
     case EditVerb::Rename: {
         const std::string& name = forward ? c.afterText : c.beforeText;
@@ -434,7 +434,7 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
         break;
     }
     case EditVerb::SetStatic: {
-        // Whole-tree static mark (Scene::staticRoot): frozen transforms
+        // Whole-tree static mark (TransformHierarchy::staticRoot): frozen transforms
         // after the initial build + mega-mesh collapse eligibility.
         // Mark/Clear rebuild the derived staticNode cache.
         const bool v = forward ? c.afterFlag : c.beforeFlag;
@@ -500,28 +500,29 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
     }
     case EditVerb::AttachPhysicsBody: {
         if (forward) {
-            if (const auto* row = tour::scene::FindPhysicsBody(scene, c.node)) {
+            if (const auto* row = tour::transformhierarchy::FindPhysicsBody(scene, c.node)) {
                 c.beforePhysicsBody = true;
                 c.beforePhysics = row->body;
             } else
                 c.beforePhysicsBody = false;
-            tour::scene::SetPhysicsBody(scene, c.node, tour::scene::ScenePhysicsBody{});
+            tour::transformhierarchy::SetPhysicsBody(
+                scene, c.node, tour::transformhierarchy::ScenePhysicsBody{});
         } else if (c.beforePhysicsBody)
-            tour::scene::SetPhysicsBody(scene, c.node, c.beforePhysics);
+            tour::transformhierarchy::SetPhysicsBody(scene, c.node, c.beforePhysics);
         else
-            tour::scene::RemovePhysicsBody(scene, c.node);
+            tour::transformhierarchy::RemovePhysicsBody(scene, c.node);
         break;
     }
     case EditVerb::RemovePhysicsBodyVerb: {
         if (forward) {
-            if (const auto* row = tour::scene::FindPhysicsBody(scene, c.node)) {
+            if (const auto* row = tour::transformhierarchy::FindPhysicsBody(scene, c.node)) {
                 c.beforePhysicsBody = true;
                 c.beforePhysics = row->body;
-                tour::scene::RemovePhysicsBody(scene, c.node);
+                tour::transformhierarchy::RemovePhysicsBody(scene, c.node);
             } else
                 c.beforePhysicsBody = false;
         } else if (c.beforePhysicsBody)
-            tour::scene::SetPhysicsBody(scene, c.node, c.beforePhysics);
+            tour::transformhierarchy::SetPhysicsBody(scene, c.node, c.beforePhysics);
         break;
     }
     case EditVerb::SetPhysicsBodyAttr:
@@ -533,27 +534,28 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
     case EditVerb::AttachTriggerVolume: {
         if (forward) {
             c.beforeTriggerVolume = false;
-            if (const auto* row = tour::scene::FindTriggerVolume(scene, c.node)) {
+            if (const auto* row = tour::transformhierarchy::FindTriggerVolume(scene, c.node)) {
                 c.beforeTriggerVolume = true;
                 c.beforeTrigger = row->trigger;
             }
-            tour::scene::SetTriggerVolume(scene, c.node, tour::scene::SceneTriggerVolume{});
+            tour::transformhierarchy::SetTriggerVolume(
+                scene, c.node, tour::transformhierarchy::SceneTriggerVolume{});
         } else if (c.beforeTriggerVolume)
-            tour::scene::SetTriggerVolume(scene, c.node, c.beforeTrigger);
+            tour::transformhierarchy::SetTriggerVolume(scene, c.node, c.beforeTrigger);
         else
-            tour::scene::RemoveTriggerVolume(scene, c.node);
+            tour::transformhierarchy::RemoveTriggerVolume(scene, c.node);
         break;
     }
     case EditVerb::RemoveTriggerVolumeVerb: {
         if (forward) {
             c.beforeTriggerVolume = false;
-            if (const auto* row = tour::scene::FindTriggerVolume(scene, c.node)) {
+            if (const auto* row = tour::transformhierarchy::FindTriggerVolume(scene, c.node)) {
                 c.beforeTriggerVolume = true;
                 c.beforeTrigger = row->trigger;
-                tour::scene::RemoveTriggerVolume(scene, c.node);
+                tour::transformhierarchy::RemoveTriggerVolume(scene, c.node);
             }
         } else if (c.beforeTriggerVolume)
-            tour::scene::SetTriggerVolume(scene, c.node, c.beforeTrigger);
+            tour::transformhierarchy::SetTriggerVolume(scene, c.node, c.beforeTrigger);
         break;
     }
     case EditVerb::SetTriggerVolumeAttr: {
@@ -720,31 +722,32 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
             // Capture any existing row for the exact undo (idempotent
             // capture — LIFO discipline keeps it correct on redo).
             c.beforeAudioRoom = false;
-            if (const auto* row = tour::scene::FindAudioRoom(scene, c.node)) {
+            if (const auto* row = tour::transformhierarchy::FindAudioRoom(scene, c.node)) {
                 c.beforeAudioRoom = true;
                 c.beforeRoom = row->room;
             }
-            tour::scene::SetAudioRoom(scene, c.node, tour::scene::SceneAudioRoom{});
+            tour::transformhierarchy::SetAudioRoom(
+                scene, c.node, tour::transformhierarchy::SceneAudioRoom{});
         } else {
             // Exact inverse: restore the captured row, or drop the row
             // the attach created.
             if (c.beforeAudioRoom)
-                tour::scene::SetAudioRoom(scene, c.node, c.beforeRoom);
+                tour::transformhierarchy::SetAudioRoom(scene, c.node, c.beforeRoom);
             else
-                tour::scene::RemoveAudioRoom(scene, c.node);
+                tour::transformhierarchy::RemoveAudioRoom(scene, c.node);
         }
         break;
     }
     case EditVerb::RemoveAudioRoomVerb: {
         if (forward) {
             c.beforeAudioRoom = false;
-            if (const auto* row = tour::scene::FindAudioRoom(scene, c.node)) {
+            if (const auto* row = tour::transformhierarchy::FindAudioRoom(scene, c.node)) {
                 c.beforeAudioRoom = true;
                 c.beforeRoom = row->room;
-                tour::scene::RemoveAudioRoom(scene, c.node);
+                tour::transformhierarchy::RemoveAudioRoom(scene, c.node);
             }
         } else if (c.beforeAudioRoom) {
-            tour::scene::SetAudioRoom(scene, c.node, c.beforeRoom);
+            tour::transformhierarchy::SetAudioRoom(scene, c.node, c.beforeRoom);
         }
         break;
     }
@@ -1007,7 +1010,7 @@ int EditorApp::CreatedAudioRoomIndex(uint32_t worldNode) const {
         const EditCmd& h = m_history[i];
         if (h.verb != EditVerb::CreateAudioRoom)
             continue;
-        if (!m_world || tour::scene::FindAudioRoom(m_world->scene, h.node) == nullptr)
+        if (!m_world || tour::transformhierarchy::FindAudioRoom(m_world->scene, h.node) == nullptr)
             continue; // deleted (tombstoned): not in the file's ref space
         if (!CreateCmdEmitsInTour(*this, h))
             continue; // emission dropped (parent unresolvable)
@@ -1133,7 +1136,7 @@ bool EditorApp::CreateCmdEmitsInTour(const EditorApp& app, const EditCmd& h) {
     // recorded creation-time parent.
     if (!app.m_world)
         return false;
-    const Scene& scene = app.m_world->scene;
+    const TransformHierarchy& scene = app.m_world->scene;
     const uint32_t created = h.node;
     if (created == UINT32_MAX || created >= scene.hierarchy.size())
         return false;
@@ -1193,7 +1196,7 @@ uint32_t EditorApp::CreateEmitParent(const EditorApp& app, const EditCmd& h) {
     // own no cluster id — their Parent lines could never persist).
     if (!app.m_world)
         return UINT32_MAX;
-    const Scene& scene = app.m_world->scene;
+    const TransformHierarchy& scene = app.m_world->scene;
     if (h.node == UINT32_MAX || h.node >= scene.hierarchy.size())
         return UINT32_MAX;
     const int p = scene.hierarchy[h.node].parent;
@@ -1220,7 +1223,7 @@ bool EditorApp::IsCreatedChild(const EditorApp& app, uint32_t childNode) {
 bool EditorApp::ParentResolvesInTour(const EditorApp& app, uint32_t parentSlot) {
     if (!app.m_world)
         return false;
-    const Scene& scene = app.m_world->scene;
+    const TransformHierarchy& scene = app.m_world->scene;
     if (parentSlot == UINT32_MAX || parentSlot >= scene.hierarchy.size())
         return false;
     if (parentSlot == 0)
@@ -1355,7 +1358,7 @@ void EditorApp::DraftCreateAudioSource() {
     Do(c);
 }
 
-bool EditorApp::IsLocatorNode(const Scene& scene, uint32_t node) {
+bool EditorApp::IsLocatorNode(const TransformHierarchy& scene, uint32_t node) {
     // The "locator" definition: a bare transform — no type link of any
     // kind. This is the INVERSE of the contains-chain the outliner uses
     // for tags; it catches editor-created locators, imported glTF empty
@@ -1373,7 +1376,7 @@ bool EditorApp::IsLocatorNode(const Scene& scene, uint32_t node) {
         return false;
     if (FindAudioSource(scene, node) != nullptr)
         return false; // a typed audio-source node, not a bare anchor
-    if (tour::scene::FindAudioRoom(scene, node) != nullptr)
+    if (tour::transformhierarchy::FindAudioRoom(scene, node) != nullptr)
         return false; // a typed audio-room node, not a bare anchor
     if (FindDecal(scene, node) != nullptr)
         return false;
@@ -1484,7 +1487,7 @@ void EditorApp::DraftCreateLocator() {
 void EditorApp::ExecCreateLight(EditCmd& c) {
     if (!m_world)
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     uint32_t parent = c.node2;
     if (parent == UINT32_MAX || parent >= scene.hierarchy.size())
         parent = DefaultCreateParent();
@@ -1546,7 +1549,7 @@ void EditorApp::ExecCreateLight(EditCmd& c) {
 void EditorApp::RetireCreatedNode(uint32_t n) {
     if (!m_world || n == UINT32_MAX || n >= m_world->scene.hierarchy.size())
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     if (!IsNodeAlive(scene, n))
         return; // already retired (double undo): no-op
     const int p = scene.hierarchy[n].parent;
@@ -1577,7 +1580,7 @@ void EditorApp::RetireCreatedNode(uint32_t n) {
 void EditorApp::ExecUncreateLight(EditCmd& c) {
     if (!m_world)
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     const uint32_t n = c.node;
     if (n == UINT32_MAX || n >= scene.hierarchy.size())
         return;
@@ -1627,7 +1630,7 @@ void EditorApp::ExecUncreateLight(EditCmd& c) {
 void EditorApp::ExecCreateCamera(EditCmd& c) {
     if (!m_world)
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     uint32_t parent = c.node2;
     if (parent == UINT32_MAX || parent >= scene.hierarchy.size())
         parent = DefaultCreateParent();
@@ -1680,7 +1683,7 @@ void EditorApp::ExecCreateCamera(EditCmd& c) {
 void EditorApp::ExecUncreateCamera(EditCmd& c) {
     if (!m_world)
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     const uint32_t n = c.node;
     if (n == UINT32_MAX || n >= scene.hierarchy.size())
         return;
@@ -1733,7 +1736,7 @@ void EditorApp::ExecUncreateCamera(EditCmd& c) {
 void EditorApp::ExecCreateAudioSource(EditCmd& c) {
     if (!m_world)
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     uint32_t parent = c.node2;
     if (parent == UINT32_MAX || parent >= scene.hierarchy.size())
         parent = DefaultCreateParent();
@@ -1778,7 +1781,7 @@ void EditorApp::ExecCreateAudioSource(EditCmd& c) {
 void EditorApp::ExecUncreateAudioSource(EditCmd& c) {
     if (!m_world)
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     const uint32_t n = c.node;
     if (n == UINT32_MAX || n >= scene.hierarchy.size())
         return;
@@ -1833,7 +1836,7 @@ void EditorApp::DraftCreateAudioRoom() {
 void EditorApp::ExecCreateAudioRoom(EditCmd& c) {
     if (!m_world)
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     uint32_t parent = c.node2;
     if (parent == UINT32_MAX || parent >= scene.hierarchy.size())
         parent = DefaultCreateParent();
@@ -1856,12 +1859,12 @@ void EditorApp::ExecCreateAudioRoom(EditCmd& c) {
     // Inline payload: the DEFAULT SceneAudioRoom, or — when
     // DuplicateSelection seeded roomDupFrom — the source node's LIVE
     // payload.
-    tour::scene::SceneAudioRoom payload{};
+    tour::transformhierarchy::SceneAudioRoom payload{};
     if (c.roomDupFrom != UINT32_MAX && c.roomDupFrom < scene.hierarchy.size()) {
-        if (const auto* src = tour::scene::FindAudioRoom(scene, c.roomDupFrom))
+        if (const auto* src = tour::transformhierarchy::FindAudioRoom(scene, c.roomDupFrom))
             payload = src->room;
     }
-    tour::scene::SetAudioRoom(scene, uint32_t(created), payload);
+    tour::transformhierarchy::SetAudioRoom(scene, uint32_t(created), payload);
     if (m_replayingTour)
         m_tourCreatedAudioRoomNodes.push_back(uint32_t(created));
     markAsChanged(scene, created);
@@ -1876,18 +1879,18 @@ void EditorApp::ExecCreateAudioRoom(EditCmd& c) {
 void EditorApp::ExecUncreateAudioRoom(EditCmd& c) {
     if (!m_world)
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     const uint32_t n = c.node;
     if (n == UINT32_MAX || n >= scene.hierarchy.size())
         return;
     const bool childless = scene.hierarchy[n].firstChild < 0;
     if (childless) {
-        tour::scene::RemoveAudioRoom(scene, n);
+        tour::transformhierarchy::RemoveAudioRoom(scene, n);
         RetireCreatedNode(n);
         Log("Undid audio room creation (#" + std::to_string(n) + "; slot retired, ids stable).");
     } else {
         MarkHidden(scene, int(n));
-        tour::scene::RemoveAudioRoom(scene, n);
+        tour::transformhierarchy::RemoveAudioRoom(scene, n);
         Log("Undid audio room creation (#" + std::to_string(n) +
             "): hidden, ids kept stable (payload retained in the command).");
     }
@@ -1934,7 +1937,7 @@ void EditorApp::DraftCreateGiVolume() {
 void EditorApp::ExecCreateGiVolume(EditCmd& c) {
     if (!m_world)
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     uint32_t parent = c.node2;
     if (parent == UINT32_MAX || parent >= scene.hierarchy.size())
         parent = DefaultCreateParent();
@@ -1978,7 +1981,7 @@ void EditorApp::ExecCreateGiVolume(EditCmd& c) {
 void EditorApp::ExecUncreateGiVolume(EditCmd& c) {
     if (!m_world)
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     const uint32_t n = c.node;
     if (n == UINT32_MAX || n >= scene.hierarchy.size())
         return;
@@ -2014,7 +2017,7 @@ void EditorApp::ExecUncreateGiVolume(EditCmd& c) {
 uint32_t EditorApp::FindExportSettingsNode() const {
     if (!m_world)
         return UINT32_MAX;
-    const Scene& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->scene;
     // The FIRST in node id order = THE one (the singleton rule; the
     // auto-seed keeps it at exactly one — duplicates only via hand
     // edits or referenced scenes, first wins like every consumer).
@@ -2036,7 +2039,7 @@ const SceneExportSettings& EditorApp::ExportCfg() const {
     static const SceneExportSettings kDefaults{};
     if (!m_world)
         return kDefaults;
-    const Scene& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->scene;
     const uint32_t n = FindExportSettingsNode();
     if (n == UINT32_MAX)
         return kDefaults;
@@ -2072,7 +2075,7 @@ void EditorApp::DraftCreateExportSettings() {
 void EditorApp::ExecCreateExportSettings(EditCmd& c) {
     if (!m_world)
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     uint32_t parent = c.node2;
     if (parent == UINT32_MAX || parent >= scene.hierarchy.size())
         parent = DefaultCreateParent();
@@ -2104,7 +2107,7 @@ void EditorApp::ExecCreateExportSettings(EditCmd& c) {
 void EditorApp::ExecUncreateExportSettings(EditCmd& c) {
     if (!m_world)
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     const uint32_t n = c.node;
     if (n == UINT32_MAX || n >= scene.hierarchy.size())
         return;
@@ -2135,7 +2138,7 @@ bool EditorApp::ReadNodeExportAttr(uint32_t node,
     text.clear();
     if (!m_world || node >= m_world->scene.hierarchy.size())
         return false;
-    const Scene& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->scene;
     auto it = FindExport(scene, node);
     if (!it)
         return false;
@@ -2209,7 +2212,7 @@ bool EditorApp::WriteNodeExportAttr(uint32_t node,
                                     const std::string& text) {
     if (!m_world || node >= m_world->scene.hierarchy.size())
         return false;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     auto it = FindExport(scene, node);
     if (!it)
         return false;
@@ -2294,7 +2297,7 @@ void EditorApp::DraftCreateCubemap() {
 void EditorApp::ExecCreateCubemap(EditCmd& c) {
     if (!m_world)
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     uint32_t parent = c.node2;
     if (parent == UINT32_MAX || parent >= scene.hierarchy.size())
         parent = DefaultCreateParent();
@@ -2331,7 +2334,7 @@ void EditorApp::ExecCreateCubemap(EditCmd& c) {
 void EditorApp::ExecUncreateCubemap(EditCmd& c) {
     if (!m_world)
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     const uint32_t n = c.node;
     if (n == UINT32_MAX || n >= scene.hierarchy.size())
         return;
@@ -2367,7 +2370,7 @@ void EditorApp::ExecUncreateCubemap(EditCmd& c) {
 void EditorApp::ExecDelete(EditCmd& c) {
     if (!m_world)
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     const uint32_t n = c.node;
     if (n == UINT32_MAX || n == 0 || n >= scene.hierarchy.size())
         return; // 0 = scene root: never a delete target
@@ -2443,15 +2446,15 @@ void EditorApp::ExecDelete(EditCmd& c) {
             c.beforeAudio = auit->source;
         // Audio-room row: the same whole-value capture (the room is
         // inline like the source).
-        if (const auto* aroom = tour::scene::FindAudioRoom(scene, n)) {
+        if (const auto* aroom = tour::transformhierarchy::FindAudioRoom(scene, n)) {
             c.beforeAudioRoom = true;
             c.beforeRoom = aroom->room;
         }
-        if (const auto* physics = tour::scene::FindPhysicsBody(scene, n)) {
+        if (const auto* physics = tour::transformhierarchy::FindPhysicsBody(scene, n)) {
             c.beforePhysicsBody = true;
             c.beforePhysics = physics->body;
         }
-        if (const auto* trigger = tour::scene::FindTriggerVolume(scene, n)) {
+        if (const auto* trigger = tour::transformhierarchy::FindTriggerVolume(scene, n)) {
             c.beforeTriggerVolume = true;
             c.beforeTrigger = trigger->trigger;
         }
@@ -2480,9 +2483,9 @@ void EditorApp::ExecDelete(EditCmd& c) {
         RemoveCubemap(scene, id);
         RemoveCamera(scene, id);
         RemoveAudioSource(scene, id);
-        tour::scene::RemoveAudioRoom(scene, id);
-        tour::scene::RemoveTriggerVolume(scene, id);
-        tour::scene::RemovePhysicsBody(scene, id);
+        tour::transformhierarchy::RemoveAudioRoom(scene, id);
+        tour::transformhierarchy::RemoveTriggerVolume(scene, id);
+        tour::transformhierarchy::RemovePhysicsBody(scene, id);
         m_deletedNodes.insert(id);
         for (size_t i = m_world->drawItems.size(); i-- > 0;)
             if (m_world->drawItems[i].node == id) {
@@ -2500,7 +2503,7 @@ void EditorApp::ExecDelete(EditCmd& c) {
 void EditorApp::ExecUndelete(EditCmd& c) {
     if (!m_world)
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     const uint32_t n = c.node;
     if (n == UINT32_MAX || n >= scene.hierarchy.size())
         return;
@@ -2543,11 +2546,11 @@ void EditorApp::ExecUndelete(EditCmd& c) {
     if (c.beforeAudioSource)
         SetAudioSource(scene, n, c.beforeAudio);
     if (c.beforeAudioRoom)
-        tour::scene::SetAudioRoom(scene, n, c.beforeRoom);
+        tour::transformhierarchy::SetAudioRoom(scene, n, c.beforeRoom);
     if (c.beforeTriggerVolume)
-        tour::scene::SetTriggerVolume(scene, n, c.beforeTrigger);
+        tour::transformhierarchy::SetTriggerVolume(scene, n, c.beforeTrigger);
     if (c.beforePhysicsBody)
-        tour::scene::SetPhysicsBody(scene, n, c.beforePhysics);
+        tour::transformhierarchy::SetPhysicsBody(scene, n, c.beforePhysics);
     std::vector<size_t> order;
     for (size_t k = 0; k + 4 < c.delDrawItems.size(); k += 5)
         order.push_back(k);
@@ -2789,7 +2792,7 @@ void EditorApp::DuplicateSelection() {
             c.afterText = name;
             c.afterVec = tr;
             c.audioDupFrom = t;
-        } else if (tour::scene::FindAudioRoom(m_world->scene, t) != nullptr) {
+        } else if (tour::transformhierarchy::FindAudioRoom(m_world->scene, t) != nullptr) {
             // Audio room: the inline-payload duplicate (audioDupFrom's twin,
             // roomDupFrom seeds the LIVE row copy).
             c.verb = EditVerb::CreateAudioRoom;
@@ -2870,7 +2873,7 @@ void EditorApp::DuplicateSelection() {
 void EditorApp::ExecCreateTransform(EditCmd& c) {
     if (!m_world)
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     uint32_t parent = c.node2;
     if (parent == UINT32_MAX || parent >= scene.hierarchy.size())
         parent = DefaultCreateParent();
@@ -2903,7 +2906,7 @@ void EditorApp::ExecCreateTransform(EditCmd& c) {
 void EditorApp::ExecUncreateTransform(EditCmd& c) {
     if (!m_world)
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     const uint32_t n = c.node;
     if (n == UINT32_MAX || n >= scene.hierarchy.size())
         return;
@@ -2989,7 +2992,7 @@ bool EditorApp::WriteNodeLightAttr(uint32_t node,
                                    const std::string& text) {
     if (!m_world)
         return false;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     if (attr == "receiverMask") {
         if (node >= scene.hierarchy.size())
             return false;
@@ -3070,7 +3073,7 @@ bool EditorApp::ReadNodePhysicsBodyAttr(uint32_t node,
     flag = false;
     if (!m_world)
         return false;
-    const auto* row = tour::scene::FindPhysicsBody(m_world->scene, node);
+    const auto* row = tour::transformhierarchy::FindPhysicsBody(m_world->scene, node);
     if (!row)
         return false;
     const auto& b = row->body;
@@ -3106,7 +3109,7 @@ bool EditorApp::WriteNodePhysicsBodyAttr(uint32_t node,
                                          bool flag) {
     if (!m_world)
         return false;
-    auto* row = tour::scene::FindPhysicsBody(m_world->scene, node);
+    auto* row = tour::transformhierarchy::FindPhysicsBody(m_world->scene, node);
     if (!row || !std::isfinite(number))
         return false;
     auto& b = row->body;
@@ -3147,7 +3150,7 @@ bool EditorApp::ReadNodeTriggerVolumeAttr(uint32_t node,
     text.clear();
     if (!m_world)
         return false;
-    const auto* row = tour::scene::FindTriggerVolume(m_world->scene, node);
+    const auto* row = tour::transformhierarchy::FindTriggerVolume(m_world->scene, node);
     if (!row)
         return false;
     if (attr == "enabled")
@@ -3167,7 +3170,7 @@ bool EditorApp::WriteNodeTriggerVolumeAttr(uint32_t node,
                                            const std::string& text) {
     if (!m_world)
         return false;
-    auto* row = tour::scene::FindTriggerVolume(m_world->scene, node);
+    auto* row = tour::transformhierarchy::FindTriggerVolume(m_world->scene, node);
     if (!row)
         return false;
     if (attr == "enabled")
@@ -3191,7 +3194,7 @@ bool EditorApp::ReadNodeGiVolumeAttr(uint32_t node,
     text.clear();
     if (!m_world || node >= m_world->scene.hierarchy.size())
         return false;
-    const Scene& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->scene;
     auto it = FindGiVolume(scene, node);
     if (!it)
         return false;
@@ -3231,7 +3234,7 @@ bool EditorApp::WriteNodeGiVolumeAttr(uint32_t node,
                                       const std::string& text) {
     if (!m_world || node >= m_world->scene.hierarchy.size())
         return false;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     auto it = FindGiVolume(scene, node);
     if (!it)
         return false;
@@ -3283,7 +3286,7 @@ bool EditorApp::GiVolumeOBB(uint32_t node,
                             glm::vec3& half) const {
     if (!m_world || node >= m_world->scene.hierarchy.size())
         return false;
-    const Scene& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->scene;
     if (!FindGiVolume(scene, node))
         return false;
     if (node >= scene.globalTransform.size())
@@ -3342,7 +3345,7 @@ bool EditorApp::ReadNodeCubemapAttr(uint32_t node,
     text.clear();
     if (!m_world || node >= m_world->scene.hierarchy.size())
         return false;
-    const Scene& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->scene;
     auto it = FindCubemap(scene, node);
     if (!it)
         return false;
@@ -3368,7 +3371,7 @@ bool EditorApp::WriteNodeCubemapAttr(uint32_t node,
                                      const std::string& text) {
     if (!m_world || node >= m_world->scene.hierarchy.size())
         return false;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     auto it = FindCubemap(scene, node);
     if (!it)
         return false;
@@ -3434,7 +3437,7 @@ bool EditorApp::WriteNodeCameraAttr(uint32_t node,
                                     const std::string& text) {
     if (!m_world)
         return false;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     auto cit = FindCamera(scene, node);
     if (!cit || cit->camera >= m_world->cameraLocations.size())
         return false;
@@ -3495,7 +3498,7 @@ bool EditorApp::ReadNodeAudioSourceAttr(uint32_t node,
     text.clear();
     if (!m_world || node >= m_world->scene.hierarchy.size())
         return false;
-    const Scene& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->scene;
     const AudioSourceRow* row = FindAudioSource(scene, node);
     if (!row)
         return false;
@@ -3532,7 +3535,7 @@ bool EditorApp::WriteNodeAudioSourceAttr(uint32_t node,
                                          const std::string& text) {
     if (!m_world || node >= m_world->scene.hierarchy.size())
         return false;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     AudioSourceRow* row = FindAudioSource(scene, node);
     if (!row)
         return false;
@@ -3585,11 +3588,12 @@ bool EditorApp::ReadNodeAudioRoomAttr(uint32_t node,
     text.clear();
     if (!m_world || node >= m_world->scene.hierarchy.size())
         return false;
-    const Scene& scene = m_world->scene;
-    const tour::scene::AudioRoomRow* row = tour::scene::FindAudioRoom(scene, node);
+    const TransformHierarchy& scene = m_world->scene;
+    const tour::transformhierarchy::AudioRoomRow* row =
+        tour::transformhierarchy::FindAudioRoom(scene, node);
     if (!row)
         return false;
-    const tour::scene::SceneAudioRoom& def = row->room;
+    const tour::transformhierarchy::SceneAudioRoom& def = row->room;
     if (attr == "enabled") {
         flag = def.enabled;
     } else if (attr == "priority") {
@@ -3631,11 +3635,12 @@ bool EditorApp::WriteNodeAudioRoomAttr(uint32_t node,
                                        const std::string& text) {
     if (!m_world || node >= m_world->scene.hierarchy.size())
         return false;
-    Scene& scene = m_world->scene;
-    tour::scene::AudioRoomRow* row = tour::scene::FindAudioRoom(scene, node);
+    TransformHierarchy& scene = m_world->scene;
+    tour::transformhierarchy::AudioRoomRow* row =
+        tour::transformhierarchy::FindAudioRoom(scene, node);
     if (!row)
         return false;
-    tour::scene::SceneAudioRoom& def = row->room;
+    tour::transformhierarchy::SceneAudioRoom& def = row->room;
     if (attr == "enabled") {
         def.enabled = flag;
     } else if (attr == "priority") {
@@ -3689,7 +3694,7 @@ void EditorApp::AddNodeAudioSound(uint32_t node,
     // window (the tour parser enforces the same).
     if (!m_world)
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     AudioSourceRow* row = FindAudioSource(scene, node);
     if (!row)
         return;
@@ -3714,7 +3719,7 @@ bool EditorApp::RemoveNodeAudioSound(uint32_t node,
     // False when no such slot existed (a no-op remove).
     if (!m_world)
         return false;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     AudioSourceRow* row = FindAudioSource(scene, node);
     if (!row)
         return false;
@@ -4168,7 +4173,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c, smvk::tour::Co
     auto parentRefFor = [&](uint32_t worldParent) {
         if (!app.m_world || worldParent >= app.m_world->scene.hierarchy.size())
             return std::string();
-        const Scene& scene = app.m_world->scene;
+        const TransformHierarchy& scene = app.m_world->scene;
         const std::string nm = getNodeName(scene, int(worldParent));
         if (!nm.empty()) {
             const std::string p = smvk::tour::DagShortestUniquePath(scene, worldParent);
@@ -4848,7 +4853,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c, smvk::tour::Co
         const uint32_t created = c.node;
         if (created == UINT32_MAX || created >= app.m_world->scene.hierarchy.size())
             return false;
-        if (tour::scene::FindAudioRoom(app.m_world->scene, created) == nullptr)
+        if (tour::transformhierarchy::FindAudioRoom(app.m_world->scene, created) == nullptr)
             return false; // detached (tombstoned): nothing to persist
         if (app.m_deletedNodes.contains(created))
             return false;
@@ -5331,7 +5336,7 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget, bool allowE
     // kept). Covers Delete targets AND symbolic parent targets (a
     // parent addressed by uuid must exist in the file) — named parents
     // resolve by name and need nothing.
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     auto held = [&](const std::string& hex, uint32_t except) {
         for (uint32_t n = 0; n < scene.metadata.size(); ++n) {
             const std::string& u = scene.metadata[n].uuid;
@@ -5679,7 +5684,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
     // lane is tc.parentRef).
     auto resolveTarget = [&](const smvk::tour::Command& tc, uint32_t& worldNode) -> bool {
         if (!tc.uuid.empty()) {
-            const Scene& ws = app.m_world->scene;
+            const TransformHierarchy& ws = app.m_world->scene;
             for (uint32_t n = 0; n < ws.metadata.size(); ++n)
                 if (n < ws.hierarchy.size() && ws.metadata[n].uuid == tc.uuid) {
                     worldNode = n;
@@ -6363,7 +6368,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
         }
         if (target == UINT32_MAX || target >= app.m_world->scene.hierarchy.size())
             return false;
-        if (tour::scene::FindAudioRoom(app.m_world->scene, target) == nullptr)
+        if (tour::transformhierarchy::FindAudioRoom(app.m_world->scene, target) == nullptr)
             return false; // not an audio room: orphan, preserved verbatim
         out.verb = EditVerb::SetAudioRoomAttr;
         out.node = target;
@@ -6399,7 +6404,8 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
             target = nodes[k];
         } else
             target = app.PageToWorld(tc.node);
-        if (target == UINT32_MAX || !tour::scene::FindPhysicsBody(app.m_world->scene, target))
+        if (target == UINT32_MAX ||
+            !tour::transformhierarchy::FindPhysicsBody(app.m_world->scene, target))
             return false;
         out.verb = EditVerb::SetPhysicsBodyAttr;
         out.node = target;
@@ -6426,7 +6432,8 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
             target = nodes[k];
         } else
             target = app.PageToWorld(tc.node);
-        if (target == UINT32_MAX || !tour::scene::FindTriggerVolume(app.m_world->scene, target))
+        if (target == UINT32_MAX ||
+            !tour::transformhierarchy::FindTriggerVolume(app.m_world->scene, target))
             return false;
         out.verb = EditVerb::SetTriggerVolumeAttr;
         out.node = target;
@@ -6969,7 +6976,7 @@ bool EditorApp::RebuildTerrainTiles(uint32_t groupNode,
     if (it == m_terrainGroups.end() || !m_world)
         return false;
     TerrainGroup& g = it->second;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     std::vector<uint32_t> touched;
     smvk::placement::TerrainBrushTouchedTiles(
         x0, x1, z0, z1, g.data.heights.width, g.data.tilesX, g.data.tilesZ, touched);
@@ -7012,7 +7019,7 @@ bool EditorApp::RebuildTerrainTiles(uint32_t groupNode,
 void EditorApp::ExecCreateTerrain(EditCmd& c) {
     if (!m_world || m_world->pages.empty() || !m_world->pages[0])
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     // Parent rides beforeParent (node2 packs the tile split). The draft
     // resolves it pre-execution; undo/replay read it back untouched.
     uint32_t parentNode = c.beforeParent;
@@ -7120,7 +7127,7 @@ void EditorApp::ExecCreateTerrain(EditCmd& c) {
 void EditorApp::ExecUncreateTerrain(EditCmd& c) {
     if (!m_world)
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     const uint32_t n = c.node;
     if (n == UINT32_MAX || n >= scene.hierarchy.size())
         return;

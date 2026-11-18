@@ -53,7 +53,7 @@ struct StaticMergeResult {
 
 // Collects renderable static nodes (staticNode != 0 && a mesh row present).
 // NOTE: Scene lives in the global namespace (see Scene/scene.h).
-std::vector<uint32_t> CollectStaticRenderNodes(const ::Scene& scene);
+std::vector<uint32_t> CollectStaticRenderNodes(const ::TransformHierarchy& scene);
 
 // Bakes globals (caller should have fresh globalTransform) and merges every
 // static renderable node, grouped by material pool index. Requires retained

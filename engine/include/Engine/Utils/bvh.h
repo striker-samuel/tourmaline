@@ -209,7 +209,7 @@ using MeshFromIndexFunc = std::function<smvk::StaticMesh(uint32_t meshIndex)>;
 // Return false to exclude a node (e.g. static/dynamic split).
 using BvhNodeFilter = std::function<bool(uint32_t node)>;
 
-inline BvhTree treeFromScene(const Scene& scene,
+inline BvhTree treeFromScene(const TransformHierarchy& scene,
                              MeshFromIndexFunc meshFromMeshIndex,
                              BvhNodeFilter filter = {}) {
     BvhTree tree;
@@ -296,7 +296,8 @@ struct SplitBvh {
     BvhTree dynamic;
 };
 
-inline SplitBvh splitBvhFromScene(const Scene& scene, MeshFromIndexFunc meshFromMeshIndex) {
+inline SplitBvh splitBvhFromScene(const TransformHierarchy& scene,
+                                  MeshFromIndexFunc meshFromMeshIndex) {
     SplitBvh out;
     const bool hasStatic = scene.staticNode.size() == scene.hierarchy.size();
     auto isStatic = [&](uint32_t node) -> bool {

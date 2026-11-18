@@ -19,7 +19,7 @@
 #include <limits>
 #include <numeric>
 
-namespace tour::scene {
+namespace tour::transformhierarchy {
 
 [[noreturn]] void CrashNodeBudget(const char* stage, size_t requested, size_t budget) {
     std::fprintf(stderr,
@@ -32,7 +32,7 @@ namespace tour::scene {
     std::abort();
 }
 
-void Scene::ReserveNodeSlots(size_t slots) {
+void TransformHierarchy::ReserveNodeSlots(size_t slots) {
     if (!slots || slots >= kNodeSlotCountMax)
         CrashNodeBudget(
             "invalid startup budget (packed node slot limit)", slots, kNodeSlotCountMax - 1);
@@ -42,7 +42,7 @@ void Scene::ReserveNodeSlots(size_t slots) {
     ReserveNodeCapacity(slots);
 }
 
-void Scene::ReserveNodeCapacity(size_t slots) {
+void TransformHierarchy::ReserveNodeCapacity(size_t slots) {
     if (slots < hierarchy.size() || slots >= kNodeSlotCountMax)
         CrashNodeBudget("invalid scene capacity", slots, kNodeSlotCountMax - 1);
     // The three arena-flat node streams use the process linear allocation
@@ -76,9 +76,9 @@ void Scene::ReserveNodeCapacity(size_t slots) {
     gpuSceneGlobalChanges.reserve(slots);
 }
 
-void Scene::ResetForResolve() {
+void TransformHierarchy::ResetForResolve() {
     // Transfer capacity instead of throwing away the startup allocations.
-    Scene fresh;
+    TransformHierarchy fresh;
     fresh.nodeSlotBudget = nodeSlotBudget;
     fresh.hierarchy = std::move(hierarchy);
     fresh.hierarchy.clear();
@@ -121,7 +121,9 @@ void Scene::ResetForResolve() {
     *this = std::move(fresh);
 }
 
-std::string UniqueSiblingNodeName(const Scene& scene, int node, const std::string& requested) {
+std::string UniqueSiblingNodeName(const TransformHierarchy& scene,
+                                  int node,
+                                  const std::string& requested) {
     if (node < 0 || size_t(node) >= scene.hierarchy.size())
         return requested;
     const int parent = scene.hierarchy[size_t(node)].parent;
@@ -158,7 +160,7 @@ std::string UniqueSiblingNodeName(const Scene& scene, int node, const std::strin
     return requested;
 }
 
-int addNode(Scene& scene, int parent, int level, bool autoName) {
+int addNode(TransformHierarchy& scene, int parent, int level, bool autoName) {
     const int nodeCount = (int)scene.hierarchy.size();
     // Parent must be a LIVE slot (not just in range): a retired slot is
     // a hole — linking into it orphans the node silently in release.
@@ -197,7 +199,7 @@ int addNode(Scene& scene, int parent, int level, bool autoName) {
             scene.ditherCloseup[size_t(node)] = 0;
         if (scene.hidden.size() > size_t(node))
             scene.hidden[size_t(node)] = 0;
-        scene.hierarchy[size_t(node)] = Hierarchy{};
+        scene.hierarchy[size_t(node)] = NodeLinks{};
         if (scene.metadata.size() > size_t(node))
             scene.metadata[size_t(node)] = NodeMetadata{};
         if (scene.rowsForNode.size() > size_t(node))
@@ -275,7 +277,7 @@ int addNode(Scene& scene, int parent, int level, bool autoName) {
 
 // ---- stable node slots (Epoch 6b) ----------------------------------------
 
-uint32_t LiveNodeCount(const Scene& scene) {
+uint32_t LiveNodeCount(const TransformHierarchy& scene) {
     uint32_t live = 0;
     for (uint32_t s = 0; s < scene.hierarchy.size(); ++s)
         if (IsLiveSlot(scene, s))
@@ -283,7 +285,7 @@ uint32_t LiveNodeCount(const Scene& scene) {
     return live;
 }
 
-std::vector<uint32_t> BuildSlotToDenseMap(const Scene& scene) {
+std::vector<uint32_t> BuildSlotToDenseMap(const TransformHierarchy& scene) {
     std::vector<uint32_t> map(scene.hierarchy.size(), UINT32_MAX);
     uint32_t dense = 0;
     for (uint32_t s = 0; s < scene.hierarchy.size(); ++s)
@@ -292,16 +294,16 @@ std::vector<uint32_t> BuildSlotToDenseMap(const Scene& scene) {
     return map;
 }
 
-void UnlinkNodeFromParent(Scene& scene, int node) {
+void UnlinkNodeFromParent(TransformHierarchy& scene, int node) {
     if (node < 0 || (size_t)node >= scene.hierarchy.size())
         return;
-    Hierarchy& h = scene.hierarchy[size_t(node)];
+    NodeLinks& h = scene.hierarchy[size_t(node)];
     const int p = h.parent;
     if (p < 0 || (size_t)p >= scene.hierarchy.size()) {
         h.parent = -1;
         return;
     }
-    Hierarchy& hp = scene.hierarchy[size_t(p)];
+    NodeLinks& hp = scene.hierarchy[size_t(p)];
     if (hp.firstChild == node) {
         hp.firstChild = h.nextSibling;
     } else {
@@ -322,7 +324,7 @@ void UnlinkNodeFromParent(Scene& scene, int node) {
     h.nextSibling = -1;
 }
 
-void RetireNodeSlot(Scene& scene, NodeId node) {
+void RetireNodeSlot(TransformHierarchy& scene, NodeId node) {
     if (!IsNodeAlive(scene, node))
         return; // already retired (or never was): idempotent
     // Rows never outlive their node (the deletion discipline): drop every
@@ -350,7 +352,7 @@ void RetireNodeSlot(Scene& scene, NodeId node) {
     scene.globalTransform[size_t(node)] = glm::mat4(1.0f);
     // level = -1 marks the hole for debug dumps (tree walks can't reach
     // it — it is unlinked — but flat iteration reads it as "not a node").
-    scene.hierarchy[size_t(node)] = Hierarchy{.parent = -1, .level = -1};
+    scene.hierarchy[size_t(node)] = NodeLinks{.parent = -1, .level = -1};
     // Bump the generation (handles minted against the old life die here)
     // and push the slot to the free list. 12 bits: 4,096 lives per slot
     // before the counter wraps — see scene_node_id.h.
@@ -366,11 +368,11 @@ void RetireNodeSlot(Scene& scene, NodeId node) {
     scene.nodeFreeList.push_back(node);
 }
 
-bool SetLocalTransform(Scene& scene, NodeHandle handle, const glm::mat4& transform) {
+bool SetLocalTransform(TransformHierarchy& scene, NodeHandle handle, const glm::mat4& transform) {
     return SetLocalTransform(scene, handle, glm::dmat4(transform));
 }
 
-bool SetLocalTransform(Scene& scene, NodeHandle handle, const glm::dmat4& transform) {
+bool SetLocalTransform(TransformHierarchy& scene, NodeHandle handle, const glm::dmat4& transform) {
     if (!NodeHandleValid(scene, handle))
         return false;
     // Invalid transforms cannot be published safely to scene or GPU views.
@@ -405,7 +407,7 @@ bool SetLocalTransform(Scene& scene, NodeHandle handle, const glm::dmat4& transf
     return true;
 }
 
-void markAsChanged(Scene& scene, int node) {
+void markAsChanged(TransformHierarchy& scene, int node) {
     // Clamp to the fixed depth budget (changedAtThisFrame has MAX_NODE_LEVEL
     // slots): a source hierarchy deeper than the budget — Caldera's deep
     // instance chains — lumps into the last level instead of writing past
@@ -421,7 +423,7 @@ void markAsChanged(Scene& scene, int node) {
     }
 }
 
-void MarkAllRootsChanged(Scene& scene) {
+void MarkAllRootsChanged(TransformHierarchy& scene) {
     // See the header contract: every ROOT (parent == -1), not just node 0.
     // Retired slots reset to parent == -1 — they are holes, NOT roots; a
     // dead slot in the dirty set would be skipped by recalculate anyway,
@@ -432,7 +434,7 @@ void MarkAllRootsChanged(Scene& scene) {
     }
 }
 
-void markAsChangedDynamic(Scene& scene, int node) {
+void markAsChangedDynamic(TransformHierarchy& scene, int node) {
     // Frozen subtrees never re-enter the dirty set after the initial build.
     if (node >= 0 && (size_t)node < scene.staticNode.size() && scene.staticNode[(size_t)node] != 0)
         return;
@@ -450,7 +452,7 @@ void markAsChangedDynamic(Scene& scene, int node) {
     }
 }
 
-void RebuildStaticCache(Scene& scene) {
+void RebuildStaticCache(TransformHierarchy& scene) {
     scene.staticNode.assign(scene.hierarchy.size(), 0);
     if (scene.staticRoot.size() != scene.hierarchy.size())
         scene.staticRoot.assign(scene.hierarchy.size(), 0);
@@ -475,7 +477,7 @@ void RebuildStaticCache(Scene& scene) {
     }
 }
 
-void MarkSubtreeStatic(Scene& scene, int node) {
+void MarkSubtreeStatic(TransformHierarchy& scene, int node) {
     if (node < 0 || (size_t)node >= scene.hierarchy.size())
         return;
     if (scene.staticRoot.size() != scene.hierarchy.size())
@@ -484,14 +486,14 @@ void MarkSubtreeStatic(Scene& scene, int node) {
     RebuildStaticCache(scene);
 }
 
-void ClearSubtreeStatic(Scene& scene, int node) {
+void ClearSubtreeStatic(TransformHierarchy& scene, int node) {
     if (node < 0 || (size_t)node >= scene.staticRoot.size())
         return;
     scene.staticRoot[(size_t)node] = 0;
     RebuildStaticCache(scene);
 }
 
-int findNodeByName(const Scene& scene, const std::string& name) {
+int findNodeByName(const TransformHierarchy& scene, const std::string& name) {
     if (scene.namesStripped)
         return -1;
     // Extremely simple linear search without any hierarchy reference
@@ -513,7 +515,7 @@ void fprintfMat4(FILE* f, const glm::mat4& m);
 // CPU version of global transform update []
 // Defer one notification per node until the renderer consumes the journal.
 // This bounds pending entries even in long-running headless worlds.
-static void QueueGpuSceneGlobalChange(Scene& scene, uint32_t node) {
+static void QueueGpuSceneGlobalChange(TransformHierarchy& scene, uint32_t node) {
     if (scene.skipGpuSceneChangeJournal)
         return;
     if (scene.gpuSceneGlobalQueued.size() <= node)
@@ -524,7 +526,7 @@ static void QueueGpuSceneGlobalChange(Scene& scene, uint32_t node) {
     scene.gpuSceneGlobalChanges.push_back(node);
 }
 
-static void PrepareDoubleTransforms(Scene& scene) {
+static void PrepareDoubleTransforms(TransformHierarchy& scene) {
     const size_t count = scene.localTransform.size();
     const size_t oldLocal = scene.localTransformDouble.size();
     const size_t oldGlobal = scene.globalTransformDouble.size();
@@ -548,7 +550,7 @@ static void PrepareDoubleTransforms(Scene& scene) {
 // GPU high/low position scaffolding remain available for future use.
 static constexpr bool kCpuDoubleTransformComposition = false;
 
-static void ComposeDoubleTransform(Scene& scene, int c) {
+static void ComposeDoubleTransform(TransformHierarchy& scene, int c) {
     const size_t n = size_t(c);
     // Import legacy float mutations without quantizing unchanged double state.
     if (scene.localTransform[n] != scene.localTransformFloatShadow[n]) {
@@ -571,7 +573,7 @@ static void ComposeDoubleTransform(Scene& scene, int c) {
     }
 }
 
-glm::dmat4 GlobalTransformDouble(const Scene& scene, NodeId node) {
+glm::dmat4 GlobalTransformDouble(const TransformHierarchy& scene, NodeId node) {
     if (node < scene.globalTransformDouble.size() &&
         scene.globalTransformDouble.size() == scene.globalTransform.size())
         return scene.globalTransformDouble[node];
@@ -579,7 +581,7 @@ glm::dmat4 GlobalTransformDouble(const Scene& scene, NodeId node) {
                                                : glm::dmat4(1.0);
 }
 
-bool recalculateGlobalTransforms(Scene& scene) {
+bool recalculateGlobalTransforms(TransformHierarchy& scene) {
     PrepareDoubleTransforms(scene);
     bool wasUpdated = false;
 
@@ -617,7 +619,7 @@ bool recalculateGlobalTransforms(Scene& scene) {
     return wasUpdated;
 }
 
-bool recalculateGlobalTransformsDynamic(Scene& scene) {
+bool recalculateGlobalTransformsDynamic(TransformHierarchy& scene) {
     PrepareDoubleTransforms(scene);
     const bool hasStatic = scene.staticNode.size() == scene.hierarchy.size() &&
                            std::any_of(scene.staticNode.begin(),
@@ -666,7 +668,7 @@ bool recalculateGlobalTransformsDynamic(Scene& scene) {
 // u32 rowCount + pairs, routed through the table mutators (which
 // validate node range — a corrupt file's out-of-range rows drop
 // instead of materializing as garbage entries).
-void loadMeshRows(FILE* f, Scene& scene) {
+void loadMeshRows(FILE* f, TransformHierarchy& scene) {
     std::vector<uint32_t> ms;
     uint32_t count = 0;
     fread(&count, 1, sizeof(count), f);
@@ -676,7 +678,7 @@ void loadMeshRows(FILE* f, Scene& scene) {
         SetMesh(scene, ms[i * 2 + 0], ms[i * 2 + 1]);
 }
 
-void loadMaterialRows(FILE* f, Scene& scene) {
+void loadMaterialRows(FILE* f, TransformHierarchy& scene) {
     std::vector<uint32_t> ms;
     uint32_t count = 0;
     fread(&count, 1, sizeof(count), f);
@@ -687,7 +689,7 @@ void loadMaterialRows(FILE* f, Scene& scene) {
 }
 
 // The saveNameRows mirror (out-of-range nodes drop via the mutators).
-void loadNameRows(FILE* f, Scene& scene) {
+void loadNameRows(FILE* f, TransformHierarchy& scene) {
     std::vector<uint32_t> ms;
     uint32_t count = 0;
     fread(&count, 1, sizeof(count), f);
@@ -858,7 +860,7 @@ static bool ReadSceneDoubleMatrix(FILE* f, glm::dmat4& m) {
     return true;
 }
 
-void loadScene(const char* fileName, Scene& scene) {
+void loadScene(const char* fileName, TransformHierarchy& scene) {
     FILE* f = fopen(fileName, "rb");
     if (!f)
         return;
@@ -889,7 +891,7 @@ void loadScene(const char* fileName, Scene& scene) {
     // closed instead of partially replacing the current world.
     const long payloadStart = ftell(f);
     const uint64_t matrixBytes = hasDoubles ? 16u * sizeof(double) : sizeof(glm::mat4);
-    const uint64_t fixedBytes = uint64_t(sz) * (2u * matrixBytes + sizeof(Hierarchy));
+    const uint64_t fixedBytes = uint64_t(sz) * (2u * matrixBytes + sizeof(NodeLinks));
     if (payloadStart < 0 || fseek(f, 0, SEEK_END) != 0 || ftell(f) < 0 ||
         uint64_t(ftell(f) - payloadStart) < fixedBytes || fseek(f, payloadStart, SEEK_SET) != 0) {
         fclose(f);
@@ -946,7 +948,7 @@ void loadScene(const char* fileName, Scene& scene) {
             return;
         }
     }
-    if (fread(scene.hierarchy.data(), sizeof(Hierarchy), sz, f) != sz) {
+    if (fread(scene.hierarchy.data(), sizeof(NodeLinks), sz, f) != sz) {
         fclose(f);
         return;
     }
@@ -1107,7 +1109,9 @@ void loadScene(const char* fileName, Scene& scene) {
 // compaction map (the file stays DENSE — see BuildSlotToDenseMap);
 // rows pointing at retired slots drop (they cannot exist through the
 // mutators — belt and suspenders for hand-tampered scenes).
-void saveMeshRows(FILE* f, const Scene& scene, const std::vector<uint32_t>& slotToDense) {
+void saveMeshRows(FILE* f,
+                  const TransformHierarchy& scene,
+                  const std::vector<uint32_t>& slotToDense) {
     uint32_t count = 0;
     for (const MeshRow& row : scene.tables.meshes)
         if (row.node < slotToDense.size() && slotToDense[row.node] != UINT32_MAX)
@@ -1122,7 +1126,9 @@ void saveMeshRows(FILE* f, const Scene& scene, const std::vector<uint32_t>& slot
     }
 }
 
-void saveMaterialRows(FILE* f, const Scene& scene, const std::vector<uint32_t>& slotToDense) {
+void saveMaterialRows(FILE* f,
+                      const TransformHierarchy& scene,
+                      const std::vector<uint32_t>& slotToDense) {
     uint32_t count = 0;
     for (const MaterialRow& row : scene.tables.materials)
         if (row.node < slotToDense.size() && slotToDense[row.node] != UINT32_MAX)
@@ -1140,7 +1146,9 @@ void saveMaterialRows(FILE* f, const Scene& scene, const std::vector<uint32_t>& 
 // Node-name section (row-native, node-sorted for byte-stable saves):
 // u32 rowCount + (node, nodeNames index) pairs; UINT32_MAX name = skip
 // (should not occur — named nodes only).
-void saveNameRows(FILE* f, const Scene& scene, const std::vector<uint32_t>& slotToDense) {
+void saveNameRows(FILE* f,
+                  const TransformHierarchy& scene,
+                  const std::vector<uint32_t>& slotToDense) {
     std::vector<std::pair<uint32_t, uint32_t>> pairs;
     for (uint32_t n = 0; n < scene.metadata.size(); ++n)
         if (scene.metadata[n].name != 0xFFFFFFFFu && n < slotToDense.size() &&
@@ -1155,7 +1163,7 @@ void saveNameRows(FILE* f, const Scene& scene, const std::vector<uint32_t>& slot
     }
 }
 
-void saveScene(const char* fileName, const Scene& scene) {
+void saveScene(const char* fileName, const TransformHierarchy& scene) {
     FILE* f = fopen(fileName, "wb");
     if (!f)
         return;
@@ -1178,7 +1186,7 @@ void saveScene(const char* fileName, const Scene& scene) {
     {
         std::vector<glm::dmat4> local;
         std::vector<glm::dmat4> global;
-        std::vector<Hierarchy> hierarchy;
+        std::vector<NodeLinks> hierarchy;
         local.reserve(sz);
         global.reserve(sz);
         hierarchy.reserve(sz);
@@ -1201,8 +1209,8 @@ void saveScene(const char* fileName, const Scene& scene) {
             global.push_back(s < scene.globalTransformDouble.size()
                                  ? scene.globalTransformDouble[s]
                                  : glm::dmat4(scene.globalTransform[s]));
-            const Hierarchy& h = scene.hierarchy[s];
-            hierarchy.push_back(Hierarchy{
+            const NodeLinks& h = scene.hierarchy[s];
+            hierarchy.push_back(NodeLinks{
                 .parent = mapLink(h.parent),
                 .firstChild = mapLink(h.firstChild),
                 .nextSibling = mapLink(h.nextSibling),
@@ -1215,7 +1223,7 @@ void saveScene(const char* fileName, const Scene& scene) {
                 WriteSceneDoubleMatrix(f, m);
             for (const glm::dmat4& m : global)
                 WriteSceneDoubleMatrix(f, m);
-            fwrite(hierarchy.data(), sizeof(Hierarchy), sz, f);
+            fwrite(hierarchy.data(), sizeof(NodeLinks), sz, f);
         }
     }
 
@@ -1330,14 +1338,14 @@ void fprintfMat4(FILE* f, const glm::mat4& m) {
 
 // Zone half extents from the node's global transform columns (column
 // lengths). An INFINITE component = unbounded on that local axis.
-static inline void ZoneHalfExtents(const Scene& scene, NodeId zone, float out[3]) {
+static inline void ZoneHalfExtents(const TransformHierarchy& scene, NodeId zone, float out[3]) {
     const glm::mat4& g = scene.globalTransform[zone];
     out[0] = glm::length(glm::vec3(g[0]));
     out[1] = glm::length(glm::vec3(g[1]));
     out[2] = glm::length(glm::vec3(g[2]));
 }
 
-bool ZoneCovers(const Scene& scene, NodeId zone, const glm::vec3& p) {
+bool ZoneCovers(const TransformHierarchy& scene, NodeId zone, const glm::vec3& p) {
     if (zone >= scene.globalTransform.size())
         return false;
     // Disabled volumes cover nothing (Unreal bEnabled).
@@ -1395,13 +1403,13 @@ bool ZoneCovers(const Scene& scene, NodeId zone, const glm::vec3& p) {
     return true;
 }
 
-float ZonePriority(const Scene& scene, NodeId zone, const SceneEnv& env) {
+float ZonePriority(const TransformHierarchy& scene, NodeId zone, const SceneEnv& env) {
     if (const EnvVolumeRow* volRow = FindEnvVolume(scene, zone))
         return volRow->volume.priority;
     return env.zonePriority;
 }
 
-NodeId ZoneAtPosition(const Scene& scene, const glm::vec3& p) {
+NodeId ZoneAtPosition(const TransformHierarchy& scene, const glm::vec3& p) {
     NodeId best = UINT32_MAX;
     float bestPriority = 0.0f;
     double bestVolume = 0.0;
@@ -1446,7 +1454,7 @@ NodeId ZoneAtPosition(const Scene& scene, const glm::vec3& p) {
     return best;
 }
 
-void dumpTransforms(const char* fileName, const Scene& scene) {
+void dumpTransforms(const char* fileName, const TransformHierarchy& scene) {
     FILE* f = fopen(fileName, "a+");
     for (size_t i = 0; i < scene.localTransform.size(); i++) {
         fprintf(f, "Node[%d].localTransform: ", (int)i);
@@ -1462,7 +1470,7 @@ void dumpTransforms(const char* fileName, const Scene& scene) {
     fclose(f);
 }
 
-void printChangedNodes(const Scene& scene) {
+void printChangedNodes(const TransformHierarchy& scene) {
     for (int i = 0; i < MAX_NODE_LEVEL && (!scene.changedAtThisFrame[i].empty()); i++) {
         printf("Changed at level(%d):\n", i);
 
@@ -1490,8 +1498,8 @@ void printChangedNodes(const Scene& scene) {
   creating a "grid" of objects (or scenes) with the same material and mesh sets. For the second use
   case we need two flags: 'mergeMeshes' and 'mergeMaterials' to avoid shifting mesh indices
 */
-void mergeScenes(Scene& scene,
-                 const std::vector<Scene*>& scenes,
+void mergeScenes(TransformHierarchy& scene,
+                 const std::vector<TransformHierarchy*>& scenes,
                  const std::vector<glm::mat4>& rootTransforms,
                  const std::vector<uint32_t>& meshCounts,
                  bool mergeMeshes,
@@ -1553,7 +1561,7 @@ void mergeScenes(Scene& scene,
     // merge keeps them independent).
     std::vector<std::vector<NodeId>> srcRoots;
     srcRoots.reserve(scenes.size());
-    for (const Scene* s : scenes) {
+    for (const TransformHierarchy* s : scenes) {
         const uint32_t srcSlotCount = (uint32_t)s->hierarchy.size();
         nodeMap.assign(srcSlotCount, UINT32_MAX);
 
@@ -1600,8 +1608,8 @@ void mergeScenes(Scene& scene,
         for (uint32_t src = 0; src < srcSlotCount; ++src) {
             if (nodeMap[src] == UINT32_MAX)
                 continue;
-            Hierarchy& h = scene.hierarchy[nodeMap[src]];
-            const Hierarchy& sh = s->hierarchy[src];
+            NodeLinks& h = scene.hierarchy[nodeMap[src]];
+            const NodeLinks& sh = s->hierarchy[src];
             h.parent = mapLink(sh.parent);
             h.firstChild = mapLink(sh.firstChild);
             h.nextSibling = mapLink(sh.nextSibling);
@@ -1705,7 +1713,7 @@ void mergeScenes(Scene& scene,
     RebuildStaticCache(scene);
 }
 
-void dumpSceneToDot(const char* fileName, const Scene& scene, int* visited) {
+void dumpSceneToDot(const char* fileName, const TransformHierarchy& scene, int* visited) {
     FILE* f = fopen(fileName, "w");
     fprintf(f, "digraph G\n{\n");
     for (size_t i = 0; i < scene.globalTransform.size(); i++) {
@@ -1731,7 +1739,7 @@ void dumpSceneToDot(const char* fileName, const Scene& scene, int* visited) {
     fclose(f);
 }
 
-int getNodeLevel(const Scene& scene, int n) {
+int getNodeLevel(const TransformHierarchy& scene, int n) {
     int level = -1;
     for (int p = 0; p != -1; p = scene.hierarchy[p].parent, level++)
         ;
@@ -1754,14 +1762,16 @@ static void addUniqueIdx(std::vector<uint32_t>& v, uint32_t index) {
 }
 
 // Recurse down from a node and collect all nodes which are already marked for deletion
-static void collectNodesToDelete(const Scene& scene, int node, std::vector<uint32_t>& nodes) {
+static void collectNodesToDelete(const TransformHierarchy& scene,
+                                 int node,
+                                 std::vector<uint32_t>& nodes) {
     for (int n = scene.hierarchy[node].firstChild; n != -1; n = scene.hierarchy[n].nextSibling) {
         addUniqueIdx(nodes, n);
         collectNodesToDelete(scene, n, nodes);
     }
 }
 
-void deleteSceneNodes(Scene& scene, const std::vector<uint32_t>& nodesToDelete) {
+void deleteSceneNodes(TransformHierarchy& scene, const std::vector<uint32_t>& nodesToDelete) {
     // 0) Collect every subtree under the requested roots. The input is
     // normalized FIRST (sorted-unique — addUniqueIdx's binary_search and
     // the doomed-parent skip below both need it; the old code trusted
@@ -1814,4 +1824,4 @@ void deleteSceneNodes(Scene& scene, const std::vector<uint32_t>& nodesToDelete) 
     // the surviving table values' pool indices.
 }
 
-} // namespace tour::scene
+} // namespace tour::transformhierarchy

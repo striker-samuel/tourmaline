@@ -12,7 +12,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
-namespace tour::scene {
+namespace tour::transformhierarchy {
 
 inline bool TriggerContains(const SpatialVolumeBox& box, const glm::vec3& worldPos) {
     if (!box.Valid())
@@ -37,7 +37,7 @@ struct TriggerEvent {
 class TriggerVolumeTracker {
   public:
     template <typename Callback>
-    void Update(const Scene& scene,
+    void Update(const TransformHierarchy& scene,
                 uint64_t actorId,
                 const glm::vec3& worldPosition,
                 Callback&& onEvent) {
@@ -85,4 +85,4 @@ class TriggerVolumeTracker {
     std::unordered_map<uint64_t, std::unordered_set<NodeId>> fired_;
 };
 
-} // namespace tour::scene
+} // namespace tour::transformhierarchy

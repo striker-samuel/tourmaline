@@ -26,7 +26,7 @@
 // Node-local like SceneLight (no pool); resolved against
 // globalTransform[node] at use so parenting applies like meshes.
 
-namespace tour::scene {
+namespace tour::transformhierarchy {
 
 struct SceneGiVolume {
     uint32_t priority = 0;    // higher = composited later = wins
@@ -275,9 +275,9 @@ struct SceneTriggerVolume {
 // switch carry scene-unit values that read dark — re-author them.
 // Exposure 0.1..4, fog 0..1. Scene-attached like the other authored
 // node data below (givolume/cubemap): the resolved ACTIVE look lives in
-// Scene::environment; the default block + per-node alternatives live
+// TransformHierarchy::environment; the default block + per-node alternatives live
 // beside it; the "which block renders" selection stays editor view
-// state (like the active camera) and is resolved into Scene::environment.
+// state (like the active camera) and is resolved into TransformHierarchy::environment.
 struct SceneEnv {
     glm::vec3 skyColor{0.35f, 0.5f, 0.7f};
     float skyIntensity = 600.0f; // lux-scale (the runtime sky default)
@@ -332,21 +332,21 @@ struct SceneEnv {
 // Booleans are stored as 0/1 floats; enum values are stored numerically.
 inline constexpr int kSceneEnvFloatCount = 17;
 
-} // namespace tour::scene
+} // namespace tour::transformhierarchy
 
 // GLOBAL compat aliases (the migration bridge - retire with the call
 // sites; the boundary scanner guards against NEW globals, these are
 // the tracked pre-existing set).
-using tour::scene::AudioSoundRef;
-using tour::scene::EnvVolume;
-using tour::scene::kEnvInfNegX;
-using tour::scene::kEnvInfNegY;
-using tour::scene::kEnvInfNegZ;
-using tour::scene::kEnvInfPosX;
-using tour::scene::kEnvInfPosY;
-using tour::scene::kEnvInfPosZ;
-using tour::scene::kSceneEnvFloatCount;
-using tour::scene::SceneAudioSource;
-using tour::scene::SceneCubemap;
-using tour::scene::SceneExportSettings;
-using tour::scene::SceneGiVolume;
+using tour::transformhierarchy::AudioSoundRef;
+using tour::transformhierarchy::EnvVolume;
+using tour::transformhierarchy::kEnvInfNegX;
+using tour::transformhierarchy::kEnvInfNegY;
+using tour::transformhierarchy::kEnvInfNegZ;
+using tour::transformhierarchy::kEnvInfPosX;
+using tour::transformhierarchy::kEnvInfPosY;
+using tour::transformhierarchy::kEnvInfPosZ;
+using tour::transformhierarchy::kSceneEnvFloatCount;
+using tour::transformhierarchy::SceneAudioSource;
+using tour::transformhierarchy::SceneCubemap;
+using tour::transformhierarchy::SceneExportSettings;
+using tour::transformhierarchy::SceneGiVolume;

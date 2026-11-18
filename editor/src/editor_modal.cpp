@@ -500,7 +500,7 @@ void EditorApp::ModalIsolateSelect() {
         Log("Isolate Select: off (original visibility restored).");
         return;
     }
-    const Scene& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->scene;
     std::vector<int> parents;
     parents.reserve(scene.hierarchy.size());
     for (const auto& node : scene.hierarchy)
@@ -621,7 +621,7 @@ void EditorApp::ModalWireframeToggle() {
 void EditorApp::ModalGroupSelection() {
     if (!m_world || m_selection.empty() || m_imguiFocusInPlacementGraph)
         return;
-    const Scene& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->scene;
     // Keep selected roots only: nesting a selected parent and child in
     // the group must not flatten the child's original hierarchy.
     std::vector<uint32_t> roots;

@@ -6,14 +6,14 @@
 #include <cstdint>
 
 int main() {
-    using namespace tour::scene;
-    using namespace tour::scene::memory;
+    using namespace tour::transformhierarchy;
+    using namespace tour::transformhierarchy::memory;
 
-    Scene scene;
-    auto empty = GetView(scene, Semantic::Hierarchy);
+    TransformHierarchy scene;
+    auto empty = GetView(scene, Semantic::NodeLinks);
     assert(empty.Empty());
     assert(empty.data == nullptr);
-    assert(empty.stride == sizeof(Hierarchy));
+    assert(empty.stride == sizeof(NodeLinks));
 
     // This probe exercises direct scene data only; no GPU is needed.
     scene.hierarchy.resize(2);
@@ -24,14 +24,14 @@ int main() {
     scene.tables.meshes.resize(1);
     scene.hierarchy[1].parent = 0;
 
-    const auto hierarchy = GetView(scene, Semantic::Hierarchy);
+    const auto hierarchy = GetView(scene, Semantic::NodeLinks);
     assert(hierarchy.data == scene.hierarchy.data());
-    assert(hierarchy.count == 2 && hierarchy.stride == sizeof(Hierarchy));
+    assert(hierarchy.count == 2 && hierarchy.stride == sizeof(NodeLinks));
     assert(hierarchy.ownership == Ownership::Borrowed);
     assert(hierarchy.access == Access::ReadOnly);
-    assert(HierarchyFields[0].offset == offsetof(Hierarchy, parent));
-    assert(HierarchyFields[1].offset == offsetof(Hierarchy, firstChild));
-    const auto* entries = static_cast<const Hierarchy*>(hierarchy.data);
+    assert(HierarchyFields[0].offset == offsetof(NodeLinks, parent));
+    assert(HierarchyFields[1].offset == offsetof(NodeLinks, firstChild));
+    const auto* entries = static_cast<const NodeLinks*>(hierarchy.data);
     assert(entries[1].parent == 0);
 
     auto local = GetView(scene, Semantic::LocalTransform);
@@ -58,27 +58,27 @@ int main() {
         ++visited;
     });
     assert(visited == AllSemantics.size());
-    const Layout hierarchyLayout = Describe(scene, Semantic::Hierarchy);
+    const Layout hierarchyLayout = Describe(scene, Semantic::NodeLinks);
     assert(hierarchyLayout.nodeIndexed && hierarchyLayout.externalBindingSupported);
     assert(hierarchyLayout.fieldCount == 5);
-    assert(hierarchyLayout.fields[0].offset == offsetof(Hierarchy, parent));
+    assert(hierarchyLayout.fields[0].offset == offsetof(NodeLinks, parent));
     const Layout matrixLayout = Describe(scene, Semantic::LocalTransform);
     assert(matrixLayout.fieldCount == 4);
     assert(matrixLayout.fields[3].offset == 48);
     assert(matrixLayout.format == ScalarFormat::Mat4x4Float32);
 
     // Bind real caller-owned memory to all three authoritative streams.
-    Scene bound;
+    TransformHierarchy bound;
     const int root = addNode(bound, -1, 0);
     const int child = addNode(bound, root, 1);
     alignas(16) glm::mat4 externalLocal[8]{};
     alignas(16) glm::mat4 externalGlobal[8]{};
-    alignas(16) Hierarchy externalHierarchy[8]{};
+    alignas(16) NodeLinks externalHierarchy[8]{};
     ExternalBinding localBind{Semantic::LocalTransform, externalLocal, 2, 8, sizeof(glm::mat4), 16};
     ExternalBinding globalBind{
         Semantic::GlobalTransform, externalGlobal, 2, 8, sizeof(glm::mat4), 16};
     ExternalBinding hierarchyBind{
-        Semantic::Hierarchy, externalHierarchy, 2, 8, sizeof(Hierarchy), 16};
+        Semantic::NodeLinks, externalHierarchy, 2, 8, sizeof(NodeLinks), 16};
     assert(BindExternal(bound, localBind));
     assert(BindExternal(bound, globalBind));
     assert(BindExternal(bound, hierarchyBind));
@@ -86,7 +86,7 @@ int main() {
     assert(bound.globalTransform.data() == externalGlobal);
     assert(bound.hierarchy.data() == externalHierarchy);
     assert(externalHierarchy[child].parent == root);
-    assert(GetView(bound, Semantic::Hierarchy).ownership == Ownership::External);
+    assert(GetView(bound, Semantic::NodeLinks).ownership == Ownership::External);
     assert(GetView(bound, Semantic::LocalTransform).capacity == 8);
 
     const NodeHandle childHandle = MakeNodeHandle(bound, child);
@@ -111,7 +111,7 @@ int main() {
 
     assert(DetachExternal(bound, Semantic::LocalTransform));
     assert(DetachExternal(bound, Semantic::GlobalTransform));
-    assert(DetachExternal(bound, Semantic::Hierarchy));
+    assert(DetachExternal(bound, Semantic::NodeLinks));
     assert(bound.localTransform.data() != externalLocal);
     assert(bound.globalTransform.data() != externalGlobal);
     assert(bound.hierarchy.data() != externalHierarchy);
@@ -120,7 +120,7 @@ int main() {
 
     // Copying a bound scene must NOT carry another owner's borrowed memory.
     assert(BindExternal(bound, localBind));
-    Scene copied(bound);
+    TransformHierarchy copied(bound);
     assert(copied.localTransform.data() != externalLocal);
     assert(copied.localTransform[child][3].x == 7.0f);
     assert(DetachExternal(bound, Semantic::LocalTransform));

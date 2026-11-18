@@ -942,10 +942,11 @@ std::string DescribeOverride(const OverrideRule& r) {
                       "override /%s/ .%s -> %s%s",
                       r.pattern.c_str(),
                       r.plug.c_str(),
-                      r.value.kind == tour::scene::plugs::Kind::Boolean
+                      r.value.kind == tour::transformhierarchy::plugs::Kind::Boolean
                           ? (r.value.boolean ? "on" : "off")
-                      : r.value.kind == tour::scene::plugs::Kind::String ? r.value.text.c_str()
-                                                                         : "number",
+                      : r.value.kind == tour::transformhierarchy::plugs::Kind::String
+                          ? r.value.text.c_str()
+                          : "number",
                       r.enabled ? "" : " [off]");
     else if (r.attr == OverrideAttr::Material)
         std::snprintf(buf,
@@ -1278,13 +1279,13 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
         else if (r.attr == OverrideAttr::Plug) {
             f << " -name " << Quote(r.plug);
             switch (r.value.kind) {
-            case tour::scene::plugs::Kind::Boolean:
+            case tour::transformhierarchy::plugs::Kind::Boolean:
                 f << " -type bool -v " << FlagVal(r.value.boolean);
                 break;
-            case tour::scene::plugs::Kind::Number:
+            case tour::transformhierarchy::plugs::Kind::Number:
                 f << " -type double -t " << r.value.number;
                 break;
-            case tour::scene::plugs::Kind::String:
+            case tour::transformhierarchy::plugs::Kind::String:
                 f << " -type string -t " << Quote(r.value.text);
                 break;
             }
@@ -2080,7 +2081,7 @@ bool LoadTourFromString(const std::string& text,
             // REMOVED verb: the cook block is gone — the export settings
             // are the scene's exportSettings NODE now (createNode -at
             // exportSettings + setExportAttr; payload in
-            // Scene::exportForNode). Old tours: warn + skip (the settings
+            // TransformHierarchy::exportForNode). Old tours: warn + skip (the settings
             // default until re-authored on the node; the sanctioned
             // no-conversions break).
             warn("tour:" + std::to_string(lineNo) +
@@ -2281,13 +2282,13 @@ bool LoadTourFromString(const std::string& text,
             c.node = fl.n;
             c.flag = b;
         } else if (effVerb == "connectAttr" && fl.hasM && fl.hasName && fl.hasN && fl.hasAt) {
-            tour::scene::plugs::Connection conn{};
+            tour::transformhierarchy::plugs::Connection conn{};
             conn.source.node = fl.m;
             conn.source.plug = fl.name;
             conn.destination.node = fl.n;
             conn.destination.plug = fl.at;
-            const auto* src = tour::scene::plugs::Find(conn.source.plug);
-            const auto* dst = tour::scene::plugs::Find(conn.destination.plug);
+            const auto* src = tour::transformhierarchy::plugs::Find(conn.source.plug);
+            const auto* dst = tour::transformhierarchy::plugs::Find(conn.destination.plug);
             if (!src || !dst || src->kind != dst->kind) {
                 warn("tour:" + std::to_string(lineNo) + ": incompatible plug connection (skipped)");
                 continue;
@@ -2309,26 +2310,26 @@ bool LoadTourFromString(const std::string& text,
                     return false;
                 }
                 r.plug = fl.name;
-                const auto* descriptor = tour::scene::plugs::Find(r.plug);
+                const auto* descriptor = tour::transformhierarchy::plugs::Find(r.plug);
                 if (!descriptor) {
                     warn("tour:" + std::to_string(lineNo) + ": unsupported plug '" + r.plug +
                          "' (skipped)");
                     continue;
                 }
-                using tour::scene::plugs::Kind;
+                using tour::transformhierarchy::plugs::Kind;
                 if (descriptor->kind == Kind::Boolean) {
                     bool b = false;
                     if (!fl.hasV || !ParseFlagWord(fl.v, b)) {
                         err = "line " + std::to_string(lineNo) + ": bad boolean plug value";
                         return false;
                     }
-                    r.value = tour::scene::plugs::Value::Bool(b);
+                    r.value = tour::transformhierarchy::plugs::Value::Bool(b);
                 } else if (descriptor->kind == Kind::String) {
                     if (fl.t.size() != 1) {
                         err = "line " + std::to_string(lineNo) + ": string plug needs one -t";
                         return false;
                     }
-                    r.value = tour::scene::plugs::Value::String(fl.t[0]);
+                    r.value = tour::transformhierarchy::plugs::Value::String(fl.t[0]);
                 } else {
                     if (fl.t.size() != 1) {
                         err = "line " + std::to_string(lineNo) + ": numeric plug needs one -t";
@@ -2339,7 +2340,7 @@ bool LoadTourFromString(const std::string& text,
                         const double n = std::stod(fl.t[0], &used);
                         if (used != fl.t[0].size() || !std::isfinite(n))
                             throw std::invalid_argument("non-finite");
-                        r.value = tour::scene::plugs::Value::Number(n);
+                        r.value = tour::transformhierarchy::plugs::Value::Number(n);
                     } catch (...) {
                         err = "line " + std::to_string(lineNo) + ": bad numeric plug value";
                         return false;
@@ -3458,7 +3459,7 @@ bool LoadTourFromString(const std::string& text,
     return true;
 }
 
-void TourReparent(Scene& scene, uint32_t node, uint32_t newParent) {
+void TourReparent(TransformHierarchy& scene, uint32_t node, uint32_t newParent) {
     if (node >= scene.hierarchy.size() || newParent >= scene.hierarchy.size() ||
         node == newParent || node == 0)
         return;
@@ -3488,7 +3489,7 @@ void TourReparent(Scene& scene, uint32_t node, uint32_t newParent) {
     }
     // Unlink.
     if (oldParent >= 0) {
-        Hierarchy& op = scene.hierarchy[size_t(oldParent)];
+        NodeLinks& op = scene.hierarchy[size_t(oldParent)];
         int prev = -1;
         for (int c = op.firstChild; c != -1; c = scene.hierarchy[c].nextSibling) {
             if (c == int(node)) {
@@ -3506,7 +3507,7 @@ void TourReparent(Scene& scene, uint32_t node, uint32_t newParent) {
         op.lastSibling = last;
     }
     // Link (append).
-    Hierarchy& np = scene.hierarchy[newParent];
+    NodeLinks& np = scene.hierarchy[newParent];
     scene.hierarchy[node].parent = int(newParent);
     scene.hierarchy[node].nextSibling = -1;
     if (np.firstChild < 0) {
@@ -3672,8 +3673,9 @@ namespace {
 // are cluster-space (validated against the replayed scene by the caller;
 // dangling blocks warn + drop, never fatal).
 struct TourEnvBlocks {
-    tour::scene::SceneEnv def{};
-    std::vector<std::pair<uint32_t, tour::scene::SceneEnv>> nodeEnvs; // cluster-space, file order
+    tour::transformhierarchy::SceneEnv def{};
+    std::vector<std::pair<uint32_t, tour::transformhierarchy::SceneEnv>>
+        nodeEnvs; // cluster-space, file order
     uint32_t currentCluster = UINT32_MAX;
     bool haveCurrent = false;
     bool hasBlocks = false;
@@ -3710,7 +3712,9 @@ glm::vec3 TourEnvVec3(const std::string& s, const glm::vec3& fallback) {
     in >> v.x >> v.y >> v.z;
     return v;
 }
-void TourEnvApplyField(tour::scene::SceneEnv& e, const std::string& f, const std::string& v) {
+void TourEnvApplyField(tour::transformhierarchy::SceneEnv& e,
+                       const std::string& f,
+                       const std::string& v) {
     if (f == "skyColor")
         e.skyColor = TourEnvVec3(v, e.skyColor);
     else if (f == "sunColor")
@@ -3727,7 +3731,7 @@ void TourEnvApplyField(tour::scene::SceneEnv& e, const std::string& f, const std
         e.sunIntensity = TourEnvFloat(v, e.sunIntensity);
     else if (f == "exposure")
         e.exposure = TourEnvFloat(v, e.exposure);
-    // Fog quality tiers (see tour::scene::SceneEnv): 0 = off, 1 = analytic (the
+    // Fog quality tiers (see tour::transformhierarchy::SceneEnv): 0 = off, 1 = analytic (the
     // cheap fallback), 2 = volumetric (the raymarched pass, with the
     // analytic fallback at runtime).
     else if (f == "fogQuality")
@@ -3853,7 +3857,7 @@ TourEnvBlocks ParseTourEnvBlocks(const Doc& doc) {
     TourEnvBlocks eb{};
     bool inNode = false;
     uint32_t nodeCluster = UINT32_MAX;
-    tour::scene::SceneEnv cur{};
+    tour::transformhierarchy::SceneEnv cur{};
     bool inVol = false;
     uint32_t volCluster = UINT32_MAX;
     EnvVolume volCur{};
@@ -3874,7 +3878,7 @@ TourEnvBlocks ParseTourEnvBlocks(const Doc& doc) {
                     eb.nodeEnvs.emplace_back(nodeCluster, cur);
                 inNode = true;
                 nodeCluster = uint32_t(TourEnvFloat(val, -1.0f));
-                cur = tour::scene::SceneEnv{};
+                cur = tour::transformhierarchy::SceneEnv{};
             } else if (inNode) {
                 eb.hasBlocks = true;
                 TourEnvApplyField(cur, field, val);
@@ -3941,7 +3945,7 @@ bool ApplyTourToCluster(WorldPage& cluster,
             err->clear();
         return true;
     };
-    Scene& scene = cluster.scene;
+    TransformHierarchy& scene = cluster.scene;
     // LOGICAL TARGET RESOLUTION (the Item-6 layer): a command carrying
     // uuid/name keys resolves through the Delete chain — uuid exact ->
     // unique full name -> DAG path suffix -> the numeric id as the
@@ -4187,7 +4191,7 @@ bool ApplyTourToCluster(WorldPage& cluster,
             break;
         }
         case Verb::SetStatic: {
-            // Static-subtree ROOT mark (Scene::staticRoot): the subtree's
+            // Static-subtree ROOT mark (TransformHierarchy::staticRoot): the subtree's
             // transforms freeze after the initial build (skip per-frame
             // updates + BVH rebuilds, mega-mesh collapse eligibility).
             // MarkSubtreeStatic/Clear rebuild the staticNode cache.
@@ -4649,7 +4653,8 @@ bool ApplyTourToCluster(WorldPage& cluster,
             m = glm::translate(m, c.vec);
             m = glm::scale(m, glm::max(c.svec, glm::vec3(1e-3f)));
             scene.localTransform[size_t(newId)] = m;
-            tour::scene::SetAudioRoom(scene, uint32_t(newId), tour::scene::SceneAudioRoom{});
+            tour::transformhierarchy::SetAudioRoom(
+                scene, uint32_t(newId), tour::transformhierarchy::SceneAudioRoom{});
             setNodeName(scene, int(uint32_t(newId)), c.text);
             createdAudioRooms.push_back(uint32_t(newId));
             break;
@@ -4684,11 +4689,12 @@ bool ApplyTourToCluster(WorldPage& cluster,
                 break;
             }
             if (c.verb == Verb::AttachPhysicsBody)
-                tour::scene::SetPhysicsBody(scene, target, tour::scene::ScenePhysicsBody{});
+                tour::transformhierarchy::SetPhysicsBody(
+                    scene, target, tour::transformhierarchy::ScenePhysicsBody{});
             else if (c.verb == Verb::RemovePhysicsBody)
-                tour::scene::RemovePhysicsBody(scene, target);
+                tour::transformhierarchy::RemovePhysicsBody(scene, target);
             else if (c.verb == Verb::SetPhysicsBodyAttr) {
-                auto* row = tour::scene::FindPhysicsBody(scene, target);
+                auto* row = tour::transformhierarchy::FindPhysicsBody(scene, target);
                 if (!row) {
                     if (err)
                         *err = "tour: physics attr on node without physics body";
@@ -4724,10 +4730,11 @@ bool ApplyTourToCluster(WorldPage& cluster,
             else if (c.verb == Verb::RemoveGiVolume)
                 RemoveGiVolume(scene, target);
             else if (c.verb == Verb::AttachTriggerVolume)
-                tour::scene::SetTriggerVolume(scene, target, tour::scene::SceneTriggerVolume{});
+                tour::transformhierarchy::SetTriggerVolume(
+                    scene, target, tour::transformhierarchy::SceneTriggerVolume{});
             else if (c.verb == Verb::RemoveTriggerVolume)
-                tour::scene::RemoveTriggerVolume(scene, target);
-            else if (auto* row = tour::scene::FindTriggerVolume(scene, target)) {
+                tour::transformhierarchy::RemoveTriggerVolume(scene, target);
+            else if (auto* row = tour::transformhierarchy::FindTriggerVolume(scene, target)) {
                 if (c.text == "enabled")
                     row->trigger.enabled = c.flag;
                 else if (c.text == "once")
@@ -4791,14 +4798,16 @@ bool ApplyTourToCluster(WorldPage& cluster,
                 break;
             }
             if (c.verb == Verb::AttachAudioRoom) {
-                if (!tour::scene::SetAudioRoom(scene, target, tour::scene::SceneAudioRoom{})) {
+                if (!tour::transformhierarchy::SetAudioRoom(
+                        scene, target, tour::transformhierarchy::SceneAudioRoom{})) {
                     if (err)
                         *err = "tour: attachAudioRoom on invalid node " + std::to_string(target);
                     if (!failCmd(c))
                         return false;
                 }
             } else {
-                tour::scene::RemoveAudioRoom(scene, target); // absent == fine (idempotent)
+                tour::transformhierarchy::RemoveAudioRoom(scene,
+                                                          target); // absent == fine (idempotent)
             }
             break;
         }
@@ -4846,7 +4855,8 @@ bool ApplyTourToCluster(WorldPage& cluster,
                     return false;
                 break;
             }
-            tour::scene::AudioRoomRow* row = tour::scene::FindAudioRoom(scene, target);
+            tour::transformhierarchy::AudioRoomRow* row =
+                tour::transformhierarchy::FindAudioRoom(scene, target);
             if (!row) {
                 if (err)
                     *err =
@@ -4855,7 +4865,7 @@ bool ApplyTourToCluster(WorldPage& cluster,
                     return false;
                 break;
             }
-            tour::scene::SceneAudioRoom& def = row->room;
+            tour::transformhierarchy::SceneAudioRoom& def = row->room;
             if (c.text == "name") {
                 setNodeName(scene, int(target), c.name);
             } else if (c.text == "position" || c.text == "rotation" || c.text == "size") {
@@ -5478,7 +5488,7 @@ bool ApplyTourToCluster(WorldPage& cluster,
     // address created GI-volume nodes, so the command walk above must be
     // done). Each doc.giAssets record (the bake owner's stamped HARD
     // identification of the scene's baked GI — see GiAssetCmd) resolves
-    // onto the replayed scene: kind World -> Scene::giWorldSource/ Guid;
+    // onto the replayed scene: kind World -> TransformHierarchy::giWorldSource/ Guid;
     // kind GiVolume -> the addressed definition's SceneGiVolume::bakeSource/Guid.
     // Dangling family refs warn + drop (strict=false reference replay
     // semantics — a broken record must not take the scene down); a
@@ -5675,7 +5685,8 @@ bool ApplyTourToCluster(WorldPage& cluster,
                             c.verb == Verb::SetCastsVolumetricShadow)
                             local = true;
                     }
-                    if (!local && tour::scene::plugs::Write(scene, n, r.plug, r.value)) {
+                    if (!local &&
+                        tour::transformhierarchy::plugs::Write(scene, n, r.plug, r.value)) {
                         // Scene tables now carry the evaluated rule value.
                     } else if (!local) {
                         warn("tour: plug override skipped on incompatible node: " + r.plug);
@@ -5739,7 +5750,7 @@ bool ApplyTourToCluster(WorldPage& cluster,
     // Topological evaluation respects source-to-destination dependencies.
     // Invalid/cyclic or dangling links cannot mutate past a failed read.
     {
-        tour::scene::plugs::Graph graph;
+        tour::transformhierarchy::plugs::Graph graph;
         for (const auto& link : doc.connections)
             if (!graph.Connect(link))
                 warn("tour: rejected incompatible/cyclic connectAttr");
@@ -5775,7 +5786,7 @@ bool ApplyTourToCluster(WorldPage& cluster,
                 else
                     warn("tour: env node block #" + std::to_string(n) + " out of range (dropped)");
             }
-            tour::scene::SceneEnv active = eb.def;
+            tour::transformhierarchy::SceneEnv active = eb.def;
             uint32_t activeNode = UINT32_MAX;
             if (eb.haveCurrent) {
                 auto it = std::find_if(rows.begin(), rows.end(), [&](const EnvRow& r) {
@@ -5833,7 +5844,7 @@ bool ApplyTourToCluster(WorldPage& cluster,
     // scene-object reference field (see tour.h's editorSettings note).
     // Resolves AFTER command replay (a "ref k" points into the replayed
     // createdCameras set) + env blocks, into the pak's
-    // Scene::defaultCameraNode for the runtime App's spawn framing.
+    // TransformHierarchy::defaultCameraNode for the runtime App's spawn framing.
     // Dangling refs warn + drop (never fatal — the same discipline as the
     // env blocks); a target that lost its camera link warns + drops too.
     {
@@ -5874,7 +5885,7 @@ bool ApplyTourToCluster(WorldPage& cluster,
 }
 
 bool StampGiAssets(Doc& doc,
-                   const Scene& scene,
+                   const TransformHierarchy& scene,
                    const std::vector<uint32_t>& createdGiVolumes,
                    std::string* err,
                    std::vector<std::string>* superseded,
@@ -6233,7 +6244,7 @@ std::string GenerateUuid() {
     return std::string(buf, 32);
 }
 
-bool SetNodeUuid(Scene& scene, uint32_t node, const std::string& uuid) {
+bool SetNodeUuid(TransformHierarchy& scene, uint32_t node, const std::string& uuid) {
     if (node >= scene.hierarchy.size() || uuid.empty())
         return false;
     // Maya setUuid parity: reject a uuid already held by ANOTHER live
@@ -6266,7 +6277,7 @@ static std::vector<std::string> SplitDagPath(const std::string& path) {
     return comps;
 }
 
-std::string DagFullPath(const Scene& scene, uint32_t node) {
+std::string DagFullPath(const TransformHierarchy& scene, uint32_t node) {
     if (node >= scene.hierarchy.size())
         return {};
     // Root-to-node components (the unnamed root contributes nothing).
@@ -6286,7 +6297,7 @@ std::string DagFullPath(const Scene& scene, uint32_t node) {
     return path;
 }
 
-static bool NodeMatchesSuffix(const Scene& scene,
+static bool NodeMatchesSuffix(const TransformHierarchy& scene,
                               uint32_t node,
                               const std::vector<std::string>& comps) {
     if (comps.empty())
@@ -6305,7 +6316,7 @@ static bool NodeMatchesSuffix(const Scene& scene,
     return true;
 }
 
-std::string DagShortestUniquePath(const Scene& scene, uint32_t node) {
+std::string DagShortestUniquePath(const TransformHierarchy& scene, uint32_t node) {
     // Maya partialPathName: shortest suffix that still names the node
     // uniquely; the bare name when it already does; empty when even the
     // full path is ambiguous.
@@ -6340,7 +6351,9 @@ std::string DagShortestUniquePath(const Scene& scene, uint32_t node) {
     return {};
 }
 
-static bool MatchDagPathSuffix(const Scene& scene, const std::string& path, uint32_t& out) {
+static bool MatchDagPathSuffix(const TransformHierarchy& scene,
+                               const std::string& path,
+                               uint32_t& out) {
     const std::vector<std::string> comps = SplitDagPath(path);
     if (comps.empty())
         return false;
@@ -6356,13 +6369,13 @@ static bool MatchDagPathSuffix(const Scene& scene, const std::string& path, uint
     return found;
 }
 
-bool ResolveDagPath(const Scene& scene, const std::string& path, uint32_t& out) {
+bool ResolveDagPath(const TransformHierarchy& scene, const std::string& path, uint32_t& out) {
     if (path.empty() || path.find('/') == std::string::npos)
         return false;
     return MatchDagPathSuffix(scene, path, out);
 }
 
-bool ResolveParentTarget(const Scene& scene, const std::string& ref, uint32_t& out) {
+bool ResolveParentTarget(const TransformHierarchy& scene, const std::string& ref, uint32_t& out) {
     if (ref.empty())
         return false;
     // 32-hex reads as a uuid first (writer prefers it for unnamed
@@ -6391,7 +6404,7 @@ bool ResolveParentTarget(const Scene& scene, const std::string& ref, uint32_t& o
     return ResolveDeleteTarget(scene, {}, ref, UINT32_MAX, out);
 }
 
-bool ResolveDeleteTarget(const Scene& scene,
+bool ResolveDeleteTarget(const TransformHierarchy& scene,
                          const std::string& uuid,
                          const std::string& name,
                          uint32_t idFallback,

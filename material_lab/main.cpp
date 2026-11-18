@@ -38,7 +38,7 @@ class ToonMaterialSelector final : public engine::IAppElement {
                                  [&](const tour::World::RenderItem& item) {
                                      if (item.material == tour::World::kInvalidIndex)
                                          return;
-                                     const std::string name = tour::scene::getNodeName(
+                                     const std::string name = tour::transformhierarchy::getNodeName(
                                          world->scene, static_cast<int>(item.node));
                                      if (name == "toon_cel")
                                          materials.insert(item.material);

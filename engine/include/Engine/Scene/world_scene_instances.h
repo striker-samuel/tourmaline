@@ -28,7 +28,7 @@
 #include <utility>
 #include <vector>
 
-namespace tour::scene {
+namespace tour::transformhierarchy {
 
 // Explicit local Scene -> already-resident World resource indices.
 // A direct instance does not own a WorldPage or assume that source indices
@@ -78,9 +78,9 @@ class WorldSceneInstances {
     // The caller acquires all assets before this call (AssetResidency's
     // AcquireAll is atomic), and publishes render bindings separately after
     // the root is valid. No scene-level GPU resources are embedded here.
-    uint64_t Instantiate(Scene& target,
+    uint64_t Instantiate(TransformHierarchy& target,
                          RegionRegistry& regions,
-                         const Scene& source,
+                         const TransformHierarchy& source,
                          uint64_t sceneAssetId,
                          const glm::dmat4& frame,
                          std::vector<asset::AssetLease> assets,
@@ -311,7 +311,7 @@ class WorldSceneInstances {
         return id;
     }
 
-    bool Retire(Scene& target, RegionRegistry& regions, uint64_t id) {
+    bool Retire(TransformHierarchy& target, RegionRegistry& regions, uint64_t id) {
         auto it = instances_.find(id);
         if (it == instances_.end())
             return false;
@@ -332,4 +332,4 @@ class WorldSceneInstances {
     std::map<uint64_t, WorldSceneInstance> instances_;
 };
 
-} // namespace tour::scene
+} // namespace tour::transformhierarchy

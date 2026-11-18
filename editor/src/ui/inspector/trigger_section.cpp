@@ -59,8 +59,8 @@ void EditorApp::DrawTriggerVolumeSection(uint32_t node) {
     const attr::ScopedID componentId("trigger_volume");
     if (!m_world || node >= m_world->scene.hierarchy.size())
         return;
-    Scene& scene = m_world->scene;
-    const auto* row = tour::scene::FindTriggerVolume(scene, node);
+    TransformHierarchy& scene = m_world->scene;
+    const auto* row = tour::transformhierarchy::FindTriggerVolume(scene, node);
     if (!row)
         return;
     if (attr::ComponentHeader("Trigger Volume")) {

@@ -36,7 +36,7 @@ enum class EditVerb : uint8_t {
     SetDitherCloseup,         // subtree dither on camera closeup
     SetVisibility,            // Clarisse-style self hidden flag (hierarchical effect)
     SetCastsVolumetricShadow, // the coarse fog-tile caster mark (self
-                              // flag, see Scene::castsVolumetricShadow)
+                              // flag, see TransformHierarchy::castsVolumetricShadow)
     SetStatic,                // static-subtree ROOT mark (frozen transforms,
                               // mega-mesh collapse eligibility; whole tree)
     Parent,                   // world parent id
@@ -238,8 +238,8 @@ struct EditCmd {
     // CreateGiVolume payload (live-world domain; box center in
     // afterVec, full-extents size in svec, name in afterText,
     // parent in node2):
-    uint32_t giVolumePriority = 0;    // higher = composited later = wins
-    float giVolumeSpacing = 0.5f;     // dense probe grid spacing (m)
+    uint32_t giVolumePriority = 0; // higher = composited later = wins
+    float giVolumeSpacing = 0.5f;  // dense probe grid spacing (m)
     // Kept solely to parse historical .tour commands / editor undo data.
     // Newly authored GI hulls ignore these fade values.
     float giVolumeInsideFade = 0.0f;
@@ -253,9 +253,9 @@ struct EditCmd {
     std::string triggerVolumeAttr;
     std::string physicsAttr;
     bool beforePhysicsBody = false;
-    tour::scene::ScenePhysicsBody beforePhysics{};
+    tour::transformhierarchy::ScenePhysicsBody beforePhysics{};
     bool beforeTriggerVolume = false;
-    tour::scene::SceneTriggerVolume beforeTrigger{};
+    tour::transformhierarchy::SceneTriggerVolume beforeTrigger{};
     bool beforeGiVolume = false;
     SceneGiVolume beforeGi{};
     // CreateCubemap payload (live-world domain; pinned probe position
@@ -327,7 +327,7 @@ struct EditCmd {
     // Attach/Remove/Delete payload: the room row's presence + captured
     // value (undo restores it EXACTLY; a node carries at most one).
     bool beforeAudioRoom = false;
-    tour::scene::SceneAudioRoom beforeRoom{};
+    tour::transformhierarchy::SceneAudioRoom beforeRoom{};
     // SetExportAttr channel — a SceneExportSettings field name
     // ("meshopt","lods","lodRatios","lodError","lightmap",
     // "lmMetersPerTexel","lmLobes","lmAtlasWidth","lmRays",

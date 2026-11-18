@@ -147,7 +147,8 @@ bool EnvZoneAt(const std::vector<EnvZoneGpu>& zones,
     return false;
 }
 
-EnvZone DeriveZoneLook(const ::tour::scene::SceneEnv& e, const ::tour::scene::SceneEnv& base) {
+EnvZone DeriveZoneLook(const ::tour::transformhierarchy::SceneEnv& e,
+                       const ::tour::transformhierarchy::SceneEnv& base) {
     EnvZone z{};
     for (int c = 0; c < 3; ++c) {
         const float d = base.skyColor[c];

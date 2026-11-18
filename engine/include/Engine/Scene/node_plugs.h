@@ -14,7 +14,7 @@
 #include <string_view>
 #include <vector>
 
-namespace tour::scene::plugs {
+namespace tour::transformhierarchy::plugs {
 
 enum class Kind : uint8_t { Boolean, Number, String };
 struct Value {
@@ -114,7 +114,7 @@ inline bool ValidValue(std::string_view path, const Value& v) {
     const Descriptor* d = Find(path);
     return d && d->kind == v.kind && (v.kind != Kind::Number || std::isfinite(v.number));
 }
-inline bool Read(const Scene& scene, uint32_t node, std::string_view key, Value& out) {
+inline bool Read(const TransformHierarchy& scene, uint32_t node, std::string_view key, Value& out) {
     if (node >= scene.hierarchy.size() || !Find(key))
         return false;
     auto boolean = [&](bool v) {
@@ -214,7 +214,7 @@ inline bool Read(const Scene& scene, uint32_t node, std::string_view key, Value&
     }
     return false;
 }
-inline bool Write(Scene& scene, uint32_t node, std::string_view key, const Value& v) {
+inline bool Write(TransformHierarchy& scene, uint32_t node, std::string_view key, const Value& v) {
     if (node >= scene.hierarchy.size() || !ValidValue(key, v))
         return false;
     if (key == "node.visibility") {
@@ -430,7 +430,7 @@ class Graph {
                                     }),
                      edges_.end());
     }
-    bool Evaluate(Scene& scene) const {
+    bool Evaluate(TransformHierarchy& scene) const {
         // Resolve edges by repeatedly consuming those with no pending
         // inbound dependency. Cycles cannot be added through Connect().
         std::vector<bool> done(edges_.size(), false);
@@ -461,4 +461,4 @@ class Graph {
         return true;
     }
 };
-} // namespace tour::scene::plugs
+} // namespace tour::transformhierarchy::plugs

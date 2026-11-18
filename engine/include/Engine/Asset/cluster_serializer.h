@@ -227,7 +227,7 @@ struct SceneLinkMaps {
 // stress grid carries ~1M of each; materializing them was 1M heap
 // strings nobody read). Material names always load (diagnostics).
 bool ParseSceneBlob(std::span<const uint8_t> payload,
-                    Scene& scene,
+                    TransformHierarchy& scene,
                     std::string& nameOut,
                     const SceneLinkMaps* maps,
                     std::string& err,

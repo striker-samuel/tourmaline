@@ -6,7 +6,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 #include <vector>
 
-using namespace tour::scene;
+using namespace tour::transformhierarchy;
 
 int main() {
     int failed = 0;
@@ -15,7 +15,7 @@ int main() {
         if (!ok)
             ++failed;
     };
-    Scene scene;
+    TransformHierarchy scene;
     const int node = addNode(scene, -1, 0);
     scene.globalTransform[size_t(node)] = glm::translate(glm::mat4(1.0f), glm::vec3(10, 0, 0)) *
                                           glm::scale(glm::mat4(1.0f), glm::vec3(8, 4, 8));

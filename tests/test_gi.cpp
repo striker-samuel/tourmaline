@@ -2205,7 +2205,7 @@ void TestLmChartTransfer() {
 void TestStaticBakeLights() {
     auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
-    ::Scene& scene = cluster->scene;
+    ::TransformHierarchy& scene = cluster->scene;
     addNode(scene, -1, 0); // root
 
     auto addLightNode = [&](glm::vec3 pos, const SceneLight& def) {
@@ -2302,7 +2302,7 @@ void TestStaticBakeLights() {
     {
         auto cluster2 = std::make_unique<smvk::WorldPage>(nullptr);
         cluster2->SetOfflineMode(true);
-        ::Scene& scene2 = cluster2->scene;
+        ::TransformHierarchy& scene2 = cluster2->scene;
         addNode(scene2, -1, 0); // root
         glm::mat4 g =
             glm::mat4_cast(glm::quat(0.70710678118f, 0.0f, 0.70710678118f, 0.0f)); // rotY(90)
@@ -3008,7 +3008,7 @@ void TestTraceSceneFromWorld() {
     cluster->SetOfflineMode(true); // retained uploads (the editor keeps
                                    // them ONLINE via SetRetainUploads -
                                    // same CPU mirror either way)
-    ::Scene& cs = cluster->scene;
+    ::TransformHierarchy& cs = cluster->scene;
     const int root = addNode(cs, -1, 0);
     smvk::MeshData u;
     const float h = 2.0f;

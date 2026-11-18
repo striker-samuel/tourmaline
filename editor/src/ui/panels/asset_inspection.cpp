@@ -770,7 +770,7 @@ void EditorApp::DrawAssetReadonlyPage() {
         uint32_t cams = uint32_t(k.cameras.size());
         ImGui::TextDisabled("%u light(s), %u camera(s)", lights, cams);
         ImGui::Separator();
-        ImGui::Text("Hierarchy (first 32)");
+        ImGui::Text("NodeLinks (first 32)");
         ImGui::BeginChild("##meshnodes", ImVec2(0, 0), true);
         const size_t n = std::min(k.nodes.size(), size_t(32));
         for (size_t i = 0; i < n; ++i) {

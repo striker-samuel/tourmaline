@@ -5,11 +5,11 @@
 #include <cassert>
 #include <cmath>
 
-using namespace tour::scene;
-namespace plugs = tour::scene::plugs;
+using namespace tour::transformhierarchy;
+namespace plugs = tour::transformhierarchy::plugs;
 
 int main() {
-    Scene scene;
+    TransformHierarchy scene;
     const uint32_t a = uint32_t(addNode(scene, -1, 0));
     const uint32_t b = uint32_t(addNode(scene, -1, 0));
     const uint32_t c = uint32_t(addNode(scene, -1, 0));

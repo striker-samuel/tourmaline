@@ -17,7 +17,7 @@
 // cooked format stays dense by the locked decision).
 //
 // GENERATIONS guard against slot reuse (the ABA problem): every slot
-// carries a 12-bit generation in Scene::nodeGeneration, bumped on
+// carries a 12-bit generation in TransformHierarchy::nodeGeneration, bumped on
 // retirement. A NodeId alone is an INDEX (fine for internal plumbing
 // — hierarchy links, rows, per-frame dirty lists — where the
 // deletion discipline drops dangling references at retirement time).
@@ -26,13 +26,13 @@
 // plus the generation it was minted at, validatable after the fact.
 //
 // (the namespace/RHI boundary audit, todo item 8.4): the declarations
-// live in tour::scene — the global-namespace cleanup's first slice.
+// live in tour::transformhierarchy — the global-namespace cleanup's first slice.
 // The GLOBAL aliases below keep the whole tree's unqualified `NodeId`
 // spellings compiling through the consumer migration; retire them as
-// call sites move to tour::scene::NodeId.
+// call sites move to tour::transformhierarchy::NodeId.
 #include <cstdint>
 
-namespace tour::scene {
+namespace tour::transformhierarchy {
 
 using NodeId = uint32_t;
 
@@ -66,19 +66,19 @@ inline constexpr NodeHandle PackNodeHandle(uint32_t slot, uint32_t gen) {
     return (NodeHandle((gen & kNodeGenMask) << kNodeSlotBits)) | NodeHandle(slot & kNodeSlotMask);
 }
 
-} // namespace tour::scene
+} // namespace tour::transformhierarchy
 
 // ---- GLOBAL compat aliases (the migration bridge; retire with the
 // call sites — the boundary scanner guards against NEW global
 // declarations, these are the tracked pre-existing set) ----
-using NodeId = tour::scene::NodeId;
-using NodeHandle = tour::scene::NodeHandle;
-using tour::scene::kNodeGenBits;
-using tour::scene::kNodeGenMask;
-using tour::scene::kNodeInvalidHandle;
-using tour::scene::kNodeSlotBits;
-using tour::scene::kNodeSlotCountMax;
-using tour::scene::kNodeSlotMask;
-using tour::scene::NodeHandleGen;
-using tour::scene::NodeHandleSlot;
-using tour::scene::PackNodeHandle;
+using NodeId = tour::transformhierarchy::NodeId;
+using NodeHandle = tour::transformhierarchy::NodeHandle;
+using tour::transformhierarchy::kNodeGenBits;
+using tour::transformhierarchy::kNodeGenMask;
+using tour::transformhierarchy::kNodeInvalidHandle;
+using tour::transformhierarchy::kNodeSlotBits;
+using tour::transformhierarchy::kNodeSlotCountMax;
+using tour::transformhierarchy::kNodeSlotMask;
+using tour::transformhierarchy::NodeHandleGen;
+using tour::transformhierarchy::NodeHandleSlot;
+using tour::transformhierarchy::PackNodeHandle;

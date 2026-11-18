@@ -32,7 +32,7 @@ class RegionRegistry {
     // Register an existing node as an ownership boundary. Returns 0 for an
     // invalid node or a root already registered with a live generation.
     // No scene topology is modified by this operation.
-    uint64_t Register(const Scene& scene, NodeHandle root, RegionKind kind) {
+    uint64_t Register(const TransformHierarchy& scene, NodeHandle root, RegionKind kind) {
         if (!NodeHandleValid(scene, root))
             return 0;
         const NodeId slot = NodeHandleSlot(root);
@@ -61,7 +61,7 @@ class RegionRegistry {
 
     // Find the closest live region ancestor. Safe with retired slots:
     // a stale registered root is never reported for a reused node slot.
-    const SceneRegion* RegionOf(const Scene& scene, NodeId node) const {
+    const SceneRegion* RegionOf(const TransformHierarchy& scene, NodeId node) const {
         if (!IsNodeAlive(scene, node))
             return nullptr;
         size_t guard = 0;
@@ -80,7 +80,7 @@ class RegionRegistry {
         return nullptr; // also handles malformed cyclic hierarchy
     }
 
-    const SceneRegion* Find(uint64_t id, const Scene& scene) const {
+    const SceneRegion* Find(uint64_t id, const TransformHierarchy& scene) const {
         for (const SceneRegion& region : regions_) {
             if (region.id == id && NodeHandleValid(scene, region.root))
                 return &region;
@@ -91,7 +91,7 @@ class RegionRegistry {
     // The editor may freely reorganize a subtree INSIDE one region.
     // Moving a registered root, or moving a subtree across ownership
     // boundaries, requires an explicit content transfer instead.
-    bool CanReparent(const Scene& scene, NodeId node, NodeId newParent) const {
+    bool CanReparent(const TransformHierarchy& scene, NodeId node, NodeId newParent) const {
         if (!IsNodeAlive(scene, node) || !IsNodeAlive(scene, newParent))
             return false;
         if (byRoot_.contains(node)) {
@@ -104,7 +104,7 @@ class RegionRegistry {
         return (source ? source->id : 0) == (target ? target->id : 0);
     }
 
-    void PruneRetired(const Scene& scene) {
+    void PruneRetired(const TransformHierarchy& scene) {
         for (size_t i = 0; i < regions_.size();) {
             if (!NodeHandleValid(scene, regions_[i].root))
                 EraseAt(i);

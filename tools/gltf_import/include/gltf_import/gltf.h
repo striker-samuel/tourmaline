@@ -232,7 +232,7 @@ struct SourceSceneImporter {
         importImages_ = out;
     }
     // Multiplies the scene root's local transform by preTransform_ (left).
-    void applyPreTransform(Scene& scene, int rootNode);
+    void applyPreTransform(TransformHierarchy& scene, int rootNode);
     // glTF node index -> cluster scene node id (filled by the import
     // traversal; -1 = not imported). The ASSET DERIVATION uses it to
     // retarget glTF animation targets + material bindings onto the

@@ -61,7 +61,7 @@ struct DefaultVsPush
     GPU_PTR_READ(GfxChartXforms) lmXforms;
     // Byte 240 = PushConstants::padEnd_.x (the per-draw overlay scratch's
     // last word; the motion tail 192..240 stops short of it): the DIRECT
-    // legs' per-draw dither-on-closeup flag (Scene::ditherCloseup — the
+    // legs' per-draw dither-on-closeup flag (TransformHierarchy::ditherCloseup — the
     // legs push it per draw, 0/1). Forwarded flat at location 8 so the FS
     // family reads ONE channel on both paths (the filtered legs deliver
     // the ring's GFX_DRAW_DITHER_CLOSEUP at the same location).
@@ -141,7 +141,7 @@ struct VSOut
     // single compile serves BOTH the direct and filtered legs (the direct
     // legs have no draws ring, so the push-constant materialId rides here).
     [[vk::location(7)]] nointerpolation uint meshMaterial : TEXCOORD5;
-    // Dither-on-closeup flag (flat; Scene::ditherCloseup): the direct
+    // Dither-on-closeup flag (flat; TransformHierarchy::ditherCloseup): the direct
     // legs' per-draw pc word (byte 240) forwarded so the FS family reads
     // one channel on both paths (the filtered legs deliver the Draw
     // ring's flag at the same location). FSs that do not declare it

@@ -19,14 +19,14 @@
 #include <Engine/Scene/scene.h>
 #include <Engine/Scene/scene_tables.h>
 
-namespace tour::scene {
+namespace tour::transformhierarchy {
 
 namespace {
 
 // rowsForNode must cover every live node. Lazily grown (addNode does
 // not touch it — Scene is a plain aggregate); every entry starts
 // all-InvalidRow (NodeRows' defaults).
-void EnsureNodeRows(Scene& scene) {
+void EnsureNodeRows(TransformHierarchy& scene) {
     if (scene.rowsForNode.size() < scene.hierarchy.size())
         scene.rowsForNode.resize(scene.hierarchy.size());
 }
@@ -35,13 +35,13 @@ void EnsureNodeRows(Scene& scene) {
 // only ever point at a LIVE slot — range alone is not validity
 // anymore (a retired slot is in range but dead; SetX on it would
 // mint a row nothing can address once the slot is reused).
-bool NodeInRange(const Scene& scene, NodeId node) {
+bool NodeInRange(const TransformHierarchy& scene, NodeId node) {
     return size_t(node) < scene.hierarchy.size() && IsLiveSlot(scene, node);
 }
 
 } // namespace
 
-void RebuildNodeRows(Scene& scene) {
+void RebuildNodeRows(TransformHierarchy& scene) {
     // EXACT resize — grows AND shrinks to the SLOT count (hierarchy
     // size; retirement keeps holes, so this is capacity, not the live
     // node count). The mutators' EnsureNodeRows is grow-only by
@@ -210,7 +210,7 @@ void RebuildNodeRows(Scene& scene) {
 
 // ---- mesh ----
 
-MeshRow* FindMesh(Scene& scene, NodeId node) {
+MeshRow* FindMesh(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId rid = scene.rowsForNode[node].mesh;
@@ -220,7 +220,7 @@ MeshRow* FindMesh(Scene& scene, NodeId node) {
     return &scene.tables.meshes[rid];
 }
 
-const MeshRow* FindMesh(const Scene& scene, NodeId node) {
+const MeshRow* FindMesh(const TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId rid = scene.rowsForNode[node].mesh;
@@ -230,7 +230,7 @@ const MeshRow* FindMesh(const Scene& scene, NodeId node) {
     return &scene.tables.meshes[rid];
 }
 
-bool SetMesh(Scene& scene, NodeId node, uint32_t mesh) {
+bool SetMesh(TransformHierarchy& scene, NodeId node, uint32_t mesh) {
     if (!NodeInRange(scene, node))
         return false;
     EnsureNodeRows(scene);
@@ -245,7 +245,7 @@ bool SetMesh(Scene& scene, NodeId node, uint32_t mesh) {
     return true;
 }
 
-bool RemoveMesh(Scene& scene, NodeId node) {
+bool RemoveMesh(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return false;
     const RowId rid = scene.rowsForNode[node].mesh;
@@ -266,7 +266,7 @@ bool RemoveMesh(Scene& scene, NodeId node) {
 
 // ---- material (independent of the mesh row — see scene_tables.h) ----
 
-MaterialRow* FindMaterial(Scene& scene, NodeId node) {
+MaterialRow* FindMaterial(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId rid = scene.rowsForNode[node].material;
@@ -276,7 +276,7 @@ MaterialRow* FindMaterial(Scene& scene, NodeId node) {
     return &scene.tables.materials[rid];
 }
 
-const MaterialRow* FindMaterial(const Scene& scene, NodeId node) {
+const MaterialRow* FindMaterial(const TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId rid = scene.rowsForNode[node].material;
@@ -286,7 +286,7 @@ const MaterialRow* FindMaterial(const Scene& scene, NodeId node) {
     return &scene.tables.materials[rid];
 }
 
-bool SetMaterial(Scene& scene, NodeId node, uint32_t material) {
+bool SetMaterial(TransformHierarchy& scene, NodeId node, uint32_t material) {
     if (!NodeInRange(scene, node))
         return false;
     EnsureNodeRows(scene);
@@ -299,7 +299,7 @@ bool SetMaterial(Scene& scene, NodeId node, uint32_t material) {
     return true;
 }
 
-bool RemoveMaterial(Scene& scene, NodeId node) {
+bool RemoveMaterial(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return false;
     const RowId rid = scene.rowsForNode[node].material;
@@ -317,7 +317,7 @@ bool RemoveMaterial(Scene& scene, NodeId node) {
 
 // ---- light ----
 
-LightRow* FindLight(Scene& scene, NodeId node) {
+LightRow* FindLight(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId rid = scene.rowsForNode[node].light;
@@ -327,7 +327,7 @@ LightRow* FindLight(Scene& scene, NodeId node) {
     return &scene.tables.lights[rid];
 }
 
-const LightRow* FindLight(const Scene& scene, NodeId node) {
+const LightRow* FindLight(const TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId rid = scene.rowsForNode[node].light;
@@ -337,7 +337,7 @@ const LightRow* FindLight(const Scene& scene, NodeId node) {
     return &scene.tables.lights[rid];
 }
 
-bool SetLight(Scene& scene, NodeId node, uint32_t light) {
+bool SetLight(TransformHierarchy& scene, NodeId node, uint32_t light) {
     if (!NodeInRange(scene, node))
         return false;
     EnsureNodeRows(scene);
@@ -350,7 +350,7 @@ bool SetLight(Scene& scene, NodeId node, uint32_t light) {
     return true;
 }
 
-bool RemoveLight(Scene& scene, NodeId node) {
+bool RemoveLight(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return false;
     const RowId rid = scene.rowsForNode[node].light;
@@ -368,7 +368,7 @@ bool RemoveLight(Scene& scene, NodeId node) {
 
 // ---- camera ----
 
-CameraRow* FindCamera(Scene& scene, NodeId node) {
+CameraRow* FindCamera(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId rid = scene.rowsForNode[node].camera;
@@ -378,7 +378,7 @@ CameraRow* FindCamera(Scene& scene, NodeId node) {
     return &scene.tables.cameras[rid];
 }
 
-const CameraRow* FindCamera(const Scene& scene, NodeId node) {
+const CameraRow* FindCamera(const TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId rid = scene.rowsForNode[node].camera;
@@ -388,7 +388,7 @@ const CameraRow* FindCamera(const Scene& scene, NodeId node) {
     return &scene.tables.cameras[rid];
 }
 
-bool SetCamera(Scene& scene, NodeId node, uint32_t camera) {
+bool SetCamera(TransformHierarchy& scene, NodeId node, uint32_t camera) {
     if (!NodeInRange(scene, node))
         return false;
     EnsureNodeRows(scene);
@@ -401,7 +401,7 @@ bool SetCamera(Scene& scene, NodeId node, uint32_t camera) {
     return true;
 }
 
-bool RemoveCamera(Scene& scene, NodeId node) {
+bool RemoveCamera(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return false;
     const RowId rid = scene.rowsForNode[node].camera;
@@ -419,7 +419,7 @@ bool RemoveCamera(Scene& scene, NodeId node) {
 
 // ---- decal ----
 
-DecalRow* FindDecal(Scene& scene, NodeId node) {
+DecalRow* FindDecal(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId rid = scene.rowsForNode[node].decal;
@@ -429,7 +429,7 @@ DecalRow* FindDecal(Scene& scene, NodeId node) {
     return &scene.tables.decals[rid];
 }
 
-const DecalRow* FindDecal(const Scene& scene, NodeId node) {
+const DecalRow* FindDecal(const TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId rid = scene.rowsForNode[node].decal;
@@ -439,7 +439,7 @@ const DecalRow* FindDecal(const Scene& scene, NodeId node) {
     return &scene.tables.decals[rid];
 }
 
-bool SetDecal(Scene& scene, NodeId node, uint32_t decal) {
+bool SetDecal(TransformHierarchy& scene, NodeId node, uint32_t decal) {
     if (!NodeInRange(scene, node))
         return false;
     EnsureNodeRows(scene);
@@ -452,7 +452,7 @@ bool SetDecal(Scene& scene, NodeId node, uint32_t decal) {
     return true;
 }
 
-bool RemoveDecal(Scene& scene, NodeId node) {
+bool RemoveDecal(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return false;
     const RowId rid = scene.rowsForNode[node].decal;
@@ -470,7 +470,7 @@ bool RemoveDecal(Scene& scene, NodeId node) {
 
 // ---- gi volume (inline payload) ----
 
-GiVolumeRow* FindGiVolume(Scene& scene, NodeId node) {
+GiVolumeRow* FindGiVolume(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId rid = scene.rowsForNode[node].giVolume;
@@ -480,7 +480,7 @@ GiVolumeRow* FindGiVolume(Scene& scene, NodeId node) {
     return &scene.tables.giVolumes[rid];
 }
 
-const GiVolumeRow* FindGiVolume(const Scene& scene, NodeId node) {
+const GiVolumeRow* FindGiVolume(const TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId rid = scene.rowsForNode[node].giVolume;
@@ -490,7 +490,7 @@ const GiVolumeRow* FindGiVolume(const Scene& scene, NodeId node) {
     return &scene.tables.giVolumes[rid];
 }
 
-bool SetGiVolume(Scene& scene, NodeId node, const SceneGiVolume& volume) {
+bool SetGiVolume(TransformHierarchy& scene, NodeId node, const SceneGiVolume& volume) {
     if (!NodeInRange(scene, node))
         return false;
     EnsureNodeRows(scene);
@@ -506,7 +506,7 @@ bool SetGiVolume(Scene& scene, NodeId node, const SceneGiVolume& volume) {
     return true;
 }
 
-bool RemoveGiVolume(Scene& scene, NodeId node) {
+bool RemoveGiVolume(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return false;
     const RowId rid = scene.rowsForNode[node].giVolume;
@@ -527,7 +527,7 @@ bool RemoveGiVolume(Scene& scene, NodeId node) {
 
 // ---- cubemap pin (inline payload) ----
 
-CubemapRow* FindCubemap(Scene& scene, NodeId node) {
+CubemapRow* FindCubemap(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId rid = scene.rowsForNode[node].cubemap;
@@ -537,7 +537,7 @@ CubemapRow* FindCubemap(Scene& scene, NodeId node) {
     return &scene.tables.cubemaps[rid];
 }
 
-const CubemapRow* FindCubemap(const Scene& scene, NodeId node) {
+const CubemapRow* FindCubemap(const TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId rid = scene.rowsForNode[node].cubemap;
@@ -547,7 +547,7 @@ const CubemapRow* FindCubemap(const Scene& scene, NodeId node) {
     return &scene.tables.cubemaps[rid];
 }
 
-bool SetCubemap(Scene& scene, NodeId node, const SceneCubemap& cubemap) {
+bool SetCubemap(TransformHierarchy& scene, NodeId node, const SceneCubemap& cubemap) {
     if (!NodeInRange(scene, node))
         return false;
     EnsureNodeRows(scene);
@@ -563,7 +563,7 @@ bool SetCubemap(Scene& scene, NodeId node, const SceneCubemap& cubemap) {
     return true;
 }
 
-bool RemoveCubemap(Scene& scene, NodeId node) {
+bool RemoveCubemap(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return false;
     const RowId rid = scene.rowsForNode[node].cubemap;
@@ -581,7 +581,7 @@ bool RemoveCubemap(Scene& scene, NodeId node) {
 
 // ---- export settings (inline payload) ----
 
-ExportRow* FindExport(Scene& scene, NodeId node) {
+ExportRow* FindExport(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId rid = scene.rowsForNode[node].exportSettings;
@@ -591,7 +591,7 @@ ExportRow* FindExport(Scene& scene, NodeId node) {
     return &scene.tables.exports[rid];
 }
 
-const ExportRow* FindExport(const Scene& scene, NodeId node) {
+const ExportRow* FindExport(const TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId rid = scene.rowsForNode[node].exportSettings;
@@ -601,7 +601,7 @@ const ExportRow* FindExport(const Scene& scene, NodeId node) {
     return &scene.tables.exports[rid];
 }
 
-bool SetExport(Scene& scene, NodeId node, const SceneExportSettings& settings) {
+bool SetExport(TransformHierarchy& scene, NodeId node, const SceneExportSettings& settings) {
     if (!NodeInRange(scene, node))
         return false;
     EnsureNodeRows(scene);
@@ -617,7 +617,7 @@ bool SetExport(Scene& scene, NodeId node, const SceneExportSettings& settings) {
     return true;
 }
 
-bool RemoveExport(Scene& scene, NodeId node) {
+bool RemoveExport(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return false;
     const RowId rid = scene.rowsForNode[node].exportSettings;
@@ -635,7 +635,7 @@ bool RemoveExport(Scene& scene, NodeId node) {
 
 // ---- environment block (inline payload) ----
 
-EnvRow* FindEnv(Scene& scene, NodeId node) {
+EnvRow* FindEnv(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId rid = scene.rowsForNode[node].env;
@@ -645,7 +645,7 @@ EnvRow* FindEnv(Scene& scene, NodeId node) {
     return &scene.tables.envs[rid];
 }
 
-const EnvRow* FindEnv(const Scene& scene, NodeId node) {
+const EnvRow* FindEnv(const TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId rid = scene.rowsForNode[node].env;
@@ -655,7 +655,7 @@ const EnvRow* FindEnv(const Scene& scene, NodeId node) {
     return &scene.tables.envs[rid];
 }
 
-bool SetEnv(Scene& scene, NodeId node, const SceneEnv& environment) {
+bool SetEnv(TransformHierarchy& scene, NodeId node, const SceneEnv& environment) {
     if (!NodeInRange(scene, node))
         return false;
     EnsureNodeRows(scene);
@@ -671,7 +671,7 @@ bool SetEnv(Scene& scene, NodeId node, const SceneEnv& environment) {
     return true;
 }
 
-bool RemoveEnv(Scene& scene, NodeId node) {
+bool RemoveEnv(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return false;
     const RowId rid = scene.rowsForNode[node].env;
@@ -689,7 +689,7 @@ bool RemoveEnv(Scene& scene, NodeId node) {
 
 // ---- env volume (inline payload) ----
 
-EnvVolumeRow* FindEnvVolume(Scene& scene, NodeId node) {
+EnvVolumeRow* FindEnvVolume(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId rid = scene.rowsForNode[node].envVolume;
@@ -699,7 +699,7 @@ EnvVolumeRow* FindEnvVolume(Scene& scene, NodeId node) {
     return &scene.tables.envVolumes[rid];
 }
 
-const EnvVolumeRow* FindEnvVolume(const Scene& scene, NodeId node) {
+const EnvVolumeRow* FindEnvVolume(const TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId rid = scene.rowsForNode[node].envVolume;
@@ -709,7 +709,7 @@ const EnvVolumeRow* FindEnvVolume(const Scene& scene, NodeId node) {
     return &scene.tables.envVolumes[rid];
 }
 
-bool SetEnvVolume(Scene& scene, NodeId node, const EnvVolume& volume) {
+bool SetEnvVolume(TransformHierarchy& scene, NodeId node, const EnvVolume& volume) {
     if (!NodeInRange(scene, node))
         return false;
     EnsureNodeRows(scene);
@@ -725,7 +725,7 @@ bool SetEnvVolume(Scene& scene, NodeId node, const EnvVolume& volume) {
     return true;
 }
 
-bool RemoveEnvVolume(Scene& scene, NodeId node) {
+bool RemoveEnvVolume(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return false;
     const RowId rid = scene.rowsForNode[node].envVolume;
@@ -745,7 +745,7 @@ bool RemoveEnvVolume(Scene& scene, NodeId node) {
 // string-carrying sounds list — the move-not-copy convention, see
 // SetGiVolume) ----
 
-AudioSourceRow* FindAudioSource(Scene& scene, NodeId node) {
+AudioSourceRow* FindAudioSource(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId rid = scene.rowsForNode[node].audioSource;
@@ -755,7 +755,7 @@ AudioSourceRow* FindAudioSource(Scene& scene, NodeId node) {
     return &scene.tables.audioSources[rid];
 }
 
-const AudioSourceRow* FindAudioSource(const Scene& scene, NodeId node) {
+const AudioSourceRow* FindAudioSource(const TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId rid = scene.rowsForNode[node].audioSource;
@@ -765,7 +765,7 @@ const AudioSourceRow* FindAudioSource(const Scene& scene, NodeId node) {
     return &scene.tables.audioSources[rid];
 }
 
-bool SetAudioSource(Scene& scene, NodeId node, const SceneAudioSource& source) {
+bool SetAudioSource(TransformHierarchy& scene, NodeId node, const SceneAudioSource& source) {
     if (!NodeInRange(scene, node))
         return false;
     EnsureNodeRows(scene);
@@ -781,7 +781,7 @@ bool SetAudioSource(Scene& scene, NodeId node, const SceneAudioSource& source) {
     return true;
 }
 
-bool RemoveAudioSource(Scene& scene, NodeId node) {
+bool RemoveAudioSource(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return false;
     const RowId rid = scene.rowsForNode[node].audioSource;
@@ -800,7 +800,7 @@ bool RemoveAudioSource(Scene& scene, NodeId node) {
 // ---- audioRoom (the environmental-reverb volume association; a POD
 // inline payload — the plain copy twin of the audioSource set) ----
 
-AudioRoomRow* FindAudioRoom(Scene& scene, NodeId node) {
+AudioRoomRow* FindAudioRoom(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId rid = scene.rowsForNode[node].audioRoom;
@@ -810,7 +810,7 @@ AudioRoomRow* FindAudioRoom(Scene& scene, NodeId node) {
     return &scene.tables.audioRooms[rid];
 }
 
-const AudioRoomRow* FindAudioRoom(const Scene& scene, NodeId node) {
+const AudioRoomRow* FindAudioRoom(const TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId rid = scene.rowsForNode[node].audioRoom;
@@ -820,7 +820,7 @@ const AudioRoomRow* FindAudioRoom(const Scene& scene, NodeId node) {
     return &scene.tables.audioRooms[rid];
 }
 
-bool SetAudioRoom(Scene& scene, NodeId node, const SceneAudioRoom& room) {
+bool SetAudioRoom(TransformHierarchy& scene, NodeId node, const SceneAudioRoom& room) {
     if (!NodeInRange(scene, node))
         return false;
     EnsureNodeRows(scene);
@@ -836,7 +836,7 @@ bool SetAudioRoom(Scene& scene, NodeId node, const SceneAudioRoom& room) {
     return true;
 }
 
-bool RemoveAudioRoom(Scene& scene, NodeId node) {
+bool RemoveAudioRoom(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return false;
     const RowId rid = scene.rowsForNode[node].audioRoom;
@@ -853,19 +853,19 @@ bool RemoveAudioRoom(Scene& scene, NodeId node) {
 }
 
 // ---- physics authoring association ----
-PhysicsBodyRow* FindPhysicsBody(Scene& scene, NodeId node) {
+PhysicsBodyRow* FindPhysicsBody(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId id = scene.rowsForNode[node].body;
     return id == InvalidRow ? nullptr : &scene.tables.physicsBodies[id];
 }
-const PhysicsBodyRow* FindPhysicsBody(const Scene& scene, NodeId node) {
+const PhysicsBodyRow* FindPhysicsBody(const TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId id = scene.rowsForNode[node].body;
     return id == InvalidRow ? nullptr : &scene.tables.physicsBodies[id];
 }
-bool SetPhysicsBody(Scene& scene, NodeId node, const ScenePhysicsBody& body) {
+bool SetPhysicsBody(TransformHierarchy& scene, NodeId node, const ScenePhysicsBody& body) {
     if (!NodeInRange(scene, node))
         return false;
     EnsureNodeRows(scene);
@@ -877,7 +877,7 @@ bool SetPhysicsBody(Scene& scene, NodeId node, const ScenePhysicsBody& body) {
     scene.rowsForNode[node].body = RowId(scene.tables.physicsBodies.size() - 1);
     return true;
 }
-bool RemovePhysicsBody(Scene& scene, NodeId node) {
+bool RemovePhysicsBody(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return false;
     const RowId id = scene.rowsForNode[node].body;
@@ -892,19 +892,19 @@ bool RemovePhysicsBody(Scene& scene, NodeId node) {
 }
 
 // ---- spatial trigger association ----
-TriggerVolumeRow* FindTriggerVolume(Scene& scene, NodeId node) {
+TriggerVolumeRow* FindTriggerVolume(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId rid = scene.rowsForNode[node].triggerVolume;
     return rid == InvalidRow ? nullptr : &scene.tables.triggerVolumes[rid];
 }
-const TriggerVolumeRow* FindTriggerVolume(const Scene& scene, NodeId node) {
+const TriggerVolumeRow* FindTriggerVolume(const TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId rid = scene.rowsForNode[node].triggerVolume;
     return rid == InvalidRow ? nullptr : &scene.tables.triggerVolumes[rid];
 }
-bool SetTriggerVolume(Scene& scene, NodeId node, const SceneTriggerVolume& trigger) {
+bool SetTriggerVolume(TransformHierarchy& scene, NodeId node, const SceneTriggerVolume& trigger) {
     if (!NodeInRange(scene, node))
         return false;
     EnsureNodeRows(scene);
@@ -916,7 +916,7 @@ bool SetTriggerVolume(Scene& scene, NodeId node, const SceneTriggerVolume& trigg
     scene.rowsForNode[node].triggerVolume = RowId(scene.tables.triggerVolumes.size() - 1);
     return true;
 }
-bool RemoveTriggerVolume(Scene& scene, NodeId node) {
+bool RemoveTriggerVolume(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return false;
     const RowId rid = scene.rowsForNode[node].triggerVolume;
@@ -932,7 +932,7 @@ bool RemoveTriggerVolume(Scene& scene, NodeId node) {
 
 // ---- project-defined schema associations (node_schema.h) ----------
 
-const SchemaAssocRow* FindSchemaAssoc(const Scene& scene, NodeId node) {
+const SchemaAssocRow* FindSchemaAssoc(const TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return nullptr;
     const RowId rid = scene.rowsForNode[node].schemaAssoc;
@@ -942,11 +942,15 @@ const SchemaAssocRow* FindSchemaAssoc(const Scene& scene, NodeId node) {
     return &scene.tables.schemaAssocs[rid];
 }
 
-SchemaAssocRow* FindSchemaAssoc(Scene& scene, NodeId node) {
-    return const_cast<SchemaAssocRow*>(FindSchemaAssoc(static_cast<const Scene&>(scene), node));
+SchemaAssocRow* FindSchemaAssoc(TransformHierarchy& scene, NodeId node) {
+    return const_cast<SchemaAssocRow*>(
+        FindSchemaAssoc(static_cast<const TransformHierarchy&>(scene), node));
 }
 
-bool SetSchemaAssoc(Scene& scene, NodeId node, uint32_t schemaId, std::vector<uint8_t> values) {
+bool SetSchemaAssoc(TransformHierarchy& scene,
+                    NodeId node,
+                    uint32_t schemaId,
+                    std::vector<uint8_t> values) {
     if (!NodeInRange(scene, node))
         return false;
     EnsureNodeRows(scene);
@@ -964,7 +968,7 @@ bool SetSchemaAssoc(Scene& scene, NodeId node, uint32_t schemaId, std::vector<ui
     return true;
 }
 
-bool RemoveSchemaAssoc(Scene& scene, NodeId node) {
+bool RemoveSchemaAssoc(TransformHierarchy& scene, NodeId node) {
     if (!NodeInRange(scene, node) || node >= scene.rowsForNode.size())
         return false;
     const RowId rid = scene.rowsForNode[node].schemaAssoc;
@@ -982,32 +986,32 @@ bool RemoveSchemaAssoc(Scene& scene, NodeId node) {
 
 // ---- dense node metadata (name/uuid) ----
 
-void EnsureNodeMetadata(Scene& scene) {
+void EnsureNodeMetadata(TransformHierarchy& scene) {
     if (scene.metadata.size() < scene.hierarchy.size())
         scene.metadata.resize(scene.hierarchy.size());
 }
 
-uint32_t GetNodeNameIndex(const Scene& scene, NodeId node) {
+uint32_t GetNodeNameIndex(const TransformHierarchy& scene, NodeId node) {
     if (node >= scene.metadata.size())
         return 0xFFFFFFFFu;
     return scene.metadata[node].name;
 }
 
-void SetNodeNameIndex(Scene& scene, NodeId node, uint32_t nameIndex) {
+void SetNodeNameIndex(TransformHierarchy& scene, NodeId node, uint32_t nameIndex) {
     if (size_t(node) >= scene.hierarchy.size())
         return;
     EnsureNodeMetadata(scene);
     scene.metadata[node].name = nameIndex;
 }
 
-const std::string& GetNodeUuid(const Scene& scene, NodeId node) {
+const std::string& GetNodeUuid(const TransformHierarchy& scene, NodeId node) {
     static const std::string kEmpty;
     if (node >= scene.metadata.size())
         return kEmpty;
     return scene.metadata[node].uuid;
 }
 
-void SetNodeUuidRaw(Scene& scene, NodeId node, const std::string& uuid) {
+void SetNodeUuidRaw(TransformHierarchy& scene, NodeId node, const std::string& uuid) {
     if (size_t(node) >= scene.hierarchy.size())
         return;
     EnsureNodeMetadata(scene);
@@ -1016,7 +1020,7 @@ void SetNodeUuidRaw(Scene& scene, NodeId node, const std::string& uuid) {
 // ---- all kinds at once (the node-deletion hook the editor/tour paths
 // adopt) ----
 
-bool RemoveNodeRows(Scene& scene, NodeId node) {
+bool RemoveNodeRows(TransformHierarchy& scene, NodeId node) {
     bool removed = false;
     removed |= RemoveMesh(scene, node);
     removed |= RemoveMaterial(scene, node);
@@ -1036,4 +1040,4 @@ bool RemoveNodeRows(Scene& scene, NodeId node) {
     return removed;
 }
 
-} // namespace tour::scene
+} // namespace tour::transformhierarchy

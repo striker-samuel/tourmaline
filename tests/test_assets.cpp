@@ -1654,7 +1654,7 @@ void TestNodeSchemas() {
         if (r) {
             const auto* e = r->Find(smvk::PakAssetKind::Scene, "<cluster-local>#scene");
             Check(e != nullptr, "schema.scene-find");
-            Scene scene;
+            TransformHierarchy scene;
             std::string name;
             std::string perr;
             Check(e && smvk::ParseSceneBlob(r->Payload(*e), scene, name, nullptr, perr),
@@ -1685,7 +1685,7 @@ void TestNodeSchemas() {
             Check(r2.has_value(), "schema.bare-pak-open");
             if (r2) {
                 const auto* e = r2->Find(smvk::PakAssetKind::Scene, "<cluster-local>#scene");
-                Scene scene;
+                TransformHierarchy scene;
                 std::string name;
                 std::string perr;
                 Check(e && smvk::ParseSceneBlob(r2->Payload(*e), scene, name, nullptr, perr) &&
@@ -2917,7 +2917,7 @@ void TestLightmapChartTable() {
 bool SceneTailMatchesWithBvhSection(std::span<const uint8_t> p,
                                     const std::vector<uint8_t>& expect,
                                     std::string& diag) {
-    Scene probe;
+    TransformHierarchy probe;
     std::string nameOut, perr;
     smvk::CookedStaticBvhOut cooked;
     if (!smvk::ParseSceneBlob(p, probe, nameOut, nullptr, perr, nullptr, nullptr, true, &cooked) ||
@@ -3319,7 +3319,7 @@ void TestClusterSerializeCook() {
 }
 
 void TestStaticSubtrees() {
-    Scene scene;
+    TransformHierarchy scene;
     const int root = addNode(scene, -1, 0);
     const int a = addNode(scene, root, 1);
     const int b = addNode(scene, a, 2);
@@ -3996,7 +3996,7 @@ void TestAudioRoomSection() {
         c->SetOfflineMode(true);
         addNode(c->scene, -1, 0);                     // root (slot 0)
         const int roomNode = addNode(c->scene, 0, 1); // slot 1
-        ::tour::scene::SceneAudioRoom room;
+        ::tour::transformhierarchy::SceneAudioRoom room;
         room.enabled = true;
         room.priority = 3;
         room.insideFade = 0.5f;
@@ -4005,12 +4005,12 @@ void TestAudioRoomSection() {
         room.rt60 = 2.5f;
         room.damping = 0.7f;
         room.transitionSeconds = 0.5f;
-        ::tour::scene::SetAudioRoom(c->scene, NodeId(roomNode), room);
+        ::tour::transformhierarchy::SetAudioRoom(c->scene, NodeId(roomNode), room);
         // A second DISABLED room on the root exercises the flags bit.
-        ::tour::scene::SceneAudioRoom off;
+        ::tour::transformhierarchy::SceneAudioRoom off;
         off.enabled = false;
         off.priority = 9;
-        ::tour::scene::SetAudioRoom(c->scene, NodeId(0), off);
+        ::tour::transformhierarchy::SetAudioRoom(c->scene, NodeId(0), off);
         return c;
     };
     {
@@ -4087,14 +4087,14 @@ void TestAudioRoomSection() {
                       "room.pak.scene.list-parses");
                 // The FULL payload round-trip: every authored field
                 // survives the cook + the reader's sanitize gates.
-                Scene scene;
+                TransformHierarchy scene;
                 std::string nameOut, perr;
                 Check(ParseSceneBlob(p, scene, nameOut, nullptr, perr) && perr.empty(),
                       "room.parse.round-trips");
-                const ::tour::scene::AudioRoomRow* r1 =
-                    ::tour::scene::FindAudioRoom(scene, NodeId(1));
-                const ::tour::scene::AudioRoomRow* r0 =
-                    ::tour::scene::FindAudioRoom(scene, NodeId(0));
+                const ::tour::transformhierarchy::AudioRoomRow* r1 =
+                    ::tour::transformhierarchy::FindAudioRoom(scene, NodeId(1));
+                const ::tour::transformhierarchy::AudioRoomRow* r0 =
+                    ::tour::transformhierarchy::FindAudioRoom(scene, NodeId(0));
                 Check(r1 && r1->room.enabled && r1->room.priority == 3 &&
                           r1->room.insideFade == 0.5f && r1->room.outsideFade == 1.0f &&
                           r1->room.wet == 0.4f && r1->room.rt60 == 2.5f &&
@@ -4111,7 +4111,7 @@ void TestAudioRoomSection() {
     // this pins the serializer's independent backstop.
     {
         auto c = mkCluster();
-        ::tour::scene::AudioRoomRow orphan;
+        ::tour::transformhierarchy::AudioRoomRow orphan;
         orphan.node = 99; // no such slot in the 2-node cluster
         c->scene.tables.audioRooms.push_back(orphan);
         PakWriter w;
@@ -4153,7 +4153,7 @@ void TestStaticBvhSection() {
         img = w.Finalize();
     };
     auto parse = [](const std::vector<uint8_t>& img,
-                    Scene& scene,
+                    TransformHierarchy& scene,
                     CookedStaticBvhOut& out,
                     const char* tag) {
         std::string err;
@@ -4186,7 +4186,7 @@ void TestStaticBvhSection() {
         WorldPageSerializeStats stats;
         cook(*c, img, stats);
         Check(stats.staticBvhPrims == 1, "bvh.serialize.stats-prim");
-        Scene scene;
+        TransformHierarchy scene;
         CookedStaticBvhOut cooked;
         if (parse(img, scene, cooked, "bvh.pak")) {
             Check(cooked.present, "bvh.parse.present");
@@ -4224,7 +4224,7 @@ void TestStaticBvhSection() {
                     Check(p.size() > sectionTotal, "bvh.strip.payload-size");
                     if (p.size() > sectionTotal) {
                         std::vector<uint8_t> oldGrammar(p.begin(), p.end() - sectionTotal);
-                        Scene scene2;
+                        TransformHierarchy scene2;
                         CookedStaticBvhOut none;
                         std::string nameOut, perr;
                         Check(ParseSceneBlob(std::span<const uint8_t>(oldGrammar),
@@ -4255,7 +4255,7 @@ void TestStaticBvhSection() {
         std::vector<uint8_t> img;
         WorldPageSerializeStats stats;
         cook(*c, img, stats);
-        Scene scene;
+        TransformHierarchy scene;
         CookedStaticBvhOut cooked;
         if (parse(img, scene, cooked, "bvh.edit.pak")) {
             Check(cooked.present && cooked.stateHash != 0, "bvh.edit.present");
@@ -4264,7 +4264,7 @@ void TestStaticBvhSection() {
             std::vector<uint8_t> img0;
             WorldPageSerializeStats stats0;
             cook(*c0, img0, stats0);
-            Scene scene0;
+            TransformHierarchy scene0;
             CookedStaticBvhOut cooked0;
             if (parse(img0, scene0, cooked0, "bvh.orig.pak"))
                 Check(cooked.stateHash != cooked0.stateHash, "bvh.hash-edit-flips");
@@ -4300,7 +4300,7 @@ void TestNodeNameStripping() {
             const auto scenes = reader->BlobsOfKind(PakAssetKind::Scene);
             Check(scenes.size() == 1, "names.pak.scene1");
             if (scenes.size() == 1) {
-                Scene scene;
+                TransformHierarchy scene;
                 std::string nameOut, perr;
                 Check(ParseSceneBlob(reader->Payload(*scenes[0]), scene, nameOut, nullptr, perr) &&
                           perr.empty(),
@@ -4352,7 +4352,7 @@ void TestNodeNameStripping() {
         p.insert(p.end(), {'Q', 'u', 'a', 'd', 'N', 'o', 'd', 'e'});
         putU32(0); // matNameCount
         {
-            Scene on, off;
+            TransformHierarchy on, off;
             std::string nameOn, nameOff, errOn, errOff;
             Check(ParseSceneBlob(
                       p, on, nameOn, nullptr, errOn, nullptr, nullptr, /*wantNodeNames=*/true) &&

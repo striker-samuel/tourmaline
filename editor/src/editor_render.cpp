@@ -434,8 +434,8 @@ void EditorApp::UpdateFrameData(uint32_t flight) {
     m_lastViewProj = m_viewports[m_activeVp].viewProj;
 
     // Sun light (lights[0], same convention as App) from the CURRENT env.
-    // The env block is LUX-NATIVE (see tour::scene::SceneEnv) and the lit view now runs
-    // the App's RAW-LUX HDR display chain (see the file header + m_sceneHdr)
+    // The env block is LUX-NATIVE (see tour::transformhierarchy::SceneEnv) and the lit view now
+    // runs the App's RAW-LUX HDR display chain (see the file header + m_sceneHdr)
     // - the lux go in unscaled and the per-viewport tonemap layer brings
     // them down with the authored operator + exposure, exactly like the App.
     const EditorEnv& envSet = CurrentEnv();
@@ -500,11 +500,11 @@ void EditorApp::ApplyEnvToFrame(engine::FrameUniforms& frame,
 }
 
 EditorApp::EditorEnv& EditorApp::CurrentEnv() {
-    // Scene-backed (see tour::scene::SceneEnv): the resolved source that renders —
+    // Scene-backed (see tour::transformhierarchy::SceneEnv): the resolved source that renders —
     // the scene default, or the selected node block. UI writes land
     // directly in the scene (no publish step; ResolveSceneEnv refreshes
     // the rendered copy afterwards).
-    static tour::scene::SceneEnv fallback{};
+    static tour::transformhierarchy::SceneEnv fallback{};
     if (!m_world)
         return fallback;
     if (m_envCurrent != UINT32_MAX) {
@@ -517,7 +517,7 @@ EditorApp::EditorEnv& EditorApp::CurrentEnv() {
 }
 
 const EditorApp::EditorEnv& EditorApp::CurrentEnv() const {
-    static const tour::scene::SceneEnv fallback{};
+    static const tour::transformhierarchy::SceneEnv fallback{};
     if (!m_world)
         return fallback;
     if (m_envCurrent != UINT32_MAX) {

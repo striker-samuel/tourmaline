@@ -9,14 +9,14 @@
 
 #include "Engine/Scene/spatial_volume.h"
 
-#include <glm/glm.hpp>
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <glm/glm.hpp>
 #include <span>
 
-namespace tour::scene {
+namespace tour::transformhierarchy {
 
 // Six signed LOCAL axes (+X,-X,+Y,-Y,+Z,-Z). Each value is in [0,1]:
 // 1 = unoccluded sky, 0 = fully blocked. These are visibility factors,
@@ -57,15 +57,15 @@ struct AmbientMaskVolume {
 // are handled by SpatialVolumeWeight (not extrapolation). Broken fields
 // and invalid/non-finite inputs conservatively return full visibility.
 [[nodiscard]] inline float AmbientMaskVisibility(const AmbientMaskVolume& volume,
-                                                  const glm::vec3& worldPos,
-                                                  const glm::vec3& worldDirection) {
-    if (!volume.box.Valid() || !volume.field.Valid() ||
-        !std::isfinite(worldPos.x) || !std::isfinite(worldPos.y) ||
-        !std::isfinite(worldPos.z) || !std::isfinite(worldDirection.x) ||
-        !std::isfinite(worldDirection.y) || !std::isfinite(worldDirection.z))
+                                                 const glm::vec3& worldPos,
+                                                 const glm::vec3& worldDirection) {
+    if (!volume.box.Valid() || !volume.field.Valid() || !std::isfinite(worldPos.x) ||
+        !std::isfinite(worldPos.y) || !std::isfinite(worldPos.z) ||
+        !std::isfinite(worldDirection.x) || !std::isfinite(worldDirection.y) ||
+        !std::isfinite(worldDirection.z))
         return 1.0f;
-    const float weight = SpatialVolumeWeight(volume.box, worldPos,
-                                             volume.insideFade, volume.outsideFade);
+    const float weight =
+        SpatialVolumeWeight(volume.box, worldPos, volume.insideFade, volume.outsideFade);
     if (!(weight > 0.0f))
         return 1.0f;
     const float dirLen = glm::length(worldDirection);
@@ -76,18 +76,17 @@ struct AmbientMaskVolume {
     glm::vec3 uv;
     glm::vec3 localDirection;
     for (int i = 0; i < 3; ++i) {
-        uv[i] = std::clamp(0.5f + 0.5f * glm::dot(offset, volume.box.axes[i]) /
-                                    volume.box.half[i], 0.0f, 1.0f);
+        uv[i] = std::clamp(
+            0.5f + 0.5f * glm::dot(offset, volume.box.axes[i]) / volume.box.half[i], 0.0f, 1.0f);
         localDirection[i] = glm::dot(worldDirection / dirLen, volume.box.axes[i]);
     }
     const glm::vec3 grid = uv * glm::vec3(float(volume.field.nx - 1),
                                           float(volume.field.ny - 1),
                                           float(volume.field.nz - 1));
     const glm::uvec3 lo = glm::uvec3(grid);
-    const glm::uvec3 hi = glm::min(lo + glm::uvec3(1),
-                                   glm::uvec3(volume.field.nx - 1,
-                                              volume.field.ny - 1,
-                                              volume.field.nz - 1));
+    const glm::uvec3 hi =
+        glm::min(lo + glm::uvec3(1),
+                 glm::uvec3(volume.field.nx - 1, volume.field.ny - 1, volume.field.nz - 1));
     const glm::vec3 t = grid - glm::vec3(lo);
     float axes[6] = {};
     for (unsigned k = 0; k < 6; ++k) {
@@ -95,30 +94,28 @@ struct AmbientMaskVolume {
             const float v = volume.field.At(x, y, z).axis[k];
             return std::isfinite(v) ? std::clamp(v, 0.0f, 1.0f) : 1.0f;
         };
-        const float a = glm::mix(glm::mix(fetch(lo.x, lo.y, lo.z),
-                                            fetch(hi.x, lo.y, lo.z), t.x),
-                                  glm::mix(fetch(lo.x, hi.y, lo.z),
-                                            fetch(hi.x, hi.y, lo.z), t.x), t.y);
-        const float b = glm::mix(glm::mix(fetch(lo.x, lo.y, hi.z),
-                                            fetch(hi.x, lo.y, hi.z), t.x),
-                                  glm::mix(fetch(lo.x, hi.y, hi.z),
-                                            fetch(hi.x, hi.y, hi.z), t.x), t.y);
+        const float a = glm::mix(glm::mix(fetch(lo.x, lo.y, lo.z), fetch(hi.x, lo.y, lo.z), t.x),
+                                 glm::mix(fetch(lo.x, hi.y, lo.z), fetch(hi.x, hi.y, lo.z), t.x),
+                                 t.y);
+        const float b = glm::mix(glm::mix(fetch(lo.x, lo.y, hi.z), fetch(hi.x, lo.y, hi.z), t.x),
+                                 glm::mix(fetch(lo.x, hi.y, hi.z), fetch(hi.x, hi.y, hi.z), t.x),
+                                 t.y);
         axes[k] = glm::mix(a, b, t.z);
     }
 
     // Project the direction onto the three positive/negative axes.
     // Absolute weights sum to one, so a constant field stays constant.
     float visibility = 0.0f;
-    const float denom = std::abs(localDirection.x) +
-                        std::abs(localDirection.y) + std::abs(localDirection.z);
+    const float denom =
+        std::abs(localDirection.x) + std::abs(localDirection.y) + std::abs(localDirection.z);
     if (!(denom > 1e-6f))
         return 1.0f;
     for (int i = 0; i < 3; ++i) {
         const unsigned axis = unsigned(i * 2 + (localDirection[i] < 0.0f ? 1 : 0));
         visibility += std::abs(localDirection[i]) * axes[axis] / denom;
     }
-    const float influence = weight * std::clamp(
-        std::isfinite(volume.intensity) ? volume.intensity : 0.0f, 0.0f, 1.0f);
+    const float influence =
+        weight * std::clamp(std::isfinite(volume.intensity) ? volume.intensity : 0.0f, 0.0f, 1.0f);
     return glm::mix(1.0f, visibility, influence);
 }
 
@@ -131,4 +128,4 @@ struct AmbientMaskVolume {
     return std::min(a, b);
 }
 
-} // namespace tour::scene
+} // namespace tour::transformhierarchy

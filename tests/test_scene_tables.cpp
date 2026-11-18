@@ -51,8 +51,8 @@ bool Near(float a, float b, float eps = 1e-4f) {
 // A fresh scene with `count` root-level nodes (addNode grows
 // hierarchy/transforms + the seven flag tables; rowsForNode is
 // DELIBERATELY not grown by addNode — the mutators grow it lazily).
-Scene MakeScene(uint32_t count) {
-    Scene scene;
+TransformHierarchy MakeScene(uint32_t count) {
+    TransformHierarchy scene;
     for (uint32_t i = 0; i < count; ++i)
         addNode(scene, -1, 0);
     return scene;
@@ -64,7 +64,7 @@ int main() {
     {
         // Offline builds must retain stable ids/transforms without allocating
         // transient names or GPU publication events.
-        Scene s;
+        TransformHierarchy s;
         s.namesStripped = true;
         s.skipGpuSceneChangeJournal = true;
         const int root = addNode(s, -1, 0);
@@ -80,7 +80,7 @@ int main() {
         Check(Near(s.globalTransform[child][3].x, 3.0f), "offline transforms still finalized");
         Check(s.gpuSceneGlobalChanges.empty() && s.gpuSceneGlobalQueued.empty(),
               "offline scene omits GPU change journal");
-        Scene editor;
+        TransformHierarchy editor;
         const int authored = addNode(editor, -1, 0);
         setNodeName(editor, authored, "author-only");
         Check(getNodeName(editor, authored) == "author-only" &&
@@ -90,13 +90,13 @@ int main() {
     {
         const SceneRenderSettings defaults{};
         Check(!defaults.autoExposure, "render-settings.auto-exposure-default-off");
-        Scene s;
+        TransformHierarchy s;
         Check(!s.renderSettings.autoExposure, "scene.auto-exposure-default-off");
         Check(!s.defaultRenderSettings.autoExposure,
               "scene.default-render-settings.auto-exposure-default-off");
     }
     {
-        Scene s;
+        TransformHierarchy s;
         const int root = addNode(s, -1, 0);
         const int child = addNode(s, root, 1);
         const int leaf = addNode(s, child, 2);
@@ -130,7 +130,7 @@ int main() {
     {
         // Versioned disk persistence must retain fractional positions
         // far beyond float32's world-space precision budget.
-        Scene source;
+        TransformHierarchy source;
         const int root = addNode(source, -1, 0);
         const int child = addNode(source, root, 1);
         glm::dmat4 a(1.0), b(1.0);
@@ -143,7 +143,7 @@ int main() {
         recalculateGlobalTransforms(source);
         const char* path = "audit03_scene_double_roundtrip.bin";
         saveScene(path, source);
-        Scene loaded;
+        TransformHierarchy loaded;
         loadScene(path, loaded);
         Check(loaded.hierarchy.size() == 2, "scene v1: node count");
         Check(loaded.localTransformDouble.size() == 2 &&
@@ -161,7 +161,7 @@ int main() {
     {
         // Versioned files fail closed for unsupported versions. The
         // loader must not erase the existing scene on a bad header.
-        Scene retained = MakeScene(1);
+        TransformHierarchy retained = MakeScene(1);
         const char* path = "audit03_scene_unsupported.bin";
         FILE* f = std::fopen(path, "wb");
         if (f) {
@@ -184,7 +184,7 @@ int main() {
             const uint32_t count = 1u;
             const glm::mat4 local =
                 glm::translate(glm::mat4(1.0f), glm::vec3(128.5f, -64.25f, 7.0f));
-            const Hierarchy hierarchy{
+            const NodeLinks hierarchy{
                 .parent = -1, .firstChild = -1, .nextSibling = -1, .lastSibling = -1, .level = 0};
             const uint32_t emptyRows = 0u;
             std::fwrite(&count, sizeof(count), 1, f);
@@ -194,7 +194,7 @@ int main() {
             std::fwrite(&emptyRows, sizeof(emptyRows), 1, f); // materials
             std::fwrite(&emptyRows, sizeof(emptyRows), 1, f); // meshes
             std::fclose(f);
-            Scene legacy;
+            TransformHierarchy legacy;
             loadScene(path, legacy);
             Check(legacy.hierarchy.size() == 1 && legacy.globalTransformDouble.size() == 1 &&
                       legacy.globalTransformDouble[0][3].x == 128.5 &&
@@ -210,7 +210,7 @@ int main() {
         // A legacy bulk import may resize the float arrays after a precise
         // setter has run. Repair must initialize only the missing double
         // entries, not overwrite an existing sub-float translation.
-        Scene s;
+        TransformHierarchy s;
         const int root = addNode(s, -1, 0);
         glm::dmat4 precise(1.0);
         precise[3].x = 1.0e12 + 0.125;
@@ -242,7 +242,7 @@ int main() {
         // Export detaches static descendants, folding every ancestor's
         // transform into each independent cooked static root. Editor state
         // and dynamic hierarchy remain unchanged.
-        Scene s;
+        TransformHierarchy s;
         const int root = addNode(s, -1, 0);
         const int staticParent = addNode(s, root, 1);
         const int staticChild = addNode(s, staticParent, 2);
@@ -253,7 +253,7 @@ int main() {
         s.localTransform[staticChild][3].y = 4.0f;
         s.localTransform[dynamicSibling][3].z = 6.0f;
         MarkSubtreeStatic(s, staticParent);
-        const auto cooked = tour::scene::BuildStaticExportHierarchy(s);
+        const auto cooked = tour::transformhierarchy::BuildStaticExportHierarchy(s);
         Check(cooked.hierarchy[staticParent].parent == -1 &&
                   cooked.hierarchy[staticChild].parent == -1 &&
                   cooked.hierarchy[staticParent].firstChild == -1 &&
@@ -281,67 +281,72 @@ int main() {
               "static-export: authored scene is not mutated");
     }
     {
-        Scene s;
+        TransformHierarchy s;
         const int root = addNode(s, -1, 0);
         const int child = addNode(s, root, 1);
-        const auto cooked = tour::scene::BuildStaticExportHierarchy(s);
+        const auto cooked = tour::transformhierarchy::BuildStaticExportHierarchy(s);
         Check(cooked.hierarchy[child].parent == root &&
                   cooked.hierarchy[root].firstChild == child && cooked.staticRoots[child] == 0,
               "static-export: all-dynamic scenes retain their hierarchy");
     }
     {
         // Mutation boundary + dynamic multiple roots (with static siblings).
-        Scene s = MakeScene(3);
+        TransformHierarchy s = MakeScene(3);
         MarkSubtreeStatic(s, 1);
         const NodeHandle root0 = MakeNodeHandle(s, 0);
         const NodeHandle root2 = MakeNodeHandle(s, 2);
         glm::mat4 moved0(1.0f), moved2(1.0f);
         moved0[3].x = 3.0f;
         moved2[3].x = 7.0f;
-        Check(tour::scene::SetLocalTransform(s, root0, moved0), "mutation: set root zero");
-        Check(tour::scene::SetLocalTransform(s, root2, moved2), "mutation: set other root");
+        Check(tour::transformhierarchy::SetLocalTransform(s, root0, moved0),
+              "mutation: set root zero");
+        Check(tour::transformhierarchy::SetLocalTransform(s, root2, moved2),
+              "mutation: set other root");
         Check(recalculateGlobalTransformsDynamic(s), "mutation: dynamic recalc");
         Check(Near(s.globalTransform[0][3].x, 3.0f) && Near(s.globalTransform[2][3].x, 7.0f),
               "mutation: both dynamic roots updated");
         Check(s.gpuSceneGlobalChanges.size() == 2, "mutation: GPU journal contains both roots");
         glm::mat4 invalid = moved0;
         invalid[0][0] = std::numeric_limits<float>::quiet_NaN();
-        Check(!tour::scene::SetLocalTransform(s, root0, invalid) &&
+        Check(!tour::transformhierarchy::SetLocalTransform(s, root0, invalid) &&
                   Near(s.localTransform[0][3].x, 3.0f),
               "mutation: nonfinite input fails without side effects");
         RetireNodeSlot(s, 2);
         const int reused = addNode(s, -1, 0);
-        Check(reused == 2 && !tour::scene::SetLocalTransform(s, root2, moved2),
+        Check(reused == 2 && !tour::transformhierarchy::SetLocalTransform(s, root2, moved2),
               "mutation: stale generation cannot update reused slot");
     }
     {
-        Scene s = MakeScene(4);
-        tour::scene::ScenePhysicsBody dynamic{};
+        TransformHierarchy s = MakeScene(4);
+        tour::transformhierarchy::ScenePhysicsBody dynamic{};
         dynamic.motion = 1;
         dynamic.shape = 2;
         dynamic.mass = 12.5f;
         dynamic.radius = 0.35f;
-        Check(tour::scene::SetPhysicsBody(s, 1, dynamic), "physics: attach");
-        Check(tour::scene::FindPhysicsBody(s, 1) &&
-                  tour::scene::FindPhysicsBody(s, 1)->body.mass == 12.5f,
+        Check(tour::transformhierarchy::SetPhysicsBody(s, 1, dynamic), "physics: attach");
+        Check(tour::transformhierarchy::FindPhysicsBody(s, 1) &&
+                  tour::transformhierarchy::FindPhysicsBody(s, 1)->body.mass == 12.5f,
               "physics: authored data stored");
-        Check(tour::scene::SetPhysicsBody(s, 2, {}), "physics: second body attaches");
-        Check(tour::scene::RemovePhysicsBody(s, 1), "physics: detach");
-        Check(tour::scene::FindPhysicsBody(s, 2) && tour::scene::FindPhysicsBody(s, 2)->node == 2,
+        Check(tour::transformhierarchy::SetPhysicsBody(s, 2, {}), "physics: second body attaches");
+        Check(tour::transformhierarchy::RemovePhysicsBody(s, 1), "physics: detach");
+        Check(tour::transformhierarchy::FindPhysicsBody(s, 2) &&
+                  tour::transformhierarchy::FindPhysicsBody(s, 2)->node == 2,
               "physics: swap-and-pop fixes node lookup");
-        Check(tour::scene::SetPhysicsBody(s, 2, dynamic) && s.tables.physicsBodies.size() == 1,
+        Check(tour::transformhierarchy::SetPhysicsBody(s, 2, dynamic) &&
+                  s.tables.physicsBodies.size() == 1,
               "physics: repeated attach replaces");
         RebuildNodeRows(s);
-        Check(tour::scene::FindPhysicsBody(s, 2) &&
-                  Near(tour::scene::FindPhysicsBody(s, 2)->body.radius, 0.35f),
+        Check(tour::transformhierarchy::FindPhysicsBody(s, 2) &&
+                  Near(tour::transformhierarchy::FindPhysicsBody(s, 2)->body.radius, 0.35f),
               "physics: index rebuild preserves body");
-        Check(RemoveNodeRows(s, 2) && !tour::scene::FindPhysicsBody(s, 2),
+        Check(RemoveNodeRows(s, 2) && !tour::transformhierarchy::FindPhysicsBody(s, 2),
               "physics: node deletion detaches body");
-        Check(!tour::scene::SetPhysicsBody(s, 999, {}), "physics: cannot attach to invalid node");
+        Check(!tour::transformhierarchy::SetPhysicsBody(s, 999, {}),
+              "physics: cannot attach to invalid node");
     }
     {
         // ---- insertion + lookup ----
-        Scene s = MakeScene(4);
+        TransformHierarchy s = MakeScene(4);
         Check(SetMesh(s, 1, 10), "SetMesh valid node returns true");
         Check(SetMaterial(s, 1, 20), "SetMaterial valid node returns true");
         const MeshRow* mr = FindMesh(s, 1);
@@ -352,7 +357,7 @@ int main() {
         // The two rows are INDEPENDENT (tour assignMaterial pins
         // material-without-mesh; gltf instancing pins mesh-without-
         // material — one owner per fact).
-        Scene s2 = MakeScene(2);
+        TransformHierarchy s2 = MakeScene(2);
         SetMaterial(s2, 0, 7);
         Check(FindMaterial(s2, 0) && !FindMesh(s2, 0), "material row exists without a mesh row");
         SetMesh(s2, 1, 8);
@@ -402,43 +407,49 @@ int main() {
         audio.minDistance = 2.0f;
         audio.sounds.push_back(AudioSoundRef{"Bells", "content/audio/bells.wav", 0, 1.0f, true});
         SetAudioSource(s, 2, audio);
-        tour::scene::SceneAudioRoom room;
+        tour::transformhierarchy::SceneAudioRoom room;
         room.priority = 4;
         room.wet = 0.4f;
         room.rt60 = 2.5f;
-        tour::scene::SetAudioRoom(s, 2, room);
+        tour::transformhierarchy::SetAudioRoom(s, 2, room);
         Check(FindMesh(s, 2) && FindMaterial(s, 2) && FindDecal(s, 2) && FindCamera(s, 2) &&
-                  FindLight(s, 2) && FindAudioSource(s, 2) && tour::scene::FindAudioRoom(s, 2),
+                  FindLight(s, 2) && FindAudioSource(s, 2) &&
+                  tour::transformhierarchy::FindAudioRoom(s, 2),
               "all kinds coexist on one node");
         Check(FindDecal(s, 2)->decal == 40 && FindCamera(s, 2)->camera == 50,
               "coexisting rows keep their own payloads");
         {
-            const tour::scene::AudioRoomRow* rr = tour::scene::FindAudioRoom(s, 2);
+            const tour::transformhierarchy::AudioRoomRow* rr =
+                tour::transformhierarchy::FindAudioRoom(s, 2);
             Check(rr && rr->room.priority == 4 && rr->room.wet == 0.4f && rr->room.rt60 == 2.5f,
                   "audio room row payload round-trips");
             // A GI-volume row on the SAME node coexists (one placement,
             // two independent associations) — the room neither requires
             // nor disturbs it.
             Check(SetGiVolume(s, 2, SceneGiVolume{}) && FindGiVolume(s, 2) &&
-                      tour::scene::FindAudioRoom(s, 2),
+                      tour::transformhierarchy::FindAudioRoom(s, 2),
                   "audio room + GI volume coexist on one node");
             RemoveGiVolume(s, 2);
-            Check(tour::scene::FindAudioRoom(s, 2), "removing the GI row leaves the room intact");
+            Check(tour::transformhierarchy::FindAudioRoom(s, 2),
+                  "removing the GI row leaves the room intact");
             // Replacement in place (Set replaces).
-            tour::scene::SceneAudioRoom room2;
+            tour::transformhierarchy::SceneAudioRoom room2;
             room2.priority = 7;
-            Check(tour::scene::SetAudioRoom(s, 2, room2) && s.tables.audioRooms.size() == 1 &&
-                      tour::scene::FindAudioRoom(s, 2)->room.priority == 7,
-                  "re-tour::scene::SetAudioRoom replaces in place");
+            Check(tour::transformhierarchy::SetAudioRoom(s, 2, room2) &&
+                      s.tables.audioRooms.size() == 1 &&
+                      tour::transformhierarchy::FindAudioRoom(s, 2)->room.priority == 7,
+                  "re-tour::transformhierarchy::SetAudioRoom replaces in place");
             // Swap-and-pop keeps the payload whole.
-            tour::scene::SceneAudioRoom room3;
+            tour::transformhierarchy::SceneAudioRoom room3;
             room3.wet = 0.9f;
-            tour::scene::SetAudioRoom(s, 3, room3);
-            Check(tour::scene::RemoveAudioRoom(s, 2) && tour::scene::FindAudioRoom(s, 3) &&
-                      tour::scene::FindAudioRoom(s, 3)->room.wet == 0.9f,
+            tour::transformhierarchy::SetAudioRoom(s, 3, room3);
+            Check(tour::transformhierarchy::RemoveAudioRoom(s, 2) &&
+                      tour::transformhierarchy::FindAudioRoom(s, 3) &&
+                      tour::transformhierarchy::FindAudioRoom(s, 3)->room.wet == 0.9f,
                   "audio room swap-and-pop keeps the payload");
-            Check(!tour::scene::RemoveAudioRoom(s, 2), "audio room re-Remove returns false");
-            tour::scene::RemoveAudioRoom(s, 3);
+            Check(!tour::transformhierarchy::RemoveAudioRoom(s, 2),
+                  "audio room re-Remove returns false");
+            tour::transformhierarchy::RemoveAudioRoom(s, 3);
         }
         {
             const AudioSourceRow* ar = FindAudioSource(s, 2);
@@ -469,7 +480,8 @@ int main() {
         // ---- RemoveNodeRows drops every kind at once ----
         Check(RemoveNodeRows(s, 2), "RemoveNodeRows reports removal");
         Check(!FindMesh(s, 2) && !FindMaterial(s, 2) && !FindDecal(s, 2) && !FindCamera(s, 2) &&
-                  !FindLight(s, 2) && !FindAudioSource(s, 2) && !tour::scene::FindAudioRoom(s, 2),
+                  !FindLight(s, 2) && !FindAudioSource(s, 2) &&
+                  !tour::transformhierarchy::FindAudioRoom(s, 2),
               "RemoveNodeRows cleared all kinds");
         Check(!RemoveNodeRows(s, 2), "RemoveNodeRows on a bare node is false");
 
@@ -487,7 +499,7 @@ int main() {
         // Rows outliving the node count (a compacting deletion shrank
         // the scene) are unreachable and get compacted out by the
         // rebuild — "a table guarantees valid nodes".
-        Scene s = MakeScene(4);
+        TransformHierarchy s = MakeScene(4);
         SetMesh(s, 0, 1);
         SetMesh(s, 3, 3);
         SetDecal(s, 3, 9);
@@ -505,7 +517,7 @@ int main() {
 
     {
         // ---- NodeRows defaults + the derived-index contract ----
-        Scene s = MakeScene(1);
+        TransformHierarchy s = MakeScene(1);
         Check(s.rowsForNode.empty(), "a fresh scene carries no derived index (lazy growth)");
         RebuildNodeRows(s);
         Check(s.rowsForNode.size() == 1 && s.rowsForNode[0].mesh == InvalidRow &&
@@ -521,7 +533,7 @@ int main() {
         // without renumbering; rows only address LIVE slots; reuse
         // starts clean; the generational NodeHandle guards the ABA case
         // (a stale handle must NOT resurrect across slot reuse).
-        Scene s;
+        TransformHierarchy s;
         const int root = addNode(s, -1, 0);
         const int a = addNode(s, root, 1);
         const int b = addNode(s, root, 1);
@@ -588,15 +600,19 @@ int main() {
         // The value-component lane accepts default braced values without
         // a catalog key. The concrete payload type is supplied by the
         // mutator signature (a generic template cannot deduce from {}).
-        Scene s = MakeScene(1);
-        Check(tour::scene::SetPhysicsBody(s, 0, {}),
+        TransformHierarchy s = MakeScene(1);
+        Check(tour::transformhierarchy::SetPhysicsBody(s, 0, {}),
               "value component: default-braced physics body");
-        Check(tour::scene::SetAudioRoom(s, 0, {}), "value component: default-braced audio room");
-        Check(tour::scene::SetTriggerVolume(s, 0, {}),
+        Check(tour::transformhierarchy::SetAudioRoom(s, 0, {}),
+              "value component: default-braced audio room");
+        Check(tour::transformhierarchy::SetTriggerVolume(s, 0, {}),
               "value component: default-braced trigger volume");
-        const tour::scene::PhysicsBodyRow* physics = tour::scene::FindPhysicsBody(s, 0);
-        const tour::scene::AudioRoomRow* room = tour::scene::FindAudioRoom(s, 0);
-        const tour::scene::TriggerVolumeRow* trigger = tour::scene::FindTriggerVolume(s, 0);
+        const tour::transformhierarchy::PhysicsBodyRow* physics =
+            tour::transformhierarchy::FindPhysicsBody(s, 0);
+        const tour::transformhierarchy::AudioRoomRow* room =
+            tour::transformhierarchy::FindAudioRoom(s, 0);
+        const tour::transformhierarchy::TriggerVolumeRow* trigger =
+            tour::transformhierarchy::FindTriggerVolume(s, 0);
         Check(physics && physics->body.mass == 1.0f, "value component: physics defaults preserved");
         Check(room && room->room.enabled, "value component: audio room defaults preserved");
         Check(trigger && trigger->trigger.enabled, "value component: trigger defaults preserved");
@@ -606,7 +622,7 @@ int main() {
         // Catalog-first node binding invariant: the scene holds exactly
         // ONE mesh association per node; rebinding the mesh replaces
         // its row, retaining the node's generation and transform.
-        Scene s = MakeScene(2);
+        TransformHierarchy s = MakeScene(2);
         const NodeHandle node = MakeNodeHandle(s, 0);
         const glm::mat4 frame = glm::translate(glm::mat4(1.0f), glm::vec3(7.0f, 8.0f, 9.0f));
         Check(SetLocalTransform(s, node, frame), "mesh-slot: set node-local transform");
@@ -633,7 +649,7 @@ int main() {
         // axes = normalized columns, half = HALF the column lengths.
         // Fades in metres, min-of-six-faces, degenerate shapes cover
         // nothing, and PARITY with the GI volume's own plane math.
-        using namespace tour::scene;
+        using namespace tour::transformhierarchy;
         const float inFade = 0.3f, outFade = 0.7f;
         // Axis-aligned 10x4x6 box at (0,2,0): scale = FULL extents.
         const glm::mat4 g = glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 2.0f, 0.0f)) *
@@ -706,7 +722,7 @@ int main() {
     {
         // Ambient visibility is a property of the shared oriented volume,
         // not a second placement geometry or a baked-radiance multiplier.
-        using namespace tour::scene;
+        using namespace tour::transformhierarchy;
         std::array<AmbientMaskSample, 8> data{};
         for (auto& sample : data) {
             sample.axis[0] = 0.25f; // local +X blocked

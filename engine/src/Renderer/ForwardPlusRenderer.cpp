@@ -86,7 +86,7 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base, bool fallbackO
     // Execute(); nothing here may reference the frame-local fc).
     smvk::World* world = fc.world;
     const IRenderer::PushConstants depthPC = fc.pc;
-    // Dither-on-closeup anchor eye (Scene::ditherCloseup; per frame): the
+    // Dither-on-closeup anchor eye (TransformHierarchy::ditherCloseup; per frame): the
     // state walk measures the camera distance to the flagged subtree's
     // anchor, exactly like the filtered path (GfxRenderer::FilterMainView)
     // and the direct Main/shadow legs — one decision per draw per frame.
@@ -239,7 +239,7 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base, bool fallbackO
                 auto drawPrepassNode = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
                     if (gpuRasterOwnsNode && gpuRasterOwnsNode(item.node))
                         return; // depth/G-buffer already written by GPU scene
-                    // Dither-on-closeup (Scene::ditherCloseup; per frame, per
+                    // Dither-on-closeup (TransformHierarchy::ditherCloseup; per frame, per
                     // draw): Hidden draws drop out of the depth entirely (the
                     // CPU cull — no leg sees them this frame); Fade draws join
                     // the MASKED phase so their depth runs the alpha-tested FS

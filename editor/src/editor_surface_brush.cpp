@@ -15,7 +15,7 @@
 
 namespace editor {
 namespace {
-uint32_t ResolveStrokeParent(const Scene& scene, const surface::Stroke& stroke) {
+uint32_t ResolveStrokeParent(const TransformHierarchy& scene, const surface::Stroke& stroke) {
     if (stroke.parentUuid.empty())
         return UINT32_MAX;
     for (uint32_t i = 0; i < scene.hierarchy.size(); ++i)
@@ -39,7 +39,7 @@ void EditorApp::SurfaceBrushSample(int viewport, float x, float y) {
     if (!hit || hit->node >= m_world->scene.globalTransform.size() ||
         m_deletedNodes.contains(hit->node))
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     const glm::mat4 parentWorld = scene.globalTransform[hit->node];
     // Mint an identity only for touched nodes. SaveTour already emits
     // SetUuid for metadata UUIDs, so this survives scene re-imports.

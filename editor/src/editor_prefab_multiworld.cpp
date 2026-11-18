@@ -38,7 +38,7 @@ bool Near(const glm::mat4& a, const glm::mat4& b) {
                 return false;
     return true;
 }
-bool DescendantOf(const Scene& scene, uint32_t n, uint32_t root) {
+bool DescendantOf(const TransformHierarchy& scene, uint32_t n, uint32_t root) {
     for (size_t guard = 0; guard < scene.hierarchy.size(); ++guard) {
         if (n == root)
             return true;
@@ -305,7 +305,7 @@ void EditorApp::RestorePrefabPreview() {
         m_prefab.parentWitness = nullptr;
         return;
     }
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     bool changed = false;
     std::vector<uint32_t> nodes;
     nodes.reserve(m_prefab.parentOriginal.size());
@@ -372,8 +372,8 @@ bool EditorApp::ParentHasTransformOverride(uint32_t node) const {
 void EditorApp::SyncPrefabPreview() {
     if (!m_prefab.world || !m_world)
         return;
-    Scene& parent = m_world->scene;
-    const Scene& source = m_prefab.world->scene;
+    TransformHierarchy& parent = m_world->scene;
+    const TransformHierarchy& source = m_prefab.world->scene;
     if (m_prefab.parentWitness != m_world.get()) {
         m_prefab.parentWitness = m_world.get();
         m_prefab.parentOriginal.clear();
@@ -533,7 +533,7 @@ bool EditorApp::SavePrefab() {
     };
     std::vector<MintedUuid> minted;
     if (m_prefab.world->pages.size() == 1 && m_prefab.world->pageMergedNodes.size() == 1) {
-        const Scene& scene = m_prefab.world->scene;
+        const TransformHierarchy& scene = m_prefab.world->scene;
         const auto& mapping = m_prefab.world->pageMergedNodes[0];
         const auto missing = prefab_sync::LegacyIdentityCandidates(mapping, [&](uint32_t n) {
             return n != 0 && IsLiveSlot(scene, n) && GetNodeUuid(scene, n).empty();
@@ -579,8 +579,8 @@ bool EditorApp::SavePrefab() {
     // The file replace succeeded: only now publish the newly authored
     // identities into both copies of this session's Scene metadata.
     if (!minted.empty()) {
-        Scene& merged = m_prefab.world->scene;
-        Scene& local = m_prefab.world->pages[0]->scene;
+        TransformHierarchy& merged = m_prefab.world->scene;
+        TransformHierarchy& local = m_prefab.world->pages[0]->scene;
         for (const auto& id : minted) {
             SetNodeUuidRaw(merged, id.mergedNode, id.uuid);
             SetNodeUuidRaw(local, id.clusterNode, id.uuid);
@@ -602,7 +602,7 @@ bool EditorApp::PrefabSetTRS(uint32_t node,
                              const glm::vec3& scale) {
     if (!m_prefab.world || !Finite(translation) || !Finite(rotation) || !Finite(scale))
         return false;
-    Scene& source = m_prefab.world->scene;
+    TransformHierarchy& source = m_prefab.world->scene;
     if (node == 0 || node >= source.localTransform.size() || !IsLiveSlot(source, node))
         return false;
     source.localTransform[node] = LocalMatrixFromTRS(translation, rotation, scale);
@@ -913,7 +913,7 @@ void EditorApp::DrawPrefabWindow() {
         ImGui::SameLine();
         ImGui::BeginChild("##prefabInspector", ImVec2(-1, panelH), true);
         ImGui::TextDisabled("Prefab nodes (not parent instances)");
-        const Scene& source = m_prefab.world->scene;
+        const TransformHierarchy& source = m_prefab.world->scene;
         static char filter[128] = {};
         ImGui::SetNextItemWidth(-1);
         ImGui::InputTextWithHint(

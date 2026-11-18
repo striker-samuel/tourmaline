@@ -379,11 +379,11 @@ struct Args {
     std::string registryDir;
 };
 
-// Bake/pak sun+sky source of record (see tour::scene::SceneEnv): the scene's LUX-NATIVE
-// env block when the tour carried one (the editor always writes env.default.*),
-// else the CLI sun defaults (bare cooks). Every stage — the synthesized
-// WorldSun, the lightmap / cubemap / GI-volume bakes — reads this, so ONE
-// authored sun/sky drives the editor viewport, the bakes and the pak.
+// Bake/pak sun+sky source of record (see tour::transformhierarchy::SceneEnv): the scene's
+// LUX-NATIVE env block when the tour carried one (the editor always writes env.default.*), else the
+// CLI sun defaults (bare cooks). Every stage — the synthesized WorldSun, the lightmap / cubemap /
+// GI-volume bakes — reads this, so ONE authored sun/sky drives the editor viewport, the bakes and
+// the pak.
 struct BakeEnv {
     float sunAzimuth = 30.0f, sunElevation = 55.0f;
     float sunIntensity = 10000.0f, skyIntensity = 600.0f;
@@ -392,7 +392,7 @@ struct BakeEnv {
 BakeEnv EnvForBake(const smvk::WorldPage& c, const Args& args) {
     BakeEnv e{};
     if (c.scene.envAuthored) {
-        const tour::scene::SceneEnv& se = c.scene.environment;
+        const tour::transformhierarchy::SceneEnv& se = c.scene.environment;
         e.sunAzimuth = se.sunAzimuth;
         e.sunElevation = se.sunElevation;
         e.sunIntensity = se.sunIntensity;
@@ -2095,7 +2095,7 @@ void DumpManifestFromPak(const smvk::PakReader& reader,
 // boundaries (case-insensitive; "tree" hits Linden_Tree_Mesh, not
 // StreetSign_mesh). Excluded subtrees still trace/cast — they only skip
 // charting and baked coefficients.
-bool NodeChainMatchesKeywords(const Scene& scene,
+bool NodeChainMatchesKeywords(const TransformHierarchy& scene,
                               uint32_t node,
                               const std::vector<std::string>& kws) {
     for (int n = int(node); n >= 0 && n < int(scene.hierarchy.size());) {
@@ -4914,7 +4914,7 @@ int Run(const CookArgs& c) {
     for (auto& sc : scenePages) {
         if (!sc->scene.envAuthored)
             continue; // runtime seeds from the light at load
-        const ::Scene& scene = sc->scene;
+        const ::TransformHierarchy& scene = sc->scene;
         glm::vec3 toSun(0.0f);
         glm::vec3 sunColor(0.0f);
         float sunLux = 0.0f;
@@ -4961,7 +4961,7 @@ int Run(const CookArgs& c) {
         }
         if (!hasSun)
             continue;
-        tour::scene::SceneEnv& e = sc->scene.environment;
+        tour::transformhierarchy::SceneEnv& e = sc->scene.environment;
         e.sunElevation = glm::degrees(std::asin(glm::clamp(toSun.y, -1.0f, 1.0f)));
         e.sunAzimuth = glm::degrees(std::atan2(toSun.x, toSun.z));
         if (e.sunAzimuth < 0.0f)
@@ -5331,7 +5331,7 @@ int Run(const CookArgs& c) {
                 ++skipExcluded;
                 continue;
             }
-            // Authored opt-in (Scene::lightmap, subtree-scoped, default
+            // Authored opt-in (TransformHierarchy::lightmap, subtree-scoped, default
             // OFF): the editor's per-object "bake lightmap" toggle,
             // stamped from glTF "smvk.lightmap" node extras (or the LM_
             // prefix). Only opted-in meshes chart; everything else keeps
@@ -5341,7 +5341,7 @@ int Run(const CookArgs& c) {
                 ++skipNoLm;
                 continue;
             }
-            // Legacy opt-out (Scene::noLightmap, subtree-scoped): force
+            // Legacy opt-out (TransformHierarchy::noLightmap, subtree-scoped): force
             // skip even when opted in above. Same treatment: trace/cast,
             // probe-lit.
             if (IsNoLightmapNode(cluster->scene, int(node))) {

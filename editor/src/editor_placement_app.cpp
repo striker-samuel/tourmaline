@@ -91,7 +91,7 @@ bool EditorApp::BuildPlacementPointCloud(int strokeIndex,
         error = "PointCloud: source stroke index is out of range";
         return false;
     }
-    const Scene& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->scene;
     std::unordered_map<std::string, uint32_t> byUuid;
     for (uint32_t node = 0; node < scene.hierarchy.size(); ++node) {
         if (!IsNodeAlive(scene, node) || m_deletedNodes.contains(node))
@@ -149,7 +149,7 @@ void EditorApp::CheckSurfaceBrushPlacementChanges() {
         hash ^= b;
         hash *= 1099511628211ull;
     };
-    const Scene& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->scene;
     std::unordered_map<std::string, uint32_t> byUuid;
     byUuid.reserve(scene.hierarchy.size());
     for (uint32_t i = 0; i < scene.hierarchy.size(); ++i) {

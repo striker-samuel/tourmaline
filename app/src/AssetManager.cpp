@@ -714,7 +714,7 @@ bool World::NodeRef::SetMesh(app::MeshHandle mesh) const {
     const uint32_t worldMesh = owner_.gameAssets_->MeshWorldIndex(mesh);
     if (worldMesh == UINT32_MAX)
         return false;
-    if (!tour::scene::SetMesh(owner_.scene, NodeHandleSlot(handle_), worldMesh))
+    if (!tour::transformhierarchy::SetMesh(owner_.scene, NodeHandleSlot(handle_), worldMesh))
         return false;
     owner_.gameMeshBindings_[handle_] = mesh.value;
     owner_.RefreshRuntimeSceneCaches();
@@ -724,7 +724,8 @@ bool World::NodeRef::SetMesh(app::MeshHandle mesh) const {
 bool World::NodeRef::RemoveMesh() const {
     if (!owner_.IsGameNode(handle_))
         return false;
-    const bool removed = tour::scene::RemoveMesh(owner_.scene, NodeHandleSlot(handle_));
+    const bool removed =
+        tour::transformhierarchy::RemoveMesh(owner_.scene, NodeHandleSlot(handle_));
     owner_.gameMeshBindings_.erase(handle_);
     if (removed)
         owner_.RefreshRuntimeSceneCaches();

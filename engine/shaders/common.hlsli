@@ -225,7 +225,7 @@ bool DitherKeep(float alpha, float2 pix)
 }
 
 // -------------------------------------------------------------------------
-// Dither-on-closeup (Scene::ditherCloseup; see scene.h): the flagged
+// Dither-on-closeup (TransformHierarchy::ditherCloseup; see scene.h): the flagged
 // subtree screen-doors away as the camera closes on its anchor — LOD-pop
 // hiding for impostors/foliage. The CPU routes the per-frame per-draw state
 // (DitherCloseupStateFor): Hidden draws are CPU-culled outright; Fade draws

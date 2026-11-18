@@ -351,7 +351,7 @@ void EditorApp::DrawOutlinerNode(uint32_t node, const std::unordered_set<uint32_
     if (m_deletedNodes.contains(node))
         return;                      // deleted (Maya delete): out of the live scene
     m_outlinerOrder.push_back(node); // visible-row order (shift-range)
-    const Scene& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->scene;
     const std::string name = getNodeName(scene, int(node));
     const bool hasMesh = FindMesh(scene, node) != nullptr;
     const bool sel = IsSelected(node);

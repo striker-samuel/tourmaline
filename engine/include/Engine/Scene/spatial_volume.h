@@ -26,7 +26,7 @@
 #include <cmath>
 #include <cstdint>
 
-namespace tour::scene {
+namespace tour::transformhierarchy {
 
 // One oriented box decoded from a node's global transform.
 struct SpatialVolumeBox {
@@ -118,4 +118,4 @@ struct SpatialVolumeBox {
     }
 }
 
-} // namespace tour::scene
+} // namespace tour::transformhierarchy

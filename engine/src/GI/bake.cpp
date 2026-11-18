@@ -900,7 +900,7 @@ namespace {
 // gate, the sun/spot/point mapping - is source-agnostic, so a cook
 // replay and a live editor snapshot treat lights identically.
 template <typename LightFn>
-GiStaticLightCounts CollectStaticBakeLightsImpl(const ::Scene& scene,
+GiStaticLightCounts CollectStaticBakeLightsImpl(const ::TransformHierarchy& scene,
                                                 LightFn&& lightAt,
                                                 GiTraceScene& out,
                                                 const glm::vec3& aimAxis,
@@ -1010,7 +1010,7 @@ namespace {
 // MatFn   (node, matIdx)         -> const Material*
 // LightFn (node, lightIdx)       -> const SceneLight*
 template <typename MeshFn, typename MatFn, typename LightFn>
-void AssembleTraceScene(const ::Scene& scene,
+void AssembleTraceScene(const ::TransformHierarchy& scene,
                         const GiSceneBuildOptions& opts,
                         GiTraceScene& out,
                         std::string& err,
@@ -1299,7 +1299,7 @@ void BuildTraceSceneFromCluster(WorldPage& cluster,
                                 const GiSceneBuildOptions& opts,
                                 GiTraceScene& out,
                                 std::string& err) {
-    ::Scene& scene = cluster.scene;
+    ::TransformHierarchy& scene = cluster.scene;
     recalculateGlobalTransforms(scene);
     AssembleTraceScene(
         scene,
@@ -1333,7 +1333,7 @@ void ExtractTraceSceneFromWorld(World& world,
                                 const GiSceneBuildOptions& opts,
                                 GiTraceScene& out,
                                 std::string& err) {
-    ::Scene& scene = world.scene;
+    ::TransformHierarchy& scene = world.scene;
     // The merged scene's globals are the authoritative node transforms
     // (the editor keeps them current, but a snapshot must never trust an
     // incremental update it did not observe) - the same call the cook

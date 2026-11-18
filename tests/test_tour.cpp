@@ -128,19 +128,19 @@ void TestRoundTrip() {
     r.attr = smvk::tour::OverrideAttr::Plug;
     r.pattern = "Body.*";
     r.plug = "physics.mass";
-    r.value = tour::scene::plugs::Value::Number(12.5);
+    r.value = tour::transformhierarchy::plugs::Value::Number(12.5);
     doc.overrides.push_back(r);
     r = smvk::tour::OverrideRule{};
     r.attr = smvk::tour::OverrideAttr::Plug;
     r.pattern = "Sensor.*";
     r.plug = "trigger.enabled";
-    r.value = tour::scene::plugs::Value::Bool(false);
+    r.value = tour::transformhierarchy::plugs::Value::Bool(false);
     doc.overrides.push_back(r);
     r = smvk::tour::OverrideRule{};
     r.attr = smvk::tour::OverrideAttr::Plug;
     r.pattern = "Sensor.*";
     r.plug = "trigger.tag";
-    r.value = tour::scene::plugs::Value::String("Zone A");
+    r.value = tour::transformhierarchy::plugs::Value::String("Zone A");
     doc.overrides.push_back(r);
     doc.connections.push_back({{7, "physics.mass"}, {9, "physics.mass"}});
     // Cook/export knobs ride the scene's exportSettings NODE: a createNode
@@ -269,13 +269,14 @@ void TestRoundTrip() {
         Check(!smvk::tour::OverridePatternMatches("([bad", "anything"), "tour override bad regex");
         Check(back.overrides[2].attr == smvk::tour::OverrideAttr::Plug &&
                   back.overrides[2].plug == "physics.mass" &&
-                  back.overrides[2].value == tour::scene::plugs::Value::Number(12.5),
+                  back.overrides[2].value == tour::transformhierarchy::plugs::Value::Number(12.5),
               "tour numeric plug override round trip");
         Check(back.overrides[3].plug == "trigger.enabled" &&
-                  back.overrides[3].value == tour::scene::plugs::Value::Bool(false),
+                  back.overrides[3].value == tour::transformhierarchy::plugs::Value::Bool(false),
               "tour boolean plug override round trip");
         Check(back.overrides[4].plug == "trigger.tag" &&
-                  back.overrides[4].value == tour::scene::plugs::Value::String("Zone A"),
+                  back.overrides[4].value ==
+                      tour::transformhierarchy::plugs::Value::String("Zone A"),
               "tour string plug override round trip");
     }
     Check(back.connections.size() == 1 && back.connections[0].source.node == 7 &&
@@ -407,7 +408,7 @@ void TestUnknownVerbSkipped() {
 }
 
 void TestReparent() {
-    Scene s{};
+    TransformHierarchy s{};
     const int root = addNode(s, -1, 0);
     const int a = addNode(s, root, 1);
     const int b = addNode(s, root, 1);
@@ -2162,7 +2163,7 @@ void TestIdentityLayers() {
     setNodeName(cluster->scene, meshA, "Mesh");
     setNodeName(cluster->scene, meshB, "Mesh");
     setNodeName(cluster->scene, solo, "Solo");
-    Scene& scene = cluster->scene;
+    TransformHierarchy& scene = cluster->scene;
     // MDagPath: full path (unnamed root contributes nothing)...
     Check(smvk::tour::DagFullPath(scene, uint32_t(meshA)) ==
               getNodeName(scene, root) + "/grpA/Mesh",
@@ -2895,10 +2896,11 @@ void TestAudioRoom() {
         std::string rerr;
         Check(smvk::tour::ApplyTourToCluster(*cluster, back, &rw, &rerr), "room replay ok");
         Check(cluster->scene.hierarchy.size() == 2, "room replay node");
-        const tour::scene::AudioRoomRow* it = tour::scene::FindAudioRoom(cluster->scene, 1);
+        const tour::transformhierarchy::AudioRoomRow* it =
+            tour::transformhierarchy::FindAudioRoom(cluster->scene, 1);
         Check(it != nullptr, "room replay link");
         if (it != nullptr) {
-            const tour::scene::SceneAudioRoom& def = it->room;
+            const tour::transformhierarchy::SceneAudioRoom& def = it->room;
             Check(def.rt60 == 1.9f && def.wet == 0.32f && def.damping == 0.65f &&
                       def.priority == 5 && def.enabled && def.insideFade == 0.30f,
                   "room replay payload");
@@ -2946,9 +2948,10 @@ void TestAudioRoom() {
             Check(smvk::tour::ApplyTourToCluster(*cluster, gd, &rw, &rerr),
                   "room attach replay ok");
             Check(FindGiVolume(cluster->scene, 1) != nullptr &&
-                      tour::scene::FindAudioRoom(cluster->scene, 1) != nullptr,
+                      tour::transformhierarchy::FindAudioRoom(cluster->scene, 1) != nullptr,
                   "room attach coexists with givolume");
-            const tour::scene::AudioRoomRow* row = tour::scene::FindAudioRoom(cluster->scene, 1);
+            const tour::transformhierarchy::AudioRoomRow* row =
+                tour::transformhierarchy::FindAudioRoom(cluster->scene, 1);
             Check(row && row->room.rt60 == 2.4f, "room attach attr applies");
         }
         // Save + reload round-trips the -owner addressing.
@@ -2976,7 +2979,7 @@ void TestAudioRoom() {
             Check(smvk::tour::ApplyTourToCluster(*cluster, gd, &rw, &rerr),
                   "room remove replay ok");
             Check(FindGiVolume(cluster->scene, 1) != nullptr &&
-                      tour::scene::FindAudioRoom(cluster->scene, 1) == nullptr,
+                      tour::transformhierarchy::FindAudioRoom(cluster->scene, 1) == nullptr,
                   "room remove leaves the givolume");
         }
     }
@@ -4120,13 +4123,13 @@ void TestTourFuzz() {
               << " binds=" << nestBinds << "\n";
 }
 
-// Dither-on-closeup (Scene::ditherCloseup): the per-frame per-draw state
+// Dither-on-closeup (TransformHierarchy::ditherCloseup): the per-frame per-draw state
 // walk (DitherCloseupStateFor) — the band edges measured from the camera
 // to the FLAGGED ancestor's world translate, subtree inheritance, the
 // nearest-flagged-ancestor rule, the empty-table fast path, and the
 // setDitherCloseup tour verb round-trip that authors the flag.
 void TestDitherCloseup() {
-    Scene scene;
+    TransformHierarchy scene;
     const int root = addNode(scene, -1, 0);
     const int grp = addNode(scene, root, 1);
     const int mesh = addNode(scene, grp, 2);
@@ -4208,7 +4211,7 @@ void TestDitherCloseup() {
 // future per-node flag must keep ALL of these sites additive.
 void TestSceneFlagTables() {
     // --- create: addNode grows BOTH tables with the hierarchy ---
-    Scene scene;
+    TransformHierarchy scene;
     const int root = addNode(scene, -1, 0);
     const int a = addNode(scene, root, 1);
     const int b = addNode(scene, root, 1);
@@ -4250,19 +4253,19 @@ void TestSceneFlagTables() {
           "flagtables reuse relinked under root");
 
     // --- merge: mergeScenes carries BOTH tables across sources ---
-    Scene s0;
+    TransformHierarchy s0;
     {
         const int r = addNode(s0, -1, 0);
         const int n = addNode(s0, r, 1);
         MarkDitherCloseup(s0, n);
         MarkCastsVolumetricShadow(s0, r);
     }
-    Scene s1;
+    TransformHierarchy s1;
     {
         const int r = addNode(s1, -1, 0);
         MarkCastsVolumetricShadow(s1, r);
     }
-    Scene merged;
+    TransformHierarchy merged;
     mergeScenes(
         merged, {&s0, &s1}, {glm::mat4(1.0f), glm::mat4(1.0f)}, {0u, 0u}, false, false, false);
     // FLAT MERGE (no synthetic "World" root): 0..1 = s0 (ids NOT
@@ -4305,7 +4308,7 @@ void TestSceneFlagTables() {
     SetNodeNameIndex(scene, 2, rootName);
     {
         saveScene(TempTour().c_str(), scene);
-        Scene loaded;
+        TransformHierarchy loaded;
         loadScene(TempTour().c_str(), loaded);
         Check(loaded.hierarchy.size() == 2 && LiveNodeCount(loaded) == 2,
               "flagtables roundtrip compacts to dense");
@@ -4401,7 +4404,7 @@ void TestMaterialContactFlag() {
 }
 
 void TestLightmapOptIn() {
-    Scene scene;
+    TransformHierarchy scene;
     const int root = addNode(scene, -1, 0);
     const int grp = addNode(scene, root, 1);
     const int mesh = addNode(scene, grp, 2);
@@ -4562,7 +4565,7 @@ void TestPhysicsAuthoring() {
     cluster->SetOfflineMode(true);
     addNode(cluster->scene, -1, 0);
     Check(ApplyTourToCluster(*cluster, loaded, nullptr, &err), "physics: cook replay");
-    const auto* row = tour::scene::FindPhysicsBody(cluster->scene, 0);
+    const auto* row = tour::transformhierarchy::FindPhysicsBody(cluster->scene, 0);
     Check(row && row->body.motion == 1 && row->body.shape == 2 && row->body.sensor &&
               row->body.mass == 12.5f && row->body.radius == 0.75f,
           "physics: replay body properties");
@@ -4678,7 +4681,7 @@ void TestReferenceNamespaceFuzz() {
 
 void TestMayaNodeNamePropagation() {
     using namespace smvk::tour;
-    Scene scene;
+    TransformHierarchy scene;
     const int root = addNode(scene, -1, 0);
     const int a = addNode(scene, root, 1);
     const int b = addNode(scene, root, 1);

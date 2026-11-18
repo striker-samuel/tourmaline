@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // Editor environment (IBL) settings: viewport lighting lives in the
-// SCENE (smvktour::scene::SceneEnv blocks — the scene default, plus per-node
+// SCENE (smvktour::transformhierarchy::SceneEnv blocks — the scene default, plus per-node
 // ENVIRONMENT NODES; skybox + EV/volumetrics authoring; position = node
 // translate, size = node scale; convex-volume rendering comes later).
 // The current source feeds every viewport straight from the scene.
@@ -71,7 +71,7 @@ void EditorApp::ResolveSceneEnv() {
     // writer besides the tour/cook loaders.
     if (!m_world)
         return;
-    const tour::scene::SceneEnv* src = &m_world->scene.defaultEnvironment;
+    const tour::transformhierarchy::SceneEnv* src = &m_world->scene.defaultEnvironment;
     if (m_envCurrent != UINT32_MAX) {
         auto it = FindEnv(m_world->scene, m_envCurrent);
         if (it)
@@ -1250,47 +1250,49 @@ void EditorApp::SaveEnvToDoc(smvk::tour::Doc& doc) const {
     put("daynight.year", std::to_string(m_dayNight.year));
     put("daynight.month", std::to_string(m_dayNight.month));
     put("daynight.day", std::to_string(m_dayNight.day));
-    auto saveEnv =
-        [&](const std::string& prefix, uint32_t clusterNode, const tour::scene::SceneEnv& e) {
-            if (clusterNode != UINT32_MAX)
-                put(prefix + ".node", std::to_string(clusterNode));
-            put(prefix + ".skyColor", Vec3Str(e.skyColor));
-            put(prefix + ".skyIntensity", std::to_string(e.skyIntensity));
-            put(prefix + ".sunColor", Vec3Str(e.sunColor));
-            put(prefix + ".sunAzimuth", std::to_string(e.sunAzimuth));
-            put(prefix + ".sunElevation", std::to_string(e.sunElevation));
-            put(prefix + ".sunIntensity", std::to_string(e.sunIntensity));
-            put(prefix + ".exposure", std::to_string(e.exposure));
-            // Fog quality tiers (see tour::scene::SceneEnv): 0 = off, 1 = analytic (the
-            // cheap fallback), 2 = volumetric (the raymarched pass).
-            put(prefix + ".fogQuality", std::to_string(e.fogQuality));
-            put(prefix + ".fogDensity", std::to_string(e.fogDensity));
-            put(prefix + ".fogColor", Vec3Str(e.fogColor));
-            // Volumetric fog (the App's pass seeds from these — the same
-            // settings its panel exposes; "volumetrics" is the master:
-            // 0 = off, else the scattering intensity).
-            put(prefix + ".volumetrics", std::to_string(e.volumetrics));
-            put(prefix + ".volSteps", std::to_string(e.volumetricSteps));
-            put(prefix + ".volMaxDistance", std::to_string(e.volumetricMaxDistance));
-            put(prefix + ".volDensity", std::to_string(e.volumetricDensity));
-            put(prefix + ".volAnisotropy", std::to_string(e.volumetricAnisotropy));
-            put(prefix + ".volSun", std::to_string(e.volumetricSun));
-            put(prefix + ".volGi", std::to_string(e.volumetricGi));
-            put(prefix + ".volUseGi", e.volumetricUseGi ? "1" : "0");
-            put(prefix + ".volUseSun", e.volumetricUseSun ? "1" : "0");
-            put(prefix + ".volJitter", std::to_string(e.volumetricJitter));
-            put(prefix + ".volHeightFalloff", std::to_string(e.volumetricHeightFalloff));
-            put(prefix + ".volHeightBase", std::to_string(e.volumetricHeightBase));
-            // Postfx look: SPLIT OUT — env blocks save environment only
-            // (the look saves once, scene-level, as render.* below). Zone
-            // priority rides the env block (it IS environment).
-            put(prefix + ".zonePriority", std::to_string(e.zonePriority));
-            put(prefix + ".skyboxUri", e.skyboxUri);
-        };
+    auto saveEnv = [&](const std::string& prefix,
+                       uint32_t clusterNode,
+                       const tour::transformhierarchy::SceneEnv& e) {
+        if (clusterNode != UINT32_MAX)
+            put(prefix + ".node", std::to_string(clusterNode));
+        put(prefix + ".skyColor", Vec3Str(e.skyColor));
+        put(prefix + ".skyIntensity", std::to_string(e.skyIntensity));
+        put(prefix + ".sunColor", Vec3Str(e.sunColor));
+        put(prefix + ".sunAzimuth", std::to_string(e.sunAzimuth));
+        put(prefix + ".sunElevation", std::to_string(e.sunElevation));
+        put(prefix + ".sunIntensity", std::to_string(e.sunIntensity));
+        put(prefix + ".exposure", std::to_string(e.exposure));
+        // Fog quality tiers (see tour::transformhierarchy::SceneEnv): 0 = off, 1 = analytic (the
+        // cheap fallback), 2 = volumetric (the raymarched pass).
+        put(prefix + ".fogQuality", std::to_string(e.fogQuality));
+        put(prefix + ".fogDensity", std::to_string(e.fogDensity));
+        put(prefix + ".fogColor", Vec3Str(e.fogColor));
+        // Volumetric fog (the App's pass seeds from these — the same
+        // settings its panel exposes; "volumetrics" is the master:
+        // 0 = off, else the scattering intensity).
+        put(prefix + ".volumetrics", std::to_string(e.volumetrics));
+        put(prefix + ".volSteps", std::to_string(e.volumetricSteps));
+        put(prefix + ".volMaxDistance", std::to_string(e.volumetricMaxDistance));
+        put(prefix + ".volDensity", std::to_string(e.volumetricDensity));
+        put(prefix + ".volAnisotropy", std::to_string(e.volumetricAnisotropy));
+        put(prefix + ".volSun", std::to_string(e.volumetricSun));
+        put(prefix + ".volGi", std::to_string(e.volumetricGi));
+        put(prefix + ".volUseGi", e.volumetricUseGi ? "1" : "0");
+        put(prefix + ".volUseSun", e.volumetricUseSun ? "1" : "0");
+        put(prefix + ".volJitter", std::to_string(e.volumetricJitter));
+        put(prefix + ".volHeightFalloff", std::to_string(e.volumetricHeightFalloff));
+        put(prefix + ".volHeightBase", std::to_string(e.volumetricHeightBase));
+        // Postfx look: SPLIT OUT — env blocks save environment only
+        // (the look saves once, scene-level, as render.* below). Zone
+        // priority rides the env block (it IS environment).
+        put(prefix + ".zonePriority", std::to_string(e.zonePriority));
+        put(prefix + ".skyboxUri", e.skyboxUri);
+    };
     // Sceneless save (shouldn't happen — tours save scenes): struct
     // defaults stand in for the scene blocks.
-    const tour::scene::SceneEnv sceneDefault{};
-    const tour::scene::SceneEnv& def = m_world ? m_world->scene.defaultEnvironment : sceneDefault;
+    const tour::transformhierarchy::SceneEnv sceneDefault{};
+    const tour::transformhierarchy::SceneEnv& def =
+        m_world ? m_world->scene.defaultEnvironment : sceneDefault;
     saveEnv("env.default", UINT32_MAX, def);
     // Sort env nodes for deterministic files.
     std::vector<uint32_t> nodes;
@@ -1403,7 +1405,7 @@ void EditorApp::LoadEnvFromDoc(const smvk::tour::Doc& doc) {
     // Do not change SceneRenderSettings' runtime/App default.
     scene.defaultRenderSettings.autoExposure = false;
     scene.tables.envs.clear();
-    scene.envZonesEnabled = true; // absent key = auto-on (Scene default)
+    scene.envZonesEnabled = true; // absent key = auto-on (TransformHierarchy default)
     m_envCurrent = UINT32_MAX;
     EditorEnv def = scene.defaultEnvironment;
     std::vector<std::pair<uint32_t, EditorEnv>> nodeEnvs;
@@ -1441,7 +1443,7 @@ void EditorApp::LoadEnvFromDoc(const smvk::tour::Doc& doc) {
             e.sunIntensity = StrFloat(v, e.sunIntensity);
         else if (f == "exposure")
             e.exposure = StrFloat(v, e.exposure);
-        // Fog quality tiers (see tour::scene::SceneEnv) + the volumetric knobs (the
+        // Fog quality tiers (see tour::transformhierarchy::SceneEnv) + the volumetric knobs (the
         // App's pass seeds from them — "volumetrics" is the master:
         // 0 = off, else the scattering intensity).
         else if (f == "fogQuality")
@@ -1690,7 +1692,7 @@ void EditorApp::LoadDefaultCameraFromDoc(const smvk::tour::Doc& doc) {
     m_defaultCameraNode = UINT32_MAX;
     if (!m_world)
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     for (const auto& [key, val] : doc.editorSettings) {
         if (key != "camera.default" || val.empty())
             continue;

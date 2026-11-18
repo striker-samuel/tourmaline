@@ -13,7 +13,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace tour::scene::memory {
+namespace tour::transformhierarchy::memory {
 
 enum class GpuSemantic : uint8_t { Mesh, Lod, Submesh, Instance, Leaf, LeafMember };
 
@@ -90,4 +90,4 @@ struct GpuView {
               gLeafMember + 4}}};
 }
 
-} // namespace tour::scene::memory
+} // namespace tour::transformhierarchy::memory

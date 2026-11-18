@@ -96,7 +96,7 @@ void EditorApp::DrawInspector() {
             "top of the outliner.");
         return;
     }
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     const uint32_t node = m_selected;
     const attr::ScopedID nodeId{int(node)};
     // Highlight properties at their edit sites (local overrides win
@@ -177,7 +177,7 @@ void EditorApp::DrawInspector() {
     const attr::ScopedOverrideLabels highlightedProperties(&provenance);
     if (m_selection.size() > 1)
         ImGui::TextDisabled("multi-select: %zu nodes (primary #%u)", m_selection.size(), node);
-    // Hierarchy breadcrumb from the root to the selected node.
+    // NodeLinks breadcrumb from the root to the selected node.
     std::vector<uint32_t> ancestry;
     int current = int(node);
     for (size_t depth = 0;
@@ -286,8 +286,8 @@ void EditorApp::DrawInspector() {
     // mask belongs to the NODE, so separate instances of one mesh can link
     // to different lights. Hexadecimal input exposes all 32 bits directly.
     {
-        uint32_t receiveMask = node < scene.metadata.size()
-                                   ? scene.metadata[node].lightLayerMask : 0xffffffffu;
+        uint32_t receiveMask =
+            node < scene.metadata.size() ? scene.metadata[node].lightLayerMask : 0xffffffffu;
         if (ImGui::InputScalar("Receive light channels",
                                ImGuiDataType_U32,
                                &receiveMask,
@@ -300,8 +300,8 @@ void EditorApp::DrawInspector() {
             c.node = node;
             c.lightAttr = "receiverMask";
             c.number = double(receiveMask);
-            ReadNodeLightAttr(node, "receiverMask", c.beforeVec4, c.beforeNum,
-                              c.beforeFlag, c.beforeText);
+            ReadNodeLightAttr(
+                node, "receiverMask", c.beforeVec4, c.beforeNum, c.beforeFlag, c.beforeText);
             Do(c);
         }
         if (ImGui::IsItemHovered())
@@ -330,8 +330,12 @@ void EditorApp::DrawInspector() {
                 edit.node = node;
                 edit.lightAttr = "layerMask";
                 edit.number = double(emitMask);
-                ReadNodeLightAttr(node, "layerMask", edit.beforeVec4,
-                                  edit.beforeNum, edit.beforeFlag, edit.beforeText);
+                ReadNodeLightAttr(node,
+                                  "layerMask",
+                                  edit.beforeVec4,
+                                  edit.beforeNum,
+                                  edit.beforeFlag,
+                                  edit.beforeText);
                 Do(edit);
             }
             if (ImGui::IsItemHovered())
@@ -614,7 +618,7 @@ void EditorApp::DrawInspector() {
 
     ImGui::SeparatorText("Node flags");
     // Static subtree (transform freeze): the root mark affects the WHOLE
-    // tree (Scene::staticRoot) — frozen transforms after the initial
+    // tree (TransformHierarchy::staticRoot) — frozen transforms after the initial
     // build (skip per-frame updates + BVH rebuilds) + mega-mesh collapse
     // eligibility at cook.
     {
@@ -870,14 +874,14 @@ void EditorApp::DrawInspector() {
         const ComponentChoice choices[] = {
             {"Physics Body",
              EditVerb::AttachPhysicsBody,
-             tour::scene::FindPhysicsBody(scene, node) != nullptr},
+             tour::transformhierarchy::FindPhysicsBody(scene, node) != nullptr},
             {"Trigger Volume",
              EditVerb::AttachTriggerVolume,
-             tour::scene::FindTriggerVolume(scene, node) != nullptr},
+             tour::transformhierarchy::FindTriggerVolume(scene, node) != nullptr},
             {"GI Volume", EditVerb::AttachGiVolume, FindGiVolume(scene, node) != nullptr},
             {"Audio Room",
              EditVerb::AttachAudioRoom,
-             tour::scene::FindAudioRoom(scene, node) != nullptr},
+             tour::transformhierarchy::FindAudioRoom(scene, node) != nullptr},
         };
         bool any = false;
         for (const ComponentChoice& choice : choices) {

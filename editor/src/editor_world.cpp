@@ -29,7 +29,7 @@ void EditorApp::RenameNode(uint32_t node, const std::string& name) {
 void EditorApp::ReparentNode(uint32_t node, uint32_t newParent) {
     if (!m_world)
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     if (node >= scene.hierarchy.size() || newParent >= scene.hierarchy.size())
         return;
     // Authoring can reparent freely within the same ownership region.
@@ -51,7 +51,7 @@ void EditorApp::RefreshNodeDrawState(uint32_t node) {
         return;
     if (m_deletedNodes.contains(node))
         return; // deleted: links stay dropped (no wide-override resurrect)
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     if (!FindMesh(scene, node))
         return;
     smvk::IteratorFlags f = smvk::IteratorFlags(smvk::IteratorFlagBit_Renderable |
@@ -116,7 +116,7 @@ const ::SceneLight* EditorApp::FindNodeLight(uint32_t node, glm::vec3* outAimWs)
         *outAimWs = glm::vec3(0.0f);
     if (!m_world || node >= m_world->scene.hierarchy.size())
         return nullptr;
-    const Scene& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->scene;
     auto lit = FindLight(scene, node);
     if (!lit || lit->light >= m_world->lightLocations.size())
         return nullptr;
@@ -142,7 +142,7 @@ const ::SceneLight* EditorApp::FindNodeLight(uint32_t node, glm::vec3* outAimWs)
 const ::SceneCamera* EditorApp::FindNodeCamera(uint32_t node) const {
     if (!m_world || node >= m_world->scene.hierarchy.size())
         return nullptr;
-    const Scene& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->scene;
     auto cit = FindCamera(scene, node);
     if (!cit || cit->camera >= m_world->cameraLocations.size())
         return nullptr;
@@ -179,7 +179,7 @@ void EditorApp::RebuildCookedLights() {
     m_cookedStaticSkipped = 0;
     if (!m_world)
         return;
-    const Scene& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->scene;
     if (scene.tables.lights.empty()) {
         Log("Cooked lights: none (viewport sun default).");
         return;
@@ -204,7 +204,7 @@ void EditorApp::RebuildCookedLights() {
                 continue;
             const glm::vec3 toSun = -aimWs;
             m_cookedSunName = l->name.empty() ? ("node " + std::to_string(node)) : l->name;
-            tour::scene::SceneEnv& env =
+            tour::transformhierarchy::SceneEnv& env =
                 m_world->scene.defaultEnvironment; // seed the scene default
             env.sunAzimuth = glm::degrees(std::atan2(toSun.x, toSun.z));
             if (env.sunAzimuth < 0.0f)

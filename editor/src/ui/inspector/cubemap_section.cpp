@@ -63,7 +63,7 @@ void EditorApp::DrawCubemapSection(uint32_t node) {
     // as a 'pin' row (wins weight ties at load).
     if (!m_world || node >= m_world->scene.hierarchy.size())
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     auto it = FindCubemap(scene, node);
     if (!it)
         return;

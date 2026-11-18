@@ -745,7 +745,7 @@ struct ResolvedSceneLights {
     // World-space static lights, spots FIRST (per-tile lists keep only
     // the first FP_MAX_PER_TILE passing lights — cone lights must not
     // compete with the point crowd for those slots).
-    // No sun flag: the scene env ALWAYS carries sun values (tour::scene::SceneEnv
+    // No sun flag: the scene env ALWAYS carries sun values (tour::transformhierarchy::SceneEnv
     // defaults) and a resolved directional overwrites them at bind time —
     // there is no authored-vs-default sun state to retain. The election
     // lives in RefreshSceneLights locals and dies on return.
@@ -2043,7 +2043,7 @@ class WorldRenderer : public IRenderer {
     void SetWireframe(bool v) {
         m_wireframe = v;
     }
-    void PushVolumetricEnv(const tour::scene::SceneEnv& env) {
+    void PushVolumetricEnv(const tour::transformhierarchy::SceneEnv& env) {
         const bool volTier = env.fogQuality == 2 && env.volumetrics > 0.0f;
         m_volumetricEnabled = volTier;
         if (volTier) {
@@ -2080,7 +2080,8 @@ class WorldRenderer : public IRenderer {
     // probe pre-mix, EVSM) are HOST-OWNED session state — the editor's
     // PushRenderQuality prefs, the App's panels/keys, the TOURMALINE_*
     // pins — and never scene content (see RenderQualityConfig).
-    void PushPostfxEnv(const SceneRenderSettings& r, const tour::scene::SceneEnv& env) {
+    void PushPostfxEnv(const SceneRenderSettings& r,
+                       const tour::transformhierarchy::SceneEnv& env) {
         m_bloomEnabled = r.bloomEnabled;
         m_bloomIntensity = std::clamp(r.bloomIntensity, 0.0f, 2.0f);
         m_bloomThreshold = std::max(r.bloomThreshold, 0.0f);
@@ -5014,7 +5015,7 @@ class WorldRenderer : public IRenderer {
     // by TILE ADDRESS. ALWAYS ON: the base record ([0], the scene's DEFAULT
     // environment, the old zone-zero) is the weight-1 fallback everywhere
     // (out-of-grid included). The old runtime toggle (m_envZonesEnabled)
-    // and the authored Scene::envZonesEnabled master switch are retired —
+    // and the authored TransformHierarchy::envZonesEnabled master switch are retired —
     // the field stays on the tour/pak wire (forced true at every read) for
     // format compatibility.
     engine::worldpartition::WorldEnvTiles m_envTiles;

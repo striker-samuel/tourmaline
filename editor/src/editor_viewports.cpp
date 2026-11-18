@@ -947,7 +947,7 @@ void EditorApp::DrawGiVolumePreviewOverlay() {
             // Authored boxes already draw as 3D gizmo wires; the
             // overlay contributes the name/priority tag at the box
             // center (same priority hue both places).
-            const Scene& scene = m_world->scene;
+            const TransformHierarchy& scene = m_world->scene;
             for (const GiVolumeRow& _row : scene.tables.giVolumes) {
                 const NodeId node = _row.node;
                 const auto& def = _row.volume;
@@ -991,7 +991,7 @@ void EditorApp::UpdateOctreePreview() {
     // scenes still frame their volumes).
     glm::vec3 mn(FLT_MAX), mx(-FLT_MAX);
     bool any = false;
-    const Scene& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->scene;
     if (scene.globalTransform.size() == scene.hierarchy.size()) {
         for (size_t n = 0; n < scene.globalTransform.size(); ++n) {
             const glm::vec3 p(scene.globalTransform[n][3]);
@@ -1300,7 +1300,7 @@ void EditorApp::DrawCaptureBallOverlay() {
         return false;
     };
     ImDrawList* dl = ImGui::GetForegroundDrawList();
-    const Scene& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->scene;
     const float maxDist = std::max(m_probeOverlayMaxDist, 1.0f);
     const float maxDist2 = maxDist * maxDist;
     // In-view witness (the viz window's legend): the busiest viewport's

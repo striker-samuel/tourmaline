@@ -2508,7 +2508,7 @@ bool WorldRenderer::onAttach() {
                 // ORTHO lens keeps the App's perspective defaults
                 // (the FPS camera has no ortho path - the pose still
                 // applies).
-                const ::Scene* fs = &m_world->scene;
+                const ::TransformHierarchy* fs = &m_world->scene;
                 const ::SceneCamera* defCam = nullptr;
                 if (fs->defaultCameraNode < fs->hierarchy.size()) {
                     // The camera table row on the default-camera
@@ -7097,18 +7097,18 @@ void WorldRenderer::ResolveSceneLights() {
     if (!m_world)
         return;
     // Volumetric fog state (the App panel's settings) seeds from the
-    // authored env ONCE per scene load/rebind (see tour::scene::SceneEnv - the
+    // authored env ONCE per scene load/rebind (see tour::transformhierarchy::SceneEnv - the
     // fog-quality volumetric tier; the panel stays live afterwards).
     // volumetrics is the master: 0 = off (the analytic tier or no
     // fog), else the scattering intensity; the vol* knobs load with
     // it. The runtime degrade (volumetric -> analytic when the pass
     // cannot run) lives at the frame-env build.
     if (m_world->scene.envAuthored) {
-        const tour::scene::SceneEnv& se = m_world->scene.environment;
+        const tour::transformhierarchy::SceneEnv& se = m_world->scene.environment;
         PushVolumetricEnv(se);
         // Postfx look seed (bloom/tonemap/exposure/AO/SSR/motion
         // blur/DOF/AA/cubemap - the App panels' settings): from the
-        // RENDER SETTINGS (the split look - Scene::renderSettings;
+        // RENDER SETTINGS (the split look - TransformHierarchy::renderSettings;
         // the env contributes only its viewport exposure fold).
         // Once per scene load/rebind, panels/keys live on.
         PushPostfxEnv(m_world->scene.renderSettings, se);
@@ -7169,7 +7169,7 @@ void WorldRenderer::ResolveSceneLights() {
 // (bind time only); the values are never retained in m_sceneLights.
 void WorldRenderer::RefreshSceneLights(bool log, bool seedEnvSun) {
     m_sceneLights.clear();
-    const ::Scene& scene = m_world->scene;
+    const ::TransformHierarchy& scene = m_world->scene;
     const auto& lightLocs = m_world->lightLocations;
     if (lightLocs.empty() || scene.tables.lights.empty()) {
         if (log)
@@ -7349,7 +7349,7 @@ void WorldRenderer::RefreshSceneLights(bool log, bool seedEnvSun) {
     // (old content without env blocks); a tour/cooked env always wins.
     if (seedEnvSun && sunTaken && m_world && !m_world->scene.envAuthored) {
         const glm::vec3 t = glm::normalize(electedSunDir);
-        tour::scene::SceneEnv& sceneEnv = m_world->scene.defaultEnvironment;
+        tour::transformhierarchy::SceneEnv& sceneEnv = m_world->scene.defaultEnvironment;
         sceneEnv.sunElevation = glm::degrees(std::asin(std::clamp(t.y, -1.0f, 1.0f)));
         sceneEnv.sunAzimuth = glm::degrees(std::atan2(t.x, t.z));
         sceneEnv.sunColor = electedSunColor;
@@ -8993,7 +8993,7 @@ void WorldRenderer::RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
         if (skipFiltered && m_gfxRenderer.GfxMeshForLod(
                                 item.mesh, LodIndexForNode(item.node, item.mesh)) != UINT32_MAX)
             return;
-        // Dither-on-closeup (Scene::ditherCloseup; per frame, per draw -
+        // Dither-on-closeup (TransformHierarchy::ditherCloseup; per frame, per draw -
         // the MAIN camera is the anchor eye even in light-view passes,
         // the fade follows what the camera sees): Hidden casters drop
         // out (a fully faded subtree casts nothing); Fade casters join
@@ -10248,7 +10248,7 @@ void WorldRenderer::PollCaptureReadback() {
     }
 }
 
-// Scene->frame environment mapping (see tour::scene::SceneEnv): the scene authors
+// Scene->frame environment mapping (see tour::transformhierarchy::SceneEnv): the scene authors
 // LUX-NATIVE intensities (sun 10000 / sky 600 defaults - the same units
 // this EnvironmentSettings and every bake use), so both ride through
 // UNCONVERTED - the env block is the single source of truth for the
@@ -10259,7 +10259,8 @@ void WorldRenderer::PollCaptureReadback() {
 // unlitKillSun mirrors the editor frame's Unlit handling (the Unlit
 // debug view replaces shading wholesale anyway; this keeps the lit
 // leftovers - transparents, particles - honest).
-static smvk::EnvironmentSettings MapSceneEnv(const tour::scene::SceneEnv& w, bool unlitKillSun) {
+static smvk::EnvironmentSettings MapSceneEnv(const tour::transformhierarchy::SceneEnv& w,
+                                             bool unlitKillSun) {
     smvk::EnvironmentSettings env{}; // engine defaults (disc, exponent, fog shape)
     env.skyEnabled = true;
     env.iblEnabled = true;
@@ -10274,7 +10275,7 @@ static smvk::EnvironmentSettings MapSceneEnv(const tour::scene::SceneEnv& w, boo
     env.sunIntensity = unlitKillSun ? 0.0f : w.sunIntensity;
     env.fogColor = w.fogColor;
     env.fogDensity = w.fogDensity;
-    // Fog quality tiers (see tour::scene::SceneEnv): the volumetric tier's fog renders
+    // Fog quality tiers (see tour::transformhierarchy::SceneEnv): the volumetric tier's fog renders
     // in the RAYMARCHED pass (the analytic fog stays off - both would
     // read twice); the analytic tier uses the exp2 distance fog (the
     // cheap fallback); off renders nothing. The runtime degrade (the
@@ -10393,7 +10394,7 @@ void WorldRenderer::UpdateEnvTiles(uint32_t currentFrame) {
         m_envTilesPublished = false;
         return;
     }
-    const ::Scene& scene = m_world->scene;
+    const ::TransformHierarchy& scene = m_world->scene;
 
     // ---- The dirty fingerprint: everything Build() reads. ----
     uint64_t hash = 2166136261u;
@@ -10412,7 +10413,7 @@ void WorldRenderer::UpdateEnvTiles(uint32_t currentFrame) {
             hash ^= std::hash<float>{}(f);
             hash *= 16777619ull;
         };
-        const auto mixEnv = [&](const tour::scene::SceneEnv& e) {
+        const auto mixEnv = [&](const tour::transformhierarchy::SceneEnv& e) {
             for (int c = 0; c < 3; ++c) {
                 mixF(e.skyColor[c]);
                 mixF(e.fogColor[c]);
@@ -11303,7 +11304,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     smvk::EnvironmentSettings frameEnv =
         m_world ? MapSceneEnv(m_world->scene.environment, m_debugView == ViewMode::Unlit)
                 : smvk::EnvironmentSettings{};
-    // Fog degrade (see tour::scene::SceneEnv::fogQuality): the VOLUMETRIC tier
+    // Fog degrade (see tour::transformhierarchy::SceneEnv::fogQuality): the VOLUMETRIC tier
     // falls back to the ANALYTIC exp2 fog when the raymarched pass
     // cannot run this frame (pass off / disabled / target missing /
     // zero density or intensity / a debug visualization would read
@@ -16731,7 +16732,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                   &lmTail,
                                   smvk::ShaderStage::All);
             }
-            // Dither-on-closeup (Scene::ditherCloseup; per frame, per
+            // Dither-on-closeup (TransformHierarchy::ditherCloseup; per frame, per
             // draw): Hidden draws never reach here (the leg loops skip
             // them below); Fade draws carry the per-draw flag
             // (PushConstants::padEnd_[0] - default.vert forwards it flat
@@ -17544,7 +17545,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 							return;
 					}
 #endif
-                    // Dither-on-closeup (Scene::ditherCloseup; per frame, per
+                    // Dither-on-closeup (TransformHierarchy::ditherCloseup; per frame, per
                     // draw): Hidden draws drop out of the direct leg entirely
                     // (the CPU cull - no leg sees them this frame; the filter
                     // makes the same call at registration, so both paths

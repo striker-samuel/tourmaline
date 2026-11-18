@@ -73,7 +73,7 @@ struct PushConstants
     // avoids SPIR-V's matrix-stride-12 decoration that spirv-val rejects
     // under the relaxed block-layout rules.
     float4 prevModel[3];
-    // .x: the DIRECT legs' per-draw dither-on-closeup flag (Scene::
+    // .x: the DIRECT legs' per-draw dither-on-closeup flag (TransformHierarchy::
     // ditherCloseup — the direct prepass/Main/shadow legs push it per
     // draw, 0/1; default.vert / shadow.vert forward it flat at VS
     // location 8 so the FS family reads one channel on both paths —

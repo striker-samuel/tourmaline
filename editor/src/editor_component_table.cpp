@@ -108,7 +108,7 @@ void EditorApp::DrawComponentTable() {
         ImGui::End();
         return;
     }
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     // A scene-relative component type determines the column schema,
     // just like choosing point/primitive/detail attributes in Houdini.
     static int kind = 0;
@@ -201,11 +201,11 @@ void EditorApp::DrawComponentTable() {
         case 0:
             return FindGiVolume(scene, node) != nullptr;
         case 1:
-            return tour::scene::FindAudioRoom(scene, node) != nullptr;
+            return tour::transformhierarchy::FindAudioRoom(scene, node) != nullptr;
         case 2:
             return FindAudioSource(scene, node) != nullptr;
         case 3:
-            return tour::scene::FindTriggerVolume(scene, node) != nullptr;
+            return tour::transformhierarchy::FindTriggerVolume(scene, node) != nullptr;
         case 4:
             return FindLight(scene, node) != nullptr;
         case 5:

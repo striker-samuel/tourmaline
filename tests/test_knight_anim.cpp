@@ -46,12 +46,12 @@ void Check(bool cond, const char* name) {
     }
 }
 
-std::string NodeName(const Scene& s, int n) {
+std::string NodeName(const TransformHierarchy& s, int n) {
     return (n >= 0 && n < int(s.hierarchy.size())) ? getNodeName(s, n) : "<none>";
 }
 
 // Walks n's ancestor chain (nearest first), "id:name" pairs.
-std::string ParentChain(const Scene& s, int n) {
+std::string ParentChain(const TransformHierarchy& s, int n) {
     std::ostringstream o;
     int cur = (n >= 0 && n < int(s.hierarchy.size())) ? s.hierarchy[size_t(n)].parent : -1;
     int guard = 0;
@@ -111,7 +111,7 @@ int main() {
     // Units sanity: the Body blob's bind AABB + the root local's scale
     // (the glTF is centimeter-authored; the heap must read METERS).
     {
-        const Scene& sc = c->scene;
+        const TransformHierarchy& sc = c->scene;
         const auto& g = asset.geometry[0];
         std::cout << "[knight] Body blob aabb min=(" << g.aabbMin.x << "," << g.aabbMin.y << ","
                   << g.aabbMin.z << ") max=(" << g.aabbMax.x << "," << g.aabbMax.y << ","
@@ -124,7 +124,7 @@ int main() {
                   << L[3].z << ")\n";
     }
 
-    const Scene& scene = c->scene;
+    const TransformHierarchy& scene = c->scene;
 
     // ---- 2) The id contract: .anim -joint ids vs findNodeByName -------
     // The .anim records (from the export run): pelvis 8, spine_01 9,

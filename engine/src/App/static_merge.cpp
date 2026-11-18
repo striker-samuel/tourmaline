@@ -15,7 +15,7 @@
 
 namespace smvk {
 
-std::vector<uint32_t> CollectStaticRenderNodes(const ::Scene& scene) {
+std::vector<uint32_t> CollectStaticRenderNodes(const ::TransformHierarchy& scene) {
     std::vector<uint32_t> out;
     for (uint32_t i = 0; i < (uint32_t)scene.hierarchy.size(); ++i) {
         if (i >= scene.staticNode.size() || scene.staticNode[i] == 0)
@@ -29,7 +29,7 @@ std::vector<uint32_t> CollectStaticRenderNodes(const ::Scene& scene) {
 
 StaticMergeResult CollapseStaticSubtrees(WorldPage& cluster, const StaticMergeOptions& opts) {
     StaticMergeResult result;
-    ::Scene& scene = cluster.scene;
+    ::TransformHierarchy& scene = cluster.scene;
 
     if (scene.staticRoot.size() != scene.hierarchy.size())
         RebuildStaticCache(scene);

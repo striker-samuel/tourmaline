@@ -43,7 +43,7 @@ int main() {
     // engine RNG plus the scene's generational identity, not pointer data.
     {
         tour::World world;
-        const int node = tour::scene::addNode(world.scene, -1, 0);
+        const int node = tour::transformhierarchy::addNode(world.scene, -1, 0);
         CHECK(node >= 0);
         auto before = tour::snapshot::WorldState(
             world, service, glm::vec3(1.0f, 2.0f, 3.0f), glm::vec3(0.0f, 0.0f, -1.0f));

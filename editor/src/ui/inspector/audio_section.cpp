@@ -67,7 +67,7 @@ void EditorApp::DrawAudioSection(uint32_t node) {
     // persisted as the tabulated tour verbs (cooks replay them).
     if (!m_world || node >= m_world->scene.hierarchy.size())
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     AudioSourceRow* it = FindAudioSource(scene, node);
     if (!it)
         return;

@@ -561,7 +561,7 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                 {
                     ImGui::Checkbox("Sky dome (K)", &m_skyEnabled);
                     if (m_world) {
-                        tour::scene::SceneEnv& se = m_world->scene.environment;
+                        tour::transformhierarchy::SceneEnv& se = m_world->scene.environment;
                         auto authored = [&]() { m_world->scene.envAuthored = true; };
                         ImGui::ColorEdit3("Sky color", &se.skyColor.x);
                         ImGui::DragFloat(
@@ -612,7 +612,7 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                         // lives inside the earlier `if (m_world)` scope, which
                         // MSVC leaks but GCC (correctly) does not - the Linux CI
                         // build failed with "'se' was not declared in this scope".
-                        tour::scene::SceneEnv& se = m_world->scene.environment;
+                        tour::transformhierarchy::SceneEnv& se = m_world->scene.environment;
                         auto authored = [&]() { m_world->scene.envAuthored = true; };
                         static const char* const kVolNames[5] = {"Low (8 steps)",
                                                                  "Medium (16 steps)",
@@ -2648,10 +2648,10 @@ void WorldRenderer::DrawWorldMapWindow() {
     uint32_t nZones = 0, nZonesOff = 0, nGiVolumes = 0, nProbes = 0, nLights = 0, nDecals = 0;
     // ---- Env volumes: OBB XZ footprints + inf-face arrows ---------
     if (m_worldMapEnvVolumes && m_world) {
-        const ::Scene& scene = m_world->scene;
+        const ::TransformHierarchy& scene = m_world->scene;
         for (const EnvRow& envRow : scene.tables.envs) {
             const NodeId node = envRow.node;
-            const tour::scene::SceneEnv& env = envRow.environment;
+            const tour::transformhierarchy::SceneEnv& env = envRow.environment;
             if (node >= scene.globalTransform.size())
                 continue;
             ++nZones;
@@ -2723,7 +2723,7 @@ void WorldRenderer::DrawWorldMapWindow() {
     }
     // ---- GI volumes -----------------------------------------------
     if (m_worldMapGiVolumes && m_world) {
-        const ::Scene& scene = m_world->scene;
+        const ::TransformHierarchy& scene = m_world->scene;
         for (const GiVolumeRow& giRow : scene.tables.giVolumes) {
             const NodeId node = giRow.node;
             if (node >= scene.globalTransform.size())

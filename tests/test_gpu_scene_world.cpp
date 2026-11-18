@@ -846,7 +846,7 @@ int main() {
 
     // Recalculation clears the existing dirty-at-level queues, but the
     // GPU scene journal keeps the successfully recomputed parent + child.
-    Scene scene{};
+    TransformHierarchy scene{};
     int parent = addNode(scene, -1, 0);
     int child = addNode(scene, parent, 1);
     scene.localTransform[parent][3] = glm::vec4(1, 2, 3, 1);

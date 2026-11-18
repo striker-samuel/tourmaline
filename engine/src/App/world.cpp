@@ -212,7 +212,7 @@ NodeId World::CreateDecalAt(const glm::mat4& frame, SceneDecal def) {
     const int cnode = addNode(dyn.scene, -1, 0);
     if (cnode < 0)
         return UINT32_MAX;
-    (void)tour::scene::SetLocalTransform(
+    (void)tour::transformhierarchy::SetLocalTransform(
         dyn.scene, MakeNodeHandle(dyn.scene, uint32_t(cnode)), frame);
     dyn.scene.globalTransform[size_t(cnode)] = frame;
     if (!def.name.empty()) {
@@ -234,7 +234,8 @@ NodeId World::CreateDecalAt(const glm::mat4& frame, SceneDecal def) {
     const int mnode = addNode(scene, -1, 0);
     if (mnode < 0)
         return UINT32_MAX;
-    (void)tour::scene::SetLocalTransform(scene, MakeNodeHandle(scene, uint32_t(mnode)), frame);
+    (void)tour::transformhierarchy::SetLocalTransform(
+        scene, MakeNodeHandle(scene, uint32_t(mnode)), frame);
     scene.globalTransform[size_t(mnode)] = frame;
     {
         const uint32_t cnameIdx = GetNodeNameIndex(dyn.scene, uint32_t(cnode));
@@ -267,7 +268,7 @@ AudioSourceHandle World::SpawnAudioSource(const glm::mat4& localFrame,
     const int cnode = addNode(dyn.scene, -1, 0);
     if (cnode < 0)
         return {};
-    (void)tour::scene::SetLocalTransform(
+    (void)tour::transformhierarchy::SetLocalTransform(
         dyn.scene, MakeNodeHandle(dyn.scene, uint32_t(cnode)), localFrame);
     dyn.scene.globalTransform[size_t(cnode)] = localFrame;
     SetAudioSource(dyn.scene, NodeId(cnode), def);
@@ -276,7 +277,7 @@ AudioSourceHandle World::SpawnAudioSource(const glm::mat4& localFrame,
     const int mnode = addNode(scene, -1, 0);
     NodeId merged = UINT32_MAX;
     if (mnode >= 0) {
-        (void)tour::scene::SetLocalTransform(
+        (void)tour::transformhierarchy::SetLocalTransform(
             scene, MakeNodeHandle(scene, uint32_t(mnode)), localFrame);
         scene.globalTransform[size_t(mnode)] = localFrame;
         SetAudioSource(scene, NodeId(mnode), def);
@@ -437,7 +438,7 @@ MeshEntityHandle World::SpawnMeshEntityInternal(const MeshLocation& meshLoc,
     const int cnode = addNode(dyn.scene, -1, 0);
     if (cnode < 0)
         return {};
-    (void)tour::scene::SetLocalTransform(
+    (void)tour::transformhierarchy::SetLocalTransform(
         dyn.scene, MakeNodeHandle(dyn.scene, uint32_t(cnode)), frame);
     dyn.scene.globalTransform[size_t(cnode)] = frame;
     // (the durable node roots at the cluster root; the resolved
@@ -448,7 +449,8 @@ MeshEntityHandle World::SpawnMeshEntityInternal(const MeshLocation& meshLoc,
     NodeId merged = UINT32_MAX;
     const int mnode = addNode(scene, -1, 0);
     if (mnode >= 0 && worldMeshIdx != UINT32_MAX) {
-        (void)tour::scene::SetLocalTransform(scene, MakeNodeHandle(scene, uint32_t(mnode)), frame);
+        (void)tour::transformhierarchy::SetLocalTransform(
+            scene, MakeNodeHandle(scene, uint32_t(mnode)), frame);
         scene.globalTransform[size_t(mnode)] = frame;
         SetMesh(scene, NodeId(mnode), worldMeshIdx);
         if (matLoc) {
@@ -971,12 +973,13 @@ bool World::ReleasePage(WorldPage& cluster) {
     return true;
 }
 
-uint64_t World::InstantiateSceneHierarchy(const Scene& source,
-                                          uint64_t sceneAssetId,
-                                          const glm::dmat4& placement,
-                                          std::vector<tour::asset::AssetLease> assets,
-                                          std::string& err,
-                                          const tour::scene::WorldSceneResourceMap* bindings) {
+uint64_t World::InstantiateSceneHierarchy(
+    const TransformHierarchy& source,
+    uint64_t sceneAssetId,
+    const glm::dmat4& placement,
+    std::vector<tour::asset::AssetLease> assets,
+    std::string& err,
+    const tour::transformhierarchy::WorldSceneResourceMap* bindings) {
     err.clear();
     // World indices must point at already-resident render resources,
     // never source-local integer slots or expired WorldPage resources.
@@ -1248,9 +1251,10 @@ void World::ResolveAndFixup_pages() {
     if (scene.nodeSlotBudget) {
         size_t needed = 0;
         for (const auto& c : pages) {
-            needed += tour::scene::LiveNodeCount(c->scene);
+            needed += tour::transformhierarchy::LiveNodeCount(c->scene);
             if (needed > scene.nodeSlotBudget)
-                tour::scene::CrashNodeBudget("World resolve", needed, scene.nodeSlotBudget);
+                tour::transformhierarchy::CrashNodeBudget(
+                    "World resolve", needed, scene.nodeSlotBudget);
         }
     }
     // Content-cluster identity (#228's layout-stability contract, FIXED):
@@ -1289,7 +1293,7 @@ void World::ResolveAndFixup_pages() {
     } else if (scene.nodeSlotBudget)
         scene.ResetForResolve();
     else
-        scene = Scene{};
+        scene = TransformHierarchy{};
     meshLocations.clear();
     materialLocations.clear();
     textureLocations.clear();
@@ -1334,7 +1338,7 @@ void World::ResolveAndFixup_pages() {
 
     for (auto& clusterPtr : pages) {
         WorldPage& cluster = *clusterPtr.get();
-        Scene& cs = cluster.scene;
+        TransformHierarchy& cs = cluster.scene;
 
         // Slot-association map (Epoch 6b): cluster slot -> world
         // NodeId, UINT32_MAX for holes. The dense-era +nodeOffset
@@ -1374,7 +1378,7 @@ void World::ResolveAndFixup_pages() {
                                                               ? cs.localTransformDouble[s]
                                                               : glm::dmat4(cs.localTransform[s]);
                 scene.globalTransformDouble[size_t(dst)] =
-                    tour::scene::GlobalTransformDouble(cs, s);
+                    tour::transformhierarchy::GlobalTransformDouble(cs, s);
                 scene.localTransformFloatShadow[size_t(dst)] = scene.localTransform[size_t(dst)];
                 // Flag tables: per-slot guarded copies (missing table ==
                 // defaults; addNode already pushed zeros). staticNode is
@@ -1415,8 +1419,8 @@ void World::ResolveAndFixup_pages() {
             for (uint32_t s = 0; s < clusterSlotCount; ++s) {
                 if (nodeMap[s] == UINT32_MAX)
                     continue;
-                const Hierarchy& sh = cs.hierarchy[s];
-                Hierarchy& h = scene.hierarchy[nodeMap[s]];
+                const NodeLinks& sh = cs.hierarchy[s];
+                NodeLinks& h = scene.hierarchy[nodeMap[s]];
                 h.parent = mapLink(sh.parent);
                 h.firstChild = mapLink(sh.firstChild);
                 h.nextSibling = mapLink(sh.nextSibling);
@@ -1611,15 +1615,15 @@ void World::ResolveAndFixup_pages() {
         // evaluates each room's shape against the MERGED global
         // transform at the listener, every update (never a cached
         // merged id — the map is rebuilt per resolve).
-        for (const tour::scene::AudioRoomRow& row : cs.tables.audioRooms)
+        for (const tour::transformhierarchy::AudioRoomRow& row : cs.tables.audioRooms)
             if (row.node < nodeMap.size() && nodeMap[row.node] != UINT32_MAX)
-                tour::scene::SetAudioRoom(scene, nodeMap[row.node], row.room);
-        for (const tour::scene::PhysicsBodyRow& row : cs.tables.physicsBodies)
+                tour::transformhierarchy::SetAudioRoom(scene, nodeMap[row.node], row.room);
+        for (const tour::transformhierarchy::PhysicsBodyRow& row : cs.tables.physicsBodies)
             if (row.node < nodeMap.size() && nodeMap[row.node] != UINT32_MAX)
-                tour::scene::SetPhysicsBody(scene, nodeMap[row.node], row.body);
-        for (const tour::scene::TriggerVolumeRow& row : cs.tables.triggerVolumes)
+                tour::transformhierarchy::SetPhysicsBody(scene, nodeMap[row.node], row.body);
+        for (const tour::transformhierarchy::TriggerVolumeRow& row : cs.tables.triggerVolumes)
             if (row.node < nodeMap.size() && nodeMap[row.node] != UINT32_MAX)
-                tour::scene::SetTriggerVolume(scene, nodeMap[row.node], row.trigger);
+                tour::transformhierarchy::SetTriggerVolume(scene, nodeMap[row.node], row.trigger);
         // Project-defined schema associations (node_schema.h): the
         // cooked value bytes ride VERBATIM (no decode at fold time
         // — the generated project::types own the decode), nodes
@@ -1891,7 +1895,7 @@ bool World::SetNodePosition(NodeHandle node, const glm::vec3& position) {
         return false;
     glm::mat4 frame = scene.localTransform[NodeHandleSlot(node)];
     frame[3] = glm::vec4(position, 1.0f);
-    return tour::scene::SetLocalTransform(scene, node, frame);
+    return tour::transformhierarchy::SetLocalTransform(scene, node, frame);
 }
 
 bool World::SetNodeRotation(NodeHandle node, const glm::quat& rotation) {
@@ -1905,7 +1909,7 @@ bool World::SetNodeRotation(NodeHandle node, const glm::quat& rotation) {
     const glm::mat4 frame = glm::translate(glm::mat4(1.0f), position) *
                             glm::mat4_cast(glm::normalize(rotation)) *
                             glm::scale(glm::mat4(1.0f), scale);
-    return tour::scene::SetLocalTransform(scene, node, frame);
+    return tour::transformhierarchy::SetLocalTransform(scene, node, frame);
 }
 
 bool World::SetNodeScale(NodeHandle node, const glm::vec3& scale) {
@@ -1918,7 +1922,7 @@ bool World::SetNodeScale(NodeHandle node, const glm::vec3& scale) {
         return false;
     const glm::mat4 frame = glm::translate(glm::mat4(1.0f), position) * glm::mat4_cast(rotation) *
                             glm::scale(glm::mat4(1.0f), scale);
-    return tour::scene::SetLocalTransform(scene, node, frame);
+    return tour::transformhierarchy::SetLocalTransform(scene, node, frame);
 }
 
 NodeHandle World::AddNode(const glm::mat4& localFrame, NodeHandle parent) {
@@ -1942,17 +1946,17 @@ NodeHandle World::AddNode(const glm::mat4& localFrame, NodeHandle parent) {
     uint32_t& highWater = gameSlotGeneration_[NodeId(node)];
     const uint32_t sceneGeneration = NodeGenerationOf(scene, NodeId(node));
     const uint32_t generation = std::max(highWater + 1u, sceneGeneration);
-    if (generation >= tour::scene::kNodeGenMask) {
+    if (generation >= tour::transformhierarchy::kNodeGenMask) {
         RetireNodeSlot(scene, NodeId(node));
         return kNodeInvalidHandle;
     }
     highWater = generation;
-    scene.nodeGeneration[size_t(node)] = tour::scene::kNodeSlotAliveBit | generation;
+    scene.nodeGeneration[size_t(node)] = tour::transformhierarchy::kNodeSlotAliveBit | generation;
     const NodeHandle handle = MakeNodeHandle(scene, NodeId(node));
     gameNodes_.insert(handle);
     if (!gpuSceneGameNodeRegistration)
         gpuSceneGameNodeRegistration = nextGpuScenePageId++;
-    (void)tour::scene::SetLocalTransform(scene, handle, localFrame);
+    (void)tour::transformhierarchy::SetLocalTransform(scene, handle, localFrame);
     // Root-level nodes carry the frame as their global directly; a
     // parented node recomposes through the ordinary recalc below.
     if (parentSlot < 0) {
@@ -2895,7 +2899,7 @@ bool World::AdoptCookedStaticBvh() {
     const uint32_t baked = seed->cookedStaticBvhNodeCount;
     std::vector<int32_t> parents;
     parents.reserve(scene.hierarchy.size());
-    for (const Hierarchy& h : scene.hierarchy)
+    for (const NodeLinks& h : scene.hierarchy)
         parents.push_back(h.parent);
     std::vector<::tour::StaticCullRow> rows;
     rows.reserve(scene.tables.meshes.size());

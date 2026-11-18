@@ -908,7 +908,7 @@ bool CookLodSiblings(WorldPage& cluster,
                      const CookLodSiblingsOptions& options) {
     if (!config.generateLods)
         return true;
-    Scene& scene = cluster.scene;
+    TransformHierarchy& scene = cluster.scene;
 
     // Mesh pool indices in node usage (instanced meshes share one pool
     // entry; the chain is per MESH — node transforms only matter for the

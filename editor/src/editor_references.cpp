@@ -26,7 +26,7 @@ namespace editor {
 namespace {
 
 // Subtree node count below root (excluding the placeholder itself).
-int RefSubtreeSize(const Scene& scene, uint32_t root) {
+int RefSubtreeSize(const TransformHierarchy& scene, uint32_t root) {
     if (root >= scene.hierarchy.size())
         return 0;
     int n = 0;

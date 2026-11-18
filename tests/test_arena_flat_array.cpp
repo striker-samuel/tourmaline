@@ -38,7 +38,7 @@ int main() {
     moved = std::move(copied);
     assert(copied.empty() && moved.size() == standard.size());
     // Authoritative scene arrays use the same storage and keep stable slots.
-    Scene graph;
+    TransformHierarchy graph;
     const int root = addNode(graph, -1, 0);
     const int child = addNode(graph, root, 1);
     assert(graph.hierarchy.size() == 2);
@@ -48,7 +48,7 @@ int main() {
     assert(saved.size() == graph.localTransform.size());
     assert(saved.data() != graph.localTransform.data());
 
-    Scene movedGraph(std::move(graph));
+    TransformHierarchy movedGraph(std::move(graph));
     assert(movedGraph.hierarchy[child].parent == root);
     assert(movedGraph.globalTransform.size() == 2);
     UnlinkNodeFromParent(movedGraph, child);

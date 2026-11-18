@@ -64,7 +64,7 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
     // stay session-only in the Cook panel (never scene state).
     if (!m_world || node >= m_world->scene.hierarchy.size())
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     auto it = FindExport(scene, node);
     if (!it)
         return;

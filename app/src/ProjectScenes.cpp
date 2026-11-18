@@ -301,7 +301,7 @@ bool ProjectScenes::SetPrefabTransform(SceneHandle prefab,
     }
     auto& scene = instance->cluster->scene;
     const uint32_t root = instance->prefabRoot;
-    if (!tour::scene::IsLiveSlot(scene, root) || root >= scene.localTransform.size()) {
+    if (!tour::transformhierarchy::IsLiveSlot(scene, root) || root >= scene.localTransform.size()) {
         err = "the prefab instance root is no longer live";
         return false;
     }
@@ -310,8 +310,8 @@ bool ProjectScenes::SetPrefabTransform(SceneHandle prefab,
     if (m_shapes)
         for (const auto& shape : instance->shapes)
             m_shapes->SetTransform(shape.handle, frame * shape.localTransform);
-    tour::scene::MarkAllRootsChanged(scene);
-    tour::scene::recalculateGlobalTransforms(scene);
+    tour::transformhierarchy::MarkAllRootsChanged(scene);
+    tour::transformhierarchy::recalculateGlobalTransforms(scene);
     world.ResolveAndFixup_pages();
     return true;
 }
@@ -447,10 +447,10 @@ SceneHandle ProjectScenes::LoadInternal(tour::World& world,
         // World::ResolveAndFixup_pages() folds the FIRST live cluster
         // node as its independent world child. Pre-multiplying THAT
         // node (and only that node) preserves every authored child frame.
-        tour::scene::Scene& source = cluster->scene;
+        tour::transformhierarchy::TransformHierarchy& source = cluster->scene;
         uint32_t root = UINT32_MAX;
         for (uint32_t n = 0; n < source.hierarchy.size(); ++n)
-            if (tour::scene::IsLiveSlot(source, n)) {
+            if (tour::transformhierarchy::IsLiveSlot(source, n)) {
                 root = n;
                 break;
             }
@@ -465,8 +465,8 @@ SceneHandle ProjectScenes::LoadInternal(tour::World& world,
         inst->prefabSourceRoot = source.localTransform[root];
         inst->prefabFrame = *prefabFrame;
         source.localTransform[root] = *prefabFrame * inst->prefabSourceRoot;
-        tour::scene::MarkAllRootsChanged(source);
-        tour::scene::recalculateGlobalTransforms(source);
+        tour::transformhierarchy::MarkAllRootsChanged(source);
+        tour::transformhierarchy::recalculateGlobalTransforms(source);
     }
     // Scene-owned shape instances are loaded only after the cluster has
     // succeeded. Failures undo every partial instance and the cluster,

@@ -20,9 +20,9 @@
 namespace engine::worldpartition {
 
 struct DirectScenePayload {
-    std::shared_ptr<const Scene> scene;
+    std::shared_ptr<const TransformHierarchy> scene;
     std::vector<tour::asset::AssetLease> assets;
-    tour::scene::WorldSceneResourceMap resources;
+    tour::transformhierarchy::WorldSceneResourceMap resources;
 };
 
 // All callbacks run on the update thread. No GPU resource lifetime may end

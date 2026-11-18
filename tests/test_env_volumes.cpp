@@ -39,12 +39,12 @@ void Check(bool cond, const char* name) {
 }
 
 // One-node zone: unit box scaled to half extents, placed at origin.
-uint32_t MakeZone(::Scene& s, const glm::vec3& half) {
+uint32_t MakeZone(::TransformHierarchy& s, const glm::vec3& half) {
     const int n = addNode(s, -1, 0);
     if (int(s.globalTransform.size()) <= n)
         s.globalTransform.resize(size_t(n) + 1, glm::mat4(1.0f));
     s.globalTransform[size_t(n)] = glm::scale(glm::mat4(1.0f), half);
-    tour::scene::SceneEnv e{};
+    tour::transformhierarchy::SceneEnv e{};
     SetEnv(s, NodeId(n), e);
     return uint32_t(n);
 }
@@ -52,7 +52,7 @@ uint32_t MakeZone(::Scene& s, const glm::vec3& half) {
 // Create-or-mutate an env-volume row (the old volume-map operator[]
 // semantics: default-construct when absent, apply the field
 // write, store back through the table mutator).
-template <typename Fn> void MutateEnvVolume(::Scene& s, uint32_t node, Fn&& fn) {
+template <typename Fn> void MutateEnvVolume(::TransformHierarchy& s, uint32_t node, Fn&& fn) {
     EnvVolume v{};
     if (const EnvVolumeRow* row = FindEnvVolume(s, node))
         v = row->volume;
@@ -65,7 +65,7 @@ template <typename Fn> void MutateEnvVolume(::Scene& s, uint32_t node, Fn&& fn) 
 int main() {
     // Half-spaces: box (10,10,10) at origin + single Y faces.
     {
-        ::Scene s;
+        ::TransformHierarchy s;
         const uint32_t z = MakeZone(s, glm::vec3(10, 10, 10));
         MutateEnvVolume(s, z, [](EnvVolume& v) {
             v.infMask = kEnvInfNegY; // covers y <= +10
@@ -76,7 +76,7 @@ int main() {
         Check(!ZoneCovers(s, z, glm::vec3(50, 0, 0)), "envvol.neginf-clips-x");
     }
     {
-        ::Scene s;
+        ::TransformHierarchy s;
         const uint32_t z = MakeZone(s, glm::vec3(10, 2, 10));
         MutateEnvVolume(s, z, [](EnvVolume& v) {
             v.infMask = kEnvInfPosY; // covers y >= -2
@@ -86,7 +86,7 @@ int main() {
     }
     // All-inf = infinite everywhere; disabled = nothing.
     {
-        ::Scene s;
+        ::TransformHierarchy s;
         const uint32_t z = MakeZone(s, glm::vec3(10, 10, 10));
         MutateEnvVolume(s, z, [](EnvVolume& v) { v.infMask = 63u; });
         Check(ZoneCovers(s, z, glm::vec3(1e6f, -1e6f, 1e6f)), "envvol.allinf-covers");
@@ -96,7 +96,7 @@ int main() {
     }
     // Legacy INF scale still unbounds the whole axis (regression).
     {
-        ::Scene s;
+        ::TransformHierarchy s;
         const uint32_t z = MakeZone(s, glm::vec3(10, 10, 10));
         glm::mat4 g = s.globalTransform[z];
         g[1] = glm::vec4(std::numeric_limits<float>::infinity(), 0, 0, 0);
@@ -105,7 +105,7 @@ int main() {
     }
     // Priority: volume entry beats the look; absent entry falls back.
     {
-        ::Scene s;
+        ::TransformHierarchy s;
         const uint32_t a = MakeZone(s, glm::vec3(100, 100, 100));
         const uint32_t b = MakeZone(s, glm::vec3(10, 10, 10));
         if (EnvRow* row = FindEnv(s, a))
@@ -287,7 +287,7 @@ int main() {
     // and the preserved no-split / underwater half-space shapes.
     {
         using engine::worldpartition::WorldEnvTiles;
-        const auto makeTileZone = [](::Scene& s,
+        const auto makeTileZone = [](::TransformHierarchy& s,
                                      const glm::vec3& half,
                                      const glm::vec3& pos,
                                      const glm::vec3& fog,
@@ -297,7 +297,7 @@ int main() {
                 s.globalTransform.resize(size_t(n) + 1, glm::mat4(1.0f));
             s.globalTransform[size_t(n)] =
                 glm::translate(glm::mat4(1.0f), pos) * glm::scale(glm::mat4(1.0f), half);
-            tour::scene::SceneEnv e{};
+            tour::transformhierarchy::SceneEnv e{};
             e.fogColor = fog; // the look: distinct per zone = record identity
             e.zonePriority = priority;
             SetEnv(s, NodeId(n), e);
@@ -315,7 +315,7 @@ int main() {
         // even outside the grid. The source default can differ after
         // an active look edit and must not overwrite that active look.
         {
-            ::Scene s;
+            ::TransformHierarchy s;
             s.defaultEnvironment.volumetrics = 0.0f;
             s.defaultEnvironment.volumetricDensity = 0.01f;
             s.environment.volumetrics = 1.5f;
@@ -337,7 +337,7 @@ int main() {
         // THE ROOM: one bounded interior (Y 15..25 over a 0..40 range) —
         // base below, the interior inside, base above.
         {
-            ::Scene s;
+            ::TransformHierarchy s;
             (void)makeTileZone(
                 s, glm::vec3(32, 5, 32), glm::vec3(32, 20, 32), glm::vec3(1, 0, 0), 5.0f);
             WorldEnvTiles t;
@@ -352,7 +352,7 @@ int main() {
 
         // THE STACK: base -> A (Y 10..20) -> B (Y 20..40) — three records.
         {
-            ::Scene s;
+            ::TransformHierarchy s;
             (void)makeTileZone(
                 s, glm::vec3(32, 5, 32), glm::vec3(32, 15, 32), glm::vec3(0, 1, 0), 5.0f);
             (void)makeTileZone(
@@ -370,7 +370,7 @@ int main() {
         // Four vertical intervals remain distinguishable: there is no
         // three-slot approximation or largest-mass collapse.
         {
-            ::Scene s;
+            ::TransformHierarchy s;
             (void)makeTileZone(
                 s, glm::vec3(32, 2, 32), glm::vec3(32, 12, 32), glm::vec3(1, 0, 0), 5.0f);
             (void)makeTileZone(
@@ -390,7 +390,7 @@ int main() {
         // A 6m interior within a 64m cell must not be lost by a missed
         // center sample, nor smeared across the tile footprint.
         {
-            ::Scene s;
+            ::TransformHierarchy s;
             const uint32_t node =
                 makeTileZone(s, glm::vec3(3, 3, 3), glm::vec3(8, 10, 8), glm::vec3(1, 0, 0), 5.0f);
             MutateEnvVolume(s, node, [](EnvVolume& v) {
@@ -409,7 +409,7 @@ int main() {
         // Preserved shapes: no-split outside every zone + the underwater
         // half-space split (kEnvInfNegY: the zone wins below its top).
         {
-            ::Scene s;
+            ::TransformHierarchy s;
             const uint32_t z = makeTileZone(
                 s, glm::vec3(32, 8, 32), glm::vec3(32, 8, 32), glm::vec3(0.5f, 0.5f, 0.1f), 5.0f);
             MutateEnvVolume(s, z, [](EnvVolume& v) {
@@ -430,13 +430,13 @@ int main() {
         // volumetric pass marching at ZERO pass density whenever the
         // env table authors fog): only a record's ABSOLUTE
         // volumetricDensity counts; the base record carries the scene
-        // env's own (tour::scene::SceneEnv's 0.015 default), so a default-constructed
+        // env's own (tour::transformhierarchy::SceneEnv's 0.015 default), so a default-constructed
         // env already authors fog.
         {
             // The pure-base bake (no node zones): the base record's
             // 0.015 default alone makes the scan true.
             {
-                ::Scene s;
+                ::TransformHierarchy s;
                 WorldEnvTiles t;
                 Check(t.Build(s, glm::vec2(0, 0), 1, 1, 0.0f, 40.0f), "envtile.fogscan-base-build");
                 Check(t.AnyVolumetricFog(),
@@ -447,7 +447,7 @@ int main() {
             // zeroed): the zone tables cannot raise extinction from a
             // zero pass density — the scan is false.
             {
-                ::Scene s;
+                ::TransformHierarchy s;
                 s.defaultEnvironment.volumetricDensity = 0.0f;
                 s.environment.volumetricDensity = 0.0f;
                 const uint32_t z = makeTileZone(
@@ -462,7 +462,7 @@ int main() {
             // scan is true — the zone raises extinction from a zero
             // pass density (the review's zone-fog gate case).
             {
-                ::Scene s;
+                ::TransformHierarchy s;
                 s.defaultEnvironment.volumetricDensity = 0.0f;
                 s.environment.volumetricDensity = 0.0f;
                 const uint32_t z = makeTileZone(
@@ -485,7 +485,7 @@ int main() {
             // Volumes-only scene (degenerate mesh bounds): the zone's own
             // bounds grow the grid out of the fallback window.
             {
-                ::Scene s;
+                ::TransformHierarchy s;
                 (void)makeTileZone(s,
                                    glm::vec3(32, 5, 32),
                                    glm::vec3(1000.0f, 20.0f, 1000.0f),
@@ -501,7 +501,7 @@ int main() {
             }
             // A zone hanging PAST the mesh bounds: the union covers it.
             {
-                ::Scene s;
+                ::TransformHierarchy s;
                 (void)makeTileZone(s,
                                    glm::vec3(32, 5, 32),
                                    glm::vec3(500.0f, 20.0f, 500.0f),
@@ -517,7 +517,7 @@ int main() {
             // the 16 km design edge — the zone applies wherever the grid
             // reaches.
             {
-                ::Scene s;
+                ::TransformHierarchy s;
                 const uint32_t z =
                     makeTileZone(s, glm::vec3(1, 1, 1), glm::vec3(0.0f), glm::vec3(0, 1, 0), 5.0f);
                 MutateEnvVolume(s, z, [](EnvVolume& v) {
@@ -534,7 +534,7 @@ int main() {
             // wins at every ladder height — stretching it would tank the
             // vertical resolution).
             {
-                ::Scene s;
+                ::TransformHierarchy s;
                 const uint32_t z = makeTileZone(
                     s, glm::vec3(32, 8, 32), glm::vec3(0.0f, 8.0f, 0.0f), glm::vec3(0, 1, 0), 5.0f);
                 MutateEnvVolume(s, z, [](EnvVolume& v) { v.infMask = kEnvInfNegY; });
@@ -554,7 +554,7 @@ int main() {
     // WorldPartition environment residency: subcell selection is
     // interest-driven; distant authored cells must not remain resident.
     {
-        ::Scene scene;
+        ::TransformHierarchy scene;
         engine::worldpartition::WorldEnvTiles baked;
         Check(baked.Build(scene, glm::vec2(0), 4, 1, 0, 40), "envtile.stream-source-build");
         engine::worldpartition::WorldEnvTileProvider provider;
@@ -590,7 +590,7 @@ int main() {
     // Async path: a completion is published only with its current ticket;
     // moving the interest must discard stale in-flight page payloads.
     {
-        ::Scene scene;
+        ::TransformHierarchy scene;
         engine::worldpartition::WorldEnvTiles baked;
         Check(baked.Build(scene, glm::vec2(0), 4, 1, 0, 40), "envtile.async-source-build");
         using namespace engine::worldpartition;
@@ -645,7 +645,7 @@ int main() {
     // IO and GPU reservation; a fresh page receives a new ticket.
     {
         using namespace engine::worldpartition;
-        ::Scene scene;
+        ::TransformHierarchy scene;
         WorldEnvTiles baked;
         Check(baked.Build(scene, glm::vec2(0), 8, 1, 0, 40), "envtile.budget-source-build");
         WorldEnvTileProvider provider;
@@ -687,7 +687,7 @@ int main() {
     // Far tier is a shortlist of exact large/unbounded OBBs, not
     // far-distance tile rasterization. Tiny interiors are never added.
     {
-        ::Scene scene;
+        ::TransformHierarchy scene;
         const uint32_t large = MakeZone(scene, glm::vec3(400, 20, 400));
         const uint32_t small = MakeZone(scene, glm::vec3(4, 4, 4));
         (void)large;
@@ -731,7 +731,7 @@ int main() {
     // independently decodable world-scoped 64m pages.
     {
         using namespace tour::envcook;
-        ::Scene scene;
+        ::TransformHierarchy scene;
         engine::worldpartition::WorldEnvTiles baked;
         Check(baked.Build(scene, glm::vec2(0), 2, 2, 0, 40), "envtile.pak-source");
         Manifest manifest{};
@@ -771,7 +771,7 @@ int main() {
     // allocates physical 32B cell headers; root-page misses are base.
     {
         using namespace engine::worldpartition;
-        ::Scene scene;
+        ::TransformHierarchy scene;
         WorldEnvTiles baked;
         Check(baked.Build(scene, glm::vec2(0), 8, 1, 0, 40), "envtile.sparse-source-build");
         WorldEnvTileProvider provider;
@@ -803,7 +803,7 @@ int main() {
     // Full SMP8 cook/read path (the cooker uses the same helper):
     // immutable OBB manifest + independently seekable candidate page.
     {
-        ::Scene scene;
+        ::TransformHierarchy scene;
         const uint32_t node = MakeZone(scene, glm::vec3(3, 3, 3));
         scene.globalTransform[node] = glm::translate(glm::mat4(1), glm::vec3(8, 10, 8)) *
                                       glm::scale(glm::mat4(1), glm::vec3(3, 3, 3));

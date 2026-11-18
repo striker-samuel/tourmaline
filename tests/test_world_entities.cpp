@@ -438,7 +438,7 @@ void TestSingleClusterBulkResolve() {
 
 void TestSceneNodeBudget() {
     using namespace smvk;
-    Scene slots;
+    TransformHierarchy slots;
     slots.ReserveNodeSlots(3);
     Check(slots.hierarchy.capacity() >= 3 && slots.localTransform.capacity() >= 3 &&
               slots.localTransformDouble.capacity() >= 3 && slots.nodeGeneration.capacity() >= 3,
@@ -468,7 +468,7 @@ void TestSceneNodeBudget() {
     // invisible growth, or silent clamp).
     const pid_t pid = fork();
     if (pid == 0) {
-        Scene overflow;
+        TransformHierarchy overflow;
         overflow.ReserveNodeSlots(1);
         addNode(overflow, -1, 0, false);
         addNode(overflow, -1, 0, false); // must abort
@@ -806,7 +806,7 @@ void TestBakePayloadChannel() {
 // slabs), resolution by priority descending then innermost, zoneForNode
 // resolving a node's world origin.
 void TestEnvZones() {
-    ::Scene scene;
+    ::TransformHierarchy scene;
     // Zone A: a big box at the origin, half extents (10, 10, 10).
     NodeId zoneA = UINT32_MAX;
     {
@@ -816,7 +816,7 @@ void TestEnvZones() {
         m[1] = glm::vec4(0.0f, 10.0f, 0.0f, 0.0f);
         m[2] = glm::vec4(0.0f, 0.0f, 10.0f, 0.0f);
         scene.localTransform[size_t(n)] = m;
-        tour::scene::SceneEnv envA{};
+        tour::transformhierarchy::SceneEnv envA{};
         SetEnv(scene, uint32_t(n), envA);
         zoneA = uint32_t(n);
         markAsChanged(scene, n);
@@ -836,7 +836,7 @@ void TestEnvZones() {
         m[2] = glm::vec4(0.0f, 0.0f, 1.0f, 0.0f);
         m[3] = glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
         scene.localTransform[size_t(n)] = m;
-        tour::scene::SceneEnv envB{};
+        tour::transformhierarchy::SceneEnv envB{};
         SetEnv(scene, uint32_t(n), envB);
         zoneB = uint32_t(n);
         markAsChanged(scene, n);
@@ -854,7 +854,7 @@ void TestEnvZones() {
         m[2] = glm::vec4(0.0f, 0.0f, 2.0f, 0.0f);
         m[3] = glm::vec4(5.0f, 0.0f, 0.0f, 1.0f);
         scene.localTransform[size_t(n)] = m;
-        tour::scene::SceneEnv envC{};
+        tour::transformhierarchy::SceneEnv envC{};
         envC.zonePriority = 5.0f;
         SetEnv(scene, uint32_t(n), envC);
         zoneC = uint32_t(n);
@@ -879,7 +879,7 @@ void TestEnvZones() {
         m[2] = glm::vec4(0.0f, 0.0f, 2.0f, 0.0f);
         m[3] = glm::vec4(0.0f, 5.0f, 0.0f, 1.0f);
         scene.localTransform[size_t(n)] = m;
-        tour::scene::SceneEnv envD{};
+        tour::transformhierarchy::SceneEnv envD{};
         SetEnv(scene, uint32_t(n), envD);
         zoneD = uint32_t(n);
         markAsChanged(scene, n);
@@ -921,7 +921,7 @@ void TestActiveEnvironmentFirstWins() {
     // elevation per block (exact floats — resolve copies verbatim).
     auto addEnvBlock = [](smvk::WorldPage& cl, int parent, float sunEl) {
         const int n = addNode(cl.scene, parent, 0);
-        tour::scene::SceneEnv e{};
+        tour::transformhierarchy::SceneEnv e{};
         e.sunElevation = sunEl;
         SetEnv(cl.scene, uint32_t(n), e);
         return n;
@@ -1015,7 +1015,7 @@ void TestResolveCarriesInlineTables() {
     w.RegisterPage(std::move(c1));
     w.RegisterPage(std::move(c2));
     w.ResolveAndFixup_pages();
-    const ::Scene& s = w.scene;
+    const ::TransformHierarchy& s = w.scene;
     size_t gi = 0, cbm = 0, ex = 0;
     for (const GiVolumeRow& r : s.tables.giVolumes) {
         ++gi;
@@ -1092,7 +1092,7 @@ void TestSchemaAssocFold() {
     w.RegisterPage(std::move(c1));
     w.RegisterPage(std::move(c2));
     w.ResolveAndFixup_pages();
-    const ::Scene& s = w.scene;
+    const ::TransformHierarchy& s = w.scene;
     Check(s.tables.schemaAssocs.size() == 2, "schemafold.both-carried");
     const SchemaAssocRow* a = nullptr;
     const SchemaAssocRow* b = nullptr;
@@ -1138,7 +1138,7 @@ void TestResolveHoledCluster() {
     smvk::World w;
     auto c = std::make_unique<smvk::WorldPage>(nullptr);
     c->SetOfflineMode(true);
-    ::Scene& cs = c->scene;
+    ::TransformHierarchy& cs = c->scene;
     const int root = addNode(cs, -1, 0);
     const int a = addNode(cs, root, 1);
     const int b = addNode(cs, root, 1);
@@ -1149,7 +1149,7 @@ void TestResolveHoledCluster() {
     cs.defaultCameraNode = uint32_t(b);
     w.RegisterPage(std::move(c));
     w.ResolveAndFixup_pages();
-    const ::Scene& s = w.scene;
+    const ::TransformHierarchy& s = w.scene;
     // The single-content-cluster identity copy (#228): source slots stay
     // 1:1 - the world scene carries the cluster's slots INCLUDING the
     // retired hole (kept retired, never recycled). FLAT WORLD: no
@@ -1185,9 +1185,9 @@ void TestGameOwnedNodes() {
     Check(w[node].SetPhysicsBody({}) && w[node].SetAudioRoom({}) && w[node].SetTriggerVolume({}),
           "game-node: typed default brace components");
     const NodeId slot = NodeHandleSlot(node);
-    Check(tour::scene::FindPhysicsBody(w.scene, slot) &&
-              tour::scene::FindAudioRoom(w.scene, slot) &&
-              tour::scene::FindTriggerVolume(w.scene, slot),
+    Check(tour::transformhierarchy::FindPhysicsBody(w.scene, slot) &&
+              tour::transformhierarchy::FindAudioRoom(w.scene, slot) &&
+              tour::transformhierarchy::FindTriggerVolume(w.scene, slot),
           "game-node: inline associations share the same node");
     Check(!FindMesh(w.scene, slot), "game-node: no mesh required to create node");
     const auto update = glm::translate(glm::mat4(1.0f), glm::vec3(3.0f, 2.0f, 1.0f));
@@ -1441,7 +1441,7 @@ void TestStaticBvhAdoptionGuard() {
         for (uint32_t slot = 0; slot < N; ++slot)
             tree.primToNode[slot] = prims[tree.primIndices[slot]].node;
         std::vector<int32_t> parents;
-        for (const Hierarchy& h : c->scene.hierarchy)
+        for (const NodeLinks& h : c->scene.hierarchy)
             parents.push_back(h.parent);
         c->cookedStaticBvh = tree;
         c->cookedStaticBvhStateHash =

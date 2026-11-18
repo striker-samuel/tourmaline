@@ -34,7 +34,7 @@ struct PSIn
     // Lightmap chunk (flat, per-draw; 0xFFFFFFFF = none —
     // dynamic/unbaked draws sample the 3D probe grids instead).
     [[vk::location(6)]] nointerpolation uint lmChunk : TEXCOORD4;
-    // Dither-on-closeup flag (flat, per-draw; Scene::
+    // Dither-on-closeup flag (flat, per-draw; TransformHierarchy::
     // ditherCloseup — see common.hlsli CloseupDitherKeep). Both paths
     // deliver it: default.vert forwards the direct legs' pc word, the
     // filtered VS / mesh MS forward the Draw ring's flag bit.
@@ -490,7 +490,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     FrameUniforms frame = pc.frameUniforms.Get();
     FramePSHot hot = frame.frameHot.Get();
 
-    // Dither-on-closeup (per-draw flag, flat; Scene::ditherCloseup — see
+    // Dither-on-closeup (per-draw flag, flat; TransformHierarchy::ditherCloseup — see
     // common.hlsli CloseupDitherKeep): the flagged subtree screen-doors
     // away as the camera closes on its anchor. Placed FIRST so discarded
     // fragments skip every fetch below (the depth legs pair the same

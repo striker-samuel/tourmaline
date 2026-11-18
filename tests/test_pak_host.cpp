@@ -461,7 +461,7 @@ std::unique_ptr<smvk::World> WorldWithOneCluster(bool staticsSerialized, bool sk
 }
 
 bool AllNodesDynamic(const smvk::World& world) {
-    const ::Scene& s = world.pages.front()->scene;
+    const ::TransformHierarchy& s = world.pages.front()->scene;
     return s.staticRoot.size() == s.hierarchy.size() &&
            std::all_of(s.staticRoot.begin(), s.staticRoot.end(), [](uint8_t v) { return v == 0; });
 }
@@ -570,7 +570,7 @@ void TestStaticFlagApplication() {
     // the marks are the cooked data).
     {
         auto world = WorldWithOneCluster(true, false);
-        ::Scene& s = world->pages.front()->scene;
+        ::TransformHierarchy& s = world->pages.front()->scene;
         MarkSubtreeStatic(s, 0);
         app::ApplyCookedStaticFlags(*world, "marked.pak");
         Check(s.staticRoot[0] == 1, "pakhost.staticflags.cooked-marks-preserved");

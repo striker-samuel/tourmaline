@@ -12,7 +12,8 @@
 
 namespace engine::worldpartition {
 
-EnvGridExtent ComputeEnvGridExtent(const Scene& scene, const EnvGridBounds& sceneBounds) {
+EnvGridExtent ComputeEnvGridExtent(const TransformHierarchy& scene,
+                                   const EnvGridBounds& sceneBounds) {
     // ---- The seed: the mesh scene bounds (degenerate/no bounds — a flat
     // or mesh-less scene — falls to the 1 km default window around the
     // origin; env volumes below can still grow it out). ----
@@ -110,14 +111,16 @@ EnvGridExtent ComputeEnvGridExtent(const Scene& scene, const EnvGridBounds& scen
     return out;
 }
 
-bool WorldEnvTiles::LoadCooked(glm::vec2 min, uint32_t dx, uint32_t dz,
+bool WorldEnvTiles::LoadCooked(glm::vec2 min,
+                               uint32_t dx,
+                               uint32_t dz,
                                const EnvTileRecord* looks,
                                const smvk::envzones::EnvZoneGpu* shapes,
                                uint32_t count) {
     built_ = false;
-    if (!looks || !shapes || !count || count > kEnvTileMaxRecords ||
-        !dx || !dz || dx > kEnvTileMaxDim || dz > kEnvTileMaxDim ||
-        !std::isfinite(min.x) || !std::isfinite(min.y))
+    if (!looks || !shapes || !count || count > kEnvTileMaxRecords || !dx || !dz ||
+        dx > kEnvTileMaxDim || dz > kEnvTileMaxDim || !std::isfinite(min.x) ||
+        !std::isfinite(min.y))
         return false;
     records_.assign(kEnvTileMaxRecords, EnvTileRecord{});
     shapes_.assign(kEnvTileMaxRecords, smvk::envzones::EnvZoneGpu{});
@@ -135,7 +138,7 @@ bool WorldEnvTiles::LoadCooked(glm::vec2 min, uint32_t dx, uint32_t dz,
     return true;
 }
 
-bool WorldEnvTiles::Build(const Scene& scene,
+bool WorldEnvTiles::Build(const TransformHierarchy& scene,
                           glm::vec2 gridMin,
                           uint32_t dimX,
                           uint32_t dimZ,
@@ -185,7 +188,7 @@ bool WorldEnvTiles::Build(const Scene& scene,
         base.nodeId = UINT32_MAX;
         base.priority = scene.environment.zonePriority;
         base.xzMin = glm::vec2(-std::numeric_limits<float>::infinity());
-        base.xzMax = glm::vec2( std::numeric_limits<float>::infinity());
+        base.xzMax = glm::vec2(std::numeric_limits<float>::infinity());
         candidates_.push_back(base);
 
         struct NodeZone {
@@ -198,7 +201,7 @@ bool WorldEnvTiles::Build(const Scene& scene,
         nodeZones.reserve(scene.tables.envs.size());
         for (const EnvRow& envRow : scene.tables.envs) {
             const NodeId node = envRow.node;
-            const tour::scene::SceneEnv& env = envRow.environment;
+            const tour::transformhierarchy::SceneEnv& env = envRow.environment;
             if (node >= scene.globalTransform.size())
                 continue;
             // EnvVolume shape knobs (absent row = the legacy defaults).
@@ -250,14 +253,15 @@ bool WorldEnvTiles::Build(const Scene& scene,
                 infinite |= !std::isfinite(glm::length(glm::vec3(g[a])));
             if (infinite) {
                 cand.xzMin = glm::vec2(-std::numeric_limits<float>::infinity());
-                cand.xzMax = glm::vec2( std::numeric_limits<float>::infinity());
+                cand.xzMax = glm::vec2(std::numeric_limits<float>::infinity());
             } else {
                 glm::vec2 lo(std::numeric_limits<float>::infinity());
                 glm::vec2 hi(-std::numeric_limits<float>::infinity());
                 for (int sx : {-1, 1})
                     for (int sy : {-1, 1})
                         for (int sz : {-1, 1}) {
-                            const glm::vec3 p = glm::vec3(g * glm::vec4(float(sx), float(sy), float(sz), 1.0f));
+                            const glm::vec3 p =
+                                glm::vec3(g * glm::vec4(float(sx), float(sy), float(sz), 1.0f));
                             lo = glm::min(lo, glm::vec2(p.x, p.z));
                             hi = glm::max(hi, glm::vec2(p.x, p.z));
                         }
@@ -335,8 +339,7 @@ bool WorldEnvTiles::Build(const Scene& scene,
         shapes_[candidate.record] = candidate.zone;
         const glm::vec2 span = candidate.xzMax - candidate.xzMin;
         const bool unbounded = !std::isfinite(span.x) || !std::isfinite(span.y);
-        if (candidate.record == 0 || unbounded ||
-            span.x >= 512.0f || span.y >= 512.0f)
+        if (candidate.record == 0 || unbounded || span.x >= 512.0f || span.y >= 512.0f)
             farCandidates_.push_back(candidate.record);
     }
     cells_.assign(size_t(dimX_) * dimZ_, EnvTileCell{});
@@ -385,21 +388,21 @@ WorldEnvTiles::Lookup WorldEnvTiles::Evaluate(const glm::vec3& p) const {
 
 WorldEnvTiles::Lookup WorldEnvTiles::At(glm::vec3 pos) const {
     Lookup out{};
-    if (!built_) return out;
+    if (!built_)
+        return out;
     out.valid = true;
     out.record = 0;
     out.weight = 1.0f;
     const float fx = std::floor((pos.x - gridMin_.x) / kEnvTileSize);
     const float fz = std::floor((pos.z - gridMin_.y) / kEnvTileSize);
-    if (!(fx >= 0.0f) || !(fz >= 0.0f) ||
-        fx >= float(dimX_) || fz >= float(dimZ_))
+    if (!(fx >= 0.0f) || !(fz >= 0.0f) || fx >= float(dimX_) || fz >= float(dimZ_))
         return out;
     const EnvTileCell& cell = cells_[size_t(fz) * dimX_ + size_t(fx)];
     for (uint32_t i = 0; i < cell.candidateCount; ++i) {
         const uint32_t id = candidateIndices_[cell.firstCandidate + i];
         const auto& shape = shapes_[id];
-        const float w = std::clamp(shape.shape.y, 0.0f, 1.0f) *
-                        smvk::envzones::EnvZoneFalloff(shape, pos);
+        const float w =
+            std::clamp(shape.shape.y, 0.0f, 1.0f) * smvk::envzones::EnvZoneFalloff(shape, pos);
         if (w > 0.0f) {
             out.record = id;
             out.weight = w;

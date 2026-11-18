@@ -63,7 +63,7 @@ void EditorApp::DrawCamSection(uint32_t node) {
     // verbs so cooks replay them.
     if (!m_world || node >= m_world->scene.hierarchy.size())
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     if (!(FindCamera(scene, node) != nullptr))
         return;
     ImGui::Separator();

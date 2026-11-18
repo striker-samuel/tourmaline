@@ -87,16 +87,16 @@ using ::tour::WorldPage;
 } // namespace smvk
 
 // (namespace/RHI boundary audit) the old GLOBAL `struct Scene;` fwd is
-// GONE: it declared a ::Scene distinct from tour::scene::Scene and
+// GONE: it declared a ::Scene distinct from tour::transformhierarchy::Scene and
 // relied on elaborated-lookup merging with scene.h's global compat
-// alias (included above). The signatures below say tour::scene::Scene.
+// alias (included above). The signatures below say tour::transformhierarchy::Scene.
 namespace tour::asset {
 
 inline constexpr int kTourVersion = 1;
 
 // Cook settings interchange is GONE: the export settings are a SCENE
 // NODE now (createNode -at exportSettings + setExportAttr verbs, the
-// payload in Scene::exportForNode / SceneExportSettings — the WorldSettings
+// payload in TransformHierarchy::exportForNode / SceneExportSettings — the WorldSettings
 // pattern). The old `cook` block + TourCook struct died with it: Cook.exe
 // reads the settings off the replayed scene (CLI flags still win); the
 // editor authors them on the auto-seeded singleton node.
@@ -184,15 +184,15 @@ enum class Verb : uint8_t {
     SetTranslate,
     SetRotate, // degrees XYZ, same convention as the editor inspector
     SetScale,
-    AssignMaterial,           // material = cluster material POOL index
-    SetMatAttr,               // text = attr name; vec/vec4/number by attr
-    SetNoLightmap,            // flag
-    SetLightmap,              // flag (bake opt-in; default off, see Scene::lightmap)
-    SetDitherCloseup,         // flag (subtree dither on camera closeup)
-    SetVisibility,            // flag: hidden self state (hierarchical, see Scene::hidden)
+    AssignMaterial,   // material = cluster material POOL index
+    SetMatAttr,       // text = attr name; vec/vec4/number by attr
+    SetNoLightmap,    // flag
+    SetLightmap,      // flag (bake opt-in; default off, see TransformHierarchy::lightmap)
+    SetDitherCloseup, // flag (subtree dither on camera closeup)
+    SetVisibility,    // flag: hidden self state (hierarchical, see TransformHierarchy::hidden)
     SetCastsVolumetricShadow, // flag: the coarse fog-tile caster mark
-                              // (self flag, see Scene::castsVolumetricShadow)
-    SetStatic,                // flag: static-subtree ROOT mark (Scene::staticRoot —
+                              // (self flag, see TransformHierarchy::castsVolumetricShadow)
+    SetStatic,                // flag: static-subtree ROOT mark (TransformHierarchy::staticRoot —
                               // frozen transforms after the initial build, mega-mesh
                               // collapse eligibility; see Scene/static_merge.h)
     Parent,                   // node2 = new parent (cluster node id)
@@ -230,7 +230,7 @@ enum class Verb : uint8_t {
                               // deletes. Ids are never renumbered; pool resources
                               // are never reclaimed — only the LINKS drop.
     SetUuid,                  // node = cluster node id; uuid = 32-hex file-stable
-                              // identity recorded on it (Scene::uuidForNode). The
+                              // identity recorded on it (TransformHierarchy::uuidForNode). The
                               // editor assigns these for every node a Delete line
                               // addresses and emits them BEFORE the delete lines;
                               // replay/cook record them back onto the nodes.
@@ -413,11 +413,11 @@ enum class OverrideAttr : uint8_t {
 
 struct OverrideRule {
     OverrideAttr attr = OverrideAttr::Visibility;
-    std::string pattern;             // ECMAScript regex over node names
-    bool flag = false;               // Visibility/NoLightmap/Lightmap/Dither value
-    uint32_t material = 0;           // Material: cluster material pool index
-    std::string plug;                // Plug: stable node/component property path
-    tour::scene::plugs::Value value; // Plug: bool/number/string
+    std::string pattern;                          // ECMAScript regex over node names
+    bool flag = false;                            // Visibility/NoLightmap/Lightmap/Dither value
+    uint32_t material = 0;                        // Material: cluster material pool index
+    std::string plug;                             // Plug: stable node/component property path
+    tour::transformhierarchy::plugs::Value value; // Plug: bool/number/string
     bool enabled = true;
 };
 
@@ -610,7 +610,7 @@ struct Doc {
     std::vector<Command> commands;
     std::vector<ShapePlacement> shapePlacements; // scene-owned spline/point placements
     std::vector<OverrideRule> overrides;         // wide regex rules (ordered, later wins)
-    std::vector<tour::scene::plugs::Connection>
+    std::vector<tour::transformhierarchy::plugs::Connection>
         connections; // typed DAG plug links (source -> destination)
     // Scene references (ordered; the OWNING scene's level-1 list —
     // deeper nesting comes from each referenced source's own tour).
@@ -632,7 +632,7 @@ struct Doc {
     // GI-asset bindings (ordered; see GiAssetCmd): the scene's baked-GI
     // identification — the world field + one record per authored convex
     // volume. Resolved onto the replayed scene by ApplyTourToCluster
-    // (Scene::giWorld* + SceneGiVolume::bake*), read by the pak cooker / the
+    // (TransformHierarchy::giWorld* + SceneGiVolume::bake*), read by the pak cooker / the
     // editor loaders. The bake owner upserts these after every bake.
     std::vector<GiAssetCmd> giAssets;
     // fileInfo constants (Maya fileInfo block): fixed format metadata
@@ -654,14 +654,14 @@ struct Doc {
     // field: "ref <k>" (the k-th CreateCamera in the doc — the same
     // family ref space setCamAttr -ref uses) or "node <clusterId>" (a
     // cluster-backed camera, e.g. an imported glTF camera). Resolved at
-    // cook (ApplyTourToCluster -> Scene::defaultCameraNode, validated
+    // cook (ApplyTourToCluster -> TransformHierarchy::defaultCameraNode, validated
     // against the replayed scene, dangling refs warn + drop like env
     // blocks) and at editor replay (the live world node id). Future
     // typed fields (light.default, ...) reuse this grammar.
     std::vector<std::pair<std::string, std::string>> editorSettings;
     // NOTE: no cook block anymore — the export settings are a SCENE NODE
     // (createNode -at exportSettings + setExportAttr, payload in
-    // Scene::exportForNode); see SceneExportSettings. The old `cook`
+    // TransformHierarchy::exportForNode); see SceneExportSettings. The old `cook`
     // verb + TourCook struct are gone (old files: the verb warns + skips;
     // settings default until re-authored on the node).
 };
@@ -708,7 +708,7 @@ bool ApplyTourToCluster(WorldPage& cluster,
 
 // The bake owner's STAMP: mirror a replayed scene's GI bindings onto the
 // doc's giAsset records. The SCENE is the authority — the bake updates
-// Scene::giWorldSource + SceneGiVolume::bakeSource in place (unbaked volumes
+// TransformHierarchy::giWorldSource + SceneGiVolume::bakeSource in place (unbaked volumes
 // keep their old bindings; deleted volumes drop), then this regenerates
 // doc.giAssets to match (World record when the scene carries one, one
 // GiVolume record per bound volume, family-ref addressed over createdGiVolumes).
@@ -722,7 +722,7 @@ bool ApplyTourToCluster(WorldPage& cluster,
 // record set-difference is the exact list). Returns false only on a
 // structural error (err out).
 bool StampGiAssets(Doc& doc,
-                   const Scene& scene,
+                   const TransformHierarchy& scene,
                    const std::vector<uint32_t>& createdGiVolumes,
                    std::string* err = nullptr,
                    std::vector<std::string>* superseded = nullptr,
@@ -732,7 +732,7 @@ bool StampGiAssets(Doc& doc,
 // cook replay path). Index-preserving: no nodes are added/removed, only
 // parent/child/sibling links + subtree levels. Silently ignores cycles,
 // the root, and depth overflow past MAX_NODE_LEVEL.
-void TourReparent(Scene& scene, uint32_t node, uint32_t newParent);
+void TourReparent(TransformHierarchy& scene, uint32_t node, uint32_t newParent);
 
 // Human-readable one-liner per command (console/log use).
 std::string Describe(const Command& c);
@@ -748,7 +748,7 @@ std::string GenerateUuid();
 // Symbolic parent resolution (the -p quoted form): a uuid hex, a node
 // name, or a '/'-separated ancestor path — resolved against the CURRENT
 // scene, so parents survive numeric id shifts. False = nothing matched.
-bool ResolveParentTarget(const Scene& scene, const std::string& ref, uint32_t& out);
+bool ResolveParentTarget(const TransformHierarchy& scene, const std::string& ref, uint32_t& out);
 
 // Maya's identity layers, mapped onto this codebase (setUuid parity):
 //
@@ -767,15 +767,15 @@ bool ResolveParentTarget(const Scene& scene, const std::string& ref, uint32_t& o
 // Record a uuid on a node (Maya setUuid): false when another live node
 // already holds it (nothing assigned); true + assigned otherwise.
 // Re-assigning the SAME uuid to its current holder is a no-op true.
-bool SetNodeUuid(Scene& scene, uint32_t node, const std::string& uuid);
+bool SetNodeUuid(TransformHierarchy& scene, uint32_t node, const std::string& uuid);
 // Full '/'-path from the hierarchy root ("grp/mesh"; the unnamed root
 // contributes nothing). Shortest path that still names the node
 // uniquely, or empty when even the full path is ambiguous.
-std::string DagFullPath(const Scene& scene, uint32_t node);
-std::string DagShortestUniquePath(const Scene& scene, uint32_t node);
+std::string DagFullPath(const TransformHierarchy& scene, uint32_t node);
+std::string DagShortestUniquePath(const TransformHierarchy& scene, uint32_t node);
 // Resolve a full path or a '/'-separated suffix from any depth (the
 // bare-name unique match lives in ResolveDeleteTarget, not here).
-bool ResolveDagPath(const Scene& scene, const std::string& path, uint32_t& out);
+bool ResolveDagPath(const TransformHierarchy& scene, const std::string& path, uint32_t& out);
 
 // Delete addressing shared by the cook replay and the editor live
 // replay: uuid exact match wins; else a unique full-name match; else a
@@ -784,7 +784,7 @@ bool ResolveDagPath(const Scene& scene, const std::string& path, uint32_t& out);
 // the scene, and (for named deletes) names the same node — the
 // disambiguator for duplicated names and the legacy path for nameless
 // deletes. False = nothing resolved (warn-and-skip).
-bool ResolveDeleteTarget(const Scene& scene,
+bool ResolveDeleteTarget(const TransformHierarchy& scene,
                          const std::string& uuid,
                          const std::string& name,
                          uint32_t idFallback,

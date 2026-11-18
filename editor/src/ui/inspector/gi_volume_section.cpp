@@ -63,7 +63,7 @@ void EditorApp::DrawGiVolumeSection(uint32_t node) {
     // as setGiVolumeAttr tour verbs so cooks replay them.
     if (!m_world || node >= m_world->scene.hierarchy.size())
         return;
-    Scene& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->scene;
     auto it = FindGiVolume(scene, node);
     if (!it)
         return;

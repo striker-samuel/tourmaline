@@ -575,7 +575,7 @@ bool GltfExtrasStaticLight(const tinygltf::Value& extras) {
 //     (also "smvk.no_lightmap", "smvk.no-lightmap", bare "noLightmap",
 //      { "smvk": { "noLightmap"/"no_lightmap": true } })
 //   -or- name starts with "NOLM_".
-// The flag stamps Scene::noLightmap on the group node; exclusion is subtree
+// The flag stamps TransformHierarchy::noLightmap on the group node; exclusion is subtree
 // scoped (see IsNoLightmapNode). The editor writes these extras into its
 // cook-time patched glTF; PakCooker skips flagged subtrees in the chart loop.
 // NOTE: engine lightmap opt-in lives in the EDITOR (tour setLightmap),
@@ -615,7 +615,7 @@ bool GltfExtrasNoLightmap(const tinygltf::Value& extras) {
 //   extras: { "smvk.ditherCloseup": true }
 //     (also "smvk.dither_closeup", { "smvk": { "ditherCloseup": true } })
 //   -or- name starts with "DITHER_".
-// Stamps Scene::ditherCloseup on the group node (subtree scoped).
+// Stamps TransformHierarchy::ditherCloseup on the group node (subtree scoped).
 bool GltfExtrasDitherCloseup(const tinygltf::Value& extras) {
     if (!extras.IsObject())
         return false;
@@ -2356,7 +2356,7 @@ smvk::WorldPageStaticMeshHandle SourceSceneImporter::getOrCreateMesh(int gltfMes
     return meshCache[gltfMeshIndex][primitiveIndex];
 }
 
-void SourceSceneImporter::applyPreTransform(Scene& scene, int rootNode) {
+void SourceSceneImporter::applyPreTransform(TransformHierarchy& scene, int rootNode) {
     // Identity fast path (exact float compare is fine for a default matrix).
     static const glm::mat4 kIdentity{1.0f};
     if (preTransform_ == kIdentity)
@@ -3278,7 +3278,7 @@ size_t BuildFromMeshAsset(
     // root (the placeholder takes its place); nodes 1.. build under the
     // mapped parents (parent 0 -> the placeholder), ids ph+i aligning
     // with the sibling-glTF import (the .tour replay contract).
-    Scene& scene = cluster.scene;
+    TransformHierarchy& scene = cluster.scene;
     if (asset.nodes.empty())
         return 0;
     std::vector<int> mapped(asset.nodes.size(), -1);
@@ -3930,10 +3930,11 @@ size_t ApplySceneReferences(smvk::WorldPage& cluster,
                 if (sameSource && !cachedMesh->asset.nodes.empty()) {
                     const size_t perRef = cachedMesh->asset.nodes.size(); // + placeholder - root
                     const size_t count = doc.references.size();
-                    const size_t maxSlots = size_t(::tour::scene::kNodeSlotCountMax - 1);
+                    const size_t maxSlots =
+                        size_t(::tour::transformhierarchy::kNodeSlotCountMax - 1);
                     if (count <= maxSlots / perRef) {
                         const size_t wanted = cluster.scene.hierarchy.size() + count * perRef;
-                        if (wanted < ::tour::scene::kNodeSlotCountMax &&
+                        if (wanted < ::tour::transformhierarchy::kNodeSlotCountMax &&
                             (!cluster.scene.nodeSlotBudget ||
                              wanted <= cluster.scene.nodeSlotBudget))
                             cluster.scene.ReserveNodeCapacity(wanted);

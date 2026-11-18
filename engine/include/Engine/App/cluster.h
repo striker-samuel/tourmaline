@@ -81,7 +81,7 @@ struct WorldPage {
     WorldPage& operator=(const WorldPage&) = delete;
 
     smvk::ResourceManager* ctx_ = nullptr;
-    Scene scene;
+    TransformHierarchy scene;
     World* world = nullptr;
     WorldPage* sibling = nullptr;
     // linked list for import chain if multiple clusters belong to one input file.
@@ -170,13 +170,13 @@ struct WorldPage {
 
     // Cooked punctual light (KHR_lights_punctual): pure value asset,
     // no GPU side. World position/direction resolve from the light
-    // node's global transform at use time (see Scene::lightForNode).
+    // node's global transform at use time (see TransformHierarchy::lightForNode).
     WorldPageLightHandle CreateLight(SceneLight def);
-    // Authored camera lens (see Scene::cameraForNode): pure value
+    // Authored camera lens (see TransformHierarchy::cameraForNode): pure value
     // asset, no GPU side. The pose resolves from the camera node's
     // global transform at use time.
     WorldPageCameraHandle CreateCamera(SceneCamera def);
-    // Authored/runtime decal look (see Scene::decalForNode + SceneDecal):
+    // Authored/runtime decal look (see TransformHierarchy::decalForNode + SceneDecal):
     // pure value asset, no GPU side (the textures resolve through the
     // cluster pool at use). The shape resolves from the decal node's
     // global transform at use time.

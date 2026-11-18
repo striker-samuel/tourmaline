@@ -41,7 +41,7 @@ inline std::string OwnedUri(smvk::StringViewT view) {
     return view.valid() ? view.Str() : std::string{};
 }
 
-inline Json EnvState(const tour::scene::SceneEnv& env) {
+inline Json EnvState(const tour::transformhierarchy::SceneEnv& env) {
     return {{"sky_color", Vec3(env.skyColor)},
             {"sky_intensity", Bits(env.skyIntensity)},
             {"sun_color", Vec3(env.sunColor)},
@@ -68,7 +68,7 @@ inline Json EnvState(const tour::scene::SceneEnv& env) {
             {"skybox_uri", env.skyboxUri}};
 }
 
-inline Json RenderState(const tour::scene::SceneRenderSettings& r) {
+inline Json RenderState(const tour::transformhierarchy::SceneRenderSettings& r) {
     return {{"bloom_enabled", r.bloomEnabled},
             {"bloom_intensity_f32", Bits(r.bloomIntensity)},
             {"bloom_threshold_f32", Bits(r.bloomThreshold)},
@@ -135,9 +135,9 @@ inline Json WorldState(const tour::World& world,
         {"rng", Json::object()}};
 
     for (uint32_t n = 0; n < graph.hierarchy.size(); ++n) {
-        if (!tour::scene::IsNodeAlive(graph, n))
+        if (!tour::transformhierarchy::IsNodeAlive(graph, n))
             continue;
-        const uint32_t generation = tour::scene::NodeGenerationOf(graph, n);
+        const uint32_t generation = tour::transformhierarchy::NodeGenerationOf(graph, n);
         const auto& hierarchy = graph.hierarchy[n];
         Json node = {{"slot", n},
                      {"generation", generation},
@@ -146,8 +146,8 @@ inline Json WorldState(const tour::World& world,
                      {"next_sibling", hierarchy.nextSibling},
                      {"last_sibling", hierarchy.lastSibling},
                      {"level", hierarchy.level},
-                     {"name", tour::scene::getNodeName(graph, static_cast<int>(n))},
-                     {"uuid", tour::scene::GetNodeUuid(graph, n)},
+                     {"name", tour::transformhierarchy::getNodeName(graph, static_cast<int>(n))},
+                     {"uuid", tour::transformhierarchy::GetNodeUuid(graph, n)},
                      {"hidden", NodeFlag(graph.hidden, n)},
                      {"static_root", NodeFlag(graph.staticRoot, n)},
                      {"no_lightmap", NodeFlag(graph.noLightmap, n)},
@@ -159,19 +159,19 @@ inline Json WorldState(const tour::World& world,
         if (n < graph.globalTransform.size())
             node["global_f32"] = Mat4(graph.globalTransform[n]);
 
-        if (const auto* row = tour::scene::FindMesh(graph, n))
+        if (const auto* row = tour::transformhierarchy::FindMesh(graph, n))
             node["mesh"] = row->mesh;
-        if (const auto* row = tour::scene::FindMaterial(graph, n))
+        if (const auto* row = tour::transformhierarchy::FindMaterial(graph, n))
             node["material"] = row->material;
-        if (const auto* row = tour::scene::FindLight(graph, n))
+        if (const auto* row = tour::transformhierarchy::FindLight(graph, n))
             node["light"] = row->light;
-        if (const auto* row = tour::scene::FindCamera(graph, n))
+        if (const auto* row = tour::transformhierarchy::FindCamera(graph, n))
             node["camera_ref"] = row->camera;
-        if (const auto* row = tour::scene::FindDecal(graph, n))
+        if (const auto* row = tour::transformhierarchy::FindDecal(graph, n))
             node["decal"] = row->decal;
-        if (const auto* row = tour::scene::FindCubemap(graph, n))
+        if (const auto* row = tour::transformhierarchy::FindCubemap(graph, n))
             node["cubemap_radius_f32"] = Bits(row->cubemap.radius);
-        if (const auto* row = tour::scene::FindGiVolume(graph, n)) {
+        if (const auto* row = tour::transformhierarchy::FindGiVolume(graph, n)) {
             const auto& v = row->volume;
             node["gi_volume"] = {
                 {"priority", v.priority},
@@ -187,9 +187,9 @@ inline Json WorldState(const tour::World& world,
                 {"bake_guid", v.bakeGuid},
                 {"bake_input_hash", v.bakeInputHash}};
         }
-        if (const auto* row = tour::scene::FindEnv(graph, n))
+        if (const auto* row = tour::transformhierarchy::FindEnv(graph, n))
             node["environment"] = EnvState(row->environment);
-        if (const auto* row = tour::scene::FindEnvVolume(graph, n)) {
+        if (const auto* row = tour::transformhierarchy::FindEnvVolume(graph, n)) {
             const auto& v = row->volume;
             node["env_volume"] = {{"inf_mask", v.infMask},
                                   {"priority_f32", Bits(v.priority)},
@@ -197,7 +197,7 @@ inline Json WorldState(const tour::World& world,
                                   {"blend_radius_f32", Bits(v.blendRadius)},
                                   {"enabled", v.enabled}};
         }
-        if (const auto* row = tour::scene::FindAudioSource(graph, n)) {
+        if (const auto* row = tour::transformhierarchy::FindAudioSource(graph, n)) {
             const auto& source = row->source;
             Json sounds = Json::array();
             for (const auto& sound : source.sounds)
@@ -213,7 +213,7 @@ inline Json WorldState(const tour::World& world,
                                     {"max_distance_f32", Bits(source.maxDistance)},
                                     {"sounds", std::move(sounds)}};
         }
-        if (const auto* row = tour::scene::FindAudioRoom(graph, n)) {
+        if (const auto* row = tour::transformhierarchy::FindAudioRoom(graph, n)) {
             const auto& room = row->room;
             node["audio_room"] = {{"enabled", room.enabled},
                                   {"priority", room.priority},
@@ -224,7 +224,7 @@ inline Json WorldState(const tour::World& world,
                                   {"damping_f32", Bits(room.damping)},
                                   {"transition_f32", Bits(room.transitionSeconds)}};
         }
-        if (const auto* row = tour::scene::FindPhysicsBody(graph, n)) {
+        if (const auto* row = tour::transformhierarchy::FindPhysicsBody(graph, n)) {
             const auto& body = row->body;
             node["physics_authoring"] = {{"motion", body.motion},
                                          {"shape", body.shape},
@@ -236,11 +236,11 @@ inline Json WorldState(const tour::World& world,
                                          {"height_f32", Bits(body.height)},
                                          {"sensor", body.sensor}};
         }
-        if (const auto* row = tour::scene::FindTriggerVolume(graph, n))
+        if (const auto* row = tour::transformhierarchy::FindTriggerVolume(graph, n))
             node["trigger"] = {{"enabled", row->trigger.enabled},
                                {"once", row->trigger.once},
                                {"tag", row->trigger.tag}};
-        if (const auto* row = tour::scene::FindSchemaAssoc(graph, n))
+        if (const auto* row = tour::transformhierarchy::FindSchemaAssoc(graph, n))
             node["schema_association"] = {{"schema_id", row->schemaId},
                                           {"value_bytes", row->values}};
         state["nodes"][std::to_string(n) + ":" + std::to_string(generation)] = std::move(node);

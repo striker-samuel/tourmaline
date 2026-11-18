@@ -67,7 +67,7 @@ class IRenderer {
         // the CPU packs matrix ROWS via PackPushPrevModel).
         float prevModel[12];
         // padEnd_[0]: the DIRECT legs' per-draw dither-on-closeup flag
-        // (Scene::ditherCloseup — pushed per draw, 0/1, by the direct
+        // (TransformHierarchy::ditherCloseup — pushed per draw, 0/1, by the direct
         // prepass / Main / shadow legs; default.vert / shadow.vert
         // forward it flat at VS location 8 so the FS family reads ONE
         // channel on both paths — the filtered legs deliver the gfx Draw

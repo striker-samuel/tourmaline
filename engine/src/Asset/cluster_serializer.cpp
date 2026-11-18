@@ -318,10 +318,9 @@ TexCookResult CookTexturePayload(const TexCookJob& job) {
     r.digested = haveDigest;
     return r;
 }
-// Authored-environment record (see ::tour::scene::SceneEnv): 16 floats in fixed order +
-// the skybox URI string. Shared by the resolved look, the default block
-// and the per-node blocks.
-void PutSceneEnv(std::vector<uint8_t>& out, const ::tour::scene::SceneEnv& e) {
+// Authored-environment record (see ::tour::transformhierarchy::SceneEnv): 16 floats in fixed order
+// + the skybox URI string. Shared by the resolved look, the default block and the per-node blocks.
+void PutSceneEnv(std::vector<uint8_t>& out, const ::tour::transformhierarchy::SceneEnv& e) {
     PutVec3(out, e.skyColor);
     PutF32(out, e.skyIntensity);
     PutVec3(out, e.sunColor);
@@ -333,7 +332,7 @@ void PutSceneEnv(std::vector<uint8_t>& out, const ::tour::scene::SceneEnv& e) {
     PutVec3(out, e.fogColor);
     PutF32(out, e.volumetrics);
     PutStr(out, e.skyboxUri);
-    // Fog quality tiers + the volumetric fog settings (::tour::scene::SceneEnv — the
+    // Fog quality tiers + the volumetric fog settings (::tour::transformhierarchy::SceneEnv — the
     // App's pass seeds from the resolved env). Appended AFTER the v10
     // record: older paks fail the reader loudly (the sanctioned break —
     // old format, no conversions).
@@ -460,8 +459,8 @@ struct Cursor {
     // Authored-environment record (mirrors PutSceneEnv): 16 floats in
     // fixed order + the skybox URI. Sets ok=false on truncation (the
     // caller keeps defaults).
-    ::tour::scene::SceneEnv sceneEnv() {
-        ::tour::scene::SceneEnv e{};
+    ::tour::transformhierarchy::SceneEnv sceneEnv() {
+        ::tour::transformhierarchy::SceneEnv e{};
         e.skyColor = vec3();
         e.skyIntensity = f32();
         e.sunColor = vec3();
@@ -1213,10 +1212,10 @@ bool SerializeClusters(const std::vector<const WorldPage*>& clusters,
 
         // --- Scene ---------------------------------------------------------------
         {
-            const Scene& scene = cluster.scene;
-            const auto exportView = tour::scene::BuildStaticExportHierarchy(scene);
+            const TransformHierarchy& scene = cluster.scene;
+            const auto exportView = tour::transformhierarchy::BuildStaticExportHierarchy(scene);
             std::vector<uint8_t> blob;
-            // Hierarchy (20 B) + local matrix (64 B) are mandatory for every
+            // NodeLinks (20 B) + local matrix (64 B) are mandatory for every
             // live node. Reserve the known lower bound before any PutU32
             // writes, avoiding repeated large-vector reallocations.
             const size_t expectedNodes = size_t(LiveNodeCount(scene));
@@ -1240,7 +1239,7 @@ bool SerializeClusters(const std::vector<const WorldPage*>& clusters,
             for (uint32_t s = 0; s < scene.hierarchy.size(); ++s) {
                 if (slotToDense[s] == UINT32_MAX)
                     continue;
-                const Hierarchy& h = exportView.hierarchy[s];
+                const NodeLinks& h = exportView.hierarchy[s];
                 PutI32(blob, denseLink(h.parent));
                 PutI32(blob, denseLink(h.firstChild));
                 PutI32(blob, denseLink(h.nextSibling));
@@ -1493,7 +1492,7 @@ bool SerializeClusters(const std::vector<const WorldPage*>& clusters,
             }
             // Default camera (v10; v9 blobs end after the env section): the
             // authored camera node the runtime App spawns at (world settings'
-            // typed camera.default field — see Scene::defaultCameraNode).
+            // typed camera.default field — see TransformHierarchy::defaultCameraNode).
             // One u32 node id, cluster-DENSE through the map (UINT32_MAX =
             // none). Always written so the layout is uniform; old readers
             // fail the trailing-bytes check on v10 blobs (the sanctioned
@@ -1534,7 +1533,7 @@ bool SerializeClusters(const std::vector<const WorldPage*>& clusters,
                 }
             }
             // Active environment (v12; v11 blobs end after the decal links):
-            // the selected env block node (see Scene::activeEnvironment). One
+            // the selected env block node (see TransformHierarchy::activeEnvironment). One
             // u32 node id, cluster-DENSE through the map (UINT32_MAX = none,
             // the default block renders). Always written so the layout is
             // uniform; old readers fail the trailing-bytes check on v12 blobs
@@ -1615,7 +1614,7 @@ bool SerializeClusters(const std::vector<const WorldPage*>& clusters,
             }
             // Explicit animation references (v16; v15 blobs end after the
             // env-zone flag): the scene's recorded .tourAnim clip VFS paths
-            // (Scene::animClipRefs — the self-contained anim pipeline; the
+            // (TransformHierarchy::animClipRefs — the self-contained anim pipeline; the
             // pak cooker stamps them + embeds the clip blobs at the same
             // paths). u32 count + PutStr each, always written (possibly
             // empty) so the layout is uniform; the LOAD side treats an
@@ -1628,7 +1627,7 @@ bool SerializeClusters(const std::vector<const WorldPage*>& clusters,
             // Per-node volumetric-shadow caster section (v17; v16 blobs end
             // after the anim refs): u32 count + count bytes (the
             // castsVolumetricShadow self flags - the coarse fog tile's caster
-            // marks, see Scene::castsVolumetricShadow). All-zero when unused;
+            // marks, see TransformHierarchy::castsVolumetricShadow). All-zero when unused;
             // missing == off on read (pre-v17 paks).
             {
                 putFlagBytes(scene.castsVolumetricShadow);
@@ -1732,23 +1731,24 @@ bool SerializeClusters(const std::vector<const WorldPage*>& clusters,
             // rows) so the layout is uniform; old readers fail new blobs
             // at the trailing-bytes check (the sanctioned break).
             {
-                std::vector<const tour::scene::AudioRoomRow*> roomRows;
+                std::vector<const tour::transformhierarchy::AudioRoomRow*> roomRows;
                 roomRows.reserve(cluster.scene.tables.audioRooms.size());
-                for (const tour::scene::AudioRoomRow& row : cluster.scene.tables.audioRooms) {
+                for (const tour::transformhierarchy::AudioRoomRow& row :
+                     cluster.scene.tables.audioRooms) {
                     if (row.node >= slotToDense.size() || slotToDense[row.node] == UINT32_MAX)
                         return fail("scene audio-room row references"
                                     " retired node slot " +
                                     std::to_string(row.node));
                     roomRows.push_back(&row);
                 }
-                std::sort(
-                    roomRows.begin(),
-                    roomRows.end(),
-                    [&](const tour::scene::AudioRoomRow* a, const tour::scene::AudioRoomRow* b) {
-                        return slotToDense[a->node] < slotToDense[b->node];
-                    });
+                std::sort(roomRows.begin(),
+                          roomRows.end(),
+                          [&](const tour::transformhierarchy::AudioRoomRow* a,
+                              const tour::transformhierarchy::AudioRoomRow* b) {
+                              return slotToDense[a->node] < slotToDense[b->node];
+                          });
                 PutU32(blob, static_cast<uint32_t>(roomRows.size()));
-                for (const tour::scene::AudioRoomRow* row : roomRows) {
+                for (const tour::transformhierarchy::AudioRoomRow* row : roomRows) {
                     PutU32(blob, slotToDense[row->node]);
                     PutU32(blob, row->room.enabled ? 1u : 0u);
                     PutU32(blob, row->room.priority);
@@ -1765,7 +1765,7 @@ bool SerializeClusters(const std::vector<const WorldPage*>& clusters,
 
             // v21 TRIGGERS: dense node, enabled/once flags, string tag.
             {
-                std::vector<const tour::scene::TriggerVolumeRow*> rows;
+                std::vector<const tour::transformhierarchy::TriggerVolumeRow*> rows;
                 for (const auto& row : cluster.scene.tables.triggerVolumes) {
                     if (row.node >= slotToDense.size() || slotToDense[row.node] == UINT32_MAX)
                         return fail("scene trigger row references retired node");
@@ -1783,7 +1783,7 @@ bool SerializeClusters(const std::vector<const WorldPage*>& clusters,
             }
             // Physics body authoring rows, sorted by cooked dense node ID.
             {
-                std::vector<const tour::scene::PhysicsBodyRow*> rows;
+                std::vector<const tour::transformhierarchy::PhysicsBodyRow*> rows;
                 for (const auto& row : cluster.scene.tables.physicsBodies) {
                     if (row.node >= slotToDense.size() || slotToDense[row.node] == UINT32_MAX)
                         return fail("scene physics body references retired node");
@@ -1859,7 +1859,7 @@ bool SerializeClusters(const std::vector<const WorldPage*>& clusters,
                 for (const MeshRow& row : scene.tables.meshes) {
                     if (row.node >= slotToDense.size() || slotToDense[row.node] == UINT32_MAX)
                         continue; // the pair table above already failed loudly on these
-                    if (!tour::scene::IsStaticNode(scene, int(row.node)))
+                    if (!tour::transformhierarchy::IsStaticNode(scene, int(row.node)))
                         continue;
                     if (row.node >= scene.globalTransform.size())
                         return fail("scene mesh row node has no global transform (static bvh)");
@@ -2055,7 +2055,7 @@ bool SerializeCluster(const WorldPage& cluster,
 // GPU-less structure-only lane: ListPakScenes, tools, tests). The
 // definition below matches - external linkage, no defaults repeated.
 bool ParseSceneBlob(std::span<const uint8_t> payload,
-                    Scene& scene,
+                    TransformHierarchy& scene,
                     std::string& nameOut,
                     const SceneLinkMaps* maps,
                     std::string& err,
@@ -2083,14 +2083,15 @@ bool ParseSceneBlob(std::span<const uint8_t> payload,
     if (!c.ok || nodeCount == 0 || nodeCount > 16 * 1024 * 1024)
         return fail("bad scene node count");
     if (scene.nodeSlotBudget && nodeCount > scene.nodeSlotBudget)
-        tour::scene::CrashNodeBudget("pak scene parse", nodeCount, scene.nodeSlotBudget);
+        tour::transformhierarchy::CrashNodeBudget(
+            "pak scene parse", nodeCount, scene.nodeSlotBudget);
     // Stash the recorded linkage first (single parse), then grow the
     // scene in index order with addNode (sibling order preserved), then
     // restore the recorded linkage verbatim as authoritative.
-    std::vector<Hierarchy> recorded;
+    std::vector<NodeLinks> recorded;
     recorded.reserve(nodeCount);
     for (uint32_t i = 0; i < nodeCount; ++i) {
-        Hierarchy hh;
+        NodeLinks hh;
         hh.parent = c.i32();
         hh.firstChild = c.i32();
         hh.nextSibling = c.i32();
@@ -2200,7 +2201,7 @@ bool ParseSceneBlob(std::span<const uint8_t> payload,
     // is recorded on the scene (staticRootsSerialized): an all-zero array
     // from a v2+ blob is AUTHORED all-dynamic data, not a missing record —
     // consumers distinguishing cooked from legacy test the flag, never
-    // the array's contents (see Scene::staticRootsSerialized).
+    // the array's contents (see TransformHierarchy::staticRootsSerialized).
     if (c.off < c.img.size()) {
         const uint32_t staticCount = c.u32();
         if (!c.ok || staticCount != nodeCount)
@@ -2318,8 +2319,8 @@ bool ParseSceneBlob(std::span<const uint8_t> payload,
         // struct defaults stand and envAuthored stays false.
         if (c.off < c.img.size()) {
             const uint32_t envFlag = c.u32();
-            ::tour::scene::SceneEnv resolved = c.sceneEnv();
-            ::tour::scene::SceneEnv def = c.sceneEnv();
+            ::tour::transformhierarchy::SceneEnv resolved = c.sceneEnv();
+            ::tour::transformhierarchy::SceneEnv def = c.sceneEnv();
             const uint32_t envPairCount = c.u32();
             if (!c.ok || envPairCount > 1024 * 1024)
                 return fail("bad scene environment section");
@@ -2327,7 +2328,7 @@ bool ParseSceneBlob(std::span<const uint8_t> payload,
             rows.reserve(envPairCount);
             for (uint32_t i = 0; i < envPairCount; ++i) {
                 const uint32_t node = c.u32();
-                ::tour::scene::SceneEnv block = c.sceneEnv();
+                ::tour::transformhierarchy::SceneEnv block = c.sceneEnv();
                 if (!c.ok || node >= nodeCount)
                     return fail("bad scene environment section");
                 rows.push_back(EnvRow{node, std::move(block)});
@@ -2631,7 +2632,7 @@ bool ParseSceneBlob(std::span<const uint8_t> payload,
                 const float transitionSeconds = c.f32();
                 if (!c.ok || node >= nodeCount)
                     return fail("bad scene audio-room section");
-                tour::scene::AudioRoomRow row{};
+                tour::transformhierarchy::AudioRoomRow row{};
                 row.node = node;
                 row.room.enabled = (flags & 1u) != 0u;
                 row.room.priority = priority;
@@ -2661,7 +2662,7 @@ bool ParseSceneBlob(std::span<const uint8_t> payload,
                 const std::string tag = c.str();
                 if (!c.ok || node >= nodeCount || tag.size() > 4096)
                     return fail("bad scene trigger record");
-                tour::scene::SceneTriggerVolume trigger{};
+                tour::transformhierarchy::SceneTriggerVolume trigger{};
                 trigger.enabled = (flags & 1u) != 0;
                 trigger.once = (flags & 2u) != 0;
                 trigger.tag = tag;
@@ -2680,7 +2681,7 @@ bool ParseSceneBlob(std::span<const uint8_t> payload,
                 return fail("bad scene physics body section");
             for (uint32_t i = 0; i < count; ++i) {
                 const uint32_t node = c.u32();
-                tour::scene::ScenePhysicsBody b{};
+                tour::transformhierarchy::ScenePhysicsBody b{};
                 b.motion = c.u32();
                 b.shape = c.u32();
                 b.mass = c.f32();
@@ -2818,7 +2819,7 @@ bool ParseGiRegistryBlob(std::span<const uint8_t> payload,
 std::vector<PakSceneInfo> ListPakScenes(const PakReader& reader, std::string* err) {
     std::vector<PakSceneInfo> out;
     for (const PakTocEntry* e : OrderedSceneEntries(reader)) {
-        Scene tmp;
+        TransformHierarchy tmp;
         std::string name, perr;
         // Structure-only listing: the skeleton out-params stay null, so a
         // v14 scene blob with a skeleton must not hard-fail here - the

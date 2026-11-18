@@ -92,7 +92,7 @@ void EditorApp::RefreshCubemapDensity() {
     for (const auto& clusterPtr : m_world->pages) {
         if (!clusterPtr)
             continue;
-        const ::Scene& scene = clusterPtr->scene;
+        const ::TransformHierarchy& scene = clusterPtr->scene;
         for (const MeshRow& row : scene.tables.meshes) {
             const uint32_t node = row.node;
             const uint32_t meshIdx = row.mesh;
