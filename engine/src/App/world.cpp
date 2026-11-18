@@ -1212,29 +1212,29 @@ void World::ResolveAndFixup_pages() {
     // keyed by the STABLE (owner cluster, pool handle) pair — they
     // survive resolves and cluster load/unload reordering exactly
     // like the entity bindings.
-    std::vector<std::tuple<WorldPage*, WorldPageMaterialHandle, uint32_t>> oldMaterialUserData;
+    oldMaterialUserData_.clear();
     {
         const size_t n = std::min(materialLocations.size(), materialUserData.size());
-        oldMaterialUserData.reserve(n);
+        oldMaterialUserData_.reserve(n);
         for (size_t i = 0; i < n; ++i) {
             const MaterialLocation& loc = materialLocations[i];
             if (loc.cluster && loc.handle.valid())
-                oldMaterialUserData.emplace_back(loc.cluster, loc.handle, materialUserData[i]);
+                oldMaterialUserData_.emplace_back(loc.cluster, loc.handle, materialUserData[i]);
         }
     }
     // MATERIAL SHADER-FAMILY RE-KEY CAPTURE (same stable-key shape —
     // the Phase B family lane rides the userdata lane's capture
     // discipline; only ProjectLit rows need carrying, StandardLit is
     // the zero default).
-    std::vector<std::tuple<WorldPage*, WorldPageMaterialHandle, uint8_t>> oldMaterialShaderFamily;
+    oldMaterialShaderFamily_.clear();
     {
         const size_t n = std::min(materialLocations.size(), materialShaderFamily.size());
-        oldMaterialShaderFamily.reserve(n);
+        oldMaterialShaderFamily_.reserve(n);
         for (size_t i = 0; i < n; ++i) {
             if (materialShaderFamily[i] == uint8_t(smvk::MaterialShaderFamily::ProjectLit)) {
                 const MaterialLocation& loc = materialLocations[i];
                 if (loc.cluster && loc.handle.valid())
-                    oldMaterialShaderFamily.emplace_back(
+                    oldMaterialShaderFamily_.emplace_back(
                         loc.cluster, loc.handle, materialShaderFamily[i]);
             }
         }
@@ -1305,26 +1305,14 @@ void World::ResolveAndFixup_pages() {
     // The retained cluster-slot -> merged-node map (stable keys for
     // the entity layers; rebuilt with the world every resolve).
     pageMergedNodes.assign(pages.size(), {});
-    // World material dedup (see the material-table remap below).
-    std::unordered_map<uint64_t, uint32_t> worldMatByClusterMat;
-    uint32_t clusterOrdinal = 0;
-    // Authored-environment first-wins (see the per-cluster block):
-    // the first cluster scene carrying an authored look wins the
-    // world scene's resolved/default blocks.
-    bool envTaken = false;
-    // Default-camera first-wins (same contract): the first cluster
-    // scene with an authored default camera wins the world slot.
-    bool defaultCamTaken = false;
-    // Active-environment first-wins (same contract): the first
-    // cluster scene with a selected env block wins the world slot
-    // (first scene loaded into the world wins). Remapped below.
-    bool activeEnvTaken = false;
-    // Render-settings first-wins (same contract as the env above —
-    // the look + the render config are scene-global, one block):
-    // the first cluster scene carrying an AUTHORED render block
-    // wins the world slots (hasRenderSettings=false never wins, so
-    // an unauthored cluster never shadows an authored one).
-    bool renderTaken = false;
+    // World material dedup (see the material-table remap in MergePage):
+    // persisted across MergePage deltas so the incremental streaming path
+    // does not re-dedup already-folded materials.
+    worldMatByClusterMat_.clear();
+    envTaken_ = false;
+    renderTaken_ = false;
+    defaultCamTaken_ = false;
+    activeEnvTaken_ = false;
 
     // FLAT WORLD: no synthetic root node. The World is a container that
     // owns the merged Scene; top level = every live root (parent == -1)
@@ -1336,8 +1324,13 @@ void World::ResolveAndFixup_pages() {
     // arrays (the flag tables grow with zeros), so no pre-sizing is
     // needed on the reset path either.
 
-    for (auto& clusterPtr : pages) {
-        WorldPage& cluster = *clusterPtr.get();
+    for (uint32_t i = 0; i < (uint32_t)pages.size(); ++i)
+        MergePage(*pages[i], i, identityPrimary == pages[i].get());
+    RebuildDerivedCaches();
+}
+
+void World::MergePage(WorldPage& cluster, uint32_t clusterOrdinal, bool isIdentityPrimary) {
+    {
         TransformHierarchy& cs = cluster.scene;
 
         // Slot-association map (Epoch 6b): cluster slot -> world
@@ -1353,7 +1346,6 @@ void World::ResolveAndFixup_pages() {
         // placed its nodes); every other cluster - the dynamic spawn
         // home, or the second content cluster that disabled the fast
         // path - folds through the legacy append below.
-        const bool isIdentityPrimary = identityPrimary == &cluster;
         if (isIdentityPrimary) {
             for (uint32_t s = 0; s < clusterSlotCount; ++s)
                 if (IsLiveSlot(cs, s))
@@ -1509,8 +1501,8 @@ void World::ResolveAndFixup_pages() {
                 continue;
             const uint32_t worldNode = nodeMap[row.node];
             const uint64_t matKey = (static_cast<uint64_t>(clusterOrdinal) << 32) | row.material;
-            auto matHit = worldMatByClusterMat.find(matKey);
-            if (matHit != worldMatByClusterMat.end()) {
+            auto matHit = worldMatByClusterMat_.find(matKey);
+            if (matHit != worldMatByClusterMat_.end()) {
                 SetMaterial(scene, worldNode, matHit->second);
                 continue;
             }
@@ -1519,7 +1511,7 @@ void World::ResolveAndFixup_pages() {
             WorldPageMaterialHandle handle = cluster.materials.getHandle(row.material);
 
             materialLocations.push_back(MaterialLocation{.cluster = &cluster, .handle = handle});
-            worldMatByClusterMat[matKey] = worldMatIdx;
+            worldMatByClusterMat_[matKey] = worldMatIdx;
             SetMaterial(scene, worldNode, worldMatIdx);
         }
 
@@ -1633,11 +1625,11 @@ void World::ResolveAndFixup_pages() {
         for (const SchemaAssocRow& row : cs.tables.schemaAssocs)
             if (row.node < nodeMap.size() && nodeMap[row.node] != UINT32_MAX)
                 SetSchemaAssoc(scene, nodeMap[row.node], row.schemaId, row.values);
-        if (!envTaken && cs.envAuthored) {
+        if (!envTaken_ && cs.envAuthored) {
             scene.environment = cs.environment;
             scene.envAuthored = true;
             scene.defaultEnvironment = cs.defaultEnvironment;
-            envTaken = true;
+            envTaken_ = true;
         }
         // Render settings (the postfx LOOK — see
         // SceneRenderSettings): first-wins like the resolved env
@@ -1648,38 +1640,39 @@ void World::ResolveAndFixup_pages() {
         // it reads its own scene). (The GI/shadow quality knobs are
         // NOT part of this — host-owned session state; see
         // RenderQualityConfig.)
-        if (!renderTaken && cs.hasRenderSettings) {
+        if (!renderTaken_ && cs.hasRenderSettings) {
             scene.renderSettings = cs.renderSettings;
             scene.defaultRenderSettings = cs.defaultRenderSettings;
             scene.hasRenderSettings = true;
-            renderTaken = true;
+            renderTaken_ = true;
         }
         // Default camera (world settings' typed camera.default field):
         // cluster slot -> world slot through the map, first-wins
         // across pages like the resolved env (the owning scene's
         // default stands; UINT32_MAX = none is a no-op).
-        if (!defaultCamTaken && cs.defaultCameraNode != UINT32_MAX &&
+        if (!defaultCamTaken_ && cs.defaultCameraNode != UINT32_MAX &&
             cs.defaultCameraNode < clusterSlotCount &&
             nodeMap[cs.defaultCameraNode] != UINT32_MAX) {
             scene.defaultCameraNode = nodeMap[cs.defaultCameraNode];
-            defaultCamTaken = true;
+            defaultCamTaken_ = true;
         }
         // Active environment (tour env.current / editor selection):
         // same first-wins remap. The merged look resolves from the
         // winning id after the loop (see below); UINT32_MAX = none.
-        if (!activeEnvTaken && cs.activeEnvironment != UINT32_MAX &&
+        if (!activeEnvTaken_ && cs.activeEnvironment != UINT32_MAX &&
             cs.activeEnvironment < clusterSlotCount &&
             nodeMap[cs.activeEnvironment] != UINT32_MAX) {
             scene.activeEnvironment = nodeMap[cs.activeEnvironment];
-            activeEnvTaken = true;
+            activeEnvTaken_ = true;
         }
 
         // (Per-cluster merge-dirty marking is gone with the synthetic
         // root: the resolve tail's MarkAllRootsChanged marks EVERY merged
         // root, which is exactly the merge boundary now.)
-        ++clusterOrdinal;
     }
+}
 
+void World::RebuildDerivedCaches() {
     // Active-environment pick: the winning id resolves the merged
     // look from the merged block table (first scene loaded wins).
     // Falls back to the first-wins authored/default copy above when
@@ -1712,9 +1705,9 @@ void World::ResolveAndFixup_pages() {
                     continue;
                 const uint64_t matKey =
                     (static_cast<uint64_t>(clusterOrdinal) << 32) | static_cast<uint32_t>(localIdx);
-                auto hit = worldMatByClusterMat.find(matKey);
+                auto hit = worldMatByClusterMat_.find(matKey);
                 uint32_t worldMatIdx = 0;
-                if (hit != worldMatByClusterMat.end()) {
+                if (hit != worldMatByClusterMat_.end()) {
                     worldMatIdx = hit->second;
                 } else {
                     WorldPageMaterialHandle layerHandle =
@@ -1724,7 +1717,7 @@ void World::ResolveAndFixup_pages() {
                     worldMatIdx = static_cast<uint32_t>(materialLocations.size());
                     materialLocations.push_back(
                         MaterialLocation{.cluster = cluster, .handle = layerHandle});
-                    worldMatByClusterMat[matKey] = worldMatIdx;
+                    worldMatByClusterMat_[matKey] = worldMatIdx;
                 }
                 mat->values.layerMaterials[layer] = static_cast<int32_t>(worldMatIdx);
             }
@@ -1760,7 +1753,7 @@ void World::ResolveAndFixup_pages() {
         const MaterialLocation& loc = materialLocations[i];
         if (!loc.cluster || !loc.handle.valid())
             continue;
-        for (const auto& [c, h, v] : oldMaterialUserData) {
+        for (const auto& [c, h, v] : oldMaterialUserData_) {
             if (c == loc.cluster && h == loc.handle) {
                 materialUserData[i] = v;
                 break;
@@ -1778,7 +1771,7 @@ void World::ResolveAndFixup_pages() {
         const MaterialLocation& loc = materialLocations[i];
         if (!loc.cluster || !loc.handle.valid())
             continue;
-        for (const auto& [c, h, v] : oldMaterialShaderFamily) {
+        for (const auto& [c, h, v] : oldMaterialShaderFamily_) {
             if (c == loc.cluster && h == loc.handle) {
                 materialShaderFamily[i] = v;
                 break;

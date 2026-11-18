@@ -347,6 +347,20 @@ struct World {
     mutable bool dirtyCull = true;
     std::vector<IteratorFlags> flags; // indexed by node
     std::vector<std::unique_ptr<WorldPage>> pages;
+    // INCREMENTAL FOLD STATE (persists across MergePage/UnmergePage
+    // deltas; reset by ResolveAndFixup_pages before a full rebuild): the
+    // material dedup map (page ordinal -> cluster-local material -> world
+    // material index) and the first-wins flags.
+    std::unordered_map<uint64_t, uint32_t> worldMatByClusterMat_;
+    bool envTaken_ = false;
+    bool renderTaken_ = false;
+    bool defaultCamTaken_ = false;
+    bool activeEnvTaken_ = false;
+    // MATERIAL USERDATA/SHADER-FAMILY re-key capture (stable-keyed, moved to
+    // members so the incremental RebuildDerivedCaches can re-emit them into the
+    // new index layout after a batch of deltas).
+    std::vector<std::tuple<WorldPage*, WorldPageMaterialHandle, uint32_t>> oldMaterialUserData_;
+    std::vector<std::tuple<WorldPage*, WorldPageMaterialHandle, uint8_t>> oldMaterialShaderFamily_;
     // The camera-driven page streamer (see scene_page_streamer.h): set by
     // the host loader after the entry scene loads; null = streaming
     // disabled (every page is resident, the legacy load-everything model).
@@ -843,6 +857,24 @@ struct World {
     // case). Refuses the dynamic cluster.
     std::unique_ptr<WorldPage> UnregisterPage(WorldPage&);
     void ResolveAndFixup_pages();
+    // INCREMENTAL fold (the streaming path): append ONE freshly registered
+    // page into the merged scene + location tables WITHOUT re-folding the
+    // already-resident pages. The O(total) derived caches (flags /
+    // drawItems / LOD chains / static BVH) are NOT rebuilt here — call
+    // RebuildDerivedCaches once after a settled batch of MergePage calls.
+    // The page must be registered and must not already be folded.
+    // `clusterOrdinal` is the page's stable slot index in `pages` (the
+    // material-dedup + pageMergedNodes discriminator); `isIdentityPrimary`
+    // is true only for the single-content-page bulk-copy fast path.
+    void MergePage(smvk::WorldPage& page, uint32_t clusterOrdinal, bool isIdentityPrimary);
+    // Retire ONE page's folded nodes + resource rows (mark its slots dead,
+    // drop its location-table entries) WITHOUT compacting the survivors.
+    // The derived caches are rebuilt by the next RebuildDerivedCaches.
+    void UnmergePage(smvk::WorldPage& page);
+    // Rebuilds the O(total) derived caches (iterator flags, material-sorted
+    // draw list, LOD chains, lightmap charts, static-cull BVH) after a batch
+    // of MergePage/UnmergePage deltas. This is the tail of a full resolve.
+    void RebuildDerivedCaches();
     // App/scene code marks a mutated cluster; the renderer consumes this
     // at the next frame boundary, before recording any scene readers.
     // The cluster must be registered in this World (including dynamic).
