@@ -1303,6 +1303,9 @@ void World::ResolveAndFixup_pages() {
     decalLocations.clear();
     meshLodInfos.clear();
     flags.clear();
+    // The full resolve replaces every node slot, so the incremental
+    // static-cull BVH (per-page subtrees + primitive list) must reset too.
+    InvalidateStaticBvh();
     // The retained cluster-slot -> merged-node map (stable keys for
     // the entity layers; rebuilt with the world every resolve).
     pageMergedNodes.assign(pages.size(), {});
@@ -1410,6 +1413,12 @@ void World::MergePage(WorldPage& cluster, uint32_t clusterOrdinal, bool isIdenti
         if (clusterOrdinal >= pageMergedNodes.size())
             pageMergedNodes.resize(clusterOrdinal + 1);
         pageMergedNodes[clusterOrdinal] = nodeMap;
+        // Parallel BVH bookkeeping: a freshly folded page has no subtree
+        // yet (UINT32_MAX) — RebuildStaticBvh appends it lazily after the
+        // LOD chains + global transforms are recomputed.
+        if (clusterOrdinal >= staticBvhPageRoots_.size())
+            staticBvhPageRoots_.resize(clusterOrdinal + 1, UINT32_MAX);
+        staticBvhPageRoots_[clusterOrdinal] = UINT32_MAX;
         for (AudioSourceEntity& e : audioEntities)
             if (e.alive && e.owner == &cluster && e.clusterNode < nodeMap.size())
                 e.mergedNode = nodeMap[e.clusterNode];
@@ -1738,6 +1747,11 @@ void World::UnmergePage(WorldPage& page) {
         //    derived caches once per settled batch.
         gpuScenePageIds.erase(&page);
         pageMergedNodes.erase(pageMergedNodes.begin() + clusterOrdinal);
+        // Drop the page's BVH subtree ROOT from the parallel root list
+        // (the subtree's nodes + primitives are orphaned, not compacted —
+        // surviving page roots keep their node indices).
+        if (clusterOrdinal < staticBvhPageRoots_.size())
+            staticBvhPageRoots_.erase(staticBvhPageRoots_.begin() + clusterOrdinal);
         // SHARED-ASSET PARKING (mirrors UnloadCluster): live external
         // refs keep the cluster's resource rows alive — park, don't
         // destroy. The fold is still retired above (parked == unloaded).
@@ -2848,9 +2862,12 @@ std::optional<World::MaterialLocation> World::ResolveMaterialAcrossClusters(Stri
 
 void World::InvalidateStaticBvh() {
     staticBvhValid_ = false;
+    staticBvhAdopted_ = false;
     staticBvh_.nodes.clear();
     staticBvh_.primIndices.clear();
     staticBvh_.primToNode.clear();
+    staticBvhPrims_.clear();
+    staticBvhPageRoots_.clear();
 }
 
 namespace {
@@ -2881,24 +2898,109 @@ namespace {
 } // namespace
 
 void World::RebuildStaticBvh() {
-    InvalidateStaticBvh();
+    // The single-page cooked tree cannot cover a multi-page world: discard
+    // it on the first MergePage that grows the world, then rebuild every
+    // page's subtree (a one-time transition cost on the streaming path).
+    if (staticBvhAdopted_ && pages.size() > 1)
+        InvalidateStaticBvh();
     EnsureLodChainsCached(*this);
+
+    // The DIRECT world-scene-instances path (the editor's instancing lane)
+    // holds no pages: rebuild the whole tree from the merged scene's mesh
+    // table (the pre-streaming full fold — no per-page granularity there).
+    if (pages.empty()) {
+        std::vector<Partition> prims;
+        prims.reserve(scene.tables.meshes.size());
+        for (const MeshRow& row : scene.tables.meshes) {
+            const NodeId node = row.node;
+            if (!IsStaticNode(scene, (int)node))
+                continue;
+            if (row.mesh >= meshLocations.size())
+                continue;
+            StaticMesh* base = GetMesh(row.mesh);
+            if (!base)
+                continue;
+            const glm::mat4& model = scene.globalTransform[node];
+            ::tour::Aabb bounds = WorldAabbForMesh(base, model);
+            if (row.mesh < lodChains.size()) {
+                const LodChain& chain = lodChains[row.mesh];
+                for (size_t li = 1; li < chain.levels.size(); ++li) {
+                    const MeshLocation& loc = chain.levels[li].mesh;
+                    if (!loc.cluster || !loc.handle.valid())
+                        continue;
+                    if (const StaticMesh* m = loc.cluster->staticMeshes.get(loc.handle))
+                        bounds.expand(WorldAabbForMesh(m, model));
+                }
+            }
+            prims.push_back(Partition{bounds, bounds.centroid(), node});
+        }
+        const uint32_t N = static_cast<uint32_t>(prims.size());
+        staticBvh_.primIndices.resize(N);
+        for (uint32_t i = 0; i < N; ++i)
+            staticBvh_.primIndices[i] = i;
+        staticBvh_.nodes.reserve(N * 2);
+        staticBvh_.primToNode.clear();
+        staticBvhPrims_ = std::move(prims);
+        if (N > 0)
+            buildRecursive(staticBvh_, staticBvhPrims_, 0, N, /*maxLeafSize=*/4);
+        staticBvh_.primToNode.resize(N);
+        for (uint32_t slot = 0; slot < N; ++slot)
+            staticBvh_.primToNode[slot] = staticBvhPrims_[staticBvh_.primIndices[slot]].node;
+        staticBvhPageRoots_.assign(N > 0 ? 1u : 0u, 0);
+        staticBvhAdopted_ = false;
+        staticBvhValid_ = true;
+        return;
+    }
+
+    // Per-page incremental build: append a subtree for any page without a
+    // cached subtree yet (a freshly merged page, or every page after a
+    // full resolve reset the primitive list). Pages never share hierarchy,
+    // so each subtree is independent and appends without rebalancing.
+    if (staticBvhPageRoots_.size() < pages.size())
+        staticBvhPageRoots_.resize(pages.size(), UINT32_MAX);
+    for (uint32_t i = 0; i < (uint32_t)pages.size(); ++i) {
+        if (staticBvhPageRoots_[i] != UINT32_MAX)
+            continue;
+        if (!pages[i])
+            continue;
+        staticBvhPageRoots_[i] = BuildPageStaticBvhSubtree(*pages[i]);
+    }
+    staticBvhAdopted_ = false;
+    staticBvhValid_ = true;
+}
+
+uint32_t World::BuildPageStaticBvhSubtree(WorldPage& page) {
+    // The page's dense ordinal (its merged-node map is the per-page
+    // cluster-slot -> world-node join).
+    uint32_t ordinal = UINT32_MAX;
+    for (uint32_t i = 0; i < (uint32_t)pages.size(); ++i)
+        if (pages[i].get() == &page) {
+            ordinal = i;
+            break;
+        }
+    if (ordinal == UINT32_MAX || ordinal >= pageMergedNodes.size())
+        return UINT32_MAX;
+    const std::vector<NodeId>& nodeMap = pageMergedNodes[ordinal];
+
     std::vector<Partition> prims;
-    prims.reserve(scene.tables.meshes.size());
-    for (const MeshRow& row : scene.tables.meshes) {
-        const NodeId node = row.node;
-        if (!IsStaticNode(scene, (int)node))
+    prims.reserve(page.scene.tables.meshes.size());
+    for (const MeshRow& crow : page.scene.tables.meshes) {
+        if (crow.node >= nodeMap.size() || nodeMap[crow.node] == UINT32_MAX)
             continue;
-        if (row.mesh >= meshLocations.size())
+        const NodeId worldNode = nodeMap[crow.node];
+        if (!IsStaticNode(scene, (int)worldNode))
             continue;
-        StaticMesh* base = GetMesh(row.mesh);
+        const MeshRow* wrow = FindMesh(scene, worldNode);
+        if (!wrow || wrow->mesh >= meshLocations.size())
+            continue;
+        StaticMesh* base = GetMesh(wrow->mesh);
         if (!base)
             continue;
-        const glm::mat4& model = scene.globalTransform[node];
+        const glm::mat4& model = scene.globalTransform[worldNode];
         ::tour::Aabb bounds = WorldAabbForMesh(base, model);
         // LOD-chain union: any LodIndexForNode selection stays inside.
-        if (row.mesh < lodChains.size()) {
-            const LodChain& chain = lodChains[row.mesh];
+        if (wrow->mesh < lodChains.size()) {
+            const LodChain& chain = lodChains[wrow->mesh];
             for (size_t li = 1; li < chain.levels.size(); ++li) {
                 const MeshLocation& loc = chain.levels[li].mesh;
                 if (!loc.cluster || !loc.handle.valid())
@@ -2907,23 +3009,28 @@ void World::RebuildStaticBvh() {
                     bounds.expand(WorldAabbForMesh(m, model));
             }
         }
-        const glm::vec3 c = bounds.centroid();
-        prims.push_back(Partition{bounds, c, node});
+        prims.push_back(Partition{bounds, bounds.centroid(), worldNode});
     }
-    const uint32_t N = static_cast<uint32_t>(prims.size());
-    staticBvh_.primIndices.resize(N);
-    for (uint32_t i = 0; i < N; ++i)
-        staticBvh_.primIndices[i] = i;
-    staticBvh_.nodes.reserve(N * 2);
-    staticBvh_.primToNode.clear();
-    if (N > 0)
-        buildRecursive(staticBvh_, prims, 0, N, /*maxLeafSize=*/4);
-    staticBvh_.primToNode.resize(N);
-    for (uint32_t slot = 0; slot < N; ++slot) {
+    if (prims.empty())
+        return UINT32_MAX; // no static meshes: no subtree
+
+    // Append the page's primitives (contiguous primitive-id range == the
+    // primIndices slot range) and build its subtree in place.
+    const uint32_t primBase = static_cast<uint32_t>(staticBvh_.primIndices.size());
+    const uint32_t count = static_cast<uint32_t>(prims.size());
+    staticBvhPrims_.insert(staticBvhPrims_.end(), prims.begin(), prims.end());
+    staticBvh_.primIndices.resize(primBase + count);
+    for (uint32_t i = 0; i < count; ++i)
+        staticBvh_.primIndices[primBase + i] = primBase + i;
+    staticBvh_.nodes.reserve(staticBvh_.nodes.size() + count * 2);
+    const uint32_t root =
+        buildRecursive(staticBvh_, staticBvhPrims_, primBase, count, /*maxLeafSize=*/4);
+    staticBvh_.primToNode.resize(primBase + count);
+    for (uint32_t slot = primBase; slot < primBase + count; ++slot) {
         const uint32_t primId = staticBvh_.primIndices[slot];
-        staticBvh_.primToNode[slot] = prims[primId].node;
+        staticBvh_.primToNode[slot] = staticBvhPrims_[primId].node;
     }
-    staticBvhValid_ = true;
+    return root;
 }
 
 void World::RefreshStaticBvh() {
@@ -3014,6 +3121,12 @@ bool World::AdoptCookedStaticBvh() {
         return whyNot("prim count differs from the current static rows");
     staticBvh_ = std::move(seed->cookedStaticBvh);
     staticBvhValid_ = true;
+    // The adopted cooked tree is a single balanced tree rooted at node 0;
+    // register it as the ONE page subtree root so the multi-root traversal
+    // (StaticVisibilityMask) walks it. The first MergePage that grows the
+    // world discards it (see RebuildStaticBvh).
+    staticBvhPageRoots_.assign(1, 0);
+    staticBvhAdopted_ = true;
     std::fprintf(stderr,
                  "[World] adopted the cooked static-cull BVH (%u prims, %zu nodes)\n",
                  static_cast<uint32_t>(staticBvh_.primIndices.size()),
@@ -3054,7 +3167,16 @@ std::vector<uint8_t> World::StaticVisibilityMask(const glm::vec4* planes, int pl
         return {};
     std::vector<int> slots;
     slots.reserve(tree.primIndices.size());
-    ::tour::frustumCullBVH(tree, 0, planes, planeCount, slots);
+    // Traverse every page's subtree root: pages never share hierarchy, so
+    // the world cull is the union of the per-page subtrees' culls (the
+    // top-level "root" is the root list, not a single balancing node).
+    std::vector<int> rootSlots;
+    for (uint32_t root : staticBvhPageRoots_) {
+        if (root == UINT32_MAX)
+            continue;
+        ::tour::frustumCullBVH(tree, (int)root, planes, planeCount, rootSlots);
+        slots.insert(slots.end(), rootSlots.begin(), rootSlots.end());
+    }
     std::vector<uint8_t> mask(scene.hierarchy.size(), 0);
     // Dynamic (non-static) nodes pass through: the caller sphere-tests
     // them per item. Static nodes default to culled; visible ones are

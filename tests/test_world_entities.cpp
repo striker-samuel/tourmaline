@@ -1543,6 +1543,7 @@ void TestIncrementalMergeUnmerge() {
             matDef.rebuildPipeline();
             const auto math = p->materials.create(std::move(matDef));
             SetMaterial(p->scene, NodeId(root), math.index());
+            MarkSubtreeStatic(p->scene, root);
         }
         return p;
     };
@@ -1556,6 +1557,7 @@ void TestIncrementalMergeUnmerge() {
     Check(aNodes >= 1 && aMeshRows == 1 && w.meshLocations.size() == 1 &&
               w.materialLocations.size() == 1,
           "incr.entry-resolved");
+    Check(w.HasStaticBvh() && w.EnsureStaticBvh().primIndices.size() == 1, "incr.entry-static-bvh");
 
     // Stream in page B (incremental fold, ordinal 1).
     WorldPage* bPtr = nullptr;
@@ -1567,6 +1569,11 @@ void TestIncrementalMergeUnmerge() {
     Check(w.meshLocations.size() == 2 && w.materialLocations.size() == 2,
           "incr.merge-location-tables");
     Check(w.pageMergedNodes.size() == 2, "incr.merge-node-map-grown");
+    // Per-page static-cull subtrees: one root per page, one prim per page.
+    Check(w.HasStaticBvh() && w.EnsureStaticBvh().primIndices.size() == 2 &&
+              w.staticBvhPageRoots_.size() == 2 && w.staticBvhPageRoots_[0] != UINT32_MAX &&
+              w.staticBvhPageRoots_[1] != UINT32_MAX,
+          "incr.merge-static-bvh-forest");
 
     // Unmerge B: its nodes retire + its rows drop; A's entries survive.
     w.UnmergePage(*bPtr);
@@ -1581,6 +1588,11 @@ void TestIncrementalMergeUnmerge() {
     Check(w.materialLocations.size() == 2 && w.materialLocations[0].cluster == aPtr &&
               w.materialLocations[1].cluster == nullptr,
           "incr.unmerge-survivor-materials");
+    // B's subtree root drops from the forest; its prims are orphaned (not
+    // compacted) so A's subtree node indices stay valid.
+    Check(w.HasStaticBvh() && w.staticBvhPageRoots_.size() == 1 &&
+              w.EnsureStaticBvh().primIndices.size() == 2,
+          "incr.unmerge-static-bvh");
 
     // Re-merge a FRESH page at the same ordinal B held: its stable
     // pageOrdinal differs, so the dedup key cannot collide with B's

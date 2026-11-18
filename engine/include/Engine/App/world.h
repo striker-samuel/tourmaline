@@ -1199,6 +1199,23 @@ struct World {
     // O(1) mask lookup after a single ::tour::frustumCullBVH walk.
     mutable ::tour::BvhTree staticBvh_;
     mutable bool staticBvhValid_ = false;
+    // Set when the single-page COOKED tree was adopted (AdoptCookedStaticBvh)
+    // instead of an incrementally built per-page forest. The cooked tree is
+    // terminal for a single-page world: the first MergePage that makes the
+    // world multi-page must discard it and rebuild every page's subtree.
+    mutable bool staticBvhAdopted_ = false;
+    // INCREMENTAL STATIC-CULL BVH (the streaming path): pages never share
+    // hierarchy, so each page's static meshes fold into an independent
+    // subtree. staticBvhPrims_ is the append-only primitive list (indexed
+    // by primitive id == the tree's primIndices slot); staticBvhPageRoots_
+    // is parallel to `pages` (dense ordinal -> subtree root node index,
+    // UINT32_MAX = not yet built). Page add/remove appends/orphans a
+    // subtree instead of rebuilding the whole tree.
+    mutable std::vector<::tour::Partition> staticBvhPrims_;
+    mutable std::vector<uint32_t> staticBvhPageRoots_;
+    // Builds (appends) one page's static-cull subtree and returns its root
+    // node index. Requires the LOD chains + global transforms to be fresh.
+    uint32_t BuildPageStaticBvhSubtree(WorldPage& page);
     // (Re)builds staticBvh_ from the current scene. Cheap no-op when
     // there are no static mesh nodes (leaves the tree empty).
     void RebuildStaticBvh();
