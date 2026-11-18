@@ -2341,6 +2341,16 @@ void WorldRenderer::DrawWorldMapWindow() {
     ImGui::SameLine();
     if (ImGui::Button("Fit"))
         m_worldMapScale = 0.0f; // fit on next draw below
+    ImGui::SameLine();
+    if (ImGui::Button("Teleport Center") && m_world) {
+        // Jump the camera to the world's horizontal center, a couple of
+        // hundred meters above the terrain, looking down at the middle.
+        const ::tour::Aabb b = m_world->ComputeSceneBounds();
+        const glm::vec3 center = (b.mn + b.mx) * 0.5f;
+        const float height = std::clamp((b.mx.y - b.mn.y) * 0.5f + 120.0f, 120.0f, 600.0f);
+        const glm::vec3 eye(center.x, b.mx.y + height, center.z);
+        m_cameraPositioner.lookAt(eye, center, glm::vec3(0.0f, 1.0f, 0.0f));
+    }
     // Streaming layers (the WorldFields + WorldPartition debug — see
     // the draw blocks below): field residency, the fog density
     // reference heat, the partition interest cells.
@@ -2419,6 +2429,16 @@ void WorldRenderer::DrawWorldMapWindow() {
             m_worldMapCenter.y = wz - (m.y - o.y - ch * 0.5f) / ns;
             m_worldMapScale = ns;
         }
+    }
+    // Click (not drag): teleport the camera to the clicked world position,
+    // keeping the current altitude and look direction. StreamPages picks up
+    // the new position on the next frame and loads the pages around it.
+    if (ImGui::IsItemClicked(ImGuiMouseButton_Left)) {
+        const ImVec2 m = ImGui::GetIO().MousePos;
+        const float wx = vx0 + (m.x - o.x) / s;
+        const float wz = vz0 + (m.y - o.y) / s;
+        const glm::vec3 cp = m_cameraPositioner.getPosition();
+        m_cameraPositioner.setPosition(glm::vec3(wx, cp.y, wz));
     }
     ImDrawList* dl = ImGui::GetWindowDrawList();
     dl->PushClipRect(o, ImVec2(o.x + cw, o.y + ch), true);

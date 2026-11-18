@@ -2608,7 +2608,11 @@ bool WorldRenderer::onAttach() {
                         // an open world parks ABOVE the terrain instead.
                         const bool openWorld = extent.y > 0.0f && horiz > extent.y * 3.0f;
                         if (openWorld) {
-                            const float height = std::clamp(horiz * 0.08f, 50.0f, 2000.0f);
+                            // Park CLOSE to the surface (not the old 2 km orbit
+                            // cap): a modest altitude scales gently with the
+                            // world so the spawn starts with nearby detail in
+                            // view instead of high in the sky.
+                            const float height = std::clamp(horiz * 0.01f, 40.0f, 250.0f);
                             const glm::vec3 eye(center.x, bounds.mx.y + height, center.z);
                             const glm::vec3 fwd = glm::normalize(
                                 glm::vec3(0.35f, -0.9f, -0.26f)); // gentle down-slope toward -Z
