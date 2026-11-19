@@ -11549,6 +11549,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         const char* e = std::getenv("TOURMALINE_GPU_SCENE_VALIDATE");
         return e && std::strcmp(e, "1") == 0;
     }();
+    // P1 flat GPU multi-view leaf visibility (validation-only). Runs the
+    // classify -> compact -> fused chain alongside the CPU coarse selector
+    // and compares masks/verdicts in the BeginFlight readback. Does not own
+    // production draws until the safe-overflow policy + fused-verdict
+    // consumption land.
+    static const bool s_gpuSceneVisibility = [] {
+        const char* e = std::getenv("TOURMALINE_GPU_SCENE_VISIBILITY");
+        return e && std::strcmp(e, "1") == 0;
+    }();
     // GPU-scene Main/depth is the default for admitted static opaque
     // sources. Unsupported objects (including GPU-skinned, layered and
     // masked) retain the proven legacy raster path through canonical
@@ -11857,6 +11866,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     }
     if (s_gpuSceneValidate || m_gpuSceneRasterEnabled)
         m_gpuSceneValidator.BeginFlight(*m_context, fb.frameIndex);
+    if (s_gpuSceneVisibility)
+        m_gpuVisibilityRuntime.BeginFlight(*m_context, fb.frameIndex);
     for (auto& validator : m_gpuSceneCascadeValidators)
         validator.BeginFlight(*m_context, fb.frameIndex);
     m_gpuSceneDatabaseReady = false;
@@ -13778,6 +13789,113 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 std::fprintf(stderr,
                              "[GpuSceneValidate] skipped coarse selection status=%u\n",
                              uint32_t(selected.status));
+            }
+        }
+    }
+    if (s_gpuSceneVisibility && m_world && m_gpuSceneDatabaseReady &&
+        mainRenderView != smvk::RenderViewSet::kInvalidIndex) {
+        // Lazy-load the three flat leaf-visibility kernels once.
+        static constexpr const char* visibilityPaths[3] = {
+            "content/shaders/gpu_scene_leaf_classify.cs.hlsl.spv",
+            "content/shaders/gpu_scene_leaf_compact.cs.hlsl.spv",
+            "content/shaders/gpu_scene_fused_cull.cs.hlsl.spv"};
+        for (uint32_t i = 0; i < 3u; ++i) {
+            if (m_gpuVisibilityPrograms[i].shaderCount != 0)
+                continue;
+            try {
+                auto bytes = smvk::shaders::Read(visibilityPaths[i]);
+                m_gpuVisibilityModules[i] =
+                    m_context->CreateShaderModule(std::move(bytes), "gpuSceneVisibilityCS");
+                if (!m_gpuVisibilityModules[i].empty()) {
+                    smvk::Shader cs{.module = m_gpuVisibilityModules[i],
+                                    .entryPoint = "mainCS",
+                                    .stage = smvk::ShaderStage::Compute};
+                    m_gpuVisibilityPrograms[i] = {.shaders = {cs}, .shaderCount = 1};
+                }
+            } catch (...) {
+                static bool logged = false;
+                if (!logged) {
+                    std::fprintf(stderr, "[GpuSceneVisibility] shader unavailable\n");
+                    logged = true;
+                }
+            }
+        }
+
+        // Dense leaf repack (resolves slot -> dense indexing), a single Main
+        // view, and the admitted-generation mask for the fused ownership gate.
+        const auto tickets = m_gpuSceneSync.LeafTicketsFrame(m_gpuSceneDatabase);
+        tour::gpu_scene::DenseLeaves dense{};
+        if (tour::gpu_scene::BuildDenseLeaves(m_gpuSceneDatabase, tickets, dense) &&
+            dense.count != 0) {
+            const glm::dvec3 origin(m_cameraPositioner.cameraPosition_);
+            const tour::gpu_scene::RelativeFrustum mainView =
+                tour::gpu_scene::LegacyRelativeFrustum(m_renderViews.Get(mainRenderView), origin);
+            std::vector<uint32_t> owner(m_gpuSceneDatabase.instances.Size(), 0u);
+            for (size_t slot = 0; slot < m_gpuSceneDatabase.instances.Rows().size(); ++slot) {
+                const auto& row = m_gpuSceneDatabase.instances.Rows()[slot];
+                if (row.identity.y == 1u)
+                    owner[slot] = row.identity.x;
+            }
+
+            tour::gpu_scene::LeafClassifyPush classify{};
+            tour::gpu_scene::LeafCompactPush compact{};
+            tour::gpu_scene::FusedCullPush fused{};
+            const tour::gpu_scene::RelativeFrustum leafViews[] = {mainView};
+            if (m_gpuVisibilityRuntime.Prepare(
+                    *m_context,
+                    fb.frameIndex,
+                    m_gpuSceneDatabase,
+                    m_gpuSceneUploader.DeviceAddresses(*m_context, fb.frameIndex),
+                    dense,
+                    leafViews,
+                    owner,
+                    classify,
+                    compact,
+                    fused,
+                    /*validate=*/true)) {
+                // Register the fused verdict BDA write with the rendergraph so
+                // compute writes participate in graph synchronization (the
+                // same convention as the cull verdict target). Intermediate
+                // masks/queue/counters are written and read within one pass.
+                const uint32_t flight = fb.frameIndex;
+                const auto verdictHandle = m_gpuVisibilityRuntime.VerdictBuffer(flight);
+                if (!verdictHandle.empty() &&
+                    m_gpuVisibilityVerdictLogicalBacking[flight] != verdictHandle) {
+                    if (!m_gpuVisibilityVerdictLogical[flight].empty())
+                        m_rendergraph->FreeBuffer(m_gpuVisibilityVerdictLogical[flight]);
+                    m_gpuVisibilityVerdictLogical[flight] = m_rendergraph->AddExternalBuffer(
+                        verdictHandle, "GpuSceneVisibilityVerdicts");
+                    m_gpuVisibilityVerdictLogicalBacking[flight] = verdictHandle;
+                }
+                const bool verdictGraphReady = !m_gpuVisibilityVerdictLogical[flight].empty();
+                if (verdictGraphReady) {
+                    auto& pass = m_rendergraph->AddComputePass("GpuSceneVisibility");
+                    smvk::BufferSyncRequest verdictWrite{};
+                    verdictWrite.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+                    verdictWrite.barrierMasks.accessMask = smvk::AccessFlags::ShaderWrite;
+                    pass.AddBufferHint(m_gpuVisibilityVerdictLogical[flight], verdictWrite);
+                    auto programs = m_gpuVisibilityPrograms;
+                    const uint32_t leafGroups = (dense.count + 63u) / 64u;
+                    const uint32_t compactGroups = (dense.count + 255u) / 256u;
+                    pass.SetRecordingFunc(
+                        [programs, classify, compact, fused, leafGroups, compactGroups](
+                            smvk::CommandBuffer& cmd) mutable {
+                            cmd.BindComputePipeline(programs[0]);
+                            cmd.PushConstants(
+                                0, sizeof(classify), &classify, smvk::ShaderStage::Compute);
+                            cmd.Dispatch(leafGroups, 1, 1);
+                            cmd.EmitGlobalMemoryBarrier();
+                            cmd.BindComputePipeline(programs[1]);
+                            cmd.PushConstants(
+                                0, sizeof(compact), &compact, smvk::ShaderStage::Compute);
+                            cmd.Dispatch(compactGroups, 1, 1);
+                            cmd.EmitGlobalMemoryBarrier();
+                            cmd.BindComputePipeline(programs[2]);
+                            cmd.PushConstants(0, sizeof(fused), &fused, smvk::ShaderStage::Compute);
+                            cmd.Dispatch(leafGroups, 1, 1);
+                        });
+                    m_gpuVisibilityRuntime.MarkDispatched(flight);
+                }
             }
         }
     }

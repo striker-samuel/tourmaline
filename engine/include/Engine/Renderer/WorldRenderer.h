@@ -59,6 +59,7 @@
 #include <Engine/Renderer/gpu_scene_task_mesh_runtime.h>
 #include <Engine/Renderer/gpu_scene_validation.h>
 #include <Engine/Renderer/gpu_scene_world.h>
+#include <Engine/Renderer/gpu_visibility_runtime.h>
 #include <Engine/Renderer/ray_tracing_debug.h>
 #include <Engine/Renderer/renderview.h>
 #include <Engine/Renderer/static_sdf_gpu.h>
@@ -2456,6 +2457,13 @@ class WorldRenderer : public IRenderer {
     std::array<smvk::ShaderProgram, 4> m_gpuSceneMeshletPrograms{};
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuScenePsoScanModule{};
     smvk::ShaderProgram m_gpuScenePsoScanProgram{};
+    // P1 flat GPU multi-view leaf visibility (classify -> compact -> fused).
+    // Validation-only until the safe-overflow policy and downstream
+    // fused-verdict consumption are wired; the CPU coarse selector stays
+    // authoritative for production draws.
+    tour::gpu_scene::GpuVisibilityRuntime m_gpuVisibilityRuntime;
+    std::array<smvk::Holder<smvk::ShaderModuleHandle>, 3> m_gpuVisibilityModules{};
+    std::array<smvk::ShaderProgram, 3> m_gpuVisibilityPrograms{};
     // Opt-in GPU Scene task/amplification + mesh raster path.
     // CPU admission keeps the indexed renderer as an all-scene fallback:
     // no partial submesh ownership or double draws.
@@ -2584,6 +2592,13 @@ class WorldRenderer : public IRenderer {
         m_gpuSceneVerdictLogicalBacking{};
     std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>
         m_gpuSceneVerdictLogical{};
+    // P1 flat GPU leaf visibility (validation-only): the fused verdict BDA
+    // write is registered with the rendergraph so its compute writes are
+    // represented in graph synchronization, mirroring the cull verdict target.
+    std::array<smvk::BufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuVisibilityVerdictLogicalBacking{};
+    std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuVisibilityVerdictLogical{};
     // Canonical source-key admission table (AppArena-owned records). The
     // mixed renderer will use this same mapping for complementary GPU and
     // legacy submission. Until those submission masks are connected, the
