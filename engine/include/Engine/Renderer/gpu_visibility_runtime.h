@@ -179,6 +179,19 @@ class GpuVisibilityRuntime {
                                smvk::PipelineStageBit_Compute,
                                smvk::AccessFlags::ShaderRead);
 
+        // The fused cull writes a verdict only for visible instances, so a
+        // slot culled this frame would otherwise leak its previous frame's
+        // verdict into the readback. Clear the whole verdict buffer too.
+        const size_t verdictBytes = size_t(db.instances.Size()) * sizeof(FusedVerdict);
+        if (zeroScratch_.size() < verdictBytes)
+            zeroScratch_.resize(verdictBytes);
+        std::fill(zeroScratch_.begin(), zeroScratch_.begin() + verdictBytes, 0u);
+        ctx.UploadDataToBuffer(f.verdicts,
+                               zeroScratch_.data(),
+                               verdictBytes,
+                               smvk::PipelineStageBit_Compute,
+                               smvk::AccessFlags::ShaderRead);
+
         classify = {};
         classify.leaves = leaves;
         classify.views = viewsBda;
@@ -219,13 +232,12 @@ class GpuVisibilityRuntime {
         if (flight >= Flights)
             return;
         auto& f = flight_[flight];
+        f.prepared = false;
         if (!f.pending)
             return;
         f.pending = false;
-        if (!f.validate || !f.prepared || f.expected.verdicts.empty()) {
-            f.prepared = false;
+        if (!f.validate || f.expected.verdicts.empty())
             return;
-        }
 
         LeafCounters counters{};
         if (!ctx.DownloadDataFromBuffer(f.counters, &counters, sizeof(counters))) {
