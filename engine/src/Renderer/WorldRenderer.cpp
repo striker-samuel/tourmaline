@@ -1413,13 +1413,14 @@ bool WorldRenderer::onAttach() {
     }
     // GI debug view for headless runs (also cycled by R / F8):
     // 0 off, 1 flat irradiance, 2 source, 3 probe distance,
-    // 4 pre-normalization visibility weight sum (wSum).
+    // 4 pre-normalization visibility weight sum (wSum), 5 raw SG (no
+    // visibility / no clean-flag gate), 6 weight-redistribution D.
     if (const char* giDbgEnv = std::getenv("TOURMALINE_GI_DEBUG")) {
         const int mode = std::atoi(giDbgEnv);
-        if (mode >= 0 && mode <= 4)
+        if (mode >= 0 && mode <= 6)
             m_giDebug = mode;
         else
-            std::cerr << "[WorldRenderer] TOURMALINE_GI_DEBUG wants 0..4\n";
+            std::cerr << "[WorldRenderer] TOURMALINE_GI_DEBUG wants 0..6\n";
     }
     // GI-volume weighted-path telemetry (the lit shader's 64-byte
     // histogram; OFF for normal/timing runs — the perf benchmark must run
@@ -5142,7 +5143,7 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
     // the views must survive source isolation. The level byte is
     // retained for the retired octree shader ABI.
     data.giIntensity = m_giIntensity;
-    data.giDebug = (uint32_t(std::clamp(m_giDebug, 0, 4)) & 0xffu) |
+    data.giDebug = (uint32_t(std::clamp(m_giDebug, 0, 6)) & 0xffu) |
                    (uint32_t(std::clamp(m_giDebugLevel, 0, 7) & 0xff) << 8);
     // GI-volume weighted-path telemetry: publish the histogram BDA + the
     // enable flag when armed (TOURMALINE_GI_STATS=1). The buffer is

@@ -1003,14 +1003,16 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                     if (m_regLoaded || m_giVolumesLoaded) {
                         // All five R / F8 stops (including off).
                         // Select Lit so the debug shader is visible.
-                        const char* dbgNames[5] = {"Off",
+                        const char* dbgNames[7] = {"Off",
                                                    "Baked irradiance",
                                                    "GI source",
                                                    "Probe distance",
-                                                   "Visibility weight sum (wSum)"};
+                                                   "Visibility weight sum (wSum)",
+                                                   "Raw SG (no visibility)",
+                                                   "Weight redistribution (D)"};
                         int dbgIdx = m_giDebug;
-                        if (ImGui::Combo("GI debug view (R / F8)", &dbgIdx, dbgNames, 5)) {
-                            m_giDebug = std::clamp(dbgIdx, 0, 4);
+                        if (ImGui::Combo("GI debug view (R / F8)", &dbgIdx, dbgNames, 7)) {
+                            m_giDebug = std::clamp(dbgIdx, 0, 6);
                             if (m_giDebug != 0)
                                 m_debugView = ViewMode::Lit;
                         }

@@ -1752,7 +1752,7 @@ float envVis = 1.0f;
             OUT.outColor = float4(SanitizeHdr(bakedE), 1.0f);
             return OUT;
         }
-        if (giDbgMode == 3u || giDbgMode == 4u)
+        if (giDbgMode >= 3u && giDbgMode <= 6u)
         {
             // PROBE DISTANCE / WEIGHT SUM: the nearest probe's minimum 6-axis
             // obstacle distance for the pixel's cell in the first
@@ -1794,6 +1794,19 @@ float envVis = 1.0f;
                     * (0.18f / max(frame.exposure, 1e-6f))), 1.0f);
                 return OUT;
             }
+            if (giDbgMode == 5u)
+            {
+                // RAW SG: the plain hardware trilinear read of the 9 baked
+                // lobe amplitudes with NO visibility weighting and NO
+                // clean-flag gate (SgGiVolumeSample's fast path, taken
+                // unconditionally). HDR, like mode 1 — the A/B partner to
+                // the visibility-weighted bakedE that mode 1 already shows.
+                float3 rawAmps[SG_GI_LOBES];
+                SgGiVolumeSampleRaw(pc.frameUniforms, dbgVol, IN.worldPos, rawAmps);
+                OUT.outColor = float4(
+                    SanitizeHdr(SgGiDiffuseIrradiance(rawAmps, N)), 1.0f);
+                return OUT;
+            }
             float3 dbgCol;
             if (giDbgMode == 3u)
             {
@@ -1803,6 +1816,19 @@ float envVis = 1.0f;
                     ? lerp(float3(1, 0, 0), float3(1, 1, 0), probeDist / 0.3)
                     : lerp(float3(1, 1, 0), float3(0, 1, 0),
                         (probeDist - 0.3) / 0.7);
+            }
+            else if (giDbgMode == 6u)
+            {
+                // Weight REDISTRIBUTION (D = 1/2 sum |q_i - t_i|): how much
+                // the visibility filter CHANGES the contributing probe
+                // mixture even when the total weight is ~1 (the case the
+                // wSum view cannot see). Green = no redistribution, red =
+                // strong. This is the deciding A/B for the roof lattice.
+                const float D =
+                    SgGiVolumeDebugRedistribution(pc.frameUniforms, dbgVol, IN.worldPos);
+                dbgCol = D < 0.5
+                    ? lerp(float3(0, 1, 0), float3(1, 1, 0), D * 2.0)
+                    : lerp(float3(1, 1, 0), float3(1, 0, 0), (D - 0.5) * 2.0);
             }
             else
             {
