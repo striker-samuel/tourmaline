@@ -1557,7 +1557,7 @@ float envVis = 1.0f;
         float3 octaE;
         float volTrans = 1.0;
         bool volHit = false;
-        SgGiVolumeCompositeOctahedral(frame, SgGiVolumeTileMask(frame, clipPos.xy),
+        SgGiVolumeCompositeOctahedral(pc.frameUniforms, SgGiVolumeTileMask(pc.frameUniforms, clipPos.xy),
             IN.worldPos, N, octaE, volTrans, volHit);
         E = octaE;
         E += irradiance * (iblOn * volTrans); // analytic sky diffuse base
@@ -1582,7 +1582,7 @@ float envVis = 1.0f;
                 float3 specAmps[SG_GI_LOBES];
                 float specTrans;
                 bool specHit;
-                SgGiVolumeComposite(frame, SgGiVolumeTileMask(frame, clipPos.xy), IN.worldPos,
+                SgGiVolumeComposite(pc.frameUniforms, SgGiVolumeTileMask(pc.frameUniforms, clipPos.xy), IN.worldPos,
                     specAmps, specTrans, specHit);
                 const float3 giSpecular =
                     SgGiSpecular(specAmps, R, shadingRoughness) * giScale * Fenv * occlusion;
@@ -1599,7 +1599,7 @@ float envVis = 1.0f;
         float3 octaE;
         float volTrans = 1.0;
         bool volHit = false;
-        SgGiVolumeCompositeOctahedral(frame, SgGiVolumeTileMask(frame, clipPos.xy),
+        SgGiVolumeCompositeOctahedral(pc.frameUniforms, SgGiVolumeTileMask(pc.frameUniforms, clipPos.xy),
             IN.worldPos, N, octaE, volTrans, volHit);
         E = octaE;
         E += irradiance * (iblOn * volTrans); // analytic sky diffuse base
@@ -1619,7 +1619,7 @@ float envVis = 1.0f;
             if (roughW > 0.0f)
             {
                 float3 compactSpec;
-                SgGiVolumeCompositeSpecular(frame, SgGiVolumeTileMask(frame, clipPos.xy),
+                SgGiVolumeCompositeSpecular(pc.frameUniforms, SgGiVolumeTileMask(pc.frameUniforms, clipPos.xy),
                     IN.worldPos, R, shadingRoughness, compactSpec);
                 const float3 giSpecular = compactSpec * giScale * Fenv * occlusion;
                 ambientSpec = lerp(ambientSpec, giSpecular, roughW);
@@ -1631,7 +1631,7 @@ float envVis = 1.0f;
         float3 octaE;
         float volTrans = 1.0;
         bool volHit = false;
-        SgGiVolumeCompositeOctahedral(frame, SgGiVolumeTileMask(frame, clipPos.xy),
+        SgGiVolumeCompositeOctahedral(pc.frameUniforms, SgGiVolumeTileMask(pc.frameUniforms, clipPos.xy),
             IN.worldPos, N, octaE, volTrans, volHit);
         E = octaE;
         E += irradiance * (iblOn * volTrans); // analytic sky diffuse base
@@ -1656,7 +1656,7 @@ float envVis = 1.0f;
         float3 volAmps[SG_GI_LOBES];
         float volTrans = 1.0;
         bool volHit = false;
-        SgGiVolumeComposite(frame, SgGiVolumeTileMask(frame, clipPos.xy), IN.worldPos,
+        SgGiVolumeComposite(pc.frameUniforms, SgGiVolumeTileMask(pc.frameUniforms, clipPos.xy), IN.worldPos,
             volAmps, volTrans, volHit);
 
         // Base + volumes — every consumer (E, spec amps, the fog-leg mean)
@@ -1772,12 +1772,12 @@ float envVis = 1.0f;
             for (int dv = int(min(frame.giVolumeCount, (uint)8)) - 1;
                 dv >= 0; --dv)
             {
-                if ((SgGiVolumeTileMask(frame, clipPos.xy)
+                if ((SgGiVolumeTileMask(pc.frameUniforms, clipPos.xy)
                     & (1u << uint(dv))) == 0u)
                     continue;
                 const GiVolumeGpu dV =
                     frame.giVolumes.Get().volumes[uint(dv)];
-                if (SgGiVolumeWeight(frame, dV, IN.worldPos) > 0.0)
+                if (SgGiVolumeWeight(pc.frameUniforms, dV, IN.worldPos) > 0.0)
                 {
                     dbgVol = uint(dv);
                     break;
@@ -1798,7 +1798,7 @@ float envVis = 1.0f;
             if (giDbgMode == 3u)
             {
                 const float probeDist =
-                    SgGiVolumeDebugProbeDistance(frame, dbgVol, IN.worldPos);
+                    SgGiVolumeDebugProbeDistance(pc.frameUniforms, dbgVol, IN.worldPos);
                 dbgCol = probeDist < 0.3
                     ? lerp(float3(1, 0, 0), float3(1, 1, 0), probeDist / 0.3)
                     : lerp(float3(1, 1, 0), float3(0, 1, 0),
@@ -1809,7 +1809,7 @@ float envVis = 1.0f;
                 // Pre-normalization sum from the same eight weighted taps
                 // as SgGiVolumeSample. Low values show coverage holes.
                 const float wSum =
-                    SgGiVolumeDebugWeightSum(frame, dbgVol, IN.worldPos);
+                    SgGiVolumeDebugWeightSum(pc.frameUniforms, dbgVol, IN.worldPos);
                 dbgCol = wSum < 0.5
                     ? lerp(float3(1, 0, 0), float3(1, 1, 0), wSum * 2.0)
                     : lerp(float3(1, 1, 0), float3(0, 1, 0),

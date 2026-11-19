@@ -57,7 +57,7 @@
 // read giVolumesB — the previous single helper always read the A pool,
 // evaluating B volumes against A planes whenever the two pools differ.
 // Keep tile-mask semantics unchanged: A's mask never culls B.
-float SgGiVolumeWeightInPool(FrameUniforms frame, GiVolumeGpu v, float3 pos,
+float SgGiVolumeWeightInPool(GPU_PTR(FrameUniforms) frame, GiVolumeGpu v, float3 pos,
     GPU_PTR_READ(GiVolumesBuffer) pool)
 {
     // Broad-phase: the fade-expanded hull AABB (the CPU packer grew the
@@ -83,13 +83,13 @@ float SgGiVolumeWeightInPool(FrameUniforms frame, GiVolumeGpu v, float3 pos,
 
 // Set-specific wrappers (§1.2): the A pool for the A walks, the B pool for
 // the B walks. Call sites must pick the wrapper matching the volume's set.
-float SgGiVolumeWeight(FrameUniforms frame, GiVolumeGpu v, float3 pos)
+float SgGiVolumeWeight(GPU_PTR(FrameUniforms) frame, GiVolumeGpu v, float3 pos)
 {
-    return SgGiVolumeWeightInPool(frame, v, pos, frame.giVolumes);
+    return SgGiVolumeWeightInPool(frame, v, pos, frame.Get().giVolumes);
 }
-float SgGiVolumeWeightB(FrameUniforms frame, GiVolumeGpu v, float3 pos)
+float SgGiVolumeWeightB(GPU_PTR(FrameUniforms) frame, GiVolumeGpu v, float3 pos)
 {
-    return SgGiVolumeWeightInPool(frame, v, pos, frame.giVolumesB);
+    return SgGiVolumeWeightInPool(frame, v, pos, frame.Get().giVolumesB);
 }
 
 // Per-tile volume bitmask for a pixel (see GiVolumeTileMaskBuffer).
@@ -99,21 +99,21 @@ float SgGiVolumeWeightB(FrameUniforms frame, GiVolumeGpu v, float3 pos)
 // grid: the mask is only ever allowed to NARROW the candidate set
 // (correctness lives in the per-pixel AABB + plane tests of
 // SgGiVolumeWeight), never invent or drop volumes on its own.
-uint SgGiVolumeTileMask(FrameUniforms frame, float2 pix)
+uint SgGiVolumeTileMask(GPU_PTR(FrameUniforms) frame, float2 pix)
 {
-    const uint volCount = min(frame.giVolumeCount, (uint)SG_GI_VOLUME_MAX);
+    const uint volCount = min(frame.Get().giVolumeCount, (uint)SG_GI_VOLUME_MAX);
     const uint all = (1u << volCount) - 1u; // volCount <= 8 -> fits
-    if (frame.giVolumeTileCountX == 0u)
+    if (frame.Get().giVolumeTileCountX == 0u)
         return all;
-    const uint ts = max(frame.giVolumeTileSize, 1u);
+    const uint ts = max(frame.Get().giVolumeTileSize, 1u);
     const uint tx = (uint)(pix.x / (float)ts);
-    if (tx >= frame.giVolumeTileCountX)
+    if (tx >= frame.Get().giVolumeTileCountX)
         return all;
     const uint ty = (uint)(pix.y / (float)ts);
-    const uint tileIdx = ty * frame.giVolumeTileCountX + tx;
+    const uint tileIdx = ty * frame.Get().giVolumeTileCountX + tx;
     if (tileIdx >= (uint)MAX_FP_TILES)
         return all;
-    return frame.giVolumeTileMasks.Get().masks[tileIdx] & all;
+    return frame.Get().giVolumeTileMasks.Get().masks[tileIdx] & all;
 }
 
 // ---- Through-wall rejection (the visibility bake) ----
@@ -185,12 +185,12 @@ float SgGiVolumeVisFactor(float3 dRel, float4 visA, float4 visB)
 // correct fix is storing the baked cap in the volume metadata —
 // a format change deferred until it matters (no current content
 // uses a non-default cap).
-float SgGiVolumeDebugProbeDistance(FrameUniforms frame, uint vol, float3 pos)
+float SgGiVolumeDebugProbeDistance(GPU_PTR(FrameUniforms) frame, uint vol, float3 pos)
 {
-    const GiVolumeGpu v = frame.giVolumes.Get().volumes[vol];
+    const GiVolumeGpu v = frame.Get().giVolumes.Get().volumes[vol];
     const float3 uvw = saturate(pos * v.uvwScale.xyz + v.uvwBias.xyz);
-    const uint visSlotA = frame.giVolumeVisLayers[vol * 2u];
-    const uint visSlotB = frame.giVolumeVisLayers[vol * 2u + 1u];
+    const uint visSlotA = frame.Get().giVolumeVisLayers[vol * 2u];
+    const uint visSlotB = frame.Get().giVolumeVisLayers[vol * 2u + 1u];
     if (visSlotA == 0xffffffffu || visSlotB == 0xffffffffu)
         return 1.0; // no vis data (the pre-visibility behavior)
     const float3 dims = float3(v.uvwScale.w, v.uvwBias.w, v.aabbMax.w);
@@ -221,14 +221,14 @@ float SgGiVolumeDebugProbeDistance(FrameUniforms frame, uint vol, float3 pos)
 // returns black when this is <= 1e-4. A clean cell (or missing visibility
 // data) has the ordinary trilinear sum of 1. This is intentionally
 // debug-only: the normal GI path does not do a second visibility walk.
-float SgGiVolumeDebugWeightSum(FrameUniforms frame, uint vol, float3 pos)
+float SgGiVolumeDebugWeightSum(GPU_PTR(FrameUniforms) frame, uint vol, float3 pos)
 {
-    const uint visSlotA = frame.giVolumeVisLayers[vol * 2u];
-    const uint visSlotB = frame.giVolumeVisLayers[vol * 2u + 1u];
+    const uint visSlotA = frame.Get().giVolumeVisLayers[vol * 2u];
+    const uint visSlotB = frame.Get().giVolumeVisLayers[vol * 2u + 1u];
     if (visSlotA == 0xffffffffu || visSlotB == 0xffffffffu)
         return 1.0;
 
-    const GiVolumeGpu v = frame.giVolumes.Get().volumes[vol];
+    const GiVolumeGpu v = frame.Get().giVolumes.Get().volumes[vol];
     const float3 dims = float3(v.uvwScale.w, v.uvwBias.w, v.aabbMax.w);
     if (any(dims < 2.0))
         return 1.0;
@@ -277,22 +277,22 @@ float SgGiVolumeDebugWeightSum(FrameUniforms frame, uint vol, float3 pos)
 // rides a wave-UNIFORM loop counter (never a per-pixel value), so the
 // plain bindless index keeps the descriptor fetch scalar — no
 // NonUniformResourceIndex divergence on the taps.
-void SgGiVolumeSample(FrameUniforms frame, uint vol, float3 pos,
+void SgGiVolumeSample(GPU_PTR(FrameUniforms) frame, uint vol, float3 pos,
     out float3 amps[SG_GI_LOBES])
 {
-    const GiVolumeGpu v = frame.giVolumes.Get().volumes[vol];
+    const GiVolumeGpu v = frame.Get().giVolumes.Get().volumes[vol];
     const float3 uvw = saturate(pos * v.uvwScale.xyz + v.uvwBias.xyz);
 
     // Weighted-path telemetry (TOURMALINE_GI_STATS=1): one invocation
     // per call; the weighted branch adds the surviving-corner histogram.
     // giStatsCompile (SPEC_GI_STATS) folds this WHOLE block out in the
     // normal/timing build — the uninstrumented shader is bit-identical.
-    const bool giStats = (giStatsCompile != 0u) && (frame.giVolumeStatsEnabled != 0u);
+    const bool giStats = (giStatsCompile != 0u) && (frame.Get().giVolumeStatsEnabled != 0u);
     if (giStats)
-        InterlockedAdd(frame.giVolumeStats.Get().totalCalls, 1u);
+        InterlockedAdd(frame.Get().giVolumeStats.Get().totalCalls, 1u);
 
     // ---- the cell + the clean-flag fast path ----
-    const uint visSlotB = frame.giVolumeVisLayers[vol * 2u + 1u];
+    const uint visSlotB = frame.Get().giVolumeVisLayers[vol * 2u + 1u];
     if (visSlotB != 0xffffffffu)
     {
         // Lattice coords: rel = uvw * dims, the voxel-center
@@ -308,7 +308,7 @@ void SgGiVolumeSample(FrameUniforms frame, uint vol, float3 pos,
         // int4 = xyz + the mip slot 0).
         if (volumeTextures[visSlotB].Load(int4(b, 0)).z < 0.5)
         {
-            const uint visSlotA = frame.giVolumeVisLayers[vol * 2u];
+            const uint visSlotA = frame.Get().giVolumeVisLayers[vol * 2u];
             const float3 f = saturate(rel - 0.5 - float3(b));
             float3 acc[SG_GI_LOBES] = { float3(0, 0, 0), float3(0, 0, 0),
                 float3(0, 0, 0), float3(0, 0, 0), float3(0, 0, 0),
@@ -350,7 +350,7 @@ void SgGiVolumeSample(FrameUniforms frame, uint vol, float3 pos,
                     [unroll]
                     for (uint l = 0; l < SG_GI_LOBES; ++l)
                         corner[l] = volumeTextures[
-                            frame.giVolumeLayerTable[vol * 10u + l]]
+                            frame.Get().giVolumeLayerTable[vol * 10u + l]]
                             .Load(int4(cc, 0)).rgb;
                 }
                 else
@@ -359,7 +359,7 @@ void SgGiVolumeSample(FrameUniforms frame, uint vol, float3 pos,
                     [unroll]
                     for (uint t = 0; t < SG_GI_VOLUME_LAYERS; ++t)
                         layers[t] = volumeTextures[
-                            frame.giVolumeLayerTable[vol * 10u + t]]
+                            frame.Get().giVolumeLayerTable[vol * 10u + t]]
                             .Load(int4(cc, 0));
                     SgRegularUnpack(layers, corner);
                 }
@@ -370,8 +370,8 @@ void SgGiVolumeSample(FrameUniforms frame, uint vol, float3 pos,
             }
             if (giStats)
             {
-                InterlockedAdd(frame.giVolumeStats.Get().weightedCalls, 1u);
-                InterlockedAdd(frame.giVolumeStats.Get().hist[min(surviving, 8u)], 1u);
+                InterlockedAdd(frame.Get().giVolumeStats.Get().weightedCalls, 1u);
+                InterlockedAdd(frame.Get().giVolumeStats.Get().hist[min(surviving, 8u)], 1u);
                 // Weight-distance D = 1/2 sum |q_i - t_i|: how far the
                 // NORMALIZED visibility weights q_i = t_i v_i / sum(t_j v_j)
                 // drift from the ordinary trilinear weights t_i. D == 0 when
@@ -400,9 +400,9 @@ void SgGiVolumeSample(FrameUniforms frame, uint vol, float3 pos,
                 // correction from the plain trilinear result: the strong bin.
                 const float D = (wSum > 1e-4) ? (0.5 * dSum) : 1.0;
                 const uint db = D < 0.001 ? 0u : D < 0.01 ? 1u : D < 0.05 ? 2u : D < 0.1 ? 3u : 4u;
-                InterlockedAdd(frame.giVolumeStats.Get().dhist[db], 1u);
+                InterlockedAdd(frame.Get().giVolumeStats.Get().dhist[db], 1u);
                 if (allFull)
-                    InterlockedAdd(frame.giVolumeStats.Get().fullWeight, 1u);
+                    InterlockedAdd(frame.Get().giVolumeStats.Get().fullWeight, 1u);
             }
             if (wSum > 1e-4)
             {
@@ -435,7 +435,7 @@ void SgGiVolumeSample(FrameUniforms frame, uint vol, float3 pos,
     {
         [unroll]
         for (uint l = 0; l < SG_GI_LOBES; ++l)
-            amps[l] = volumeTextures[frame.giVolumeLayerTable[vol * 10u + l]]
+            amps[l] = volumeTextures[frame.Get().giVolumeLayerTable[vol * 10u + l]]
                 .Sample(samplers[2], uvw).rgb;
         return;
     }
@@ -443,7 +443,7 @@ void SgGiVolumeSample(FrameUniforms frame, uint vol, float3 pos,
     [unroll]
     for (uint t = 0; t < SG_GI_VOLUME_LAYERS; ++t)
     {
-        layers[t] = volumeTextures[frame.giVolumeLayerTable[vol * 10u + t]]
+        layers[t] = volumeTextures[frame.Get().giVolumeLayerTable[vol * 10u + t]]
             .Sample(samplers[2], uvw);
     }
     SgRegularUnpack(layers, amps);
@@ -465,7 +465,7 @@ void SgGiVolumeSample(FrameUniforms frame, uint vol, float3 pos,
 // visibility-weighted 8-corner interpolation as surface SG sampling.
 // This prevents the isotropic fog mean from blending through thin walls.
 // Keep both GI sets on this identical sampling contract.
-float3 SgGiVolumeSampleMeanFiltered(FrameUniforms frame, GiVolumeGpu v,
+float3 SgGiVolumeSampleMeanFiltered(GPU_PTR(FrameUniforms) frame, GiVolumeGpu v,
     uint meanSlot, uint visSlotA, uint visSlotB, float3 pos)
 {
     const float3 uvw = saturate(pos * v.uvwScale.xyz + v.uvwBias.xyz);
@@ -506,14 +506,14 @@ float3 SgGiVolumeSampleMeanFiltered(FrameUniforms frame, GiVolumeGpu v,
     return totalWeight > 1e-4 ? accumulated / totalWeight : float3(0.0, 0.0, 0.0);
 }
 
-void SgGiVolumeSampleMean(FrameUniforms frame, uint vol, float3 pos,
+void SgGiVolumeSampleMean(GPU_PTR(FrameUniforms) frame, uint vol, float3 pos,
     out float3 mean)
 {
-    const GiVolumeGpu v = frame.giVolumes.Get().volumes[vol];
+    const GiVolumeGpu v = frame.Get().giVolumes.Get().volumes[vol];
     mean = SgGiVolumeSampleMeanFiltered(frame, v,
-        frame.giVolumeMeanLayers[vol],
-        frame.giVolumeVisLayers[vol * 2u],
-        frame.giVolumeVisLayers[vol * 2u + 1u], pos);
+        frame.Get().giVolumeMeanLayers[vol],
+        frame.Get().giVolumeVisLayers[vol * 2u],
+        frame.Get().giVolumeVisLayers[vol * 2u + 1u], pos);
 }
 
 // ---- Fog ray-space volume table (per-pixel prep, SgGiVolumeRayPrep) ----
@@ -558,20 +558,20 @@ struct GiVolumeRayPrep
 // traffic) -> ray-interval table for the overlapping volumes (priority
 // order) with their planes transformed to base/slope form. Called ONCE
 // per pixel; the march then walks the table, never the pool.
-void SgGiVolumeRayPrep(FrameUniforms frame, uint volMask, float3 camPos,
+void SgGiVolumeRayPrep(GPU_PTR(FrameUniforms) frame, uint volMask, float3 camPos,
     float3 rayDir, float rayLen, out GiVolumeRayPrep prep)
 {
     prep.rayCount = 0u;
     prep.tailCount = 0u;
-    if (frame.giVolumesEnabled == 0u)
+    if (frame.Get().giVolumesEnabled == 0u)
         return;
-    const uint volCount = min(frame.giVolumeCount, (uint)SG_GI_VOLUME_MAX);
+    const uint volCount = min(frame.Get().giVolumeCount, (uint)SG_GI_VOLUME_MAX);
     [loop]
     for (int v = int(volCount) - 1; v >= 0; --v) // HIGH priority first
     {
         if ((volMask & (1u << uint(v))) == 0u)
             continue;
-        const GiVolumeGpu vol = frame.giVolumes.Get().volumes[uint(v)];
+        const GiVolumeGpu vol = frame.Get().giVolumes.Get().volumes[uint(v)];
         // Fade-expanded AABB slab test (a superset of the weight>0
         // region — a miss is an exact weight-0 verdict for the whole
         // ray). Division by a ~0 ray component yields ±inf, which the
@@ -620,7 +620,7 @@ void SgGiVolumeRayPrep(FrameUniforms frame, uint volMask, float3 camPos,
             [loop]
             for (uint p = 0; p < count; ++p)
             {
-                const float4 wEq = frame.giVolumes.Get()
+                const float4 wEq = frame.Get().giVolumes.Get()
                     .planes[vol.planeCountBase.y + p].weightEquation;
                 prep.rays[s].base[p] = dot(wEq.xyz, camPos) + wEq.w;
                 prep.rays[s].slope[p] = dot(wEq.xyz, rayDir);
@@ -650,7 +650,7 @@ void SgGiVolumeRayPrep(FrameUniforms frame, uint volMask, float3 camPos,
 // The texture is static but varies with position; holding the first
 // sample for an entire ray would smear lighting across rooms. Same ordered transmittance math as SgGiVolumeComposite — the
 // result is the composite AT this t with exact weights.
-void SgGiVolumeRayComposite(FrameUniforms frame, inout GiVolumeRayPrep prep, float t,
+void SgGiVolumeRayComposite(GPU_PTR(FrameUniforms) frame, inout GiVolumeRayPrep prep, float t,
     float meanRefreshDist, float3 wpos, out float3 volAcc, out float trans)
 {
     volAcc = float3(0.0, 0.0, 0.0);
@@ -692,7 +692,7 @@ void SgGiVolumeRayComposite(FrameUniforms frame, inout GiVolumeRayPrep prep, flo
         if (t < prep.tailEnter[k] || t > prep.tailExit[k])
             continue;
         const GiVolumeGpu vol =
-            frame.giVolumes.Get().volumes[prep.tailVolumes[k]];
+            frame.Get().giVolumes.Get().volumes[prep.tailVolumes[k]];
         const float w = SgGiVolumeWeight(frame, vol, wpos);
         [branch]
         if (w <= 0.0)
@@ -716,10 +716,10 @@ void SgGiVolumeRayComposite(FrameUniforms frame, inout GiVolumeRayPrep prep, flo
 // one mask for all its segments).
 // (Forward declaration: the B-set twins below are referenced by the
 // blend tail.)
-void SgGiVolumeCompositeSetB(FrameUniforms frame, float3 pos,
+void SgGiVolumeCompositeSetB(GPU_PTR(FrameUniforms) frame, float3 pos,
     out float3 amps[SG_GI_LOBES], out float transmission, out bool hit);
 
-void SgGiVolumeComposite(FrameUniforms frame, uint volMask, float3 pos,
+void SgGiVolumeComposite(GPU_PTR(FrameUniforms) frame, uint volMask, float3 pos,
     out float3 amps[SG_GI_LOBES], out float transmission, out bool hit)
 {
     [unroll]
@@ -727,15 +727,15 @@ void SgGiVolumeComposite(FrameUniforms frame, uint volMask, float3 pos,
         amps[l] = float3(0.0, 0.0, 0.0);
     transmission = 1.0;
     hit = false;
-    if (frame.giVolumesEnabled == 0u)
+    if (frame.Get().giVolumesEnabled == 0u)
         return;
-    const uint volCount = min(frame.giVolumeCount, (uint)SG_GI_VOLUME_MAX);
+    const uint volCount = min(frame.Get().giVolumeCount, (uint)SG_GI_VOLUME_MAX);
     [loop]
     for (int v = int(volCount) - 1; v >= 0; --v) // HIGH priority first
     {
         if ((volMask & (1u << uint(v))) == 0u)
             continue;
-        const GiVolumeGpu vol = frame.giVolumes.Get().volumes[uint(v)];
+        const GiVolumeGpu vol = frame.Get().giVolumes.Get().volumes[uint(v)];
         const float w = SgGiVolumeWeight(frame, vol, pos);
         [branch]
         if (w <= 0.0)
@@ -758,13 +758,13 @@ void SgGiVolumeComposite(FrameUniforms frame, uint volMask, float3 pos,
     // The B walk ignores the A tile mask (the mask culls THIS set's
     // volumes; correctness lives in the per-pixel weights - the mask
     // is a hoist).
-    if (frame.giBlendEnabled != 0u)
+    if (frame.Get().giBlendEnabled != 0u)
     {
         float3 ampsB[SG_GI_LOBES];
         float transB;
         bool hitB;
         SgGiVolumeCompositeSetB(frame, pos, ampsB, transB, hitB);
-        const float a = saturate(frame.giBlendAlpha);
+        const float a = saturate(frame.Get().giBlendAlpha);
         [unroll]
         for (uint l = 0; l < SG_GI_LOBES; ++l)
             amps[l] = lerp(amps[l], ampsB[l], a);
@@ -803,13 +803,13 @@ float2 SgGiOctEncode(float3 n) {
     return e * 0.5 + 0.5;
 }
 
-void SgGiVolumeSampleOctahedral(FrameUniforms frame, uint vol, float3 pos, float3 N,
+void SgGiVolumeSampleOctahedral(GPU_PTR(FrameUniforms) frame, uint vol, float3 pos, float3 N,
     out float3 diffuse)
 {
-    const GiVolumeGpu v = frame.giVolumes.Get().volumes[vol];
+    const GiVolumeGpu v = frame.Get().giVolumes.Get().volumes[vol];
     const float3 uvw = saturate(pos * v.uvwScale.xyz + v.uvwBias.xyz);
-    const uint octaSlot = frame.giVolumeOctaLayers[vol];
-    const uint packed = frame.giVolumeOctaDims[vol];
+    const uint octaSlot = frame.Get().giVolumeOctaLayers[vol];
+    const uint packed = frame.Get().giVolumeOctaDims[vol];
     const uint atlasCols = packed & 0xffffu;
     const uint atlasRows = packed >> 16u;
 
@@ -818,8 +818,8 @@ void SgGiVolumeSampleOctahedral(FrameUniforms frame, uint vol, float3 pos, float
     const int3 b = clamp(int3(floor(rel - 0.5)), 0, int3(dims) - 2);
     const float3 f = saturate(rel - 0.5 - float3(b));
 
-    const uint visSlotA = frame.giVolumeVisLayers[vol * 2u];
-    const uint visSlotB = frame.giVolumeVisLayers[vol * 2u + 1u];
+    const uint visSlotA = frame.Get().giVolumeVisLayers[vol * 2u];
+    const uint visSlotB = frame.Get().giVolumeVisLayers[vol * 2u + 1u];
     const bool weighted = (visSlotB != 0xffffffffu) &&
         (volumeTextures[visSlotB].Load(int4(b, 0)).z < 0.5);
 
@@ -857,21 +857,21 @@ void SgGiVolumeSampleOctahedral(FrameUniforms frame, uint vol, float3 pos, float
     diffuse = (wSum > 1e-4) ? (acc / wSum) : float3(0.0, 0.0, 0.0);
 }
 
-void SgGiVolumeCompositeOctahedral(FrameUniforms frame, uint volMask, float3 pos, float3 N,
+void SgGiVolumeCompositeOctahedral(GPU_PTR(FrameUniforms) frame, uint volMask, float3 pos, float3 N,
     out float3 diffuse, out float transmission, out bool hit)
 {
     diffuse = float3(0.0, 0.0, 0.0);
     transmission = 1.0;
     hit = false;
-    if (frame.giVolumesEnabled == 0u)
+    if (frame.Get().giVolumesEnabled == 0u)
         return;
-    const uint volCount = min(frame.giVolumeCount, (uint)SG_GI_VOLUME_MAX);
+    const uint volCount = min(frame.Get().giVolumeCount, (uint)SG_GI_VOLUME_MAX);
     [loop]
     for (int v = int(volCount) - 1; v >= 0; --v) // HIGH priority first
     {
         if ((volMask & (1u << uint(v))) == 0u)
             continue;
-        const GiVolumeGpu vol = frame.giVolumes.Get().volumes[uint(v)];
+        const GiVolumeGpu vol = frame.Get().giVolumes.Get().volumes[uint(v)];
         const float w = SgGiVolumeWeight(frame, vol, pos);
         [branch]
         if (w <= 0.0)
@@ -902,13 +902,13 @@ void SgGiVolumeCompositeOctahedral(FrameUniforms frame, uint volMask, float3 pos
 
 // One volume's compact specular response at R (world-space reflection
 // vector), visibility-weighted over the 8 surrounding probes.
-void SgGiVolumeSampleSpecular(FrameUniforms frame, uint vol, float3 pos, float3 R, float roughness,
+void SgGiVolumeSampleSpecular(GPU_PTR(FrameUniforms) frame, uint vol, float3 pos, float3 R, float roughness,
     out float3 specular)
 {
-    const GiVolumeGpu v = frame.giVolumes.Get().volumes[vol];
+    const GiVolumeGpu v = frame.Get().giVolumes.Get().volumes[vol];
     const float3 uvw = saturate(pos * v.uvwScale.xyz + v.uvwBias.xyz);
     const uint specBaseSlot = vol * 4u; // 4 roughness slices per volume
-    const uint packed = frame.giVolumeSpecDims[vol];
+    const uint packed = frame.Get().giVolumeSpecDims[vol];
     const uint atlasCols = packed & 0xffffu;
     const uint atlasRows = packed >> 16u;
 
@@ -917,8 +917,8 @@ void SgGiVolumeSampleSpecular(FrameUniforms frame, uint vol, float3 pos, float3 
     const int3 b = clamp(int3(floor(rel - 0.5)), 0, int3(dims) - 2);
     const float3 f = saturate(rel - 0.5 - float3(b));
 
-    const uint visSlotA = frame.giVolumeVisLayers[vol * 2u];
-    const uint visSlotB = frame.giVolumeVisLayers[vol * 2u + 1u];
+    const uint visSlotA = frame.Get().giVolumeVisLayers[vol * 2u];
+    const uint visSlotB = frame.Get().giVolumeVisLayers[vol * 2u + 1u];
     const bool weighted = (visSlotB != 0xffffffffu) &&
         (volumeTextures[visSlotB].Load(int4(b, 0)).z < 0.5);
 
@@ -970,8 +970,8 @@ void SgGiVolumeSampleSpecular(FrameUniforms frame, uint vol, float3 pos, float3 
         const int2 tile = int2(probeIdx % atlasCols, probeIdx / atlasCols);
         const int2 texel = int2(tile.x * int(kGiOctRes) + octTexel.x,
                                 tile.y * int(kGiOctRes) + octTexel.y);
-        const float3 sLo = textures[frame.giVolumeSpecLayers[specBaseSlot + lo]].Load(int3(texel, 0)).rgb;
-        const float3 sHi = textures[frame.giVolumeSpecLayers[specBaseSlot + hi]].Load(int3(texel, 0)).rgb;
+        const float3 sLo = textures[frame.Get().giVolumeSpecLayers[specBaseSlot + lo]].Load(int3(texel, 0)).rgb;
+        const float3 sHi = textures[frame.Get().giVolumeSpecLayers[specBaseSlot + hi]].Load(int3(texel, 0)).rgb;
         const float3 rgb = lerp(sLo, sHi, frac);
         acc += rgb * wt;
         wSum += wt;
@@ -981,20 +981,20 @@ void SgGiVolumeSampleSpecular(FrameUniforms frame, uint vol, float3 pos, float3 
 
 // Multi-volume composite of the compact specular response (the SG path's
 // SgGiVolumeComposite twin over the baked atlas).
-void SgGiVolumeCompositeSpecular(FrameUniforms frame, uint volMask, float3 pos, float3 R, float roughness,
+void SgGiVolumeCompositeSpecular(GPU_PTR(FrameUniforms) frame, uint volMask, float3 pos, float3 R, float roughness,
     out float3 specular)
 {
     specular = float3(0.0, 0.0, 0.0);
-    if (frame.giVolumesEnabled == 0u)
+    if (frame.Get().giVolumesEnabled == 0u)
         return;
-    const uint volCount = min(frame.giVolumeCount, (uint)SG_GI_VOLUME_MAX);
+    const uint volCount = min(frame.Get().giVolumeCount, (uint)SG_GI_VOLUME_MAX);
     float transmission = 1.0;
     [loop]
     for (int v = int(volCount) - 1; v >= 0; --v) // HIGH priority first
     {
         if ((volMask & (1u << uint(v))) == 0u)
             continue;
-        const GiVolumeGpu vol = frame.giVolumes.Get().volumes[uint(v)];
+        const GiVolumeGpu vol = frame.Get().giVolumes.Get().volumes[uint(v)];
         const float w = SgGiVolumeWeight(frame, vol, pos);
         [branch]
         if (w <= 0.0)
@@ -1010,7 +1010,7 @@ void SgGiVolumeCompositeSpecular(FrameUniforms frame, uint volMask, float3 pos, 
 }
 
 // ***************************************************************************
-// THE GI BLEND B-SET TWINS (docs/content_as_code.md): frame.giVolumesB
+// THE GI BLEND B-SET TWINS (docs/content_as_code.md): frame.Get().giVolumesB
 // + the *B layer tables carry a SECOND resident GI set; the functions
 // below are the A-set twins' exact math over the B tables, kept as
 // separate bodies so the A paths' hot code is untouched (blending is
@@ -1020,13 +1020,13 @@ void SgGiVolumeCompositeSpecular(FrameUniforms frame, uint volMask, float3 pos, 
 
 // Samples one B-set volume's dense grid at world pos (the
 // SgGiVolumeSample twin over the B tables).
-void SgGiVolumeSampleB(FrameUniforms frame, uint vol, float3 pos,
+void SgGiVolumeSampleB(GPU_PTR(FrameUniforms) frame, uint vol, float3 pos,
     out float3 amps[SG_GI_LOBES])
 {
-    const GiVolumeGpu v = frame.giVolumesB.Get().volumes[vol];
+    const GiVolumeGpu v = frame.Get().giVolumesB.Get().volumes[vol];
     const float3 uvw = saturate(pos * v.uvwScale.xyz + v.uvwBias.xyz);
 
-    const uint visSlotB = frame.giVolumeVisLayersB[vol * 2u + 1u];
+    const uint visSlotB = frame.Get().giVolumeVisLayersB[vol * 2u + 1u];
     if (visSlotB != 0xffffffffu)
     {
         const float3 dims = float3(v.uvwScale.w, v.uvwBias.w, v.aabbMax.w);
@@ -1034,7 +1034,7 @@ void SgGiVolumeSampleB(FrameUniforms frame, uint vol, float3 pos,
         const int3 b = clamp(int3(floor(rel - 0.5)), 0, int3(dims) - 2);
         if (volumeTextures[visSlotB].Load(int4(b, 0)).z < 0.5)
         {
-            const uint visSlotA = frame.giVolumeVisLayersB[vol * 2u];
+            const uint visSlotA = frame.Get().giVolumeVisLayersB[vol * 2u];
             const float3 f = saturate(rel - 0.5 - float3(b));
             float3 acc[SG_GI_LOBES] = { float3(0, 0, 0), float3(0, 0, 0),
                 float3(0, 0, 0), float3(0, 0, 0), float3(0, 0, 0),
@@ -1061,7 +1061,7 @@ void SgGiVolumeSampleB(FrameUniforms frame, uint vol, float3 pos,
                     [unroll]
                     for (uint l = 0; l < SG_GI_LOBES; ++l)
                         corner[l] = volumeTextures[
-                            frame.giVolumeLayerTableB[vol * 10u + l]]
+                            frame.Get().giVolumeLayerTableB[vol * 10u + l]]
                             .Load(int4(cc, 0)).rgb;
                 }
                 else
@@ -1070,7 +1070,7 @@ void SgGiVolumeSampleB(FrameUniforms frame, uint vol, float3 pos,
                     [unroll]
                     for (uint t = 0; t < SG_GI_VOLUME_LAYERS; ++t)
                         layers[t] = volumeTextures[
-                            frame.giVolumeLayerTableB[vol * 10u + t]]
+                            frame.Get().giVolumeLayerTableB[vol * 10u + t]]
                             .Load(int4(cc, 0));
                     SgRegularUnpack(layers, corner);
                 }
@@ -1099,7 +1099,7 @@ void SgGiVolumeSampleB(FrameUniforms frame, uint vol, float3 pos,
     {
         [unroll]
         for (uint l = 0; l < SG_GI_LOBES; ++l)
-            amps[l] = volumeTextures[frame.giVolumeLayerTableB[vol * 10u + l]]
+            amps[l] = volumeTextures[frame.Get().giVolumeLayerTableB[vol * 10u + l]]
                 .Sample(samplers[2], uvw).rgb;
         return;
     }
@@ -1107,7 +1107,7 @@ void SgGiVolumeSampleB(FrameUniforms frame, uint vol, float3 pos,
     [unroll]
     for (uint t = 0; t < SG_GI_VOLUME_LAYERS; ++t)
     {
-        layers[t] = volumeTextures[frame.giVolumeLayerTableB[vol * 10u + t]]
+        layers[t] = volumeTextures[frame.Get().giVolumeLayerTableB[vol * 10u + t]]
             .Sample(samplers[2], uvw);
     }
     SgRegularUnpack(layers, amps);
@@ -1115,7 +1115,7 @@ void SgGiVolumeSampleB(FrameUniforms frame, uint vol, float3 pos,
 
 // The B-set composite walk (the SgGiVolumeComposite A-walk's twin;
 // no tile mask - see the blend note above).
-void SgGiVolumeCompositeSetB(FrameUniforms frame, float3 pos,
+void SgGiVolumeCompositeSetB(GPU_PTR(FrameUniforms) frame, float3 pos,
     out float3 amps[SG_GI_LOBES], out float transmission, out bool hit)
 {
     [unroll]
@@ -1123,13 +1123,13 @@ void SgGiVolumeCompositeSetB(FrameUniforms frame, float3 pos,
         amps[l] = float3(0.0, 0.0, 0.0);
     transmission = 1.0;
     hit = false;
-    if (frame.giBlendEnabled == 0u)
+    if (frame.Get().giBlendEnabled == 0u)
         return;
-    const uint volCount = min(frame.giVolumeCountB, (uint)SG_GI_VOLUME_MAX);
+    const uint volCount = min(frame.Get().giVolumeCountB, (uint)SG_GI_VOLUME_MAX);
     [loop]
     for (int v = int(volCount) - 1; v >= 0; --v)
     {
-        const GiVolumeGpu vol = frame.giVolumesB.Get().volumes[uint(v)];
+        const GiVolumeGpu vol = frame.Get().giVolumesB.Get().volumes[uint(v)];
         // §1.2: B volumes weigh against the B plane pool.
         const float w = SgGiVolumeWeightB(frame, vol, pos);
         [branch]
@@ -1149,31 +1149,31 @@ void SgGiVolumeCompositeSetB(FrameUniforms frame, float3 pos,
 }
 
 // B-set fog GI shares the exact same wall-aware mean filter.
-void SgGiVolumeSampleMeanB(FrameUniforms frame, uint vol, float3 pos,
+void SgGiVolumeSampleMeanB(GPU_PTR(FrameUniforms) frame, uint vol, float3 pos,
     out float3 mean)
 {
-    const GiVolumeGpu v = frame.giVolumesB.Get().volumes[vol];
+    const GiVolumeGpu v = frame.Get().giVolumesB.Get().volumes[vol];
     mean = SgGiVolumeSampleMeanFiltered(frame, v,
-        frame.giVolumeMeanLayersB[vol],
-        frame.giVolumeVisLayersB[vol * 2u],
-        frame.giVolumeVisLayersB[vol * 2u + 1u], pos);
+        frame.Get().giVolumeMeanLayersB[vol],
+        frame.Get().giVolumeVisLayersB[vol * 2u],
+        frame.Get().giVolumeVisLayersB[vol * 2u + 1u], pos);
 }
 
 // The B-set FOG ray prep (the SgGiVolumeRayPrep twin over the B
 // descriptors; no tile mask - the B set has no published tile masks,
 // the per-segment plane weights own correctness).
-void SgGiVolumeRayPrepB(FrameUniforms frame, float3 camPos,
+void SgGiVolumeRayPrepB(GPU_PTR(FrameUniforms) frame, float3 camPos,
     float3 rayDir, float rayLen, out GiVolumeRayPrep prep)
 {
     prep.rayCount = 0u;
     prep.tailCount = 0u;
-    if (frame.giBlendEnabled == 0u)
+    if (frame.Get().giBlendEnabled == 0u)
         return;
-    const uint volCount = min(frame.giVolumeCountB, (uint)SG_GI_VOLUME_MAX);
+    const uint volCount = min(frame.Get().giVolumeCountB, (uint)SG_GI_VOLUME_MAX);
     [loop]
     for (int v = int(volCount) - 1; v >= 0; --v)
     {
-        const GiVolumeGpu vol = frame.giVolumesB.Get().volumes[uint(v)];
+        const GiVolumeGpu vol = frame.Get().giVolumesB.Get().volumes[uint(v)];
         float3 t0 = (vol.aabbMin.xyz - camPos) / rayDir;
         float3 t1 = (vol.aabbMax.xyz - camPos) / rayDir;
         [unroll]
@@ -1204,7 +1204,7 @@ void SgGiVolumeRayPrepB(FrameUniforms frame, float3 camPos,
             [loop]
             for (uint p = 0; p < count; ++p)
             {
-                const float4 wEq = frame.giVolumesB.Get()
+                const float4 wEq = frame.Get().giVolumesB.Get()
                     .planes[vol.planeCountBase.y + p].weightEquation;
                 prep.rays[s].base[p] = dot(wEq.xyz, camPos) + wEq.w;
                 prep.rays[s].slope[p] = dot(wEq.xyz, rayDir);
@@ -1226,7 +1226,7 @@ void SgGiVolumeRayPrepB(FrameUniforms frame, float3 camPos,
 }
 
 // The B-set FOG ray composite (the SgGiVolumeRayComposite twin).
-void SgGiVolumeRayCompositeB(FrameUniforms frame, inout GiVolumeRayPrep prep,
+void SgGiVolumeRayCompositeB(GPU_PTR(FrameUniforms) frame, inout GiVolumeRayPrep prep,
     float t, float meanRefreshDist, float3 wpos, out float3 volAcc, out float trans)
 {
     volAcc = float3(0.0, 0.0, 0.0);
@@ -1268,7 +1268,7 @@ void SgGiVolumeRayCompositeB(FrameUniforms frame, inout GiVolumeRayPrep prep,
         if (t < prep.tailEnter[k] || t > prep.tailExit[k])
             continue;
         const GiVolumeGpu vol =
-            frame.giVolumesB.Get().volumes[prep.tailVolumes[k]];
+            frame.Get().giVolumesB.Get().volumes[prep.tailVolumes[k]];
         // §1.2: B volumes weigh against the B plane pool.
         const float w = SgGiVolumeWeightB(frame, vol, wpos);
         [branch]
