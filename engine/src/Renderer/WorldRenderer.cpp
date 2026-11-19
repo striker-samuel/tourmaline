@@ -13821,8 +13821,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             }
         }
 
-        // Dense leaf repack (resolves slot -> dense indexing), a single Main
-        // view, and the admitted-generation mask for the fused ownership gate.
+        // Dense leaf repack (resolves slot -> dense indexing), the Main + cascade
+        // view frustums, and the admitted-generation mask for the fused gate.
         const auto tickets = m_gpuSceneSync.LeafTicketsFrame(m_gpuSceneDatabase);
         tour::gpu_scene::DenseLeaves dense{};
         if (tour::gpu_scene::BuildDenseLeaves(m_gpuSceneDatabase, tickets, dense) &&
@@ -13840,14 +13840,32 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             tour::gpu_scene::LeafClassifyPush classify{};
             tour::gpu_scene::LeafCompactPush compact{};
             tour::gpu_scene::FusedCullPush fused{};
-            const tour::gpu_scene::RelativeFrustum leafViews[] = {mainView};
+            // Fused multi-view: Main + the directional cascade frustums share
+            // one leaf classification, so off-camera shadow casters survive
+            // their own cascade view without re-running the coarse scan per
+            // cascade (the RFC's 5x-amplification removal).
+            std::array<tour::gpu_scene::RelativeFrustum, 1 + NUM_CASCADES> leafViews{};
+            leafViews[0] = mainView;
+            uint32_t leafViewCount = 1u;
+            if (m_passes.directionalShadows &&
+                cascadeViewBase != smvk::RenderViewSet::kInvalidIndex) {
+                for (uint32_t ci = 0; ci < NUM_CASCADES; ++ci) {
+                    const uint32_t sv = cascadeViewBase + ci;
+                    if (sv >= m_renderViews.Count())
+                        break;
+                    leafViews[leafViewCount++] =
+                        tour::gpu_scene::LegacyRelativeFrustum(m_renderViews.Get(sv), origin);
+                }
+            }
+            const std::span<const tour::gpu_scene::RelativeFrustum> viewsSpan(leafViews.data(),
+                                                                              leafViewCount);
             if (m_gpuVisibilityRuntime.Prepare(
                     *m_context,
                     fb.frameIndex,
                     m_gpuSceneDatabase,
                     m_gpuSceneUploader.DeviceAddresses(*m_context, fb.frameIndex),
                     dense,
-                    leafViews,
+                    viewsSpan,
                     owner,
                     classify,
                     compact,
