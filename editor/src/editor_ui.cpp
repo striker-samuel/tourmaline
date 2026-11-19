@@ -195,55 +195,62 @@ void EditorApp::FinishDrag() {
     m_pending.cmd = EditCmd{};
 }
 
-// Editor terrain-group top view: world X is right, +Z is down.
-// The heightmap remains the same authoritative grid as terrain painting.
+// Editor world-map top view: world X is right, +Z is down. The base grid
+// mirrors the 3D runtime/debug ground grid and never depends on terrain.
 void EditorApp::DrawWorldMapPanel() {
-    if (!m_world || m_terrainGroups.empty()) {
-        ImGui::TextDisabled("Create a terrain to display its heightmap.");
-        return;
-    }
     std::vector<uint32_t> ids;
-    for (const auto& [id, g] : m_terrainGroups)
-        if (!g.deleted && g.data.heights.width > 1 && g.data.heights.height > 1)
-            ids.push_back(id);
-    std::sort(ids.begin(), ids.end());
-    if (ids.empty()) {
-        ImGui::TextDisabled("No editable terrain.");
-        return;
+    if (m_world) {
+        for (const auto& [id, g] : m_terrainGroups)
+            if (!g.deleted && g.data.heights.width > 1 && g.data.heights.height > 1 &&
+                g.data.params.size > 0.0f)
+                ids.push_back(id);
     }
-    const uint32_t selected = TerrainGroupOf(m_selected);
+    std::sort(ids.begin(), ids.end());
+    const uint32_t selected = m_world ? TerrainGroupOf(m_selected) : UINT32_MAX;
     if (selected != UINT32_MAX && selected != m_worldMapGroup &&
         std::binary_search(ids.begin(), ids.end(), selected)) {
         m_worldMapGroup = selected;
         m_worldMapScale = 0.0f;
     }
-    if (!std::binary_search(ids.begin(), ids.end(), m_worldMapGroup))
+    if (!ids.empty() && !std::binary_search(ids.begin(), ids.end(), m_worldMapGroup)) {
         m_worldMapGroup = ids.front();
-    uint32_t group = m_worldMapGroup;
-    if (ImGui::BeginCombo("Terrain group", std::to_string(group).c_str())) {
-        for (uint32_t id : ids)
-            if (ImGui::Selectable(std::to_string(id).c_str(), id == group))
-                group = id;
-        ImGui::EndCombo();
+        m_worldMapScale = 0.0f;
     }
-    if (group != m_worldMapGroup) {
-        m_worldMapGroup = group;
-        m_worldMapScale = 0;
+    const bool hasTerrain = !ids.empty();
+    uint32_t group = hasTerrain ? m_worldMapGroup : UINT32_MAX;
+    if (hasTerrain) {
+        if (ImGui::BeginCombo("Terrain group", std::to_string(group).c_str())) {
+            for (uint32_t id : ids)
+                if (ImGui::Selectable(std::to_string(id).c_str(), id == group))
+                    group = id;
+            ImGui::EndCombo();
+        }
+        if (group != m_worldMapGroup) {
+            m_worldMapGroup = group;
+            m_worldMapScale = 0.0f;
+        }
+    } else {
+        ImGui::TextDisabled("No editable terrain (world grid remains available).");
     }
-    auto& data = m_terrainGroups.at(group).data;
-    const auto& p = data.params;
-    if (p.size <= 0.0f)
-        return;
+
+    // Terrain is an optional overlay; the map and its navigation exist without it.
+    const auto* data = hasTerrain ? &m_terrainGroups.at(group).data : nullptr;
+    const auto* p = data ? &data->params : nullptr;
+    const float cell = std::max(m_gridSize, 0.05f);
+    const int extent = int(std::clamp<uint32_t>(m_gridExtent, 2, 512));
+    const float gridRadius = float(extent) * cell;
     ImGui::SameLine();
     if (ImGui::Button("Fit"))
         m_worldMapScale = 0.0f;
-    ImGui::SameLine();
-    ImGui::Checkbox("Sculpt", &m_worldMapSculpt);
-    if (m_worldMapSculpt) {
-        const char* names[] = {"Raise", "Lower", "Flatten", "Smooth"};
-        ImGui::Combo("Brush", &m_paintOp, names, 4);
-        ImGui::DragFloat("Radius (m)", &m_paintRadius, 0.25f, 0.5f, 256.f);
-        ImGui::DragFloat("Strength", &m_paintStrength, 0.01f, 0.01f, 64.f);
+    if (hasTerrain) {
+        ImGui::SameLine();
+        ImGui::Checkbox("Sculpt", &m_worldMapSculpt);
+        if (m_worldMapSculpt) {
+            const char* names[] = {"Raise", "Lower", "Flatten", "Smooth"};
+            ImGui::Combo("Brush", &m_paintOp, names, 4);
+            ImGui::DragFloat("Radius (m)", &m_paintRadius, 0.25f, 0.5f, 256.f);
+            ImGui::DragFloat("Strength", &m_paintStrength, 0.01f, 0.01f, 64.f);
+        }
     }
     const ImVec2 pos = ImGui::GetCursorScreenPos(), dim = ImGui::GetContentRegionAvail();
     if (dim.x < 32 || dim.y < 32)
@@ -255,9 +262,10 @@ void EditorApp::DrawWorldMapPanel() {
     const bool hovered = ImGui::IsItemHovered();
     const ImVec2 mouse = ImGui::GetIO().MousePos;
     const ImVec2 mid(pos.x + dim.x * 0.5f, pos.y + dim.y * 0.5f);
-    if (m_worldMapScale <= 0) {
-        m_worldMapScale = p.size * 1.1f / std::max(1.f, std::min(dim.x, dim.y));
-        m_worldMapCenter = p.origin + glm::vec2(p.size * 0.5f);
+    if (m_worldMapScale <= 0.0f) {
+        const float worldSpan = p ? p->size : gridRadius * 2.0f;
+        m_worldMapScale = worldSpan * 1.1f / std::max(1.f, std::min(dim.x, dim.y));
+        m_worldMapCenter = p ? p->origin + glm::vec2(p->size * 0.5f) : glm::vec2(0.0f);
     }
     auto toWorld = [&](ImVec2 v) {
         return m_worldMapCenter + glm::vec2(v.x - mid.x, v.y - mid.y) * m_worldMapScale;
@@ -266,11 +274,12 @@ void EditorApp::DrawWorldMapPanel() {
         return ImVec2(mid.x + (v.x - m_worldMapCenter.x) / m_worldMapScale,
                       mid.y + (v.y - m_worldMapCenter.y) / m_worldMapScale);
     };
-    if (hovered && ImGui::GetIO().MouseWheel != 0) {
+    if (hovered && ImGui::GetIO().MouseWheel != 0.0f) {
         const glm::vec2 anchor = toWorld(mouse);
+        const float span = p ? p->size : gridRadius * 2.0f;
         m_worldMapScale = std::clamp(m_worldMapScale * std::pow(1.15f, -ImGui::GetIO().MouseWheel),
-                                     p.size / 16384.f,
-                                     p.size * 16.f);
+                                     span / 16384.f,
+                                     span * 16.f);
         m_worldMapCenter += anchor - toWorld(mouse);
     }
     if (ImGui::IsItemActive() && (ImGui::IsMouseDragging(ImGuiMouseButton_Middle) ||
@@ -282,49 +291,81 @@ void EditorApp::DrawWorldMapPanel() {
     const ImVec2 end(pos.x + dim.x, pos.y + dim.y);
     draw->AddRectFilled(pos, end, IM_COL32(24, 28, 33, 255));
     draw->PushClipRect(pos, end, true);
-    // Bounded CPU preview; no GPU readback and no duplicated terrain data.
-    const int nx = std::clamp(int(dim.x / 7), 1, 96);
-    const int nz = std::clamp(int(dim.y / 7), 1, 96);
-    const float dx = dim.x / nx, dz = dim.y / nz;
-    for (int z = 0; z < nz; ++z)
-        for (int x = 0; x < nx; ++x) {
-            const glm::vec2 w = toWorld(ImVec2(pos.x + (x + .5f) * dx, pos.y + (z + .5f) * dz));
-            if (w.x < p.origin.x || w.y < p.origin.y || w.x > p.origin.x + p.size ||
-                w.y > p.origin.y + p.size)
-                continue;
-            const float level =
-                std::clamp(data.heights.sampleHeight(w.x, w.y) / std::max(1.f, p.height), 0.f, 1.f);
-            const int v = int(55 + level * 165);
-            draw->AddRectFilled(ImVec2(pos.x + x * dx, pos.y + z * dz),
-                                ImVec2(pos.x + (x + 1) * dx + .5f, pos.y + (z + 1) * dz + .5f),
-                                IM_COL32(v, v, v, 255));
-        }
-    // Tile outlines follow shared grid samples, not approximate equal sizes.
-    const float step = p.size / float(data.heights.width - 1);
-    for (uint32_t tz = 0; tz < data.tilesZ; ++tz)
-        for (uint32_t tx = 0; tx < data.tilesX; ++tx) {
-            uint32_t x0, x1, z0, z1;
-            smvk::placement::TerrainTileRange(data, tx, tz, x0, x1, z0, z1);
-            draw->AddRect(toPixel(p.origin + glm::vec2(x0 * step, z0 * step)),
-                          toPixel(p.origin + glm::vec2(x1 * step, z1 * step)),
-                          IM_COL32(240, 203, 113, 220));
-        }
+    if (data) {
+        // Bounded CPU height preview; the terrain owns only this shading layer.
+        const int nx = std::clamp(int(dim.x / 7), 1, 96);
+        const int nz = std::clamp(int(dim.y / 7), 1, 96);
+        const float dx = dim.x / nx, dz = dim.y / nz;
+        for (int z = 0; z < nz; ++z)
+            for (int x = 0; x < nx; ++x) {
+                const glm::vec2 w = toWorld(ImVec2(pos.x + (x + .5f) * dx, pos.y + (z + .5f) * dz));
+                if (w.x < p->origin.x || w.y < p->origin.y || w.x > p->origin.x + p->size ||
+                    w.y > p->origin.y + p->size)
+                    continue;
+                const float level = std::clamp(
+                    data->heights.sampleHeight(w.x, w.y) / std::max(1.f, p->height), 0.f, 1.f);
+                const int v = int(55 + level * 165);
+                draw->AddRectFilled(ImVec2(pos.x + x * dx, pos.y + z * dz),
+                                    ImVec2(pos.x + (x + 1) * dx + .5f, pos.y + (z + 1) * dz + .5f),
+                                    IM_COL32(v, v, v, 255));
+            }
+    }
+
+    // Match the runtime debug grid's cell size, extent, major (every 5)
+    // and origin axes. Draw it after terrain so it remains visible above
+    // the height preview. Cull off-screen lines and avoid subpixel clutter.
+    const float gridMin = -gridRadius, gridMax = gridRadius;
+    const glm::vec2 viewMin = toWorld(pos), viewMax = toWorld(end);
+    const int skip = std::max(1, int(std::ceil(m_worldMapScale * 6.0f / cell)));
+    const int minorSkip = skip <= 5 ? 1 : ((skip + 4) / 5) * 5;
+    for (int i = -extent; i <= extent; ++i) {
+        if (i != 0 && i % 5 != 0 && i % minorSkip != 0)
+            continue;
+        if (i != 0 && i % 5 == 0 && minorSkip > 5 && i % minorSkip != 0)
+            continue;
+        const float v = float(i) * cell;
+        const bool axis = i == 0;
+        const ImU32 color = axis ? IM_COL32(205, 120, 90, 230)
+                                 : (i % 5 == 0 ? IM_COL32(133, 146, 161, 190)
+                                               : IM_COL32(85, 96, 109, 125));
+        const float thickness = axis ? 1.8f : (i % 5 == 0 ? 1.3f : 1.0f);
+        if (v >= viewMin.x && v <= viewMax.x)
+            draw->AddLine(toPixel(glm::vec2(v, gridMin)),
+                          toPixel(glm::vec2(v, gridMax)), color, thickness);
+        if (v >= viewMin.y && v <= viewMax.y)
+            draw->AddLine(toPixel(glm::vec2(gridMin, v)),
+                          toPixel(glm::vec2(gridMax, v)), color, thickness);
+    }
+    if (data) {
+        // Tile outlines follow shared terrain samples, not grid cell divisions.
+        const float step = p->size / float(data->heights.width - 1);
+        for (uint32_t tz = 0; tz < data->tilesZ; ++tz)
+            for (uint32_t tx = 0; tx < data->tilesX; ++tx) {
+                uint32_t x0, x1, z0, z1;
+                smvk::placement::TerrainTileRange(*data, tx, tz, x0, x1, z0, z1);
+                draw->AddRect(toPixel(p->origin + glm::vec2(x0 * step, z0 * step)),
+                              toPixel(p->origin + glm::vec2(x1 * step, z1 * step)),
+                              IM_COL32(240, 203, 113, 220));
+            }
+    }
     const glm::vec2 cursor = toWorld(mouse);
-    const bool inside = cursor.x >= p.origin.x && cursor.y >= p.origin.y &&
-                        cursor.x <= p.origin.x + p.size && cursor.y <= p.origin.y + p.size;
-    if (hovered && inside) {
-        if (m_worldMapSculpt)
+    const bool inside = data && cursor.x >= p->origin.x && cursor.y >= p->origin.y &&
+                        cursor.x <= p->origin.x + p->size && cursor.y <= p->origin.y + p->size;
+    if (hovered) {
+        if (inside && m_worldMapSculpt)
             draw->AddCircle(
                 mouse, m_paintRadius / m_worldMapScale, IM_COL32(141, 239, 157, 255), 48, 1.5f);
-        ImGui::SetTooltip("X %.2f  Z %.2f  Y %.2f m",
-                          cursor.x,
-                          cursor.y,
-                          data.heights.sampleHeight(cursor.x, cursor.y));
+        if (data && inside)
+            ImGui::SetTooltip("X %.2f  Z %.2f  Y %.2f m",
+                              cursor.x, cursor.y,
+                              data->heights.sampleHeight(cursor.x, cursor.y));
+        else
+            ImGui::SetTooltip("X %.2f  Z %.2f m", cursor.x, cursor.y);
     }
     draw->PopClipRect();
     if (!ImGui::IsMouseDown(ImGuiMouseButton_Left))
         m_worldMapLastStamp = glm::vec2(-1e9f);
-    if (m_worldMapSculpt && inside && ImGui::IsItemActive() &&
+    if (data && m_worldMapSculpt && inside && ImGui::IsItemActive() &&
         ImGui::IsMouseDown(ImGuiMouseButton_Left) &&
         glm::distance(cursor, m_worldMapLastStamp) >=
             std::max(0.1f, m_paintRadius * m_paintStrokeSpacing)) {
@@ -333,10 +374,8 @@ void EditorApp::DrawWorldMapPanel() {
         cmd.verb = EditVerb::TerrainPaint;
         cmd.node = group;
         cmd.terrainOp = ops[std::clamp(m_paintOp, 0, 3)];
-        cmd.vec4 = glm::vec4(cursor.x,
-                             cursor.y,
-                             m_paintRadius,
-                             m_paintOp == 2 ? data.heights.sampleHeight(cursor.x, cursor.y) : 0.f);
+        cmd.vec4 = glm::vec4(cursor.x, cursor.y, m_paintRadius,
+                             m_paintOp == 2 ? data->heights.sampleHeight(cursor.x, cursor.y) : 0.f);
         cmd.number = double(m_paintStrength);
         Do(cmd);
         m_worldMapLastStamp = cursor;
