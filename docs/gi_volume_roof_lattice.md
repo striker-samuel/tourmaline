@@ -15,6 +15,45 @@ is unambiguous.
 
 ---
 
+## 0. The tale
+
+A lattice of dark blotches marched diagonally across the bistro's sloped
+roof — not following the roof, but the axis-aligned probe grid underneath it.
+The prime suspect was the **dilated** probes: the ones whose centers fall
+inside the thin roof slab, invalid at trace time and filled by copying their
+valid neighbours. The bake said they were dark — 185 vs 312 mean luminance,
+59% of their traced cousins — and the stagger of the grid against the
+diagonal roof looked exactly like the pattern.
+
+Three easy answers fell first: runtime visibility rejection (the visibility
+view showed nothing at the roof), a SG-fit difference (raw SG matched the
+weighted field), and grid resolution (a 2× denser bake only shrank the band;
+the per-probe darkness stayed). That left the dilated probes.
+
+So we tried to *fix* them. A brightness-weighted dilation made the dilated
+probes recover from 59% to 88% of traced energy at bake time — a 49% swing.
+The image answered with a shrug: the roof moved ~1% brighter and the lattice
+amplitude fell ~2%. A bake-side earthquake, a screen-side whisper.
+
+That was the real clue. We stopped tuning and built the instrument that asks
+the honest question — *how much of the roof's sampled light actually comes
+from dilated probes at all?* The `W_dilated` view gave the answer: **~zero**.
+Across the whole roof the renderer interpolates from *traced* probes; the
+dark dilated probes never contribute to the lit surface. Their bake-time
+darkness was real but invisible — which is exactly why brightening them did
+nothing.
+
+So the lattice is not painted by dilated probes. It is baked into the traced
+field itself — the directional SG response at the roof normal, or the
+axis-aligned trilinear interpolation across the diagonal surface. The
+investigation that began as "the dilated probes are too dark" ended as "the
+dilated probes were never the culprit." Two bugs were caught on the way (an
+out-of-bounds classification read, and a `FrameUniforms` size assertion), and
+the decisive next experiment is a traced-only A/B: mask the dilated probes to
+zero and watch whether the lattice survives.
+
+---
+
 ## 1. Symptom
 
 Looking up at the diagonal roof of the bistro interior, the baked GI shows a
