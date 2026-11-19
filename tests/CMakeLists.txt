@@ -1526,6 +1526,13 @@ set_target_properties(GpuSceneCandidatesTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME gpu_scene_candidates_tests COMMAND GpuSceneCandidatesTests)
 
+# CPU-only P1 flat multi-view leaf classifier parity (no GPU dispatch).
+add_executable(GpuSceneLeafClassifyTests test_gpu_scene_leaf_classify.cpp)
+target_link_libraries(GpuSceneLeafClassifyTests PRIVATE engine)
+set_target_properties(GpuSceneLeafClassifyTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME gpu_scene_leaf_classify_tests COMMAND GpuSceneLeafClassifyTests)
+
 # Opt-in GPU scene instance-culling view + reference verdict parity.
 add_executable(GpuSceneValidationTests test_gpu_scene_validation.cpp)
 target_link_libraries(GpuSceneValidationTests PRIVATE engine)
