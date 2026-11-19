@@ -1403,6 +1403,15 @@ if(Python3_FOUND)
         COMMAND ${Python3_EXECUTABLE} -m unittest discover
             -s ${CMAKE_SOURCE_DIR}/tests -t ${CMAKE_SOURCE_DIR}/tests
             -p test_tourdiff.py)
+    # The configure-time vendored-dependency gate (cmake/DependencyStamps.cmake)
+    # driven in cmake -P mode over throwaway repos: stale pins, the POSIX
+    # pin-table format, and the mainline-ImGui probe. TOURMALINE_CMAKE hands
+    # the suite ctest's own cmake (the Windows build machines keep CMake
+    # inside Visual Studio, off PATH).
+    add_test(NAME dependency_stamp_tests
+        COMMAND ${Python3_EXECUTABLE} "${CMAKE_SOURCE_DIR}/tests/test_dependency_stamps.py")
+    set_tests_properties(dependency_stamp_tests PROPERTIES
+        ENVIRONMENT "TOURMALINE_CMAKE=${CMAKE_COMMAND}")
     # Project-init scaffolding checks (PR #65): CPU-only, the Project
     # process is mocked; the separate agent-CLI workflow runs the same
     # entry, ctest keeps the local gate honest.

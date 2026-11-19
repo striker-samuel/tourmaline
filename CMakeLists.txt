@@ -67,6 +67,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Clang installs do not always ship.
 set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
 
+# Vendored-dependency staleness gate: an out-of-git external/ tree that was
+# fetched from an OLDER install_dependencies pin (a `git pull` never touches
+# those trees) is refused HERE, with the re-fetch command, instead of failing
+# later as a compile error inside engine code. See cmake/DependencyStamps.cmake.
+include(cmake/DependencyStamps.cmake)
+tourmaline_check_vendored_dependencies()
+
 # Vulkan#
 #--- Rendering backend ------------------------------------------------------
 
