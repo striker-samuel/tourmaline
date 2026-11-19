@@ -21,6 +21,7 @@
 // Check() runner; never put side effects inside a Check condition.
 #include <Engine/Renderer/gpu_scene_candidates.h>
 #include <Engine/Renderer/gpu_scene_leaf.h>
+#include <Engine/Renderer/gpu_visibility_frame_ref.h>
 
 #include <cstdint>
 #include <cstdio>
@@ -254,12 +255,93 @@ void CheckDenseLeaves() {
     Check(BuildDenseLeaves(db, {}, none) && none.count == 0, "leafclass.dense-empty-ok");
 }
 
+void CheckFusedPipeline() {
+    RenderDatabase db{};
+    LeafRegistry leaves{};
+    const auto complete = db.meshes.Insert(Mesh{0, 1, 1, MeshFlagCompleteBounds});
+    const auto unknown = db.meshes.Insert(Mesh{0, 1, 1, 0});
+    Check(bool(complete) && bool(unknown), "leafclass.fused-meshes");
+
+    const auto caster = Add(db, leaves, complete, glm::dvec3(2, 0, 0));
+    const auto nonCaster = Add(db, leaves, complete, glm::dvec3(-3, 0, 4));
+    const auto far = Add(db, leaves, complete, glm::dvec3(2048, 0, 0));
+    const auto failOpen = Add(db, leaves, unknown, glm::dvec3(4096, 0, 0));
+    Check(leaves.Flush(db), "leafclass.fused-flush");
+
+    // Mark one instance as a shadow caster (mirrors the shader's (1<<5)).
+    {
+        Instance v = *db.instances.Get(caster);
+        v.refs.w |= CastShadowBit;
+        Check(db.instances.Update(caster, v), "leafclass.fused-caster-flag");
+    }
+    Check(leaves.Flush(db), "leafclass.fused-reflush");
+
+    const auto tickets = leaves.Tickets(db);
+    DenseLeaves dense{};
+    Check(BuildDenseLeaves(db, tickets, dense), "leafclass.fused-dense");
+
+    const RelativeFrustum views[3] = {
+        Cube(glm::dvec3(0.0)),
+        Cube(glm::dvec3(64.0, 0, 0), 6.0),
+        Cube(glm::dvec3(2048.0, 0, 0), 50.0),
+    };
+
+    // Admit every live instance at its current generation.
+    std::vector<uint32_t> owner(db.instances.Size(), 0u);
+    for (size_t slot = 0; slot < db.instances.Rows().size(); ++slot) {
+        const auto& row = db.instances.Rows()[slot];
+        if (row.identity.y == 1u)
+            owner[slot] = row.identity.x;
+    }
+
+    const VisibilityReference ref = ReferenceVisibility(db, dense, views, owner);
+
+    Check(ref.leafMasks.size() == dense.count, "leafclass.fused-mask-count");
+    Check(ref.activeLeafCount == ref.workQueue.size(), "leafclass.fused-queue-count");
+    Check(ref.workQueue.size() == 4, "leafclass.fused-active-leaves"); // all four cells
+    Check(ref.verdicts.size() == db.instances.Size(), "leafclass.fused-verdict-count");
+
+    // End-to-end no false negatives: every genuinely visible instance must have
+    // its view bit set in the fused verdict.
+    for (size_t slot = 0; slot < db.instances.Rows().size(); ++slot) {
+        const auto& row = db.instances.Rows()[slot];
+        if (row.identity.y != 1u)
+            continue;
+        const Handle<Instance> id{uint32_t(slot), row.identity.x};
+        for (uint32_t v = 0; v < 3; ++v) {
+            if (!ReferenceInstanceVisible(db, id, views[v]))
+                continue;
+            Check((ref.verdicts[slot].value.z & (1u << v)) != 0u,
+                  "leafclass.fused-no-false-negative");
+        }
+    }
+
+    // CastShadow flag: caster has it, nonCaster does not.
+    Check((ref.verdicts[caster.slot].value.w & 1u) == 1u, "leafclass.fused-caster-flag-out");
+    Check((ref.verdicts[nonCaster.slot].value.w & 1u) == 0u, "leafclass.fused-noncaster-flag-out");
+
+    // Unknown-bounds instance is visible in all three views (fail open).
+    Check(ref.verdicts[failOpen.slot].value.z == 0b111u, "leafclass.fused-failopen-all-views");
+
+    // Far instance is visible only in view 2.
+    Check(ref.verdicts[far.slot].value.z == (1u << 2), "leafclass.fused-far-v2-only");
+
+    // Ownership: a wrong admitted generation must suppress the verdict.
+    std::vector<uint32_t> badOwner = owner;
+    badOwner[caster.slot] = caster.generation + 1u;
+    const VisibilityReference refBad = ReferenceVisibility(db, dense, views, badOwner);
+    Check(refBad.verdicts[caster.slot].value == glm::uvec4(0u),
+          "leafclass.fused-ownership-rejects");
+    Check(refBad.verdicts[nonCaster.slot].value.z != 0u, "leafclass.fused-ownership-others-ok");
+}
+
 } // namespace
 
 int main() {
     CheckNoFalseNegatives();
     CheckGenerationRejection();
     CheckDenseLeaves();
+    CheckFusedPipeline();
     std::printf("checks=%d failures=%d\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }
