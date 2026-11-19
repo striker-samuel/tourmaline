@@ -142,6 +142,8 @@ The fastest way to see Tourmaline render a scene is to **build the `App` viewer 
 
 The repository's `install_dependencies.ps1` and `install_dependencies.sh` fetch the pinned dependencies into `external/`, but **do not install KTX-Software or the Windows Vulkan SDK**. On Windows, prefer prebuilt Embree: the vendored source has triggered MSVC internal compiler errors. Full platform details are also documented in [CI](.github/workflows/ci.yml) and [AGENTS.md](AGENTS.md).
 
+Because those trees live outside Git, a `git pull` that bumps a pin does **not** update them. The configure step therefore compares every fetched tree against the pin the dependency script declares and stops with the exact re-fetch command when they disagree (see `cmake/DependencyStamps.cmake`), instead of failing later inside engine code.
+
 ### Windows — build, install demo content, run
 
 Open **x64 Developer PowerShell for Visual Studio 2022** with CMake, Ninja and Git on `PATH`. Install the Vulkan SDK **1.4.357.0** from [LunarG](https://vulkan.lunarg.com/sdk/home) (the version used by CI). A scripted installation, if needed and permitted by your machine's elevation policy, is:
@@ -300,6 +302,7 @@ Some tests need a Vulkan device and window. Hosted CI skips GPU-window tests; th
 
 ### Setup and launch troubleshooting
 
+- **Build fails after a `git pull` with undeclared identifiers in engine code** (e.g. `'ImGuiConfigFlags_ViewportsEnable': undeclared identifier` in `imgui_overlay.cpp`): an `external/` dependency tree is older than the pin. Re-run `install_dependencies.ps1` / `install_dependencies.sh` and reconfigure; a stale tree is refused at configure time with the command included. If the link step then reports unresolved symbols from the refreshed tree, delete the build directory's copy of it (e.g. `out/build/<config>/external/imgui`) and build again.
 - **CMake cannot find `KtxConfig.cmake`:** KTX is not installed or `-DKTX_ROOT` points to the wrong prefix. The dependency-fetch scripts do not install it.
 - **Windows: Vulkan/DXC missing or `cl.exe` not found:** install the Vulkan SDK and use **x64 Developer PowerShell** with `VULKAN_SDK`/`PATH` set; do not switch to the Visual Studio generator.
 - **Windows: Embree source compiler crashes:** use the official 4.4.1 prebuilt directory via `-DEMBREE_PREBUILT_DIR`, as above.
