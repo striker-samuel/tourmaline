@@ -1783,7 +1783,7 @@ void World::UnmergePage(WorldPage& page) {
     }
 }
 
-void World::RebuildDerivedCaches() {
+void World::RebuildDerivedCaches(bool incremental) {
     // Active-environment pick: the winning id resolves the merged
     // look from the merged block table (first scene loaded wins).
     // Falls back to the first-wins authored/default copy above when
@@ -1950,9 +1950,15 @@ void World::RebuildDerivedCaches() {
     // Full-recalc marking at the merge boundary: EVERY root participates
     // (a flat world carries one root per merged cluster-scene root —
     // multi-root cooks, the deliberate WorldSun) so all merged globals
-    // recompose from their authored locals.
-    MarkAllRootsChanged(scene);
-    recalculateGlobalTransforms(scene);
+    // recompose from their authored locals. SKIPPED on the incremental
+    // streaming path: MergePage already copied each page's authored global
+    // (float + double) transforms into the merged scene, so recomputing them
+    // is pure O(total) waste — the new page's globals are exact, and
+    // UnmergePage only removes subtrees (never invalidates survivors).
+    if (!incremental) {
+        MarkAllRootsChanged(scene);
+        recalculateGlobalTransforms(scene);
+    }
 
     RefreshRuntimeSceneCaches();
 

@@ -4068,8 +4068,9 @@ bool smvk::UploadStreamer::ensureShardRing(ThreadUploadState& ust) {
     return ensureRing(ust, ringCapacityPerThread_, "UploadStreamer Ring (thread shard)");
 }
 void smvk::UploadStreamer::destroy() {
-    if (bulk_.curCmd != VK_NULL_HANDLE && bulk_.hasPending) {
-        submitState(bulk_, false);
+    for (auto& ust : bulk_) {
+        if (ust.curCmd != VK_NULL_HANDLE && ust.hasPending)
+            submitState(ust, false);
     }
     for (auto& ust : states_) {
         if (ust.curCmd != VK_NULL_HANDLE && ust.hasPending) {
@@ -4081,17 +4082,19 @@ void smvk::UploadStreamer::destroy() {
         m_transfer->waitAll();
     if (m_graphics && m_graphics != m_transfer)
         m_graphics->waitAll();
-    if (bulk_.ring.buffer != VK_NULL_HANDLE) {
-        vmaDestroyBuffer(m_rm->m_allocator, bulk_.ring.buffer, bulk_.ring.allocation);
-        bulk_.ring.buffer = VK_NULL_HANDLE;
-        bulk_.ring.allocation = VK_NULL_HANDLE;
-        bulk_.ring.mapped = nullptr;
-        bulk_.ring.capacity = 0;
-        bulk_.ring.offset = 0;
+    for (auto& ust : bulk_) {
+        if (ust.ring.buffer != VK_NULL_HANDLE) {
+            vmaDestroyBuffer(m_rm->m_allocator, ust.ring.buffer, ust.ring.allocation);
+            ust.ring.buffer = VK_NULL_HANDLE;
+            ust.ring.allocation = VK_NULL_HANDLE;
+            ust.ring.mapped = nullptr;
+            ust.ring.capacity = 0;
+            ust.ring.offset = 0;
+        }
+        ust.curCmd = VK_NULL_HANDLE;
+        ust.curHandle = {};
+        ust.hasPending = false;
     }
-    bulk_.curCmd = VK_NULL_HANDLE;
-    bulk_.curHandle = {};
-    bulk_.hasPending = false;
     for (auto& ust : states_) {
         if (ust.ring.buffer != VK_NULL_HANDLE) {
             vmaDestroyBuffer(m_rm->m_allocator, ust.ring.buffer, ust.ring.allocation);
@@ -4295,9 +4298,10 @@ void smvk::UploadStreamer::submitState(ThreadUploadState& ust, bool waitOldestIf
     ust.stagedBytesSinceFlush = 0;
 }
 bool smvk::UploadStreamer::hasAnyPending() const noexcept {
-    if (bulk_.hasPending)
-        return true;
-    for (auto& ust : states_)
+    for (const auto& ust : bulk_)
+        if (ust.hasPending)
+            return true;
+    for (const auto& ust : states_)
         if (ust.hasPending)
             return true;
     return false;
@@ -4532,7 +4536,7 @@ void smvk::UploadStreamer::uploadBufferBulk(BufferHandle dst,
     }
     if (!ensureBulkRing())
         return;
-    ThreadUploadState& ust = bulk_;
+    ThreadUploadState& ust = bulk_[CurrentPoolShard()];
     UploadShardActiveGuard shardGuard{ust.active};
     VkDeviceSize chunkBytes = 0; // staged bytes in the current blob
     VkDeviceSize chunkDstMin = std::numeric_limits<VkDeviceSize>::max();
@@ -5612,10 +5616,12 @@ void smvk::UploadStreamer::flush() {
     for (const auto& ust : states_)
         assert(!ust.active.load(std::memory_order_acquire) &&
                "flush() during an active upload recording (producers must be quiescent)");
-    assert(!bulk_.active.load(std::memory_order_acquire) &&
-           "flush() during an active bulk upload recording");
-    if (bulk_.hasPending)
-        submitState(bulk_, true);
+    for (const auto& ust : bulk_)
+        assert(!ust.active.load(std::memory_order_acquire) &&
+               "flush() during an active bulk upload recording");
+    for (auto& ust : bulk_)
+        if (ust.hasPending)
+            submitState(ust, true);
     for (auto& ust : states_)
         if (ust.hasPending)
             submitState(ust, true);
@@ -5625,10 +5631,16 @@ void smvk::UploadStreamer::flush() {
 void smvk::UploadStreamer::flushLocal() {
     SMVK_PROFILE_STREAM("UploadFlushLocal");
     // Same-thread shard only: the producer's own sequential drain (the
-    // caller IS the shard's owner - no quiescence needed).
+    // caller IS the shard's owner - no quiescence needed). Drains BOTH the
+    // per-thread ring AND the per-shard bulk ring (a page deserializer's
+    // mesh geometry stages through bulk_[shard], its textures through
+    // states_[shard]) so a bin thread publishes its whole page locally.
     ThreadUploadState& ust = states_[CurrentPoolShard()];
     if (ust.hasPending)
         submitState(ust, true);
+    ThreadUploadState& bulk = bulk_[CurrentPoolShard()];
+    if (bulk.hasPending)
+        submitState(bulk, true);
     if (m_transfer)
         m_transfer->purge();
 }
@@ -5642,11 +5654,14 @@ smvk::TimelinePoint smvk::UploadStreamer::flushAndGetTimeline() {
         assert(!ust.active.load(std::memory_order_acquire) &&
                "flushAndGetTimeline() during an active upload recording (producers must be "
                "quiescent)");
-    assert(!bulk_.active.load(std::memory_order_acquire) &&
-           "flushAndGetTimeline() during an active bulk upload recording");
-    if (bulk_.hasPending && bulk_.curCmd != VK_NULL_HANDLE) {
-        submitState(bulk_, true);
-        last = lastTransferPoint();
+    for (const auto& ust : bulk_)
+        assert(!ust.active.load(std::memory_order_acquire) &&
+               "flushAndGetTimeline() during an active bulk upload recording");
+    for (auto& bulk : bulk_) {
+        if (bulk.hasPending && bulk.curCmd != VK_NULL_HANDLE) {
+            submitState(bulk, true);
+            last = lastTransferPoint();
+        }
     }
     for (auto& ust : states_) {
         if (!ust.hasPending || ust.curCmd == VK_NULL_HANDLE)
@@ -5692,6 +5707,14 @@ void smvk::UploadStreamer::waitAll() {
     if (m_graphics && m_graphics != m_transfer)
         m_graphics->waitAll();
 }
+void smvk::UploadStreamer::waitLocal() {
+    SMVK_PROFILE_STREAM("UploadWaitLocal");
+    flushLocal();
+    if (m_transfer)
+        m_transfer->waitAll();
+    if (m_graphics && m_graphics != m_transfer)
+        m_graphics->waitAll();
+}
 
 bool smvk::VulkanResourceManager::BulkCopyBuffer(BufferHandle dst,
                                                  const void* content,
@@ -5727,9 +5750,18 @@ void smvk::VulkanResourceManager::FlushUploads() {
     if (m_streamer)
         m_streamer->flush();
 }
+
+void smvk::VulkanResourceManager::FlushUploadsLocal() {
+    if (m_streamer)
+        m_streamer->flushLocal();
+}
 void smvk::VulkanResourceManager::WaitForUploads() {
     if (m_streamer)
         m_streamer->waitAll();
+}
+void smvk::VulkanResourceManager::WaitForUploadsLocal() {
+    if (m_streamer)
+        m_streamer->waitLocal();
 }
 void smvk::VulkanResourceManager::UploadDataToBuffer(BufferHandle buffer,
                                                      const void* data,

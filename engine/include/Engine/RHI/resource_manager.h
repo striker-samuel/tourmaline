@@ -318,11 +318,26 @@ class ResourceManager {
     bool RayTracingWorldReady() const;
     void ClearRayTracingWorld();
     void FlushUploads();
+    // Shard-local flush: submits ONLY the calling thread's upload-streamer
+    // shard (the same-thread `flushLocal` escape hatch, see UploadStreamer).
+    // This is the completion-ticket primitive for a cross-thread producer
+    // (a background page/asset loader that leased its own pool shard): it
+    // records uploads into its shard and flushes them HERE, on its own
+    // thread, so the render thread's FlushUploads() never has to drain a
+    // shard that another thread is actively recording into. No quiescence
+    // requirement beyond the caller's own shard.
+    void FlushUploadsLocal();
     // Flush + block until every upload batch (transfer + graphics acquire)
     // has retired. Required before destroying resources that may still be
     // referenced by unflushed streamer batches (e.g. a failed pak import
     // that drops its partial cluster).
     void WaitForUploads();
+    // Shard-local wait (see FlushUploadsLocal): drains the calling thread's
+    // shard then blocks until it retires. The failure-path counterpart for a
+    // background producer that must destroy the partial cluster it just
+    // uploaded — never the global WaitForUploads(), which requires every
+    // shard quiescent (other streaming bins are still recording).
+    void WaitForUploadsLocal();
     // Sampler cache – deduplicates by description, returns stable
     // index into the global sampler descriptor array
     // (0 .. smvk::limits::MaxSamplers-1).

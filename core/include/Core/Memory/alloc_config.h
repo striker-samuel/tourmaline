@@ -115,6 +115,18 @@ inline constexpr uint32_t kNumPoolShards = 16;
 inline constexpr uint32_t kShardCapacity = 512;
 inline constexpr uint32_t kShardedMaxSize = kNumPoolShards * kShardCapacity; // 8192
 
+// -- Async page streaming (App/scene_page_streamer.h) -----------------------
+// Fixed-size resource bins for camera-driven page streaming: dedicated
+// deserialize worker threads, each owning a unique pool shard (shard 0 is
+// the main thread's). A page is hash-routed to a bin by its scene index
+// (stable affinity) so every upload a page records lands in one known shard
+// and flushes locally. Clamped to < kNumPoolShards at construction.
+inline constexpr uint32_t kStreamBinCount = 4;
+// Per-bin pending-request bound (the "fixed size" contract): a bin holds at
+// most one in-flight deserialize plus this many queued requests before the
+// render thread stops enqueuing (backpressure instead of unbounded growth).
+inline constexpr uint32_t kStreamMaxPendingPerBin = 2;
+
 // -- ThreadPool task ring ----------------------------------------------------
 // Bounded task queue: ring slots pre-allocated in transient memory at pool
 // construction. Enqueue blocks when full (backpressure — the queue never
@@ -246,7 +258,9 @@ using ::tour::mem::config::kStagingRingPerThread;
 using ::tour::mem::config::kStaticIndexHeap;
 using ::tour::mem::config::kStaticLightmapHeap;
 using ::tour::mem::config::kStaticVertexHeap;
+using ::tour::mem::config::kStreamBinCount;
 using ::tour::mem::config::kStreamerTotalBudget;
+using ::tour::mem::config::kStreamMaxPendingPerBin;
 using ::tour::mem::config::kTargetHeapBlock;
 using ::tour::mem::config::kThreadPoolQueueSlots;
 using ::tour::mem::config::kTransientReserve;

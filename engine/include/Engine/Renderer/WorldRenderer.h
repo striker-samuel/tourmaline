@@ -2628,6 +2628,13 @@ class WorldRenderer : public IRenderer {
     // disabled (the meshlet backend has no ProjectLit twins yet).
     uint32_t m_gpuSceneRasterProjectLitCount = 0;
     uint32_t m_gpuSceneRasterLegacyCount = 0;
+    // Four-way publication split (Epoch S0). `legacy` above is now
+    // unsupported+invalid (fail-closed); HELD items are a streaming-late state
+    // that is neither drawn nor aborted, and is retried next frame once the
+    // geometry residency reconciles.
+    uint32_t m_gpuSceneRasterHeldCount = 0;
+    uint32_t m_gpuSceneRasterUnsupportedCount = 0;
+    uint32_t m_gpuSceneRasterInvalidCount = 0;
     // Prototype production cutover: only all-supported static/opaque scenes
     // may substitute their Main draws. Unsupported content uses GfxFilter.
     const smvk::World* m_gpuSceneRasterEligibilityWorld = nullptr;
@@ -5174,6 +5181,11 @@ class WorldRenderer : public IRenderer {
     std::vector<tour::gpu_scene::SceneDemandEntry> m_gpuSceneDemandReadback;
     uint64_t m_gpuSceneDemandTicket = 0;
     uint32_t m_gpuSceneDemandCount = 0;
+    // The count at SUBMIT time, frozen for the in-flight download: the live
+    // m_gpuSceneDemandCount keeps growing with the per-frame candidate count,
+    // so the poll loop must read exactly the entries the submit actually
+    // staged, never the newer count (an OOB read otherwise).
+    uint32_t m_pendingGpuSceneDemandCount = 0;
     // GPU-cull kept-count readback (the "0/797 culled" fix): the CPU stats
     // cannot see the GPU-mode cull (clustersCulled only counts the CPU-mode
     // path), so the filter's atomic filtered-offset counter word (zeroed by

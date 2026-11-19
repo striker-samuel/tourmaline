@@ -2873,7 +2873,9 @@ std::unique_ptr<WorldPage> DeserializeCluster(
     TextureStreamer* streamer,
     std::shared_ptr<const tour::asset::PakImage> imagePin,
     const ExternalTextureResolver* externalTexture,
-    size_t sceneNodeBudget) { // Failure after textures/meshes were queued in the upload streamer
+    size_t sceneNodeBudget,
+    size_t textureMaxThreads,
+    bool localUploadDrain) { // Failure after textures/meshes were queued in the upload streamer
     // leaves transfer command buffers + graphics acquire barriers
     // referencing the partial cluster's VkImages/VkBuffers. The cluster
     // is destroyed on return, so drain the streamer first: flush submits
@@ -2888,8 +2890,15 @@ std::unique_ptr<WorldPage> DeserializeCluster(
             *err = msg;
         std::cerr << "DeserializeCluster: " << msg << std::endl;
         // Workers are joined inside LoadKtxTexturesParallelMemory, so no
-        // concurrent streamer submits are in flight here; safe to drain.
-        ctx.WaitForUploads();
+        // concurrent streamer submits are in flight here; safe to drain. The
+        // async streaming path (localUploadDrain) runs this on a background
+        // bin thread whose OWN shard holds the partial uploads — drain that
+        // shard locally, never the global waitAll() (which asserts every
+        // shard quiescent while other bins are still recording).
+        if (localUploadDrain)
+            ctx.WaitForUploadsLocal();
+        else
+            ctx.WaitForUploads();
         return nullptr;
     };
 
@@ -3022,7 +3031,8 @@ std::unique_ptr<WorldPage> DeserializeCluster(
                 t.uri,
             });
         }
-        digestHolders = LoadStreamingTailTexturesParallel(ctx, jobs, streamer, {}, &digestStats);
+        digestHolders = LoadStreamingTailTexturesParallel(
+            ctx, jobs, streamer, {}, &digestStats, textureMaxThreads);
         if (digestStats.failed > 0)
             std::cerr << "DeserializeCluster: " << digestStats.failed
                       << " digest texture(s) failed to load" << std::endl;
@@ -3042,7 +3052,7 @@ std::unique_ptr<WorldPage> DeserializeCluster(
                 t.uri,
             });
         }
-        holders = LoadKtxTexturesParallelMemory(ctx, jobs, {}, &texStats);
+        holders = LoadKtxTexturesParallelMemory(ctx, jobs, {}, &texStats, textureMaxThreads);
         if (texStats.failed > 0)
             std::cerr << "DeserializeCluster: " << texStats.failed << " texture(s) failed to load"
                       << std::endl;

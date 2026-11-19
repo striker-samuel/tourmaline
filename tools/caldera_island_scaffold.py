@@ -107,11 +107,58 @@ def write_recipe(project_dir: Path) -> Path:
     return recipe
 
 
+def generate_terrain(caldera_root: Path, project_dir: Path, usd_root: Path,
+                     terrain_src: Path, heightmaps: Path, tools_dir: Path) -> bool:
+    """Run the two terrain-source stages into the project:
+      1. caldera_terrain_heightfield.py --stitch -> the island heightmap (+ JSON + coverage)
+      2. caldera_terrain_tiles.py             -> terrain.meta + h_XX_ZZ.png + m_XX_ZZ.png
+    Needs the OpenUSD prebuilt (--usd-root) and PIL in the host interpreter
+    (caldera_terrain_tiles.py imports PIL). Returns True on success."""
+    heightfield_py = tools_dir / "caldera_terrain_heightfield.py"
+    tiles_py = tools_dir / "caldera_terrain_tiles.py"
+    heightmaps.mkdir(parents=True, exist_ok=True)
+    terrain_src.mkdir(parents=True, exist_ok=True)
+
+    print("  [terrain] stitching island heightfield ...", flush=True)
+    r = subprocess.run(
+        [sys.executable, str(heightfield_py),
+         "--usd-root", str(usd_root),
+         "--caldera-root", str(caldera_root),
+         "--out-dir", str(heightmaps),
+         "--stitch"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if r.returncode != 0:
+        tail = "\n".join((r.stderr or "").splitlines()[-3:])
+        print("  [terrain] heightfield FAILED:\n" + tail, flush=True)
+        return False
+
+    print("  [terrain] resampling heightmap -> terrain source tiles ...", flush=True)
+    r = subprocess.run(
+        [sys.executable, str(tiles_py),
+         "--heightmap", str(heightmaps / "island.height.png"),
+         "--meta", str(heightmaps / "island.height.json"),
+         "--coverage", str(heightmaps / "island.coverage.png"),
+         "--out", str(terrain_src)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace")
+    if r.returncode != 0:
+        tail = "\n".join((r.stderr or "").splitlines()[-3:])
+        print("  [terrain] tiles FAILED:\n" + tail, flush=True)
+        return False
+    print(f"  [terrain] wrote {terrain_src}", flush=True)
+    return True
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser(prog="caldera_island_scaffold")
     ap.add_argument("--caldera-root", required=True, help="Caldera repo root")
     ap.add_argument("--project-dir", required=True, help="destination Tourmaline project dir")
     ap.add_argument("--project-exe", required=True, help="path to the built Project.exe")
+    ap.add_argument("--with-terrain", action="store_true",
+                    help="also generate the island terrain source (needs --usd-root + PIL)")
+    ap.add_argument("--usd-root", help="extracted OpenUSD prebuilt root (for --with-terrain)")
+    ap.add_argument("--terrain-src", help="terrain source output dir (default <project>/terrain_src)")
+    ap.add_argument("--heightmaps", help="heightmap output dir (default <project>/terrain_heightmaps)")
+    ap.add_argument("--pak-exe", help="optional Pak.exe; cook the terrain pak directly")
     args = ap.parse_args(argv)
 
     caldera_root = Path(args.caldera_root)
@@ -119,6 +166,10 @@ def main(argv: list[str]) -> int:
     project_exe = Path(args.project_exe)
     if not project_exe.exists():
         ap.error(f"Project.exe not found: {project_exe}")
+    if args.with_terrain and not args.usd_root:
+        ap.error("--with-terrain requires --usd-root (the extracted OpenUSD prebuilt)")
+
+    tools_dir = Path(__file__).resolve().parent
 
     stems = discover_districts(caldera_root)
     if not stems:
@@ -143,8 +194,45 @@ def main(argv: list[str]) -> int:
     recipe = write_recipe(project_dir)
     print(f"  wrote {tour.relative_to(project_dir)}", flush=True)
     print(f"  wrote {recipe.relative_to(project_dir)}", flush=True)
+
+    terrain_src = Path(args.terrain_src) if args.terrain_src else project_dir / "terrain_src"
+    if args.with_terrain:
+        heightmaps = Path(args.heightmaps) if args.heightmaps else project_dir / "terrain_heightmaps"
+        if not generate_terrain(caldera_root, project_dir, Path(args.usd_root),
+                                terrain_src, heightmaps, tools_dir):
+            return 2
+
     print("scaffold done; next: "
           f"Project.exe validate --project {project_dir} --recipe {recipe}", flush=True)
+    if args.with_terrain:
+        # Terrain is a SEPARATE pak (the mesh pak stays untouched): the loader
+        # harvests Terrain blobs from any mounted pak (PakWorldLoader.cpp). Cook
+        # it into <project>/build/island_terrain.pak (beside the built pak) and
+        # list it in the built build/island.tapp [paks] section.
+        terrain_pak = project_dir / "build" / "island_terrain.pak"
+        pak_exe = Path(args.pak_exe) if args.pak_exe else None
+        print("terrain content (separate pak, run after Project build):", flush=True)
+        if pak_exe:
+            if not pak_exe.exists():
+                print(f"  WARN: Pak.exe not found at {pak_exe}; cook manually", flush=True)
+            else:
+                terrain_pak.parent.mkdir(parents=True, exist_ok=True)
+                r = subprocess.run(
+                    [str(pak_exe), str(project_dir / "content"),
+                     "--terrain", str(terrain_src),
+                     "--out-pak", str(terrain_pak)],
+                    capture_output=True, text=True, encoding="utf-8", errors="replace")
+                if r.returncode != 0:
+                    tail = "\n".join((r.stderr or "").splitlines()[-3:])
+                    print("  [terrain] pak cook FAILED:\n" + tail, flush=True)
+                    return 2
+                print(f"  cooked {terrain_pak}", flush=True)
+        else:
+            print(f"  Pak.exe {project_dir / 'content'} --terrain {terrain_src} "
+                  f"--out-pak {terrain_pak}", flush=True)
+        print("  then register it in the built manifest (after Project build):", flush=True)
+        print(f"    python {tools_dir / 'caldera_add_terrain.py'} "
+              f"--project-dir {project_dir}", flush=True)
     return 0
 
 

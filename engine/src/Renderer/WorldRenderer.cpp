@@ -61,6 +61,7 @@
 #include <gltf_import/gltf.h>
 
 #include <Engine/Renderer/GfxRenderer.h>
+#include <Engine/Renderer/gpu_scene_admission.h> // GpuSceneAdmissionFailure histogram (Epoch 0)
 #include <Engine/Renderer/static_vertex_heap.h>
 #include <Engine/Rendergraph/ForwardPlusRenderer.h>
 #include <Engine/Utils/LutIo.h>
@@ -69,6 +70,7 @@
 #include <Engine/Renderer/RendererLimits.h>
 #include <Engine/Rendergraph/FrameContext.h>
 
+#include <Engine/App/scene_page_streamer.h> // ScenePageStreamer (WorldPartition scene provider)
 #include <Engine/App/world_snapshot.h>
 #include <Engine/Profile/profile.h>
 #include <Engine/Renderer/WorldRenderer.h>
@@ -2452,6 +2454,12 @@ bool WorldRenderer::onAttach() {
             return true;
         });
     m_worldPartition.AddProvider(&m_placementStreamProvider);
+    // The camera-driven district page streamer (partitioned-family worlds) is
+    // a Scene-layer provider: its district `.geometry` residency rides the
+    // shared interest/commit sequence (ScenePageStreamer::CommitFrame) instead
+    // of the ad-hoc World::StreamPages tick.
+    if (m_world && m_world->PageStreamer())
+        m_worldPartition.AddProvider(m_world->PageStreamer());
     // Debug: force the World Map (C) window open — headless smoke
     // evidence. Frame captures are scene-only BY DESIGN (the grading
     // reference — ImGui layers never appear in exports), so the map's
@@ -4933,12 +4941,14 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
     // scene pages by camera distance BEFORE the scene is read this frame.
     // No-op when the world has no streamer (the legacy load-everything
     // shape). The streamer rebuilds the merged scene + flushes uploads.
-    if (m_world) {
+    if (m_world && m_world->PageStreamer()) {
         // The camera forward (world space) biases the streamer toward pages
         // the camera is facing. The view matrix's third column is the camera's
-        // -Z (backward) axis; negate it for the forward.
+        // -Z (backward) axis; negate it for the forward. The streamer is now a
+        // WorldPartition provider (its CommitFrame ticks district residency),
+        // so here we only feed the view direction for the facing bias.
         const glm::vec3 viewDir = -glm::vec3(view[0][2], view[1][2], view[2][2]);
-        m_world->StreamPages(data.cameraPos, viewDir);
+        m_world->PageStreamer()->SetViewDirection(viewDir);
     }
 
     data.view = view;
@@ -6484,7 +6494,7 @@ void WorldRenderer::UpdateReadbacks(uint32_t frameSlot, uint32_t streamFrame) {
             // stream): fold the GPU-selected drawn/desired LODs into the
             // GeometryStreamer lanes (drained next UpdateGeometryStreaming).
             if (m_pendingReadbackHasGpuSceneDemand && m_world) {
-                for (uint32_t i = 0; i < m_gpuSceneDemandCount; ++i) {
+                for (uint32_t i = 0; i < m_pendingGpuSceneDemandCount; ++i) {
                     const auto& d = m_gpuSceneDemandReadback[i];
                     if (d.mesh == 0xffffffffu)
                         continue;
@@ -6695,8 +6705,10 @@ void WorldRenderer::UpdateReadbacks(uint32_t frameSlot, uint32_t streamFrame) {
         // GPU-scene LOD demand feedback rides the same batch (no extra
         // submit): one DemandEntry per candidate the work selector wrote.
         m_pendingReadbackHasGpuSceneDemand = m_gpuSceneDemandCount > 0u;
-        if (m_pendingReadbackHasGpuSceneDemand)
+        if (m_pendingReadbackHasGpuSceneDemand) {
+            m_pendingGpuSceneDemandCount = m_gpuSceneDemandCount;
             m_gpuSceneDemandReadback.resize(m_gpuSceneDemandCount);
+        }
         auto dlsSpan = buildPendingDownloads();
         if (!dlsSpan.empty())
             m_asyncReadbackTicket = m_context->SubmitAsyncDownloadDataFromBuffers(dlsSpan);
@@ -10584,6 +10596,14 @@ void WorldRenderer::RefreshGpuScenePhysicalIndexedRanges(bool nativeOnly) {
     // always use native suffix IDs (a single Gfx registration cannot encode
     // several disjoint ranges).
     std::vector<uint8_t> conflicting(gfx.meshes.size(), uint8_t(0));
+    // Diagnostic (TOURMALINE_PHYSICAL_DIAG=1): count WHY a LOD is skipped, so a
+    // "held" (non-filterable) mesh can be traced to its exact residency gap.
+    static const bool s_physDiag = [] {
+        const char* e = std::getenv("TOURMALINE_PHYSICAL_DIAG");
+        return e && std::atoi(e) != 0;
+    }();
+    uint32_t skipNotResident = 0, skipNoCluster = 0, skipNoMesh = 0, skipNoSurfaces = 0,
+             skipTooManySurfaces = 0, skipUnresolvable = 0;
     for (uint32_t worldMesh = 0; worldMesh < m_world->lodChains.size(); ++worldMesh) {
         const auto& levels = m_world->lodChains[worldMesh].levels;
         auto& lodSurfaceIds = m_gpuScenePhysicalLodIds[worldMesh];
@@ -10592,20 +10612,42 @@ void WorldRenderer::RefreshGpuScenePhysicalIndexedRanges(bool nativeOnly) {
             const auto& level = levels[lod];
             auto& surfaceIds = lodSurfaceIds[lod];
             surfaceIds.clear();
-            if (!level.resident || !level.mesh.cluster || !level.mesh.handle.valid())
+            if (!level.resident) {
+                if (s_physDiag)
+                    ++skipNotResident;
                 continue;
+            }
+            if (!level.mesh.cluster || !level.mesh.handle.valid()) {
+                if (s_physDiag)
+                    ++skipNoCluster;
+                continue;
+            }
             const auto* mesh = level.mesh.cluster->staticMeshes.get(level.mesh.handle);
-            if (!mesh)
+            if (!mesh) {
+                if (s_physDiag)
+                    ++skipNoMesh;
                 continue;
+            }
             const uint32_t surfaceCount = static_cast<uint32_t>(mesh->geometry.surfaces.size());
-            if (surfaceCount == 0u || surfaceCount > tour::gpu_scene::kMaxSubmeshesPerLod)
+            if (surfaceCount == 0u) {
+                if (s_physDiag)
+                    ++skipNoSurfaces;
                 continue;
+            }
+            if (surfaceCount > tour::gpu_scene::kMaxSubmeshesPerLod) {
+                if (s_physDiag)
+                    ++skipTooManySurfaces;
+                continue;
+            }
             std::array<tour::gfx::IndexedRange, tour::gpu_scene::kMaxSubmeshesPerLod> physical{};
             // All-or-nothing: one unrepresentable surface drops the whole LOD
             // back to the direct path instead of skipping a primitive.
             if (tour::gpu_scene::ResolveWorldSurfaceIndexedRanges(
-                    *mesh, indexWords, vertexLimit, physical) != surfaceCount)
+                    *mesh, indexWords, vertexLimit, physical) != surfaceCount) {
+                if (s_physDiag)
+                    ++skipUnresolvable;
                 continue;
+            }
             const bool multiSurface = surfaceCount > 1u;
             const uint32_t gfxId =
                 (nativeOnly || multiSurface)
@@ -10622,6 +10664,17 @@ void WorldRenderer::RefreshGpuScenePhysicalIndexedRanges(bool nativeOnly) {
             }
         }
     }
+    if (s_physDiag)
+        std::fprintf(stderr,
+                     "[PhysicalDiag] lodChains=%zu skipped: notResident=%u noCluster=%u noMesh=%u "
+                     "noSurfaces=%u tooManySurfaces=%u unresolvable=%u\n",
+                     m_world->lodChains.size(),
+                     skipNotResident,
+                     skipNoCluster,
+                     skipNoMesh,
+                     skipNoSurfaces,
+                     skipTooManySurfaces,
+                     skipUnresolvable);
 }
 
 // Narrow GfxFilter's static geometry state into the pointer+count view the
@@ -11178,6 +11231,17 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             interests[interestCount].layerMask =
                 engine::worldpartition::StreamLayerBit(engine::worldpartition::StreamLayer::Scene);
             interests[interestCount].desired = engine::worldpartition::DesiredResidency::Active;
+            ++interestCount;
+        } else if (m_world && m_world->PageStreamer()) {
+            // Partitioned-family island: the district page streamer is a Scene
+            // provider keyed by the camera interest (no Map identity). Radius
+            // is district-granularity (256 m) — a district whose AABB touches
+            // the radius loads whole.
+            interests[interestCount] = interest;
+            interests[interestCount].radiusMeters = 256.0;
+            interests[interestCount].layerMask =
+                engine::worldpartition::StreamLayerBit(engine::worldpartition::StreamLayer::Scene);
+            interests[interestCount].desired = engine::worldpartition::DesiredResidency::GpuReady;
             ++interestCount;
         }
         auto* rt = m_gpuPlacementRuntime;
@@ -11845,15 +11909,14 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             constexpr uint32_t requiredTransparentFlags = smvk::IteratorFlagBit_Renderable |
                                                           smvk::IteratorFlagBit_Transparent |
                                                           smvk::IteratorFlagBit_StaticVertexFmt;
-            // KD tally (parallel to the chain below, never replacing it):
-            // count the FIRST rejecting gate group per item - 1 sync,
-            // 2 db-ready, 3 flags, 4 material, 5 node/mesh, 6 lod/geometry,
-            // 0 compatible. Evaluation order mirrors the chain so the
-            // histogram names the same short-circuit point.
+            // Admission classification (Epoch 0 observability): count the FIRST
+            // rejecting gate per item in short-circuit order, recorded ALWAYS so
+            // an oversubscribed scene can report WHY (see GpuSceneAdmissionFailure
+            // / gpu_scene_admission.h), not just how many. The verbose KD dump
+            // below stays env-gated (TOURMALINE_KD); the histogram itself is a
+            // few cheap integer branches on gates the chain already evaluates.
             static const bool s_kdElig = std::getenv("TOURMALINE_KD") != nullptr;
-            uint32_t kdTally[7] = {};
-            uint32_t kdSub[4] = {}; // 0 flagsReq 1 flagsForb 2 retired 3 lightmap
-            static const bool s_kdSub = s_kdElig;
+            tour::gpu_scene::GpuSceneAdmissionHistogram admissionHistogram;
             for (size_t i = 0; i < total; ++i) {
                 const auto& item = m_world->drawItems[i];
                 const auto key = m_gpuSceneSync.SourceForNode(item.node);
@@ -11993,39 +12056,68 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     maskedDoubleSidedCount += masked && twoSided ? 1u : 0u;
                     projectLitCount += m_gfxRenderer.MaterialProjectFamily(item.material) ? 1u : 0u;
                 }
-                // KD tally: the mirror tracks the NEW chain (double-sided
-                // is admitted + binned above, no longer a group-4 reject).
-                // Sub-tallies refine the big groups: flagsReq/flagsForb
-                // (3a/3b), surfaces (5b), lightmap (5c) - the rest of
-                // node/mesh is 5a.
-                if (s_kdElig) {
-                    const bool a = key.registration != 0 && bool(instance);
-                    const bool b = a && tour::gpu_scene::RasterIndexedInstanceReady(
-                                            m_gpuSceneDatabase, instance);
-                    const bool flagsOk = (item.flags & requiredFlags) == requiredFlags &&
-                                         (item.flags & forbiddenFlags) == 0;
-                    const bool c = b && flagsOk;
-                    const bool d =
-                        c && materialRasterEligible &&
-                        (!m_gfxRenderer.MaterialProjectFamily(item.material) || projectLitReady);
-                    const bool e5a = d && item.node < m_world->scene.globalTransform.size() &&
-                                     !IsDitherCloseupNode(m_world->scene, int(item.node)) && mesh;
-                    const bool e =
-                        e5a && (mesh->lmChartXforms.empty() ||
-                                (mesh->lmChunk == UINT32_MAX && mesh->lightmapBase == UINT32_MAX));
-                    ++kdTally[compatible ? 0
-                              : a        ? (b ? (c ? (d ? (e ? 6u : 5u) : 4u) : 3u) : 2u)
-                                         : 1u];
-                    if (s_kdSub) {
-                        if (b && !flagsOk) {
-                            if ((item.flags & requiredFlags) != requiredFlags)
-                                ++kdSub[0]; // 3a missing required bit
-                            else
-                                ++kdSub[1]; // 3b forbidden bit present
-                        } else if (e5a && !e) {
-                            ++kdSub[3]; // 5c lightmapped mesh (multi-surface is admitted)
-                        }
+                // Admission classification (Epoch 0 / S0): first-failing gate in
+                // the commonEligible && flags short-circuit order. `commonEligible`
+                // is already computed; the flags gate is the residual when
+                // commonEligible is true but neither opaque nor transparent
+                // admission passed. The four-way class (Ready/Held/Unsupported/
+                // Invalid) is derived from this gate by ClassifyAdmission.
+                {
+                    using tour::gpu_scene::GpuSceneAdmissionFailure;
+                    GpuSceneAdmissionFailure fail = GpuSceneAdmissionFailure::Admitted;
+                    if (!compatible && !transparentCompatible) {
+                        if (!(key.registration != 0 && bool(instance)))
+                            fail = GpuSceneAdmissionFailure::MissingInstanceRecord;
+                        else if (!tour::gpu_scene::RasterIndexedInstanceReady(m_gpuSceneDatabase,
+                                                                              instance)) {
+                            fail = GpuSceneAdmissionFailure::InstanceNotReady;
+                            if (s_kdElig) {
+                                // Sub-classify the "not ready" reason (diagnostic).
+                                const tour::gpu_scene::Instance* inst =
+                                    m_gpuSceneDatabase.instances.Get(instance);
+                                const tour::gpu_scene::Mesh* m =
+                                    inst ? m_gpuSceneDatabase.meshes.Get(
+                                               {inst->refs.x, inst->refs.y})
+                                         : nullptr;
+                                const char* why = "instance-missing";
+                                if (m) {
+                                    why = m->lodCount == 0          ? "mesh-placeholder"
+                                          : !(m->residentMask & 1u) ? "lod-not-resident"
+                                                                    : "lod-not-filterable";
+                                }
+                                std::fprintf(stderr,
+                                             "[Held] node=%u mesh=%u: %s\n",
+                                             item.node,
+                                             item.mesh,
+                                             why);
+                            }
+                        } else if (!materialRasterEligible)
+                            fail = GpuSceneAdmissionFailure::MaterialNotEligible;
+                        else if (m_gfxRenderer.MaterialProjectFamily(item.material) &&
+                                 !projectLitReady)
+                            fail = GpuSceneAdmissionFailure::ProjectLitNotReady;
+                        else if (item.node >= m_world->scene.globalTransform.size())
+                            fail = GpuSceneAdmissionFailure::NodeInvalid;
+                        else if (IsDitherCloseupNode(m_world->scene, int(item.node)))
+                            fail = GpuSceneAdmissionFailure::DitherCloseup;
+                        else if (!mesh)
+                            fail = GpuSceneAdmissionFailure::MissingMesh;
+                        else if (!(mesh->lmChartXforms.empty() ||
+                                   (mesh->lmChunk == UINT32_MAX &&
+                                    mesh->lightmapBase == UINT32_MAX)))
+                            fail = GpuSceneAdmissionFailure::LightmapUnsupported;
+                        else if (!commonEligible)
+                            fail = GpuSceneAdmissionFailure::LodGeometryMismatch; // the lambda
+                        else
+                            fail = GpuSceneAdmissionFailure::FlagsMissingRequired; // flags residual
+                        if (s_kdElig)
+                            std::fprintf(stderr,
+                                         "[KD] reject node=%u mesh=%u: %s\n",
+                                         item.node,
+                                         item.mesh,
+                                         tour::gpu_scene::AdmissionFailureName(fail));
                     }
+                    admissionHistogram.Record(fail);
                 }
             }
             // Publish sorts and rejects duplicate source keys: two draw
@@ -12040,36 +12132,88 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             m_gpuSceneRasterMaskedBackCount = snapshotValid ? maskedBackCount : 0u;
             m_gpuSceneRasterMaskedDoubleSidedCount = snapshotValid ? maskedDoubleSidedCount : 0u;
             m_gpuSceneRasterProjectLitCount = snapshotValid ? projectLitCount : 0u;
-            m_gpuSceneRasterLegacyCount = uint32_t(total) - m_gpuSceneRasterCompatibleCount -
-                                          m_gpuSceneTransparentCompatibleCount;
+            // Four-way publication split (Epoch S0). A streaming-late instance is
+            // HELD: not drawn (no GPU, no CPU), not aborted — it retries next
+            // frame once its geometry residency reconciles. Unsupported (semantic)
+            // and Invalid (broken invariant) items remain fail-closed.
+            uint32_t heldCount = 0, unsupportedCount = 0, invalidCount = 0;
+            for (uint32_t r = 1; r < tour::gpu_scene::kAdmissionFailureCount; ++r) {
+                const uint32_t n = admissionHistogram.counts[r];
+                if (!n)
+                    continue;
+                switch (tour::gpu_scene::ClassifyAdmission(
+                    static_cast<tour::gpu_scene::GpuSceneAdmissionFailure>(r))) {
+                case tour::gpu_scene::GpuSceneAdmission::Held:
+                    heldCount += n;
+                    break;
+                case tour::gpu_scene::GpuSceneAdmission::Unsupported:
+                    unsupportedCount += n;
+                    break;
+                case tour::gpu_scene::GpuSceneAdmission::Invalid:
+                    invalidCount += n;
+                    break;
+                default:
+                    break;
+                }
+            }
+            m_gpuSceneRasterHeldCount = snapshotValid ? heldCount : 0u;
+            m_gpuSceneRasterUnsupportedCount = snapshotValid ? unsupportedCount : 0u;
+            m_gpuSceneRasterInvalidCount = snapshotValid ? invalidCount : 0u;
+            m_gpuSceneRasterLegacyCount = snapshotValid
+                                              ? unsupportedCount + invalidCount
+                                              : uint32_t(total) - m_gpuSceneRasterCompatibleCount -
+                                                    m_gpuSceneTransparentCompatibleCount;
             m_gpuSceneRasterEligible = snapshotValid && compatibleCount > 0;
-            // One-shot per-revision report: any source that fails GPU-scene
-            // admission keeps drawing through the legacy direct path. Loud so
-            // the remaining admission gaps are visible without TOURMALINE_KD.
-            if (m_gpuSceneRasterLegacyCount != 0)
+            // FAIL-CLOSED OVERSUBSCRIPTION (unsupported + invalid only): a draw
+            // item that cannot EVER be GPU-scene-admitted (unsupported semantics
+            // or a broken invariant) aborts. A streaming-late item is HELD, never
+            // demoted to CPU draw and never aborted.
+            if (m_gpuSceneRasterLegacyCount != 0) {
                 std::fprintf(stderr,
-                             "[GpuScene] %u/%zu draw items spill to the legacy direct path "
-                             "(skinned/masked-layered/ProjectLit/material-instance/"
-                             "lightmap/dither/nonresident)\n",
+                             "[GpuScene] OVERSUBSCRIPTION: %u/%zu draw items are not "
+                             "GPU-scene-admitted (ready=%u transparent=%u held=%u "
+                             "unsupported=%u invalid=%u); aborting instead of spilling "
+                             "to the legacy direct path\n",
                              m_gpuSceneRasterLegacyCount,
-                             total);
-            if (s_kdElig)
+                             total,
+                             m_gpuSceneRasterCompatibleCount,
+                             m_gpuSceneTransparentCompatibleCount,
+                             m_gpuSceneRasterHeldCount,
+                             m_gpuSceneRasterUnsupportedCount,
+                             m_gpuSceneRasterInvalidCount);
+                // Epoch 0: explain the rejection before aborting, so an
+                // oversubscribed scene reports WHY, not just how many.
+                for (uint32_t r = 1; r < tour::gpu_scene::kAdmissionFailureCount; ++r) {
+                    const uint32_t n = admissionHistogram.counts[r];
+                    if (n)
+                        std::fprintf(stderr,
+                                     "[GpuScene]   rejected: %-24s %u\n",
+                                     tour::gpu_scene::AdmissionFailureName(
+                                         static_cast<tour::gpu_scene::GpuSceneAdmissionFailure>(r)),
+                                     n);
+                }
+                std::abort();
+            }
+            if (s_kdElig) {
                 std::fprintf(stderr,
-                             "[KD] eligibility: total=%zu compatible=%u | first-reject "
-                             "sync=%u db=%u flags=%u material=%u nodeMesh=%u lodGeometry=%u "
-                             "| flagsReq=%u flagsForb=%u retired=%u lightmap=%u\n",
+                             "[KD] admission: total=%zu ready=%u transparent=%u held=%u "
+                             "unsupported=%u invalid=%u\n",
                              total,
                              compatibleCount,
-                             kdTally[1],
-                             kdTally[2],
-                             kdTally[3],
-                             kdTally[4],
-                             kdTally[5],
-                             kdTally[6],
-                             kdSub[0],
-                             kdSub[1],
-                             kdSub[2],
-                             kdSub[3]);
+                             transparentCompatibleCount,
+                             heldCount,
+                             unsupportedCount,
+                             invalidCount);
+                for (uint32_t r = 1; r < tour::gpu_scene::kAdmissionFailureCount; ++r) {
+                    const uint32_t n = admissionHistogram.counts[r];
+                    if (n)
+                        std::fprintf(stderr,
+                                     "[KD]   %-24s %u\n",
+                                     tour::gpu_scene::AdmissionFailureName(
+                                         static_cast<tour::gpu_scene::GpuSceneAdmissionFailure>(r)),
+                                     n);
+                }
+            }
             // Mixed ownership is recorded, but *not* submitted until GPU
             // candidate work and every legacy Main/depth path share the
             // same per-flight mask. In particular, GPU-skinned objects may
@@ -12084,6 +12228,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         m_gpuSceneRasterMaskedBackCount = 0;
         m_gpuSceneRasterMaskedDoubleSidedCount = 0;
         m_gpuSceneRasterProjectLitCount = 0;
+        m_gpuSceneRasterHeldCount = 0;
+        m_gpuSceneRasterUnsupportedCount = 0;
+        m_gpuSceneRasterInvalidCount = 0;
         m_gpuSceneRasterLegacyCount = m_world ? uint32_t(m_world->drawItems.size()) : 0u;
         m_gpuSceneRasterOwnership.Reset();
         // Transient publication failures must not keep stale eligibility.

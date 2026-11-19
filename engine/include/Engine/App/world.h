@@ -928,7 +928,13 @@ struct World {
     // Rebuilds the O(total) derived caches (iterator flags, material-sorted
     // draw list, LOD chains, lightmap charts, static-cull BVH) after a batch
     // of MergePage/UnmergePage deltas. This is the tail of a full resolve.
-    void RebuildDerivedCaches();
+    // `incremental` (the streaming path) skips the global-transform
+    // recomputation — MergePage copies each page's authored global (float +
+    // double) transforms verbatim, so MarkAllRootsChanged +
+    // recalculateGlobalTransforms would only recompute what is already
+    // correct. The full-resolve path (ResolveAndFixup_pages) passes false to
+    // re-derive the whole scene from scratch.
+    void RebuildDerivedCaches(bool incremental = false);
     // App/scene code marks a mutated cluster; the renderer consumes this
     // at the next frame boundary, before recording any scene readers.
     // The cluster must be registered in this World (including dynamic).

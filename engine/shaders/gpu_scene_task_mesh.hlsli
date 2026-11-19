@@ -15,7 +15,7 @@
 #define GS_MAX_WORK 1048576u
 #define GS_MAX_INSTANCES 4194304u
 #define GS_MAX_CLUSTERS 4194304u
-#define GS_MAX_GEO 262144u
+#define GS_MAX_GEO 524288u
 #define GS_MAX_VERTICES 44739242u
 // The static index monoblock is 512 MiB (mem::config::Runtime().staticIndexHeap,
 // default) = 2^27 uint32 index words. The old 65536*128*3 (25M) cap rejected

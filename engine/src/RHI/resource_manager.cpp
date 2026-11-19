@@ -517,6 +517,9 @@ bool ResourceManager::NeedsProjectionYFlip() const {
 void ResourceManager::FlushUploads() {
     impl_->vulkan.FlushUploads();
 }
+void ResourceManager::FlushUploadsLocal() {
+    impl_->vulkan.FlushUploadsLocal();
+}
 bool ResourceManager::SupportsRayQueries() const {
     return impl_->vulkan.SupportsRayQueries();
 }
@@ -538,6 +541,9 @@ void ResourceManager::ClearRayTracingWorld() {
 }
 void ResourceManager::WaitForUploads() {
     impl_->vulkan.WaitForUploads();
+}
+void ResourceManager::WaitForUploadsLocal() {
+    impl_->vulkan.WaitForUploadsLocal();
 }
 uint64_t ResourceManager::GetBufferDeviceAddress(BufferHandle handle) const {
     auto* buf = impl_->vulkan.buffers_.get(handle);

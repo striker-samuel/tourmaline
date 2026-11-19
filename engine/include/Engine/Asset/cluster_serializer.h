@@ -200,7 +200,9 @@ std::unique_ptr<WorldPage> DeserializeCluster(
     TextureStreamer* streamer = nullptr,
     std::shared_ptr<const tour::asset::PakImage> imagePin = {},
     const ExternalTextureResolver* externalTexture = nullptr,
-    size_t sceneNodeBudget = 0);
+    size_t sceneNodeBudget = 0,
+    size_t textureMaxThreads = 0,
+    bool localUploadDrain = false);
 
 // ---- the GPU-less scene-blob reader (the structure-only lane) ----
 // The pak-id remap tables for one scene-blob parse (null = a

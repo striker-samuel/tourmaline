@@ -557,12 +557,15 @@ struct UploadStreamer {
                       VkAccessFlags2 dstAccess);
     // Table-driven bulk staged copy (the load-time counterpart of
     // uploadBuffer): `content` is one packed blob, `copies` indexes into
-    // it. Drives the dedicated bulk_ context (512 MB ring, render-thread
-    // only — load-time bulk uploads are single-threaded by construction)
-    // through the same allocFromRing/ensureCmd/submitState machinery:
-    // one memcpy pass, one command buffer, one vmaFlush, ONE barrier set
-    // and one submit per 512 MB blob. Entries larger than the ring fall
-    // back to the per-entry temp staging (mirrors uploadBuffer).
+    // it. Drives the per-shard bulk_ context (512 MB ring per shard,
+    // lazily created on first use) through the same
+    // allocFromRing/ensureCmd/submitState machinery: one memcpy pass, one
+    // command buffer, one vmaFlush, ONE barrier set and one submit per
+    // 512 MB blob. Shard-local like uploadBuffer — concurrent page
+    // deserializers (async streaming bins) each stage into their own bulk
+    // ring, and flushLocal() drains the producer's bulk on its own
+    // thread. Entries larger than the ring fall back to the per-entry
+    // temp staging (mirrors uploadBuffer).
     void uploadBufferBulk(BufferHandle dst,
                           const void* content,
                           std::span<const BufferBulkCopy> copies,
@@ -618,6 +621,12 @@ struct UploadStreamer {
     void flushLocal();
     TimelinePoint flushAndGetTimeline();
     void waitAll();
+    // Local wait (the failure-path counterpart of flushLocal): drains the
+    // calling thread's shard then waits for the transfer/graphics queues to
+    // retire, so a background producer can destroy the resources it just
+    // uploaded without a cross-shard flush. Over-waits (blocks on every
+    // in-flight transfer, not just its own) — the rare error path only.
+    void waitLocal();
     bool hasPending() const {
         return states_[CurrentPoolShard()].hasPending;
     }
@@ -709,16 +718,19 @@ struct UploadStreamer {
     };
     ThreadUploadState states_[kNumPoolShards];
     VkDeviceSize ringCapacityPerThread_ = mem::config::Runtime().stagingRingPerThread;
-    // Dedicated bulk context (512 MB ring, lazily created on the first
-    // uploadBufferBulk call so non-bulk users never pay the host
-    // memory): the shard rings stay 32 MB for steady-state frame
-    // uploads. Render-thread only — bulk uploads are load-time and
-    // single-threaded by construction (pak cluster deserialize).
-    ThreadUploadState bulk_;
+    // Dedicated per-shard bulk contexts (512 MB ring each, lazily created
+    // on the first uploadBufferBulk call so non-bulk users never pay the
+    // host memory): the shard rings stay 32 MB for steady-state frame
+    // uploads. Sharded like states_ so concurrent page deserializers
+    // (async streaming bins) stage mesh geometry into their own bulk ring
+    // — BulkCopyBuffer records into CurrentPoolShard()'s bulk, and
+    // flushLocal() drains it on the producer's own thread.
+    ThreadUploadState bulk_[kNumPoolShards];
     const VkDeviceSize bulkRingCapacity_ = mem::config::Runtime().bulkRingCapacity;
     bool ensureRing(ThreadUploadState& st, VkDeviceSize capacity, const char* debugName);
     bool ensureBulkRing() {
-        return ensureRing(bulk_, bulkRingCapacity_, "UploadStreamer Ring (bulk)");
+        return ensureRing(
+            bulk_[CurrentPoolShard()], bulkRingCapacity_, "UploadStreamer Ring (bulk)");
     }
     bool ensureShardRing(ThreadUploadState& st);
     VkDeviceSize allocFromRing(ThreadUploadState& st, VkDeviceSize size, VkDeviceSize alignment);
@@ -1255,7 +1267,21 @@ struct VulkanResourceManager final /*: public IResourceManager*/ {
         return m_hostCopyProps;
     }
     void FlushUploads();
+    // Same-thread shard drain (see UploadStreamer::flushLocal): submits the
+    // CALLING thread's upload-streamer shard only. The completion-ticket
+    // primitive for a background producer (an async page/asset loader that
+    // leased its own pool shard): it records into its shard and flushes
+    // HERE, on its own thread, so the render thread's FlushUploads() never
+    // drains a shard another thread is actively recording into.
+    void FlushUploadsLocal();
     void WaitForUploads();
+    // Local wait (see UploadStreamer::waitLocal): the failure-path
+    // counterpart of FlushUploadsLocal. A background producer that fails to
+    // deserialize a page calls this to retire its own shard's uploads before
+    // the partial cluster's resources are destroyed — never the global
+    // WaitForUploads(), which asserts every shard quiescent (other bins are
+    // still recording).
+    void WaitForUploadsLocal();
 
     Holder<DescriptorPoolHandle> defaultDescriptorPool{};
     TextureHandle m_nilTexture{};

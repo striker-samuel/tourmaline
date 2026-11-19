@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <mutex>
 #include <vector>
 
 namespace smvk {
@@ -72,6 +73,10 @@ class StaticHeapArena {
     // token (0 = budget exhausted, outOffset untouched) — mirrors
     // vmaVirtualAllocate's VK_ERROR and keeps the callers' rollback paths.
     AllocId Allocate(uint64_t size, uint64_t alignment, uint64_t& outOffset) {
+        // Thread-safe: concurrent page deserializers (async streaming bins)
+        // carve disjoint ranges from the SAME global monoblock arenas. The
+        // arena is load-time only (never per-frame), so the lock is cheap.
+        std::lock_guard<std::mutex> lock(mutex_);
         if (!Valid() || size == 0 || size > capacity_)
             return 0;
         alignment = alignment ? alignment : 1;
@@ -112,6 +117,7 @@ class StaticHeapArena {
     }
 
     void Free(AllocId id) {
+        std::lock_guard<std::mutex> lock(mutex_);
         if (id == 0)
             return;
         for (size_t i = 0; i < live_.size(); ++i) {
@@ -160,6 +166,8 @@ class StaticHeapArena {
     AllocId nextId_ = 1;
     std::vector<Live> live_; // live ranges (id != 0)
     std::vector<Live> free_; // free ranges (id == 0), offset-sorted, coalesced
+    // Guards Allocate/Free (Initialize is init/teardown-only, single-threaded).
+    mutable std::mutex mutex_;
 };
 
 // ---------------------------------------------------------------------------

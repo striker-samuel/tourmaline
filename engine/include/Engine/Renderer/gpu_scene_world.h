@@ -175,15 +175,33 @@ class SceneRegistry {
                                    bool allBoundsKnown,
                                    RenderDatabase& db) {
         auto it = meshes_.find(key);
-        if (it == meshes_.end() || levels.empty() || levels.size() > 16)
+        if (it == meshes_.end() || levels.empty() || levels.size() > 16) {
+            if (it == meshes_.end()) {
+                const char* e = std::getenv("TOURMALINE_PHYSICAL_DIAG");
+                if (e && std::atoi(e) != 0)
+                    std::fprintf(stderr,
+                                 "[GeoDiag] PublishMesh: mesh source "
+                                 "reg=%llu slot=%u gen=%u NOT in registry\n",
+                                 (unsigned long long)key.registration,
+                                 key.slot,
+                                 key.generation);
+            }
             return false;
+        }
         MeshState& state = it->second;
         const size_t count = levels.size();
         // Validate surface counts and compute the contiguous submesh span.
         uint32_t totalSubmeshes = 0;
         for (size_t i = 0; i < count; ++i) {
-            if (levels[i].surfaceCount == 0u || levels[i].surfaceCount > kMaxSubmeshesPerLod)
+            if (levels[i].surfaceCount == 0u || levels[i].surfaceCount > kMaxSubmeshesPerLod) {
+                const char* e = std::getenv("TOURMALINE_PHYSICAL_DIAG");
+                if (e && std::atoi(e) != 0)
+                    std::fprintf(stderr,
+                                 "[GeoDiag] PublishMesh: bad surfaceCount=%u at LOD %zu\n",
+                                 levels[i].surfaceCount,
+                                 i);
                 return false;
+            }
             totalSubmeshes += levels[i].surfaceCount;
         }
         // Reshape the child rows when the LOD count OR any per-LOD surface
@@ -471,19 +489,39 @@ class WorldSynchronizer {
                            : nullptr;
             size_t recordCount = 0;
             size_t meshCount = 0;
+            // Diagnostic (TOURMALINE_PHYSICAL_DIAG=1): count the draw items whose
+            // mesh source is skipped, so a "held" instance can be traced to its
+            // exact residency gap (stale index vs missing key vs null cluster).
+            static const bool s_diag = [] {
+                const char* e = std::getenv("TOURMALINE_PHYSICAL_DIAG");
+                return e && std::atoi(e) != 0;
+            }();
+            uint32_t skipStaleIndex = 0, skipNoKey = 0, skipNoCluster = 0, skipNoOwner = 0;
             for (const World::RenderItem& item : world.drawItems) {
                 if (item.node >= nodeKeyCount_ || item.node >= world.scene.globalTransform.size() ||
-                    item.mesh >= world.meshLocations.size())
+                    item.mesh >= world.meshLocations.size()) {
+                    if (s_diag)
+                        ++skipStaleIndex;
                     continue;
+                }
                 const SourceKey key = nodeKeys_[item.node];
-                if (!key.registration)
+                if (!key.registration) {
+                    if (s_diag)
+                        ++skipNoKey;
                     continue;
+                }
                 const World::MeshLocation& loc = world.meshLocations[item.mesh];
-                if (!loc.cluster || !loc.handle.valid())
+                if (!loc.cluster || !loc.handle.valid()) {
+                    if (s_diag)
+                        ++skipNoCluster;
                     continue;
+                }
                 const auto owner = world.gpuScenePageIds.find(loc.cluster);
-                if (owner == world.gpuScenePageIds.end())
+                if (owner == world.gpuScenePageIds.end()) {
+                    if (s_diag)
+                        ++skipNoOwner;
                     continue;
+                }
                 SourceRecord record{};
                 record.instance = key;
                 record.mesh = {owner->second, loc.handle.index(), loc.handle.gen()};
@@ -553,6 +591,16 @@ class WorldSynchronizer {
                 }
                 new (records + recordCount++) SourceRecord(record);
             }
+            if (s_diag)
+                std::fprintf(stderr,
+                             "[SyncDiag] drawItems=%zu skipped: staleIndex=%u noKey=%u "
+                             "noCluster=%u noOwner=%u (records=%zu)\n",
+                             world.drawItems.size(),
+                             skipStaleIndex,
+                             skipNoKey,
+                             skipNoCluster,
+                             skipNoOwner,
+                             recordCount);
             stats = registry_.Reconcile(std::span<const SourceRecord>(records, recordCount), db);
             std::destroy_n(records, recordCount);
             stats.topologyReconciled = true;
@@ -664,6 +712,13 @@ class WorldSynchronizer {
                                        const GeometryLookup& geometryLookup,
                                        uint32_t& visited) {
         visited = 0;
+        // Diagnostic (TOURMALINE_PHYSICAL_DIAG=1): name the first mesh whose
+        // geometry publication fails, so a "held" population can be traced to
+        // its exact residency gap (stale index vs malformed chain vs publish).
+        static const bool s_diag = [] {
+            const char* e = std::getenv("TOURMALINE_PHYSICAL_DIAG");
+            return e && std::atoi(e) != 0;
+        }();
         // The source-to-mesh mapping is refreshed by topology reconciliation.
         // Geometry revisions must not force another O(instances) scan.
         for (size_t meshIdx = 0; meshIdx < meshSourceCount_; ++meshIdx) {
@@ -671,11 +726,26 @@ class WorldSynchronizer {
             // A live source with a missing/malformed LOD chain is not a
             // successful geometry refresh. Silently skipping it would keep
             // its previous resident mask and draw descriptors in the DB.
-            if (worldIndex >= world.lodChains.size())
+            if (worldIndex >= world.lodChains.size()) {
+                if (s_diag)
+                    std::fprintf(stderr,
+                                 "[GeoDiag] meshIdx=%zu worldIndex=%u >= lodChains=%zu "
+                                 "(stale index)\n",
+                                 meshIdx,
+                                 worldIndex,
+                                 world.lodChains.size());
                 return false;
+            }
             const auto& chain = world.lodChains[worldIndex].levels;
-            if (chain.empty() || chain.size() > 16)
+            if (chain.empty() || chain.size() > 16) {
+                if (s_diag)
+                    std::fprintf(stderr,
+                                 "[GeoDiag] meshIdx=%zu worldIndex=%u chain=%zu (malformed)\n",
+                                 meshIdx,
+                                 worldIndex,
+                                 chain.size());
                 return false;
+            }
             // LOD chains are capped at 16; keep this scratch on the stack.
             std::array<LevelSource, 16> levels{};
             bool complete = true;
