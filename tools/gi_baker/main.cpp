@@ -201,6 +201,9 @@ bool ParseArgs(int argc, char** argv, Args& out) {
         } else if (a == "--gi-volume-smoothing") {
             if (!needU(out.giVolumeSmoothing, i))
                 return false;
+        } else if (a == "--diag-probes") {
+            if (!need(out.diagProbes, i))
+                return false;
         } else if (a == "--mask-transmission") {
             std::string v;
             if (!need(v, i))
@@ -1527,6 +1530,7 @@ int Run(Args& args) {
                                                                     : spec.captureSpacing;
             cfg.smoothingPasses = args.giVolumeSmoothing;
             cfg.threadCount = args.threads;
+            cfg.diagProbeDir = args.diagProbes;
             // The per-volume FRESHNESS CHECK (the invalidation model):
             // when the recorded bake-input hash matches the freshly
             // computed one, the re-trace is SKIPPED — the bound artifact

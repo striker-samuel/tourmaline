@@ -9,6 +9,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <future>
 #include <limits>
 #include <thread>
@@ -1171,6 +1172,65 @@ bool ChooseGiVolumeGridLayout(const TriangleBvh& bvh,
     return true;
 }
 
+// ---- Diagnostic probe dump (the roof-lattice bisection; --diag-probes) ----
+// One snapshot per bake stage. Little-endian binary: a fixed header, then
+// `probeCount` records of { u8 classification, u8 pad[3], f32 mean[3],
+// f32 sampleMean[3] }. classification: 0 = traced (valid after the trace),
+// 1 = dilated (filled by the validity dilation), 2 = unfilled (still
+// invalid after dilation). mean = the spherical-mean radiance
+// 0.124959 * Σ lobes (VolGiMean); sampleMean = the pre-fit traced sample
+// mean (0 for probes the trace never ran). The grid header makes every
+// record's world position recoverable: pos = gridMin + (ixyz + 0.5) *
+// spacing, with v = (iz*ny + iy)*nx + ix.
+namespace {
+constexpr uint32_t kProbeDiagMagic = 0x47494447u; // 'GIDG'
+constexpr uint32_t kProbeDiagVersion = 1u;
+
+void WriteProbeDiag(const std::string& path,
+                    uint32_t stage,
+                    const GiVolume& vol,
+                    const std::vector<char>& valid,
+                    const std::vector<char>& validTraced,
+                    const std::vector<glm::vec3>& sampleMean) {
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    if (!f) {
+        std::fprintf(stderr, "[GiBaker] probe diag: cannot write %s\n", path.c_str());
+        return;
+    }
+    auto wr = [&](const void* p, size_t n) {
+        f.write(reinterpret_cast<const char*>(p), std::streamsize(n));
+    };
+    const uint32_t magic = kProbeDiagMagic, version = kProbeDiagVersion;
+    const uint32_t dims[3] = {vol.dims[0], vol.dims[1], vol.dims[2]};
+    const float spacing = vol.spacing;
+    const float gridMin[3] = {vol.gridMin.x, vol.gridMin.y, vol.gridMin.z};
+    const uint64_t n = vol.VoxelCount();
+    wr(&magic, 4);
+    wr(&version, 4);
+    wr(&stage, 4);
+    wr(dims, 12);
+    wr(&spacing, 4);
+    wr(gridMin, 12);
+    wr(&n, 8);
+    constexpr float kMeanWeight = 0.124959f; // (1-e^-8)/8 — VolGiMean
+    for (uint64_t v = 0; v < n; ++v) {
+        const uint8_t cls = validTraced[size_t(v)] ? 0u : (valid[size_t(v)] ? 1u : 2u);
+        const uint8_t pad[3] = {0u, 0u, 0u};
+        glm::vec3 sum(0.0f);
+        for (uint32_t i = 0; i < kSgLobeCount; ++i)
+            sum += vol.coeffs[size_t(v) * kSgLobeCount + i];
+        const glm::vec3 mean = sum * kMeanWeight;
+        const glm::vec3 sm = sampleMean[size_t(v)];
+        const float meanArr[3] = {mean.x, mean.y, mean.z};
+        const float smArr[3] = {sm.x, sm.y, sm.z};
+        wr(&cls, 1);
+        wr(pad, 3);
+        wr(meanArr, 12);
+        wr(smArr, 12);
+    }
+}
+} // namespace
+
 // Bakes the volume's dense grid (see the header for the layout-selection
 // contract: seed > search-by-gates > legacy fixed).
 bool BakeGiVolume(const GiTraceScene& scene,
@@ -1317,6 +1377,10 @@ bool BakeGiVolume(const GiTraceScene& scene,
     // (sg_gi_volume.hlsli); the CPU twin is GiVolume::Sample.
     std::vector<char> valid(size_t(n), 0);
     outVolume.vis.assign(size_t(n) * 6, 0.0f);
+    // Pre-fit traced sample mean per probe (the --diag-probes residual:
+    // compared against the SG spherical mean to separate true traced
+    // variation from SG-fit error). Zero for probes the trace skips.
+    std::vector<glm::vec3> sampleMean(size_t(n), glm::vec3(0.0f));
     const float visCap = std::max(cfg.visibilityMaxDistance, spacing);
     // Axis order +x,-x,+y,-y,+z,-z (the runtime/CPU twins read the
     // same order).
@@ -1440,6 +1504,7 @@ bool BakeGiVolume(const GiTraceScene& scene,
                         energyBefore += sumBefore;
                         energyAfter += sumAfter;
                         meanClampedRadiance /= float(N);
+                        sampleMean[size_t(v)] = meanClampedRadiance;
                         for (uint32_t i = 0; i < N; ++i)
                             acc.AddSample(dirs[i], rad[i], texelSolidAngle);
                         // 6-axis obstacle distances (the through-wall
@@ -1482,6 +1547,16 @@ bool BakeGiVolume(const GiTraceScene& scene,
         // clamp is off or trims nothing).
         const double eb = energyBefore.load();
         stats.clampedEnergyRatio = (eb > 1e-12) ? (eb - energyAfter.load()) / eb : 0.0;
+    }
+
+    // ---- Diagnostic probe dump: snapshot the POST-TRACE state and save the
+    // ORIGINAL validity mask (before the dilation mutates it) so the later
+    // snapshots can classify traced vs dilated vs unfilled. ----
+    std::vector<char> validTraced;
+    if (!cfg.diagProbeDir.empty()) {
+        validTraced = valid;
+        WriteProbeDiag(
+            cfg.diagProbeDir + "/probes_posttrace.gidg", 0u, outVolume, valid, valid, sampleMean);
     }
 
     // ---- Shared neighbor gates (the same-side rule) ----
@@ -1626,6 +1701,16 @@ bool BakeGiVolume(const GiTraceScene& scene,
         }
     }
 
+    // Diagnostic probe dump: POST-DILATION (filled amplitudes + traced /
+    // dilated / unfilled classification, before smoothing).
+    if (!cfg.diagProbeDir.empty())
+        WriteProbeDiag(cfg.diagProbeDir + "/probes_postdilation.gidg",
+                       1u,
+                       outVolume,
+                       valid,
+                       validTraced,
+                       sampleMean);
+
     // ---- Volume smoothing (BO3 "volume smoothing"): gentle Laplacian
     // over ALL voxels, dilated ones included. The valid-only exclusion
     // this pass used to carry left the dilation's neighbor-average
@@ -1696,6 +1781,16 @@ bool BakeGiVolume(const GiTraceScene& scene,
             outVolume.coeffs = std::move(smoothed);
         }
     }
+
+    // Diagnostic probe dump: POST-SMOOTHING (final amplitudes before GPU
+    // compression; the classification still separates traced/dilated).
+    if (!cfg.diagProbeDir.empty())
+        WriteProbeDiag(cfg.diagProbeDir + "/probes_postsmoothing.gidg",
+                       2u,
+                       outVolume,
+                       valid,
+                       validTraced,
+                       sampleMean);
 
     // ---- Fast-path flags (the forward cell's clean bit) ----
     // Clean = every corner of the cell [v, v+1]^3 has enough axis

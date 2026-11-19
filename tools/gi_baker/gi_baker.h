@@ -70,6 +70,11 @@ struct Args {
     float giVolumeCaptureSpacing = 0.0f; // INERT (per-probe bake — no capture lattice); CLI compat
     uint32_t giVolumeSmoothing =
         3; // Laplacian volume-smoothing passes (per-probe bake needs it — see GiVolumeBakeConfig)
+    // Diagnostic probe dump (the roof-lattice bisection): a directory to
+    // receive probes_posttrace/postdilation/postsmoothing.gidg per baked
+    // convex volume (position/classification/spherical-mean + pre-fit
+    // sample mean). Empty = off.
+    std::string diagProbes;
     // Weave transmission for MASK (cutout cloth) materials: the cloth
     // keeps its lit albedo AND passes light tinted per texel (the GI
     // field behind the banners sees the tinted pools; the tint stays

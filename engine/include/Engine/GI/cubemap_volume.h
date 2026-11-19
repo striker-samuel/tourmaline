@@ -346,6 +346,14 @@ struct GiVolumeBakeConfig {
     float visibilityMaxDistance = 2.5f;
     uint32_t threadCount = 0; // 0 = hardware concurrency
     uint32_t seed = 1;
+    // Diagnostic probe dump (the roof-lattice bisection): when non-empty,
+    // BakeGiVolume writes THREE per-probe snapshots into this directory —
+    // probes_posttrace.gidg, probes_postdilation.gidg,
+    // probes_postsmoothing.gidg — each with position (implicit from the
+    // grid header), classification (0 traced / 1 dilated / 2 unfilled),
+    // spherical-mean radiance (0.124959 * Σ lobes) and the pre-fit traced
+    // sample mean. See the dump writer in cubemap_volume.cpp.
+    std::string diagProbeDir;
 };
 
 struct GiVolumeBakeStats {
