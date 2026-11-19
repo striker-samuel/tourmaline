@@ -1,6 +1,6 @@
 # GI volume correctness and GPU performance: implementation plan
 
-**Status:** §1 correctness gates **LANDED** (1.1 `giVolumeLayerTable[80]`/`[80]B` capacity table + 1.2 B-set plane-pool helper); §2–§8 (reproducible benchmark + optimization experiments) remain follow-up work.
+**Status:** §1 correctness gates **LANDED** (1.1 `giVolumeLayerTable[80]`/`[80]B` capacity table + 1.2 B-set plane-pool helper + the probe-visualization reader fix); **§5 Experiment A landed and measured** (−47.4% frame time, pixel-identical — see the result block in §5); §2–§4, §5 Experiments B–D, and §6–§8 remain follow-up work.
 **Entry points:** `engine/shaders/sg_gi_volume.hlsli`, `engine/shaders/default_lit_body.hlsli`, `engine/shaders/common.hlsli`, `engine/src/Renderer/WorldRenderer.cpp`.  
 **Benchmark tooling:** [perf harness](perf_harness.md), [scenario catalog](../benchmarks/README.md), [headless pins](headless_bench.md), [GI tolerance contracts](gi_volume_tolerances.md).
 
@@ -174,6 +174,26 @@ Record for the lit/Main pass: GPU execution time, occupancy, registers per threa
 4. Record registers/thread, local-memory operations, occupancy, Main GPU time and end-to-end benchmark median. Pointer indirection is not inherently faster; reject the refactor if it gets worse.
 
 This is the **first performance experiment** because it directly addresses supplied SPIR-V evidence.
+
+### Experiment A — result (landed 2026-11-19)
+
+The by-value → pointer refactor above is committed. Measured on
+`sponza-atrium` (RTX 5070 Ti, driver 617.42, 1920×1080, Release, 5 runs per
+side):
+
+| Metric | Baseline (by-value) | Candidate (pointer) | Change |
+| --- | ---: | ---: | ---: |
+| Median frame time | 7.0143 ms | 3.6891 ms | **−47.4%** |
+| Per-run avg frame time | 6.9995–7.0184 ms | 3.6613–3.7046 ms | — |
+| Decoded-pixel diff vs baseline | — | 0 / 2,073,600 | identical |
+
+- Result JSONs: `out/perf/gi-baseline/result.json`, `out/perf/gi-candidate-a/result.json`.
+- Pixel A/B: `out/capture-baseline/`, `out/capture-candidate/` (identical RGB SHA256, empty `diff.png`).
+- SPIR-V: the `gi3` (`GI_VOLUMES`) lit variants no longer emit `OpLoad %_arr_uint_uint_80` — the 80-slot descriptor table is read as scalar BDA loads, not materialized into function-local storage (step 3 above, confirmed).
+
+This validates the §0 array-materialization hypothesis: the whole-struct copy
+plus dynamic indexing from local memory was the occupancy killer, and this
+pointer refactor is the single largest quality-preserving GI-volume win.
 
 ### Experiment B — quantify the visibility-filtered slow path
 
