@@ -17,6 +17,8 @@
 
 #include <glm/glm.hpp>
 
+#include <algorithm>
+
 #include <cstdint>
 #include <iostream>
 #include <vector>
@@ -62,27 +64,46 @@ class ScenePageStreamer {
         // entry). Doing this before the load pass keeps the dense page
         // slots stable for the newly-appended pages below.
         for (uint32_t i = 0; i < manifest_.sceneCount; ++i) {
-            if (!loaded_[i] || i == entryScene_ || WithinRadius(i, cameraPos))
+            if (!loaded_[i] || i == entryScene_ ||
+                DistanceSquared(i, cameraPos) <= EvictRadiusSquared())
                 continue;
             try {
                 world_.UnmergePage(*loaded_[i]);
             } catch (const std::exception& e) {
                 std::cerr << "[PageStreamer] unload page " << i << " failed: " << e.what() << "\n";
+                continue; // do not mark a failed retire as unloaded
             }
             loaded_[i] = nullptr;
             changed = true;
         }
-        // Load near pages (incremental fold; the pinned entry is already
+        // Load near pages in nearest-first order (incremental fold; the pinned entry is already
         // loaded + folded by the host loader). Bounded per tick AND by the
         // resident-mesh budget: a dense multi-district area can stream in
         // more meshes than the GPU-scene admission ceiling (kMaxMeshes), so
         // loading stops once the next page would exceed the budget. The
         // skipped page stays unloaded and streams in when a far page evicts
         // (or the camera leaves the dense area) - no GPU-scene spill.
-        uint32_t loadedThisTick = 0;
+        struct Candidate {
+            uint32_t index;
+            float distanceSquared;
+        };
+        std::vector<Candidate> candidates;
+        candidates.reserve(manifest_.sceneCount);
         for (uint32_t i = 0; i < manifest_.sceneCount; ++i) {
             if (loaded_[i] || i == entryScene_ || !WithinRadius(i, cameraPos))
                 continue;
+            candidates.push_back({i, DistanceSquared(i, cameraPos)});
+        }
+        // Admit the closest eligible pages first, not the earliest manifest
+        // entries. Index tie-breaking keeps equal-distance ordering stable.
+        std::sort(candidates.begin(), candidates.end(), [](const Candidate& a, const Candidate& b) {
+            if (a.distanceSquared != b.distanceSquared)
+                return a.distanceSquared < b.distanceSquared;
+            return a.index < b.index;
+        });
+        uint32_t loadedThisTick = 0;
+        for (const Candidate& candidate : candidates) {
+            const uint32_t i = candidate.index;
             if (maxLoadedMeshes_ != 0 &&
                 world_.meshLocations.size() + manifest_.Meshes(i) > maxLoadedMeshes_)
                 continue; // budget exhausted this tick; retry after an eviction
@@ -130,8 +151,24 @@ class ScenePageStreamer {
     }
 
     static constexpr uint32_t kMaxLoadsPerTick = 4;
+    // Evict only after a page moves 25% beyond the admission radius.
+    // This avoids repeated deserialize/merge cycles at a page boundary.
+    static constexpr float kEvictRadiusMultiplier = 1.25f;
 
   private:
+    float DistanceSquared(uint32_t sceneIndex, glm::vec3 cameraPos) const {
+        glm::vec3 mn, mx;
+        manifest_.Aabb(sceneIndex, mn, mx);
+        const glm::vec3 closest = glm::max(mn, glm::min(cameraPos, mx));
+        const glm::vec3 delta = cameraPos - closest;
+        return glm::dot(delta, delta);
+    }
+
+    float EvictRadiusSquared() const {
+        const float r = radiusMeters_ * kEvictRadiusMultiplier;
+        return r * r;
+    }
+
     // Squared distance from the camera to the scene's AABB (0 when inside),
     // plus a directional bias: when a view direction is known, a page whose
     // AABB center sits more than a radius BEHIND the camera is not loaded
@@ -141,9 +178,7 @@ class ScenePageStreamer {
             return false;
         glm::vec3 mn, mx;
         manifest_.Aabb(sceneIndex, mn, mx);
-        const glm::vec3 closest = glm::max(mn, glm::min(cameraPos, mx));
-        const float d2 = glm::dot(cameraPos - closest, cameraPos - closest);
-        if (d2 > radiusMeters_ * radiusMeters_)
+        if (DistanceSquared(sceneIndex, cameraPos) > radiusMeters_ * radiusMeters_)
             return false;
         const float viewLen2 = glm::dot(viewDir_, viewDir_);
         if (viewLen2 > 0.0f) {
