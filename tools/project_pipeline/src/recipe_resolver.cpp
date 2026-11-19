@@ -195,8 +195,14 @@ bool CollectSceneArtifacts(const Project& project,
             err = "the tour's referenced artifact is missing: '" + rootRef + "' (" + scene + ")";
             return false;
         }
-        for (const std::string& part : parts)
-            artifacts.push_back(part);
+        for (const std::string& part : parts) {
+            // PartitionedPartFiles returns ABSOLUTE paths (root / <stem>_partN);
+            // the artifact list must be project-relative (the identity rows and
+            // the pak's logical paths normalize from the relative form).
+            std::error_code rec;
+            const fs::path rel = fs::relative(fs::path(part), fs::path(project.root), rec);
+            artifacts.push_back(rec ? part : rel.generic_string());
+        }
     } else {
         artifacts.push_back(rootRef);
     }
@@ -225,8 +231,11 @@ bool CollectSceneArtifacts(const Project& project,
                           scene + ")";
                     return false;
                 }
-                for (const std::string& part : parts)
-                    artifacts.push_back(part);
+                for (const std::string& part : parts) {
+                    std::error_code rec;
+                    const fs::path rel = fs::relative(fs::path(part), fs::path(project.root), rec);
+                    artifacts.push_back(rec ? part : rel.generic_string());
+                }
             } else {
                 artifacts.push_back(ref.source);
             }
