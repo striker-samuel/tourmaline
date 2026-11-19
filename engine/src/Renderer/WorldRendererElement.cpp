@@ -236,6 +236,14 @@ void WorldRendererElement::Update(float dt) {
 // never raw TOUR_KEY_* reads. Render settings flip through the friend
 // access (the same members the panel's widgets touch).
 void WorldRendererElement::HandleShortcuts() {
+    // Shortcut polling uses the host input state, independently of ImGui's SDL
+    // event processing. While an InputText/InputTextMultiline widget is active,
+    // let ImGui consume typing (including I, which otherwise exits UI mode).
+    // The UI is built later in the frame, so use the previous ImGui frame's
+    // WantTextInput flag, which remains valid during this update pass.
+    if (m_uiMode && m_imgui && ImGui::GetCurrentContext() && ImGui::GetIO().WantTextInput)
+        return;
+
     if (m_input.isKeyPressed(keybind::UI_TOGGLE)) {
         SetUIMode(!m_uiMode);
     }
