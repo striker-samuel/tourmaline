@@ -49,9 +49,9 @@ struct GiProbePush
 {
     float4x4 viewProj;   // 0  the rendering view's VP (reversed-Z, Y-flipped)
     float4 eyeMaxDist;   // 64 xyz camera, w the distance filter (m)
-    GPU_PTR_READ(FrameUniforms) frame; // 72 the giVolumeLayers slots (0 = unused in lattice mode)
+    GPU_PTR_READ(FrameUniforms) frame; // 72 the FrameUniforms BDA (0 = unused in lattice mode)
     GPU_PTR_READ(GiProbeInstanceArray) instances; // 80 this volume's rows
-    uint volumeIndex;    // 88 the giVolumeLayers row / 7
+    uint volumeIndex;    // 88 the volume index (0..7; giVolumeLayerTable row = volumeIndex * 10)
     uint mode;           // 92 0 baked GI, 1 visibility, 2 lattice
     float markerGain;    // 96 1/exposure for the marker modes (1/2)
     uint pad_;           // 100 (16-align tail; 112 total)
@@ -150,19 +150,36 @@ VSOut mainVS(VSIn IN, uint instanceIndex : SV_InstanceID)
         return OUT;
     }
 
-    // 0 = BAKED GI (default): the probe's EXACT texel: 7 point-fetches (Load = OpImageFetch —
-    // no sampler filtering), the same slot math SgGiVolumeSample uses
-    // (giVolumeLayers[vol * 7 + t]). The layer index rides a
-    // wave-uniform loop counter, so the plain bindless index keeps the
-    // descriptor fetch scalar.
-    float4 layers[SG_GI_VOLUME_LAYERS];
-    [unroll]
-    for (uint t = 0; t < SG_GI_VOLUME_LAYERS; ++t)
-        layers[t] = volumeTextures[
-            frame.giVolumeLayers[pb.volumeIndex * SG_GI_VOLUME_LAYERS + t]]
-            .Load(int4(inst.grid, 0));
+    // 0 = BAKED GI (default): the probe's EXACT texel: point-fetches
+    // (Load = OpImageFetch — no sampler filtering), the same slot math
+    // SgGiVolumeSample uses (giVolumeLayerTable[vol * 10 + t/l] — the
+    // §1.1 80-slot table; the reserved giVolumeLayers[vol * 7 + t] field
+    // is never written). The layer index rides a wave-uniform loop
+    // counter, so the plain bindless index keeps the descriptor fetch
+    // scalar.
+    const GiVolumeGpu v = frame.giVolumes.Get().volumes[pb.volumeIndex];
     float3 amps[SG_GI_LOBES];
-    SgRegularUnpack(layers, amps);
+    if (v.planeCountBase.z == 1u)
+    {
+        // GV6H: 9 BC6H per-lobe fetches — the RGB IS the amp (no unpack),
+        // the same format branch SgGiVolumeSample's fast path takes.
+        [unroll]
+        for (uint l = 0; l < SG_GI_LOBES; ++l)
+            amps[l] = volumeTextures[
+                frame.giVolumeLayerTable[pb.volumeIndex * 10u + l]]
+                .Load(int4(inst.grid, 0)).rgb;
+    }
+    else
+    {
+        // Legacy GVOL: 7 RGBA16F stream layers + the shared 27-half unpack.
+        float4 layers[SG_GI_VOLUME_LAYERS];
+        [unroll]
+        for (uint t = 0; t < SG_GI_VOLUME_LAYERS; ++t)
+            layers[t] = volumeTextures[
+                frame.giVolumeLayerTable[pb.volumeIndex * 10u + t]]
+                .Load(int4(inst.grid, 0));
+        SgRegularUnpack(layers, amps);
+    }
 
     // The unit sphere direction IS the shading normal (pos == normal on
     // the icosphere). The color is the WHITE-LAMBERTIAN probe answer —

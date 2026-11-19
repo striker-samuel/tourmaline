@@ -67,9 +67,9 @@ struct GiProbeInstance {
 static_assert(sizeof(GiProbeInstance) == 32, "HLSL mirror (giprobe.vert.hlsl)");
 
 // One per-volume draw: the instance buffer + its device address + the
-// volume's FrameUniforms.giVolumeLayers ROW index (v * 7 — the VS reads
-// layer slots as giVolumeLayers[volumeIndex * 7 + t], exactly like
-// SgGiVolumeSample).
+// volume INDEX (0..7 — the VS reads layer slots as
+// giVolumeLayerTable[volumeIndex * 10 + t/l], exactly like
+// SgGiVolumeSample's stride-10 table).
 struct GiProbeVolumeRow {
     BufferHandle instances{};
     uint64_t instancesBda = 0;
@@ -79,14 +79,14 @@ struct GiProbeVolumeRow {
 
 // The pass's own push block — must mirror giprobe.vert.hlsl exactly
 // (the pass is standalone: NO scene pc). frame carries the scene
-// FrameUniforms BDA (the giVolumeLayers bindless slots); instances
+// FrameUniforms BDA (the giVolumeLayerTable bindless slots); instances
 // carries this volume's instance-table BDA.
 struct alignas(16) GiProbePush {
     glm::mat4 viewProj;       // 0  the rendering view's VP (reversed-Z, Y-flipped)
     glm::vec4 eyeMaxDist;     // 64 xyz camera, w the distance filter (m)
     uint64_t frame = 0;       // 72 FrameUniforms BDA (0 in lattice mode)
     uint64_t instances = 0;   // 80 the volume's instance-table BDA
-    uint32_t volumeIndex = 0; // 88 the giVolumeLayers row / 7
+    uint32_t volumeIndex = 0; // 88 volume index (0..7; table row = vol*10)
     uint32_t mode = 0;        // 92 0 baked GI, 1 visibility, 2 lattice
     float markerGain = 1.0f;  // 96 1/exposure for the MARKER modes (1/2):
                               //    display-authored colors, the flat-view
