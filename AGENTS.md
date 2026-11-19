@@ -221,8 +221,7 @@ are still required for actual re-simulation.
 
 - **The gameplay-handle model** (engine Engine/Scene/entity_handle.h):
   NO generic game-entity registry — gameplay structs compose TYPED
-  64-bit generational handles (MeshEntityHandle/AnimatorHandle/
-  AudioSourceHandle); the generated project.h carries TYPED KEYS
+  64-bit generational handles (for example MeshEntityHandle and AnimatorHandle); the generated project.h carries TYPED KEYS
   (SceneKey/TextureKey/MeshKey/SoundKey — which ASSET; handles name
   which INSTANCE). The full mesh-entity + animator surface has landed
   (docs/entities_and_animators.md): World::SpawnMeshFromNode/
