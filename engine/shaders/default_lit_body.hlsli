@@ -1752,7 +1752,7 @@ float envVis = 1.0f;
             OUT.outColor = float4(SanitizeHdr(bakedE), 1.0f);
             return OUT;
         }
-        if (giDbgMode >= 3u && giDbgMode <= 6u)
+        if (giDbgMode >= 3u && giDbgMode <= 7u)
         {
             // PROBE DISTANCE / WEIGHT SUM: the nearest probe's minimum 6-axis
             // obstacle distance for the pixel's cell in the first
@@ -1829,6 +1829,18 @@ float envVis = 1.0f;
                 dbgCol = D < 0.5
                     ? lerp(float3(0, 1, 0), float3(1, 1, 0), D * 2.0)
                     : lerp(float3(1, 1, 0), float3(1, 0, 0), (D - 0.5) * 2.0);
+            }
+            else if (giDbgMode == 7u)
+            {
+                // DILATED COVERAGE (W_dilated): the interpolation-weighted
+                // fraction of irradiance from DILATED probes, using the
+                // ordinary trilinear weights (no visibility rejection — the
+                // A/B to mode 5's raw SG). Blue = 0 (no dilated contribution),
+                // red = 1 (fully dilated). Directly answers whether the roof
+                // lattice tracks the dilated-probe population.
+                const float wDilated =
+                    SgGiVolumeDebugDilatedCoverage(pc.frameUniforms, dbgVol, IN.worldPos);
+                dbgCol = lerp(float3(0, 0, 1), float3(1, 0, 0), wDilated);
             }
             else
             {

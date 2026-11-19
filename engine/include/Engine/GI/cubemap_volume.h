@@ -354,6 +354,15 @@ struct GiVolumeBakeConfig {
     // spherical-mean radiance (0.124959 * Σ lobes) and the pre-fit traced
     // sample mean. See the dump writer in cubemap_volume.cpp.
     std::string diagProbeDir;
+    // Debug-only probe-classification sidecar (the W_dilated view,
+    // docs/gi_volume_roof_lattice.md): when non-empty, BakeGiVolume also
+    // writes an R8 3-way classification volume (0 = directly traced,
+    // 1 = filled by validity dilation, 2 = still unfilled) to this path,
+    // with a header carrying the lattice dims/gridMin/spacing + the
+    // FNV-1a64 of the .givolume bytes so the renderer's GI_DEBUG mode 7
+    // can verify the mask matches the exact baked artifact before
+    // trusting it. NOT part of the production .givolume format.
+    std::string diagClassVolume;
 };
 
 struct GiVolumeBakeStats {
@@ -460,6 +469,41 @@ bool BakeGiVolume(const GiTraceScene& scene,
                   const GiVolumeLayoutSeed* seed = nullptr,
                   float spacingLow = 0.0f,
                   float spacingHigh = 0.0f);
+
+// ---------------------------------------------------------------------------
+// Debug-only probe-classification sidecar (the W_dilated view —
+// docs/gi_volume_roof_lattice.md). The bake derives a 3-way per-probe
+// classification (0 = directly traced, 1 = filled by validity dilation,
+// 2 = still unfilled) from provenance arrays the dilation would otherwise
+// mutate away; the renderer's GI_DEBUG mode 7 samples an R8 volume built
+// from it to measure the interpolation-weighted dilated-probe coverage.
+// This is a TEMPORARY diagnostic format — deliberately separate from the
+// production .givolume so a misaligned or stale mask can be detected (the
+// header stores the lattice geometry + a byte hash of the exact .givolume
+// it was derived from) instead of silently skewing a result.
+// ---------------------------------------------------------------------------
+struct GiVolumeClassFile {
+    uint32_t dims[3] = {};
+    float gridMin[3] = {};
+    float spacing = 0.0f;
+    uint64_t sourceHash = 0;  // FNV-1a64 of the source .givolume bytes
+    std::vector<uint8_t> cls; // one per probe: 0 traced / 1 dilated / 2 unfilled
+};
+
+// FNV-1a 64-bit over a byte span (the class-sidecar / .givolume identity).
+inline uint64_t Fnv1a64(const uint8_t* data, size_t n) {
+    uint64_t hash = 14695981039346656037ULL;
+    for (size_t i = 0; i < n; ++i) {
+        hash ^= data[i];
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+// Reads + structurally validates the class sidecar. The CALLER verifies
+// the geometry (dims/gridMin/spacing) and sourceHash against the volume
+// it is rendering — this reader only guarantees a well-formed file.
+bool ReadClassVolume(const std::string& path, GiVolumeClassFile& out, std::string& err);
 
 } // namespace tour::gi
 

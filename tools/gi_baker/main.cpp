@@ -204,6 +204,9 @@ bool ParseArgs(int argc, char** argv, Args& out) {
         } else if (a == "--diag-probes") {
             if (!need(out.diagProbes, i))
                 return false;
+        } else if (a == "--class-volume") {
+            if (!need(out.classVolume, i))
+                return false;
         } else if (a == "--mask-transmission") {
             std::string v;
             if (!need(v, i))
@@ -1531,6 +1534,7 @@ int Run(Args& args) {
             cfg.smoothingPasses = args.giVolumeSmoothing;
             cfg.threadCount = args.threads;
             cfg.diagProbeDir = args.diagProbes;
+            cfg.diagClassVolume = args.classVolume;
             // The per-volume FRESHNESS CHECK (the invalidation model):
             // when the recorded bake-input hash matches the freshly
             // computed one, the re-trace is SKIPPED — the bound artifact
@@ -1570,7 +1574,12 @@ int Run(Args& args) {
                                                  std::filesystem::path(args.contentDir) /
                                                      std::filesystem::path(cvIt->volume.bakeSource),
                                                  skipEc);
-                    if (fresh == cvIt->volume.bakeInputHash && boundExists) {
+                    // --class-volume is a DIAGNOSTIC: it demands a fresh
+                    // bake so the classification sidecar can be derived
+                    // from this run's provenance — bypass the freshness
+                    // skip even though the inputs are unchanged.
+                    if (fresh == cvIt->volume.bakeInputHash && boundExists &&
+                        args.classVolume.empty()) {
                         tool::out() << "  [GIV] volume '" << spec.def.name
                                     << "': inputs unchanged — SKIPPED (the bound "
                                        "bake stands)\n";
@@ -1641,6 +1650,31 @@ int Run(Args& args) {
             }
             tool::out() << "Wrote " << outPath << " (" << std::filesystem::file_size(outPath)
                         << " B on disk)\n";
+            // Debug-only classification sidecar (the W_dilated view): the
+            // bake wrote it with a placeholder sourceHash — patch the real
+            // FNV-1a64 of the .givolume bytes just written, so the renderer
+            // can verify the mask matches the exact baked artifact.
+            if (!args.classVolume.empty()) {
+                std::ifstream fin(outPath, std::ios::binary);
+                if (!fin) {
+                    tool::err() << "class-volume: cannot read " << outPath << " to hash"
+                                << std::endl;
+                    return 1;
+                }
+                std::vector<uint8_t> fileBytes((std::istreambuf_iterator<char>(fin)),
+                                               std::istreambuf_iterator<char>());
+                const uint64_t h = tour::gi::Fnv1a64(fileBytes.data(), fileBytes.size());
+                std::fstream fs(args.classVolume, std::ios::in | std::ios::out | std::ios::binary);
+                if (!fs) {
+                    tool::err() << "class-volume: cannot open " << args.classVolume
+                                << " to patch the source hash" << std::endl;
+                    return 1;
+                }
+                fs.seekp(36, std::ios::beg); // the GCLS header's sourceHash field
+                fs.write(reinterpret_cast<const char*>(&h), sizeof(h));
+                fs.close();
+                tool::out() << "  class-volume: " << args.classVolume << "\n";
+            }
             // The HARD identification (as meshes do): the baked volume
             // binds to ITS authored definition on the replayed scene —
             // the stamp at the end of Run mirrors the scene onto the

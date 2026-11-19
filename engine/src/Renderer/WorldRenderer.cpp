@@ -1414,14 +1414,22 @@ bool WorldRenderer::onAttach() {
     // GI debug view for headless runs (also cycled by R / F8):
     // 0 off, 1 flat irradiance, 2 source, 3 probe distance,
     // 4 pre-normalization visibility weight sum (wSum), 5 raw SG (no
-    // visibility / no clean-flag gate), 6 weight-redistribution D.
+    // visibility / no clean-flag gate), 6 weight-redistribution D,
+    // 7 dilated-probe coverage (W_dilated — needs a class volume).
     if (const char* giDbgEnv = std::getenv("TOURMALINE_GI_DEBUG")) {
         const int mode = std::atoi(giDbgEnv);
-        if (mode >= 0 && mode <= 6)
+        if (mode >= 0 && mode <= 7)
             m_giDebug = mode;
         else
-            std::cerr << "[WorldRenderer] TOURMALINE_GI_DEBUG wants 0..6\n";
+            std::cerr << "[WorldRenderer] TOURMALINE_GI_DEBUG wants 0..7\n";
     }
+    // Debug-only probe-classification sidecar for GI_DEBUG mode 7 (the
+    // W_dilated view, docs/gi_volume_roof_lattice.md): the path to the
+    // .givolume-classification file the baker wrote with --class-volume.
+    // Its lattice geometry + source byte hash are verified against the
+    // volume being rendered before the mask is trusted.
+    if (const char* clsEnv = std::getenv("TOURMALINE_GI_CLASS_VOLUME"))
+        m_giClassVolume = clsEnv;
     // GI-volume weighted-path telemetry (the lit shader's 64-byte
     // histogram; OFF for normal/timing runs — the perf benchmark must run
     // with this pin ABSENT so the atomics never fire and the timing path
@@ -4484,6 +4492,53 @@ bool WorldRenderer::BuildGiVolumeSetFromPaths(const std::vector<std::string>& li
                 cv.visSlots[t] = m_context->GetTextureBindlessIndex(cv.visLayers[t]);
             }
         }
+        // Debug-only probe-classification sidecar (GI_DEBUG mode 7, the
+        // W_dilated view — docs/gi_volume_roof_lattice.md): load the R8
+        // classification volume ONLY when it matches THIS volume's lattice
+        // geometry + source byte hash (a stale/misaligned mask would skew
+        // the coverage correlation). Absent / mismatched = UINT32_MAX.
+        if (ok && !m_giClassVolume.empty()) {
+            tour::gi::GiVolumeClassFile cls;
+            std::string cerr2;
+            if (tour::gi::ReadClassVolume(m_giClassVolume, cls, cerr2)) {
+                const uint64_t volHash = tour::gi::Fnv1a64(volBytes.data(), volBytes.size());
+                const bool geomMatch = cls.dims[0] == cv.volume.dims[0] &&
+                                       cls.dims[1] == cv.volume.dims[1] &&
+                                       cls.dims[2] == cv.volume.dims[2] &&
+                                       std::fabs(cls.spacing - cv.volume.spacing) < 1e-6f &&
+                                       std::fabs(cls.gridMin[0] - cv.volume.gridMin.x) < 1e-6f &&
+                                       std::fabs(cls.gridMin[1] - cv.volume.gridMin.y) < 1e-6f &&
+                                       std::fabs(cls.gridMin[2] - cv.volume.gridMin.z) < 1e-6f;
+                if (!geomMatch || cls.sourceHash != volHash) {
+                    std::cerr << "[GIV] class-volume mismatch for '" << line
+                              << "' (geom=" << (geomMatch ? "ok" : "BAD")
+                              << " hash=" << (cls.sourceHash == volHash ? "ok" : "BAD")
+                              << ") - W_dilated view disabled\n";
+                } else {
+                    // R8_UNorm: 0 = traced, 127 = dilated (~0.5), 255 = unfilled.
+                    std::vector<uint8_t> r8(cls.cls.size());
+                    for (size_t i = 0; i < cls.cls.size(); ++i)
+                        r8[i] = cls.cls[i] == 0 ? 0 : (cls.cls[i] == 1 ? 127 : 255);
+                    smvk::ImageCreateInfo cci{};
+                    cci.type = smvk::ImageType::Image3D;
+                    cci.extent = {cv.volume.dims[0], cv.volume.dims[1], cv.volume.dims[2]};
+                    cci.format = smvk::Format::R8_UNorm;
+                    cci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::TransferDst;
+                    cci.mipLevels = 1;
+                    cci.arrayLayers = 1;
+                    cci.name = "gi set class (debug)";
+                    auto classTex = m_context->CreateTexture(cci, r8.data());
+                    if (classTex.empty())
+                        std::cerr << "[GIV] class texture creation failed\n";
+                    else {
+                        cv.classTex = std::move(classTex);
+                        cv.classSlot = m_context->GetTextureBindlessIndex(cv.classTex);
+                    }
+                }
+            } else {
+                std::cerr << "[GIV] class-volume read failed: " << cerr2 << "\n";
+            }
+        }
         if (!ok)
             continue;
         cv.volume.coeffs.clear();
@@ -5143,7 +5198,7 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
     // the views must survive source isolation. The level byte is
     // retained for the retired octree shader ABI.
     data.giIntensity = m_giIntensity;
-    data.giDebug = (uint32_t(std::clamp(m_giDebug, 0, 6)) & 0xffu) |
+    data.giDebug = (uint32_t(std::clamp(m_giDebug, 0, 7)) & 0xffu) |
                    (uint32_t(std::clamp(m_giDebugLevel, 0, 7) & 0xff) << 8);
     // GI-volume weighted-path telemetry: publish the histogram BDA + the
     // enable flag when armed (TOURMALINE_GI_STATS=1). The buffer is
@@ -5255,6 +5310,8 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
             for (uint32_t s = 0; s < 4; ++s)
                 data.giVolumeSpecLayers[v * 4u + s] = m_giVolumes[v].specSlots[s];
             data.giVolumeSpecDims[v] = m_giVolumes[v].specDimsPacked;
+            // Debug-only classification volume (GI_DEBUG mode 7).
+            data.giVolumeClassSlots[v] = m_giVolumes[v].classSlot;
         }
         data.giVolumeCount = n;
         data.giVolumesEnabled = ProbesWanted() ? 1u : 0u;
@@ -5269,6 +5326,8 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
         for (uint32_t& slot : data.giVolumeOctaLayers)
             slot = UINT32_MAX;
         for (uint32_t& slot : data.giVolumeSpecLayers)
+            slot = UINT32_MAX;
+        for (uint32_t& slot : data.giVolumeClassSlots)
             slot = UINT32_MAX;
         data.giVolumeCount = 0u;
         data.giVolumesEnabled = 0u;

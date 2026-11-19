@@ -1001,18 +1001,19 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                     }
                     ImGui::Checkbox("GI volume bounds (wireframe)", &m_giShowVolumeBounds);
                     if (m_regLoaded || m_giVolumesLoaded) {
-                        // All five R / F8 stops (including off).
+                        // All R / F8 stops (including off).
                         // Select Lit so the debug shader is visible.
-                        const char* dbgNames[7] = {"Off",
+                        const char* dbgNames[8] = {"Off",
                                                    "Baked irradiance",
                                                    "GI source",
                                                    "Probe distance",
                                                    "Visibility weight sum (wSum)",
                                                    "Raw SG (no visibility)",
-                                                   "Weight redistribution (D)"};
+                                                   "Weight redistribution (D)",
+                                                   "Dilated coverage (W)"};
                         int dbgIdx = m_giDebug;
-                        if (ImGui::Combo("GI debug view (R / F8)", &dbgIdx, dbgNames, 7)) {
-                            m_giDebug = std::clamp(dbgIdx, 0, 6);
+                        if (ImGui::Combo("GI debug view (R / F8)", &dbgIdx, dbgNames, 8)) {
+                            m_giDebug = std::clamp(dbgIdx, 0, 7);
                             if (m_giDebug != 0)
                                 m_debugView = ViewMode::Lit;
                         }

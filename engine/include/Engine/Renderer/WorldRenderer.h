@@ -1186,6 +1186,11 @@ struct FrameUniforms {
     // stacked vertically. UINT32_MAX slot = absent (SG specular crossover).
     uint32_t giVolumeSpecLayers[32] = {}; // 3220 atlas slots (4 rough layers x 8 vols)
     uint32_t giVolumeSpecDims[8] = {};    // 3348 packed cols | rows << 16
+    // Debug-only probe-classification volume (the W_dilated view,
+    // docs/gi_volume_roof_lattice.md): per-volume R8 3D texture slots in
+    // volumeTextures[] carrying the bake's 3-way provenance (0 traced /
+    // 127 dilated / 255 unfilled). UINT32_MAX = absent (mode 7 reads 0).
+    uint32_t giVolumeClassSlots[8] = {}; // 3380 8 volumes x 1 R8 class slot
 };
 // FrameUniforms layout insurance: the HLSL mirror (common.hlsli) reads
 // every field by absolute offset — any drift desyncs the GPU reads.
@@ -1251,6 +1256,8 @@ static_assert(offsetof(FrameUniforms, giVolumeSpecLayers) == 3220,
               "giVolumeSpecLayers offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, giVolumeSpecDims) == 3348,
               "giVolumeSpecDims offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giVolumeClassSlots) == 3380,
+              "giVolumeClassSlots offset: HLSL mirror");
 // Env-zone block (the append-only tail): the per-frame EnvZoneGpu slice
 // BDA + count + reserved words, pinned like every other HLSL-mirrored
 // member. The reserved array keeps the old 208-byte block size so the
@@ -1299,12 +1306,12 @@ static_assert(offsetof(FrameUniforms, fogShadowEnabled) == 2148,
               "fogShadowEnabled offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, contactShadowIndex) == 2152,
               "contactShadowIndex offset: HLSL mirror (the old tail pad's first word)");
-static_assert(sizeof(FrameUniforms) == 3392,
+static_assert(sizeof(FrameUniforms) == 3424,
               "FrameUniforms size: HLSL mirror (the GI-blend tail grew the struct 2160 -> 2500; "
               "the §1.1 layer tables append 2500 -> 3140, the 64-bit telemetry BDA 8-aligns to "
               "3144 -> 3152, the octahedral atlas tail appends 3156 -> 3220, the compact "
-              "specular atlas appends 3220 -> 3380 (+12 pad to 16-align); every pre-blend "
-              "offset above is unchanged)");
+              "specular atlas appends 3220 -> 3380, the debug class-volume slots append "
+              "3380 -> 3412 (+12 pad to 16-align); every pre-blend offset above is unchanged)");
 
 // FramePSHot — tiny per-frame data frequently accessed by the pixel shader.
 // Mirrors HLSL FramePSHot in common.hlsli (96 bytes, 16-byte aligned).
@@ -3970,20 +3977,25 @@ class WorldRenderer : public IRenderer {
     // Baked — see AmbientMode); R / F8 cycle the baked-GI debug
     // views. ----
     AmbientMode m_ambientMode = AmbientMode::All; // N cycles (production default)
-    int m_giDebug = 0;                            // R / F8: 0 off, 1 flat irradiance,
-                                                  // 2 source, 3 probe distance, 4 visibility wSum
-    int m_giDebugLevel = 0;                       // (retired with the octree level debugs —
-                                                  // feeds the frame's legacy giDebug byte,
-                                                  // always 0)
-    float m_giIntensity = 1.0f;                   // ambient scale (FrameUniforms.giIntensity)
-    bool m_giShowProbes = false;                  // probe-sphere 3D overlay (the coplanarity
-                                                  // check's successor: instanced icospheres
-                                                  // colored by each probe's baked directional
-                                                  // GI - see Rendergraph/giprobe.h)
-    float m_giProbePointMaxDist = 40.0f;          // overlay: draw probes within N m
-    int m_giProbeColorMode = 0;                   // probe-sphere color: 0 baked GI,
-                                                  // 1 visibility (blocked/near/open),
-                                                  // 2 the pre-bake lattice preview
+    // R / F8 GI debug view: 0 off, 1 flat irradiance, 2 source, 3 probe
+    // distance, 4 visibility wSum, 5 raw SG, 6 redistribution D, 7 dilated
+    // coverage (W_dilated).
+    int m_giDebug = 0;
+    // Debug-only probe-classification sidecar (TOURMALINE_GI_CLASS_VOLUME);
+    // empty = off.
+    std::string m_giClassVolume;
+    int m_giDebugLevel = 0;              // (retired with the octree level debugs —
+                                         // feeds the frame's legacy giDebug byte,
+                                         // always 0)
+    float m_giIntensity = 1.0f;          // ambient scale (FrameUniforms.giIntensity)
+    bool m_giShowProbes = false;         // probe-sphere 3D overlay (the coplanarity
+                                         // check's successor: instanced icospheres
+                                         // colored by each probe's baked directional
+                                         // GI - see Rendergraph/giprobe.h)
+    float m_giProbePointMaxDist = 40.0f; // overlay: draw probes within N m
+    int m_giProbeColorMode = 0;          // probe-sphere color: 0 baked GI,
+                                         // 1 visibility (blocked/near/open),
+                                         // 2 the pre-bake lattice preview
     // Lattice-mode scratch (mode 2): fixed cap-sized buffers, rows
     // re-uploaded every armed frame (authored volumes move/edit live).
     smvk::Holder<smvk::BufferHandle> m_giProbeDraftBuf[8]{};
@@ -4149,6 +4161,14 @@ class WorldRenderer : public IRenderer {
         smvk::Holder<smvk::TextureHandle> specLayers[4];
         uint32_t specSlots[4] = {UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
         uint32_t specDimsPacked = 0; // atlasCols | atlasRows << 16
+        // Debug-only probe-classification volume (GI_DEBUG mode 7,
+        // docs/gi_volume_roof_lattice.md): an R8 3D texture carrying the
+        // bake's 3-way provenance (0 traced / 127 dilated / 255 unfilled).
+        // UINT32_MAX slot = absent — the mode-7 shader reads 0 coverage.
+        // Loaded from TOURMALINE_GI_CLASS_VOLUME when it matches the
+        // rendered volume's geometry + byte hash.
+        smvk::Holder<smvk::TextureHandle> classTex;
+        uint32_t classSlot = UINT32_MAX;
         // The probe-sphere instance table (Rendergraph/giprobe.h - the
         // ImGui probe-dot overlay's 3D successor): the strided static
         // lattice subset (position + integer grid coords), built once by
