@@ -4,6 +4,14 @@
 
 project(AssetTests)
 
+# Engine-only Catmull-Rom spline asset and runtime sampler.
+add_executable(SplineTests test_spline.cpp)
+target_include_directories(SplineTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/include
+    ${CMAKE_SOURCE_DIR}/external/glm)
+add_test(NAME spline_tests COMMAND SplineTests)
+
+
 # GPUScene pipeline registry and variable-size per-pipeline pak registration (CPU only).
 add_executable(GpuScenePipelineRegistryTests test_gpu_scene_pipeline_registry.cpp)
 target_include_directories(GpuScenePipelineRegistryTests PRIVATE
@@ -1583,8 +1591,12 @@ target_include_directories(PointArrayGraphTests PRIVATE
 add_test(NAME point_array_graph_tests COMMAND PointArrayGraphTests)
 
 # CPU-only authored spline/point cloud/primitive regression tests.
+# shape_asset.h's spline sampling shares the Catmull-Rom kernel with
+# spline.h (which uses glm), so the glm include dir is required.
 add_executable(ShapeAssetTests test_shape_asset.cpp)
-target_include_directories(ShapeAssetTests PRIVATE ${CMAKE_SOURCE_DIR}/engine/include)
+target_include_directories(ShapeAssetTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/include
+    ${CMAKE_SOURCE_DIR}/external/glm)
 add_test(NAME shape_asset_tests COMMAND ShapeAssetTests)
 
 # Renderer-owned persistent line/point shape instances (CPU-only).

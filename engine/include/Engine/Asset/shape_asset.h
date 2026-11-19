@@ -5,6 +5,7 @@
 // CPU-only authored shape assets. This is a source representation, not a
 // .geometry file or a new cooked-pak kind. Call TessellateShape to obtain
 // positions/indices for an importer or editor preview.
+#include <Engine/Asset/spline.h> // the shared Catmull-Rom kernel (spline sampling)
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -203,27 +204,25 @@ inline ShapePoint ShapeLerp(const ShapePoint& a, const ShapePoint& b, float t) {
     return {a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t};
 }
 
-// Catmull-Rom with endpoint duplication for open curves. An explicit
-// final segment closes loops; sampling never duplicates its first vertex.
+// Catmull-Rom with endpoint duplication for open curves. The polynomial and
+// the open/closed neighbor policy are the shared kernel in spline.h
+// (CatmullRomWeightsAt + SplineWrapIndex) — the math lives in exactly one
+// place. An explicit final segment closes loops; sampling never duplicates
+// its first vertex.
 inline ShapePoint SampleSpline(const ShapeAsset& shape, size_t span, float t) {
-    const size_t n = shape.points.size();
-    auto get = [&](long long i) -> const ShapePoint& {
-        if (shape.closed) {
-            const long long count = static_cast<long long>(n);
-            return shape.points[static_cast<size_t>((i % count + count) % count)];
-        }
-        return shape.points[static_cast<size_t>(
-            std::clamp<long long>(i, 0, static_cast<long long>(n) - 1))];
-    };
-    const auto& a = get(static_cast<long long>(span) - 1);
-    const auto& b = get(static_cast<long long>(span));
-    const auto& c = get(static_cast<long long>(span) + 1);
-    const auto& d = get(static_cast<long long>(span) + 2);
-    auto coord = [t](float p0, float p1, float p2, float p3) {
-        return 0.5f * ((2 * p1) + (-p0 + p2) * t + (2 * p0 - 5 * p1 + 4 * p2 - p3) * t * t +
-                       (-p0 + 3 * p1 - 3 * p2 + p3) * t * t * t);
-    };
-    return {coord(a.x, b.x, c.x, d.x), coord(a.y, b.y, c.y, d.y), coord(a.z, b.z, c.z, d.z)};
+    const long long n = static_cast<long long>(shape.points.size());
+    const long long i = static_cast<long long>(span);
+    const ShapePoint& a =
+        shape.points[static_cast<size_t>(SplineWrapIndex(i - 1, n, shape.closed))];
+    const ShapePoint& b = shape.points[static_cast<size_t>(SplineWrapIndex(i, n, shape.closed))];
+    const ShapePoint& c =
+        shape.points[static_cast<size_t>(SplineWrapIndex(i + 1, n, shape.closed))];
+    const ShapePoint& d =
+        shape.points[static_cast<size_t>(SplineWrapIndex(i + 2, n, shape.closed))];
+    const CatmullRomWeights w = CatmullRomWeightsAt(t);
+    return {w.w[0] * a.x + w.w[1] * b.x + w.w[2] * c.x + w.w[3] * d.x,
+            w.w[0] * a.y + w.w[1] * b.y + w.w[2] * c.y + w.w[3] * d.y,
+            w.w[0] * a.z + w.w[1] * b.z + w.w[2] * c.z + w.w[3] * d.z};
 }
 
 inline bool TessellateShape(const ShapeAsset& shape, ShapeGeometry& out, std::string& error) {
