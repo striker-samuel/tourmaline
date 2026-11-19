@@ -215,11 +215,51 @@ void CheckGenerationRejection() {
           "leafclass.slot-reused-generation-bumped");
 }
 
+void CheckDenseLeaves() {
+    RenderDatabase db{};
+    LeafRegistry leaves{};
+    const auto complete = db.meshes.Insert(Mesh{0, 1, 1, MeshFlagCompleteBounds});
+    Check(bool(complete), "leafclass.dense-mesh");
+
+    // 4 instances -> 3 cells (2,0), (63.9,0) share cell (0,0); (100,0) is
+    // cell (1,0); (200,0) is cell (3,0). Dense order is signed cell order.
+    (void)Add(db, leaves, complete, glm::dvec3(2, 0, 0));
+    (void)Add(db, leaves, complete, glm::dvec3(200, 0, 0));
+    (void)Add(db, leaves, complete, glm::dvec3(63.9, 0, 0));
+    (void)Add(db, leaves, complete, glm::dvec3(100, 0, 0));
+    Check(leaves.Flush(db), "leafclass.dense-flush");
+
+    const auto tickets = leaves.Tickets(db);
+    Check(tickets.size() == 3, "leafclass.dense-ticket-count");
+
+    DenseLeaves dense{};
+    Check(BuildDenseLeaves(db, tickets, dense), "leafclass.dense-build");
+    Check(dense.count == tickets.size(), "leafclass.dense-count");
+    for (uint32_t i = 0; i < dense.count; ++i) {
+        Check(dense.denseToSlot[i] == tickets[i].leaf.slot, "leafclass.dense-slot-map");
+        const auto& src = db.leaves.Rows()[tickets[i].leaf.slot];
+        Check(dense.rows[i].identity == src.identity, "leafclass.dense-identity");
+        Check(dense.rows[i].value.range == src.value.range, "leafclass.dense-range");
+    }
+
+    // Fail-closed: a stale ticket generation aborts with an empty result.
+    std::vector<LeafTicket> stale = tickets;
+    stale[0].leaf.generation += 1u;
+    DenseLeaves bad{};
+    Check(!BuildDenseLeaves(db, stale, bad), "leafclass.dense-stale-fails");
+    Check(bad.count == 0 && bad.rows.empty(), "leafclass.dense-stale-empty");
+
+    // Empty ticket set is a valid zero-leaf result, not an error.
+    DenseLeaves none{};
+    Check(BuildDenseLeaves(db, {}, none) && none.count == 0, "leafclass.dense-empty-ok");
+}
+
 } // namespace
 
 int main() {
     CheckNoFalseNegatives();
     CheckGenerationRejection();
+    CheckDenseLeaves();
     std::printf("checks=%d failures=%d\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }
