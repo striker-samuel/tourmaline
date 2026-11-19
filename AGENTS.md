@@ -1,4 +1,8 @@
-# AGENTS.md — instructions for AI coding agents and human collaborators.
+# AGENTS.md — Tourmaline codebase and tooling guide
+
+This is a practical map for coding agents and contributors: how to inspect the repository, identify the owning subsystem, build, test, and respect project contracts. It is **not** a feature-status ledger. Verify implementation claims against current code and tests; when this guide disagrees with the source, fix the guide rather than treating old prose as authority.
+
+Start with the relevant subsystem below. Prefer focused changes through existing seams, preserve asset identities and GPU/resource lifetimes, and report the tests you actually ran. Do not infer that a documented design is implemented merely because a design document exists.
 
 ## Text encoding integrity
 
@@ -38,7 +42,7 @@ are still required for actual re-simulation.
 
 ## Benchmarking and performance regression workflow
 
-- Build `Benchmark` explicitly with the same CMake build directory and shader configuration used for the test: `cmake --build out/build/x64-Release --target Benchmark` (Linux uses `Benchmark`, Windows `Benchmark.exe`). It is a separate cooked-pak host with **no gameplay/audio sample elements** and requires a positive `--bench` budget; an interactive test belongs in `App`.
+- Build `Benchmark` explicitly with the same CMake build directory and shader configuration used for the test: `cmake --build out/build/x64-Release --target Benchmark` (Linux uses `Benchmark`, Windows `Benchmark.exe`). It is a separate cooked-pak benchmarking host and requires a positive `--bench` budget; an interactive test belongs in `App`.
 - For reproducible workload capture, launch `App` with a cooked pak or `.tapp`, navigate to an expensive view, then use **TAB → Benchmarks → Export for benchmark** (press **I** to enable the UI cursor if needed). Review and commit `benchmarks/scenarios.json`. IDs derive from the label, with collision suffixes; saved `environment`/`app_args` capture supported startup pins and the consolidated `--with`/`--without` pass graph, not every live-only editor/viewer slider.
 - Run `python tools/perf_harness.py list` to inspect the catalog and `python tools/perf_harness.py bench --scenario <id> --exe <build-dir>/Benchmark[.exe] --repeat 5 --output out/perf/<label>` from the repository root. The executable's build directory is the renderer CWD; saved scene paths are relative to **that** directory. The sample `bistro-ssr-stress` needs a cooked Bistro pak not included in the Sponza release.
 - Scenario replay scrubs inherited `TOURMALINE_*` environment variables; explicit `--env` pins are recorded. `compare` rejects mismatched scenarios, scene args, app args, frame counts or environment, and compares medians of **per-run average frame times**. Nsight GPU Trace and graphics captures are **instrumented diagnostics**, not FPS baselines; use a GPU-capable Windows/NVIDIA setup and a separate optimized shader-debug build for source correlation.
@@ -51,7 +55,7 @@ are still required for actual re-simulation.
 
 ## Runtime layers (app/src — the project façade stack)
 
-- **THE .TOUR LOGICAL TARGET LAYER (landed)**: the generic node verbs
+- **.tour logical target layer**: the generic node verbs
   (rename/setAttr/assignMaterial/the flag verbs/parent) and the
   cluster-id form of the typed attr verbs accept `-uuid <hex>` /
   `-name "<name>"` alongside or instead of the bare `-n <cluster id>`
@@ -110,8 +114,7 @@ are still required for actual re-simulation.
   DeployCheck-gated) both build ONE shared session and load through
   the same LoadProjectWorld path; the loose `content/` tree registers
   as an override unless `--no-vfs`. The game element hook receives the
-  session (the audio runtime borrows it — no second package
-  universe). The build appends the per-pak "#ids" blob post-cook
+  session; avoid introducing a second package-resolution universe. The build appends the per-pak "#ids" blob post-cook
   (stable slots preserved; the publish digest covers it). The game
   bootstrap contract: `app::AttachCompiledCatalog` (the typed helper —
   layout static_asserts + the pointer cast in ONE audited place, never
@@ -119,18 +122,15 @@ are still required for actual re-simulation.
   `PakAppConfig::compiledCatalogGate`, which RunPakApp runs FATAL at
   bootstrap (a catalog/deployment mismatch refuses the launch before
   any graphics work); `PakAppConfig::extraElements` (a LIST, in attach
-  order, reverse detach) replaced the single `extraElement` slot —
-  game elements compose standalone, never nested lifecycle-forwarding
-  wrappers (Sample 04: the audio element + the ProjectLit demo beside
-  it). **app::RunGame** (`app/src/Runtime.h`, in the apphost lib):
+  order, reverse detach) composes game elements without nesting —
+  keep element lifecycle ownership explicit rather than using nested
+  lifecycle-forwarding wrappers. **app::RunGame** (`app/src/Runtime.h`, in the apphost lib):
   the application-facing runtime — `app::Context` (the session + the
   world + the scene service), `app::GameBehaviour` (onStart/onUpdate),
   `RunGame(game, argc, argv, catalog...)` (the packaged-manifest
   default entry, RunConfig parse + log, the FATAL typed gate, the
   services under the game element; a thin adapter over RunPakApp —
-  the bring-your-own-loop path stays open). **The viewer serves
-  authored scene audio** (App.exe installs the audio service on every
-  lane; a sound living in an unmounted pak refuses loudly by name).
+  the bring-your-own-loop path stays open).
   **THE OVERLAY IS NO LONGER A CONTENT SOURCE on any runtime
   path**: the anim-clip fallback (the last overlay read —
   AttachClips/PostLoadTail ride `ReadAssetPath` +
@@ -158,111 +158,7 @@ are still required for actual re-simulation.
   the dropped ids). GPU-less tests drive it through the public
   `clusterLoader` seam.
 
-- **AudioRuntime** (docs/audio_source.md): the scene-aware audio layer
-  (an IAppElement) — clip cache keyed by sound id, emitter states keyed
-  by the STABLE (cluster, cluster-node) pair through
-  `World::clusterMergedNodes`, per-frame distance attenuation +
-  constant-power pan, autoplay, scene/spawn lifecycle. The imperative surface
-  (PrefetchSound/PlaySound/StopSound/SetAudioSourceVolume/SetListener)
-  forwards through its singleton.
-
-- **THE AUDIO RENDERING CORE IS MINIAUDIO, DEVICE-LESS** (vendored
-  0.11.26 at `external/miniaudio`; impl TU
-  `engine/src/Audio/miniaudio_impl.cpp`, feature macros in
-  `engine/src/Audio/miniaudio_config.h` — MA_NO_DEVICE_IO /
-  MA_NO_RESOURCE_MANAGER / MA_NO_DECODING): ONE `ma_engine` hosts every
-  voice, bus and effect node; the mixer thread renders each chunk via
-  `ma_engine_read_pcm_frames` into the SAME SDL3 stream (SDL keeps the
-  device, paks keep the content, miniaudio owns the DSP). The legacy
-  voice lane (`Play`/`Stop`/`SetVoiceSpatial`) is API-unchanged — each
-  voice an `ma_sound` on the endpoint. `Config::deviceless` +
-  `PumpOffline` is the deterministic test/bounce lane.
-
-- **AUTHORED AUDIO GRAPHS** (docs/audio_graph.md — the animator
-  parallel): a `.audiograph` text asset (tour::asset::AudioGraphDoc —
-  node topology + exposed params + ALL of its cues; STRICT parse with
-  line numbers, gated at catalog ids, cooker AND runtime) is a
-  first-class kind (`PakAssetKind::AudioGraph` = 16, catalog byte 7,
-  0x7xxx ids, a VFS-addressable kind — authored text
-  verbatim). `PakAssetKind`/catalog kinds APPEND, never renumber.
-  Instances are ENGINE-owned (`tour::audio::AudioEngine` registries +
-  generational `smvk::AudioInstanceHandle` + the
-  `tour::audio::AudioInstance` facade: play/playCue/crossFade/stop/
-  set/setVolume/playing); gameplay reaches them through
-  `app::Context::audio()` (`app::AudioGraphs` — the typed-key create +
-  the doc/clip caches over the shared session). Clip resolution is
-  CALLER-thread (sounds resolve by VFS path through the registry;
-  pak reads + WAV decode never touch the mixer thread). ALL graph
-  mutations + param scheduling happen at CHUNK boundaries on the
-  mixer thread; the whole node set + every (source, cue) voice is
-  pre-built at create (the one allocation burst — steady state is
-  alloc-free); automation evaluates AT the chunk cadence (immune to
-  frame stalls). The generated project.h emits
-  `project::audiographs::*` AudioGraphKeys PLUS per-cue constants
-  (`project::audiocues::<graph>_<cue>` bundling (graph id, cue
-  ordinal), outside the catalog ABI). v1: no in-graph spatialization,
-  no graph editor yet.
-  Pinned by audiograph_tests + `audiograph.*` in
-  project_pipeline_tests + the sample + project_e2e_tests.
-
-- **THE SCHROEDER REVERB** (`engine/src/Audio/schroeder_reverb.
-  {h,cpp}` — the ONE custom miniaudio `ma_node`): four damped
-  feedback combs + two all-pass diffusers per channel, stereo
-  decorrelated, MIX mode (the authored-graph `reverb` node —
-  `AudioNodeType::Reverb = 11`, params wet/rt60/damping appended,
-  wet 0 = an EXACT bypass) and WET-ONLY mode (the environmental
-  send). Continuous processing drains tails through input silence;
-  coefficients (RT60 feedback, damping, wet) smooth INSIDE the
-  callback; delay lengths fixed for the node's lifetime; bounded
-  rt60 0.15..8 s at every gate.
-
-- **AUDIO ROOMS — the environmental reverb volumes** (docs/
-  audio_graph.md): `SceneAudioRoom` (a node-local payload:
-  priority/fades/wet/rt60/damping/transition; INDEPENDENT of GI — a
-  node may carry BOTH a GiVolumeRow and an AudioRoomRow, or a
-  room only) + the shared OBB utility `Engine/Scene/
-  spatial_volume.h` (the GI placement convention: center =
-  translation, half-extents = HALF the column lengths; parity with
-  the GI planes pinned by tests). The `.tour` lane: `createNode -at
-  audioRoom`, `attachAudioRoom`/`removeAudioRoom` (`-ref k -owner
-  givolume` targets a created GI volume — one placement, two
-  associations), `setAudioRoomAttr` (properties + the givolume-lane
-  position/rotation/size shape channels);
-  `kCreateAudioRoomRefBase = 0x01000000`. The EDITOR lane is full
-  (Create menu, the inspector's Enable button + field drags, teal
-  box gizmos + pick, undo/redo, duplicate/delete capture, the
-  family-ref drop guards). The COOKED lane: the scene blob's v20
-  audio-room section (appended after v19 — the sanctioned break).
-  The RUNTIME lane: the ENVIRONMENTAL WORLD-SFX BUS (worldSfxGroup →
-  splitter → {dry → endpoint, wet-only Schroeder → wetGain →
-  endpoint}); `Play(..., AudioRoute)` routes spatial scene emitters
-  through it (default Direct — the compat contract; a failed bus
-  build degrades to direct, logged, never fatal); AudioRuntime
-  evaluates the listener's ordered-coverage blend over the durable
-  cluster rows each frame (descending audio priority, the outdoor
-  baseline for the leftover coverage) and pushes ONE
-  change-detected `SetEnvironmentReverb` — all smoothing is
-  mixer-thread-side. MVP: listener-side reverb ONLY — no occlusion,
-  portals or per-room IRs.
-
-- **THE PER-VOICE CURSOR RULE** (the shared-buffer trap,
-  docs/audio_graph.md): a clip's decoded bytes are wrapped by
-  PER-VOICE `ma_audio_buffer_ref` cursors — NEVER a shared
-  `ma_audio_buffer` (one buffer = one cursor: the first voice to
-  play a clip exhausts it and every later voice reads silence;
-  simultaneous voices race the position). Pinned by
-  `ag.bus.raw-cursor-trap`/`-fix` + the `ag.bus.*-rings`
-  regression pins.
-
-- **Sound assets are a first-class kind**: `PakAssetKind::Sound` (raw
-  .wav at the VFS path), 0x4xxx content ids (scenes 0x1xxx / textures
-  0x2xxx / meshes 0x3xxx / sounds 0x4xxx / audiographs 0x7xxx), and
-  the cooked scene's v18 audio section stores NUMERIC sound ids (the
-  pak cooker's `--sound-id` map; a non-empty map with an unresolved
-  referenced path FAILS the cook). The kinds gate on the SHARED
-  catalog kind bytes.
-
-- **THE PAK CONTAINER IS SMP8** (the paged break — docs/pak_vnext.md is
+- **Pak container (SMP8)** (the paged break — docs/pak_vnext.md is
   the format reference): per-entry `contentCrc` verified LAZILY at
   `Payload()` fetch (a corrupt page throws AT the page, neighbors stay
   servable), the footer CRC covers ONLY the TOC (`VerifyAll()` is the
@@ -278,7 +174,7 @@ are still required for actual re-simulation.
   Cluster::PromoteDeferredMeshLodFromPage reads promote bytes from the
   entry's own file range (see docs/pak_vnext.md).
 
-- **THE ASYNC PAK PAGER** (`engine/Asset/pak_pager.h` — docs/pak_vnext.md):
+- **Async pak pager** (`engine/Asset/pak_pager.h` — docs/pak_vnext.md):
   ONE worker thread over a persistent handle, positional page reads
   outside the pool lock, demand-reads-jump-prefetch (prefetch is NEVER a
   guarantee — the later Read is the contract), in-flight/resident DEDUP,
@@ -302,7 +198,7 @@ are still required for actual re-simulation.
   (`LoadMeshByPlan` — slot validated through the O(1)
   `PakReader::FindBySlot` index).
 
-- **GEOMETRY STAGE 6 — THE PAGER LOD PROMOTE** (docs/pak_vnext.md):
+- **Paged geometry LOD promotion** (docs/pak_vnext.md):
   `Cluster::PromoteDeferredMeshLodFromPage` promotes deferred siblings
   from their ENTRY'S OWN BYTES through the pager (every range must FIT
   the page) with the promote tail SHARED with the image-pin lane.
@@ -325,8 +221,7 @@ are still required for actual re-simulation.
 
 - **The gameplay-handle model** (engine Engine/Scene/entity_handle.h):
   NO generic game-entity registry — gameplay structs compose TYPED
-  64-bit generational handles (MeshEntityHandle/AnimatorHandle/
-  AudioSourceHandle); the generated project.h carries TYPED KEYS
+  64-bit generational handles (for example MeshEntityHandle and AnimatorHandle); the generated project.h carries TYPED KEYS
   (SceneKey/TextureKey/MeshKey/SoundKey — which ASSET; handles name
   which INSTANCE). The full mesh-entity + animator surface has landed
   (docs/entities_and_animators.md): World::SpawnMeshFromNode/
@@ -343,7 +238,7 @@ are still required for actual re-simulation.
 **The ownership rule (todo item 8, the standing architecture target):**
 
 - **`tour::`** — the ENGINE API: app, scene/world/cluster, assets, paks,
-  audio, GI, placement, camera, mem, profiler, renderers' engine-side
+  GI, placement, camera, mem, profiler, renderers' engine-side
   policy, the shader library, the streamers.
 - **`smvk::`** — the RHI ONLY: resources (Texture/Image/Buffer handles,
   Holder/Handle), command buffers, swapchain, rendergraph recording,
@@ -361,7 +256,7 @@ including/referencing engine-domain headers.
 
 1. New engine-owned types go in a `tour::` namespace (flat `tour::` for
    the core families, `tour::shaders` / `tour::gfx` / `tour::asset` /
-   `tour::gi` / `tour::placement` / `tour::mem` / `tour::audio` style
+   `tour::gi` / `tour::placement` / `tour::mem` style
    for subsystems). NEVER declare engine concepts in `namespace smvk`.
 2. NEVER add `using namespace ::smvk;` to a public header (R6 bans it
    with an EMPTY exception list - zero broad imports remain). In moved
@@ -533,7 +428,7 @@ bloom/tonemap/AA/UI → swapchain.
   byte-identical text. Tabular output (`Paks`, `Assets`) is
   width-aligned by the longest emitted cell in each column, as
   are `AssetKind` enumerators; typed
-  namespaces, audio cues and retired declarations align their value
+  namespaces and retired declarations align their value
   braces. One-column collections need no alignment. Never reorder
   rows or alter literals in a formatting-only change.
   `<Name>_stamp` (`--stamp`) forces a new
@@ -777,7 +672,7 @@ binary packages — see `THIRD_PARTY_NOTICES.md`).
   FULL swap mid-bench (verified: differing pixels 0.00% vs the no-swap
   reference). Pinned by `swap.cover-*`.
 
-### The lit-hook seam + the 32-bit userdata lane (Phase A landed)
+### The lit-hook seam + the 32-bit userdata lane
 
 docs/shader_library_design.md is the design record.
 
@@ -819,7 +714,7 @@ docs/shader_library_design.md is the design record.
   (test_world_entities.cpp), the stride/tail/padEnd pins
   (test_rendergraph_contract.cpp).
 
-### The ProjectLit family (Phase B landed)
+### The ProjectLit family
 
 The project-authored lit FS family — a project's hook implementation
 compiled against the SAME shared lit body and selected per base
@@ -864,11 +759,7 @@ base; this is the family layer.
   (`World::FarShadingAt` returns default{}) — the cheap vertex-lit FS
   never runs the hooks — so the effect survives to the farthest cooked
   LOD (the documented v1 cost).
-- **The demo** (`samples/04_project_game`): the `ProjectLitDemo` element
-  (composed with the audio runtime — RunPakApp has ONE extraElement
-  slot) pulses the damage + wetness bits through `SetMaterialUserData`
-  on the scene's first opaque material. Headless A/B:
-  `TOURMALINE_EXTRA_ELEMENT_BENCH=1 TOURMALINE_CAPTURE=12 --bench 16`.
+- **The demo** (`samples/04_project_game`): `ProjectLitDemo` exercises the damage and wetness user-data bits through `SetMaterialUserData` on an opaque material. For a reproducible headless comparison, use the sample's current bench entry and verify its arguments before copying an older command.
 - Tests: `family.*` (test_world_entities.cpp) + `gfx.family-*`
   (test_gfxfilter.cpp).
 
