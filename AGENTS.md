@@ -122,17 +122,15 @@ are still required for actual re-simulation.
   `PakAppConfig::compiledCatalogGate`, which RunPakApp runs FATAL at
   bootstrap (a catalog/deployment mismatch refuses the launch before
   any graphics work); `PakAppConfig::extraElements` (a LIST, in attach
-  order, reverse detach) replaced the single `extraElement` slot —
-  game elements compose standalone, never nested lifecycle-forwarding
-  wrappers. **app::RunGame** (`app/src/Runtime.h`, in the apphost lib):
+  order, reverse detach) composes game elements without nesting —
+  keep element lifecycle ownership explicit rather than using nested
+  lifecycle-forwarding wrappers. **app::RunGame** (`app/src/Runtime.h`, in the apphost lib):
   the application-facing runtime — `app::Context` (the session + the
   world + the scene service), `app::GameBehaviour` (onStart/onUpdate),
   `RunGame(game, argc, argv, catalog...)` (the packaged-manifest
   default entry, RunConfig parse + log, the FATAL typed gate, the
   services under the game element; a thin adapter over RunPakApp —
-  the bring-your-own-loop path stays open). **The viewer serves
-  authored scene audio** (App.exe installs the audio service on every
-  lane; a sound living in an unmounted pak refuses loudly by name).
+  the bring-your-own-loop path stays open).
   **THE OVERLAY IS NO LONGER A CONTENT SOURCE on any runtime
   path**: the anim-clip fallback (the last overlay read —
   AttachClips/PostLoadTail ride `ReadAssetPath` +
