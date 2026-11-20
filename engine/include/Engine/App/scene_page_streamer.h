@@ -160,11 +160,12 @@ class ScenePageStreamer : public engine::worldpartition::IWorldStreamProvider {
             // loading on a later tick (after the camera moves and more far
             // pages evict) rather than exhausting the arena and failing a
             // whole page deserialize.
-            if (StaticVertexHeapNearlyFull()) {
+            if (HeapNearlyFull()) {
                 if (!heapGateLogged_) {
-                    std::cerr << "[PageStreamer] static vertex heap near capacity ("
-                              << smvk::staticVertexFmtHeap.m_staticVertexBlock.Used() << "/"
-                              << smvk::staticVertexFmtHeap.m_staticVertexBlock.Capacity()
+                    std::cerr << "[PageStreamer] static vertex heap near capacity (used "
+                              << smvk::staticVertexFmtHeap.m_staticVertexBlock.Used()
+                              << " + in-flight ~" << InFlightVertexEstimate() << " / budget "
+                              << GeometryBudget()
                               << " verts); holding page admission until far pages evict\n";
                     heapGateLogged_ = true;
                 }
@@ -204,6 +205,12 @@ class ScenePageStreamer : public engine::worldpartition::IWorldStreamProvider {
     }
     void SetMaxLoadedMeshes(uint32_t n) {
         maxLoadedMeshes_ = n;
+    }
+    // Resident-geometry budget in VERTICES (0 = auto, 85% of the arena). The
+    // host derives this from its configurable geometry memory limit; a value
+    // below the arena capacity reserves headroom for the async carve burst.
+    void SetMaxLoadedVertices(uint64_t verts) {
+        maxLoadedVertices_ = verts;
     }
     // Fed each frame by the renderer (the view matrix is built in the
     // frame-uniform pass, one frame after the provider's CommitFrame runs);
@@ -441,14 +448,43 @@ class ScenePageStreamer : public engine::worldpartition::IWorldStreamProvider {
     // Heap-capacity admission: the static VERTEX heap (not the mesh count) is
     // the binding budget for dense partitioned worlds. The island's ~162k valid
     // meshes fit under kMaxMeshes but their ~210M vertices overflow the arena,
-    // so admission must ALSO gate on the arena's live usage. 85% leaves headroom
-    // for in-flight bin deserializations that carve asynchronously.
-    static bool StaticVertexHeapNearlyFull() {
-        const smvk::StaticHeapArena& block = smvk::staticVertexFmtHeap.m_staticVertexBlock;
-        const uint64_t cap = block.Capacity();
+    // so admission must ALSO gate on the arena's live usage.
+    //
+    // The resident-geometry budget is CONFIGURABLE (SetMaxLoadedVertices, fed
+    // from the host's geometry memory limit); it defaults to 85% of the arena
+    // so there is always carve-burst headroom. The gate also reserves the
+    // estimated cost of the pages still queued/being deserialized: their carves
+    // race ahead of the render-thread gate, so gating on Used() alone would
+    // let the async burst overflow the arena before the next tick reacts.
+    uint64_t GeometryBudget() const {
+        const uint64_t cap = smvk::staticVertexFmtHeap.m_staticVertexBlock.Capacity();
+        if (maxLoadedVertices_ != 0)
+            return std::min(maxLoadedVertices_, cap);
+        return (cap * 85u) / 100u;
+    }
+
+    // Scale-free estimate of the async carve burst: the meshes still dispatched
+    // (queued or in a bin) times the running per-mesh vertex average observed
+    // from the arena. A floor keeps the cold-start estimate conservative.
+    uint64_t InFlightVertexEstimate() const {
+        uint64_t meshes = 0;
+        for (uint32_t i = 0; i < manifest_.sceneCount; ++i)
+            if (dispatched_[i])
+                meshes += manifest_.Meshes(i);
+        if (meshes == 0)
+            return 0;
+        const uint64_t resident = smvk::staticVertexFmtHeap.m_staticVertexBlock.Used();
+        const uint64_t residentMeshes = std::max<uint64_t>(1, world_.meshLocations.size());
+        const uint64_t perMesh = std::max<uint64_t>(64, resident / residentMeshes);
+        return meshes * perMesh;
+    }
+
+    bool HeapNearlyFull() const {
+        const uint64_t cap = smvk::staticVertexFmtHeap.m_staticVertexBlock.Capacity();
         if (cap == 0)
             return false; // uninitialized arena: let the load fail normally
-        return block.Used() >= (cap * 85u) / 100u;
+        const uint64_t used = smvk::staticVertexFmtHeap.m_staticVertexBlock.Used();
+        return used + InFlightVertexEstimate() >= GeometryBudget();
     }
 
     World& world_;
@@ -472,6 +508,8 @@ class ScenePageStreamer : public engine::worldpartition::IWorldStreamProvider {
     // sets it to the GPU-scene admission ceiling (kMaxMeshes) so streaming
     // never oversubscribes the GPU-driven path.
     uint32_t maxLoadedMeshes_ = 0;
+    // Resident-geometry budget in VERTICES (0 = auto, 85% of the arena).
+    uint64_t maxLoadedVertices_ = 0;
     // One-shot diagnostic for the heap-capacity gate (see Tick's admission).
     bool heapGateLogged_ = false;
     std::vector<std::unique_ptr<Bin>> bins_; // heap-owned (Bin is non-movable)
