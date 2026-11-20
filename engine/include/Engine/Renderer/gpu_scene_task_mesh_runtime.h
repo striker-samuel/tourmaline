@@ -88,7 +88,14 @@ struct TaskMeshDispatchPlan {
 class TaskMeshRuntime {
   public:
     static constexpr uint32_t Flights = smvk::limits::MaxFramesInFlight;
-    static constexpr uint32_t MaxTaskGroups = 2097152u;
+    // Worst-case task-group bound = workCapacity * ceil(worstMeshlets/32).
+    // A single instanced high-meshlet mesh (the imported terrain section,
+    // 6645 meshlets -> 208 groups/instance) inflates this far above the
+    // exact GPU total; 2M rejected the island's framed view outright and
+    // silently dropped the task/mesh leg back to indexed raster. 16M covers
+    // the full terrain set with headroom. (Tighter per-instance sum is a
+    // documented follow-up: the exact total is ~10x smaller.)
+    static constexpr uint32_t MaxTaskGroups = 16777216u;
     static constexpr uint32_t TaskGridX = 1024u;
     struct Flight {
         smvk::Holder<smvk::BufferHandle> counts, offsets, blockSums, blockBases;
@@ -214,9 +221,8 @@ class TaskMeshRuntime {
             !in.indexWordCapacity || !in.vertexCapacity || in.workCapacity > 1048576u ||
             in.sceneCandidateCount > 1048576u || in.meshCount > kMaxRasterDrawGroups ||
             in.aliasCount > kMaxRasterDrawGroups || in.geometryCount > kMaxRasterDrawGroups ||
-            in.clusterCount > 4194304u ||
-            in.instanceCount > 4194304u || in.indexWordCapacity > 512u * 1024u * 1024u / 4u ||
-            in.vertexCapacity > 44739242u)
+            in.clusterCount > 4194304u || in.instanceCount > 4194304u ||
+            in.indexWordCapacity > 512u * 1024u * 1024u / 4u || in.vertexCapacity > 44739242u)
             return false;
         if (in.historyCapacity != 0u &&
             (in.historyCapacity > 1048576u ||
