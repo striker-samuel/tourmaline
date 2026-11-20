@@ -2359,6 +2359,15 @@ bool WorldRenderer::onAttach() {
         if (std::atoi(streamEnv) == 0)
             m_textureStreamingEnabled = false;
     }
+    // Map streaming radius override (the camera-driven page streamer's
+    // Scene-layer interest radius, default 512m). A larger radius admits
+    // more district tiles and is the lever used to drive the static-vertex
+    // heap toward its capacity gate end-to-end.
+    if (const char* rEnv = std::getenv("TOURMALINE_MAP_STREAMING_RADIUS")) {
+        const double metres = std::atof(rEnv);
+        if (std::isfinite(metres) && metres >= 0.0)
+            m_mapStreamingRadius = metres;
+    }
     if (m_textureStreamingEnabled && !m_textureStreamer) {
         smvk::TextureStreamerConfig streamCfg;
         streamCfg.budgetBytes = 256ull * 1024 * 1024;
