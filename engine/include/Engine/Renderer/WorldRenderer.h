@@ -3862,7 +3862,7 @@ class WorldRenderer : public IRenderer {
     char m_benchmarkNotes[256] = {};
     std::string m_benchmarkExportMessage;
     void ExportBenchmarkScenario();
-    int m_debugMeshletMode = 0; // 0 = random per meshlet, 1 = cone heat
+    int m_debugMeshletMode = 0; // 0 = random per meshlet, 1 = cone heat, 2 = PSO bin
     bool m_hideTransparent =
         false; // debug: skip all transparent draws (bisect blending/overdraw out)
     // Wireframe (P): raster override on every scene-triangle bind in the

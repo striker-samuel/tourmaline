@@ -960,8 +960,9 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                             ImGui::SliderFloat(
                                 "Motion debug scale", &m_motionDebugScale, 1.0f, 128.0f);
                     }
-                    const char* meshletModes[] = {"Random per meshlet", "Cone-cutoff heat"};
-                    ImGui::Combo("Meshlet color mode (F3)", &m_debugMeshletMode, meshletModes, 2);
+                    const char* meshletModes[] = {
+                        "Random per meshlet", "Cone-cutoff heat", "PSO bin (masked vs opaque)"};
+                    ImGui::Combo("Meshlet color mode (F3)", &m_debugMeshletMode, meshletModes, 3);
                     ImGui::Checkbox("Wireframe (P)", &m_wireframe);
                     ImGui::Checkbox("Hide transparent (bisect blending)", &m_hideTransparent);
                     if (!m_gfxRenderer.DebugProgramsValid())
@@ -1345,6 +1346,28 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                         ImGui::InputFloat3("Camera position", &camPos.x, "%.1f");
                         if (ImGui::IsItemDeactivatedAfterEdit())
                             m_cameraPositioner.setPosition(camPos);
+                        // Fly-camera velocity knobs: base speed, the Shift
+                        // "fast" multiplier, and the response shape. The
+                        // island is ~28 km, so the slider tops out well past
+                        // the walking default.
+                        ImGui::SeparatorText("Camera speed");
+                        ImGui::SliderFloat("Base speed (m/s)",
+                                           &m_cameraPositioner.maxSpeed_,
+                                           0.1f,
+                                           1000.0f,
+                                           "%.1f");
+                        ImGui::SliderFloat("Fast multiplier (Shift)",
+                                           &m_cameraPositioner.fastCoef_,
+                                           1.0f,
+                                           64.0f,
+                                           "%.1f");
+                        ImGui::SliderFloat("Acceleration (m/s^2)",
+                                           &m_cameraPositioner.acceleration_,
+                                           0.5f,
+                                           2000.0f,
+                                           "%.1f");
+                        ImGui::SliderFloat(
+                            "Damping (s)", &m_cameraPositioner.damping_, 0.05f, 2.0f, "%.2f");
                     }
                     ImGui::Text("Swapchain %ux%u  framesInFlight=%u",
                                 fb.swapchain->GetExtent().width,
@@ -2016,9 +2039,13 @@ void WorldRenderer::DrawDebugViewHint() {
                 title = "F3 Meshlets (random)";
                 lines[0] = "random hue per meshlet; culled clusters stay visible";
                 lines[1] = "(every registered cluster is colored).";
-            } else {
+            } else if (m_debugMeshletMode == 1) {
                 title = "F3 Meshlets (cone heat)";
                 lines[0] = "red = degenerate cone (never culls), green = tight cone.";
+            } else {
+                title = "F3 Meshlets (PSO bin)";
+                lines[0] = "red/orange = masked alpha-test (plants/vegetation),";
+                lines[1] = "gray/blue = opaque architecture; cyan = double-sided.";
             }
             break;
         case ViewMode::Cascades:

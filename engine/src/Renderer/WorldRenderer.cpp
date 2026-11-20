@@ -11898,11 +11898,21 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     if (m_world) {
         if (m_gpuScenePhysicalWorld != m_world ||
             m_gpuScenePhysicalTopologyRevision != m_world->gpuSceneTopologyRevision) {
-            // World topology can mutate independently of LOD streaming:
-            // GPU-scene must not reuse a Gfx mesh ID from an obsolete map.
-            // Rebuild physical ranges using native-only transient IDs and
-            // keep task/mesh disabled until a full cooked re-registration.
-            RefreshGpuScenePhysicalIndexedRanges(/*nativeOnly=*/true);
+            // World topology can mutate independently of the geometry-LOD
+            // streamer: world-partition page instantiation bumps the revision
+            // (World::Instantiate tail) without passing through
+            // UpdateGeometryStreaming's promote/evict dirty path. Re-cook the
+            // meshlet registration HERE so the task/mesh backend stays enabled
+            // against the fresh map — otherwise the native-only rebuild kept it
+            // disabled with no later re-registration, and the scene silently
+            // fell back to indexed/direct after the first streamed page.
+            const bool cookedMeshletBackend = GpuSceneCookedMeshletsWanted();
+            if (cookedMeshletBackend) {
+                smvk::gfx::ResetStaticRegistrations(m_gfxRenderer.State());
+                smvk::gfx::RegisterWorldMeshes(m_gfxRenderer.State(), *m_world);
+                smvk::gfx::UploadStaticData(m_gfxRenderer.State(), *m_context, *m_rendergraph);
+            }
+            RefreshGpuScenePhysicalIndexedRanges(/*nativeOnly=*/!cookedMeshletBackend);
             ++m_gpuSceneGeometryRevision;
         }
         const auto gpuSceneSync = m_gpuSceneSync.Synchronize(
@@ -13106,9 +13116,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                 // Flat debug views render the real GPU Scene
                                 // cull survivors through the meshlet debug
                                 // color: 1 meshlet hash (F3), 2 LOD palette
-                                // (F5), 3 cone heat (F3 heat mode).
+                                // (F5), 3 cone heat (F3 heat mode), 4 PSO-bin
+                                // (F3 PSO mode — masked plants vs opaque arch).
                                 inputs.debugMode = (m_debugView == ViewMode::Meshlets)
-                                                       ? (m_debugMeshletMode == 1 ? 3u : 1u)
+                                                       ? (m_debugMeshletMode == 1
+                                                              ? 3u
+                                                              : (m_debugMeshletMode == 2 ? 4u : 1u))
                                                        : (m_debugView == ViewMode::Lods ? 2u : 0u);
                                 // Diagnostic isolation toggles for the task
                                 // shader's per-meshlet visibility tests (one-shot
@@ -17423,12 +17436,26 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // distant shadows land in T3): in 1x the Main depth is
         // read-only, so post-Main depth consumers (SSR/volumetric
         // marching) see the prepass depth over terrain pixels.
+        // The terrain field is NOT in the Forward+ depth prepass, so in
+        // 1x the shared opaqueDepth (writeEnable = useMsaa = false) would
+        // leave it depth-invisible to the scene opaques that draw after it
+        // (they also test read-only against the prepass depth, which has no
+        // terrain) - meshlets occluded by the field would composite over
+        // it. Terrain draws FIRST here, so it may write depth unconditionally:
+        // it tests GreaterEqual against the prepass depth (so scene geometry
+        // in front still occludes it) and stamps its own depth for every
+        // later opaque draw + the post-Main depth consumers (SSR/volumetric).
+        const smvk::DepthSettings terrainDepth{
+            .depthFunc = smvk::CompareOp::GreaterEqual,
+            .writeEnable = true,
+            .depthTestEnable = true,
+        };
         if (m_passes.terrain && m_terrainEnabled && m_terrain.valid) {
             m_terrain.RecordBlocks(cmd,
                                    frameViewProj,
                                    m_cameraPositioner.cameraPosition_,
                                    pc,
-                                   opaqueDepth,
+                                   terrainDepth,
                                    noStencil,
                                    smvk::BlendSettings::Opaque(),
                                    msaaSettings,
