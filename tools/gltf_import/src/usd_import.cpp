@@ -133,7 +133,7 @@ bool TriangulateFace(const std::vector<GfVec3f>& polygon,
     if (span <= 1e-8f)
         return false;
     for (const auto& point : polygon)
-        if (std::abs(GfDot(point - polygon[0], normal)) > span * 1e-4f)
+        if (std::abs(GfDot(point - polygon[0], normal)) > span * 1e-2f)
             return false;
 
     int drop = 0;
