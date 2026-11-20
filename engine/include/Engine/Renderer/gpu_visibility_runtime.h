@@ -82,7 +82,8 @@ class GpuVisibilityRuntime {
                                bool validate = false) {
         if (flight >= Flights || dense.count == 0 || views.empty() || views.size() > MaxViews ||
             dense.count > MaxRowSlots || db.instances.Size() > MaxRowSlots ||
-            db.leafMembers.Size() > MaxRowSlots || !addresses.leafMembers || !addresses.instances ||
+            db.leafMembers.Size() > MaxRowSlots || db.meshes.Size() > MaxRowSlots ||
+            !addresses.leafMembers || !addresses.instances || !addresses.meshes ||
             ownerGenerations.size() < db.instances.Size())
             return false;
         auto& f = flight_[flight];
@@ -212,10 +213,11 @@ class GpuVisibilityRuntime {
         fused.ownerGenerations = owner;
         fused.views = viewsBda;
         fused.verdicts = verdicts;
+        fused.meshes = addresses.meshes;
         // Conservative active-leaf bound: the fused pass walks every queue slot
         // and skips zero masks. dispatch-indirect on the counter is the
         // follow-up optimization once the counter path is validated.
-        fused.counts = glm::uvec4(f.leafCount, f.viewCount, 0u, 0u);
+        fused.counts = glm::uvec4(f.leafCount, f.viewCount, db.meshes.Size(), 0u);
 
         if (validate) {
             f.expected = ReferenceVisibility(db, dense, views, ownerGenerations);
