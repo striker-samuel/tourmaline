@@ -13993,6 +13993,27 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                             } catch (...) {
                             }
                         }
+                        static constexpr const char* prodScanPaths[3] = {
+                            "content/shaders/gpu_scene_work_prefix_block.cs.hlsl.spv",
+                            "content/shaders/gpu_scene_work_prefix_groups.cs.hlsl.spv",
+                            "content/shaders/gpu_scene_work_prefix_add.cs.hlsl.spv"};
+                        for (uint32_t i = 0; i < 3u; ++i) {
+                            if (m_gpuSceneWorkScanPrograms[i].shaderCount != 0)
+                                continue;
+                            try {
+                                auto bytes = smvk::shaders::Read(prodScanPaths[i]);
+                                m_gpuSceneWorkScanModules[i] = m_context->CreateShaderModule(
+                                    std::move(bytes), "gpuSceneWorkScanCS");
+                                if (!m_gpuSceneWorkScanModules[i].empty()) {
+                                    smvk::Shader cs{.module = m_gpuSceneWorkScanModules[i],
+                                                    .entryPoint = "mainCS",
+                                                    .stage = smvk::ShaderStage::Compute};
+                                    m_gpuSceneWorkScanPrograms[i] = {.shaders = {cs},
+                                                                     .shaderCount = 1};
+                                }
+                            } catch (...) {
+                            }
+                        }
                     }
                     if (s_gpuSceneVisibilityProd && m_gpuSceneCompactPrograms[0].shaderCount == 1 &&
                         m_gpuSceneCompactPrograms[1].shaderCount == 1 &&
@@ -14000,6 +14021,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         m_gpuSceneWorkPrograms[0].shaderCount == 1 &&
                         m_gpuSceneWorkPrograms[1].shaderCount == 1 &&
                         m_gpuSceneWorkPrograms[2].shaderCount == 1 &&
+                        m_gpuSceneWorkScanPrograms[0].shaderCount == 1 &&
+                        m_gpuSceneWorkScanPrograms[1].shaderCount == 1 &&
+                        m_gpuSceneWorkScanPrograms[2].shaderCount == 1 &&
                         m_gpuSceneRasterBuildProgram.shaderCount == 1) {
                         if (m_gpuVisibilityExpandProgram.shaderCount == 0) {
                             try {
