@@ -52,6 +52,7 @@
 #include <Engine/Renderer/ShapeScene.h>
 #include <Engine/Renderer/cubemap.h>
 #include <Engine/Renderer/geometry_streamer.h>
+#include <Engine/Renderer/gpu_scene_fused_expand.h>
 #include <Engine/Renderer/gpu_scene_raster_geometry.h>
 #include <Engine/Renderer/gpu_scene_raster_ownership.h>
 #include <Engine/Renderer/gpu_scene_render_view_bridge.h>
@@ -2464,6 +2465,10 @@ class WorldRenderer : public IRenderer {
     tour::gpu_scene::GpuVisibilityRuntime m_gpuVisibilityRuntime;
     std::array<smvk::Holder<smvk::ShaderModuleHandle>, 3> m_gpuVisibilityModules{};
     std::array<smvk::ShaderProgram, 3> m_gpuVisibilityPrograms{};
+    // P1 fused-expand bridge: per-instance fused verdicts -> dense cull
+    // verdicts, feeding the existing compact/work/raster chain (production).
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuVisibilityExpandModule{};
+    smvk::ShaderProgram m_gpuVisibilityExpandProgram{};
     // Opt-in GPU Scene task/amplification + mesh raster path.
     // CPU admission keeps the indexed renderer as an all-scene fallback:
     // no partial submesh ownership or double draws.

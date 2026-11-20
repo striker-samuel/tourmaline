@@ -324,6 +324,14 @@ class GpuVisibilityRuntime {
                                 : smvk::BufferHandle{};
     }
 
+    // Device address of the fused verdict stream (the expand stage's input).
+    [[nodiscard]] uint64_t FusedVerdictAddress(const smvk::ResourceManager& ctx,
+                                               uint32_t flight) const {
+        return flight < Flights && !flight_[flight].verdicts.empty()
+                   ? ctx.GetBufferDeviceAddress(flight_[flight].verdicts)
+                   : 0;
+    }
+
     void MarkDispatched(uint32_t flight) {
         if (flight >= Flights)
             return;

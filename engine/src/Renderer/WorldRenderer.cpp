@@ -11558,6 +11558,14 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         const char* e = std::getenv("TOURMALINE_GPU_SCENE_VISIBILITY");
         return e && std::strcmp(e, "1") == 0;
     }();
+    // P1 production cutover: the fused verdict stream drives the compact ->
+    // work-select -> raster chain (replacing the CPU coarse selector + cull).
+    // Validation-only for now: proves the fused path reproduces the CPU draw
+    // work; ownership flip lands once safe-overflow + draw registration are in.
+    static const bool s_gpuSceneVisibilityProd = [] {
+        const char* e = std::getenv("TOURMALINE_GPU_SCENE_VISIBILITY_PROD");
+        return e && std::strcmp(e, "1") == 0;
+    }();
     // GPU-scene Main/depth is the default for admitted static opaque
     // sources. Unsupported objects (including GPU-skinned, layered and
     // masked) retain the proven legacy raster path through canonical
@@ -11868,6 +11876,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         m_gpuSceneValidator.BeginFlight(*m_context, fb.frameIndex);
     if (s_gpuSceneVisibility)
         m_gpuVisibilityRuntime.BeginFlight(*m_context, fb.frameIndex);
+    if (s_gpuSceneVisibilityProd) {
+        const uint32_t fusedWork = m_gpuSceneValidator.ReadbackWorkCount(*m_context, fb.frameIndex);
+        if (fusedWork != UINT32_MAX && m_frameCounter % 60u == 0u)
+            std::fprintf(stderr, "[GpuSceneVisibilityProd] work=%u\n", fusedWork);
+    }
     for (auto& validator : m_gpuSceneCascadeValidators)
         validator.BeginFlight(*m_context, fb.frameIndex);
     m_gpuSceneDatabaseReady = false;
@@ -13913,6 +13926,199 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                             cmd.Dispatch(leafGroups, 1, 1);
                         });
                     m_gpuVisibilityRuntime.MarkDispatched(flight);
+
+                    // P1 production cutover (validation-only): the fused verdict
+                    // stream drives the existing compact -> work-select -> raster
+                    // chain, replacing the CPU coarse selector + per-view cull.
+                    // The CPU path still draws; this proves the fused path
+                    // reproduces the same draw work (compare against
+                    // [GpuSceneValidate]'s CPU work counts).
+                    if (s_gpuSceneVisibilityProd) {
+                        // Lazy-load the compact + work programs (the visibility-
+                        // only path does not load them; the cull/raster path does).
+                        static constexpr const char* prodCompactPaths[3] = {
+                            "content/shaders/gpu_scene_compact_count.cs.hlsl.spv",
+                            "content/shaders/gpu_scene_compact_prefix.cs.hlsl.spv",
+                            "content/shaders/gpu_scene_compact_scatter.cs.hlsl.spv"};
+                        for (uint32_t i = 0; i < 3u; ++i) {
+                            if (m_gpuSceneCompactPrograms[i].shaderCount != 0)
+                                continue;
+                            try {
+                                auto bytes = smvk::shaders::Read(prodCompactPaths[i]);
+                                m_gpuSceneCompactModules[i] = m_context->CreateShaderModule(
+                                    std::move(bytes), "gpuSceneCompactCS");
+                                if (!m_gpuSceneCompactModules[i].empty()) {
+                                    smvk::Shader cs{.module = m_gpuSceneCompactModules[i],
+                                                    .entryPoint = "mainCS",
+                                                    .stage = smvk::ShaderStage::Compute};
+                                    m_gpuSceneCompactPrograms[i] = {.shaders = {cs},
+                                                                    .shaderCount = 1};
+                                }
+                            } catch (...) {
+                            }
+                        }
+                        static constexpr const char* prodWorkPaths[3] = {
+                            "content/shaders/gpu_scene_work_select.cs.hlsl.spv",
+                            "content/shaders/gpu_scene_work_prefix.cs.hlsl.spv",
+                            "content/shaders/gpu_scene_work_scatter.cs.hlsl.spv"};
+                        for (uint32_t i = 0; i < 3u; ++i) {
+                            if (m_gpuSceneWorkPrograms[i].shaderCount != 0)
+                                continue;
+                            try {
+                                auto bytes = smvk::shaders::Read(prodWorkPaths[i]);
+                                m_gpuSceneWorkModules[i] = m_context->CreateShaderModule(
+                                    std::move(bytes), "gpuSceneWorkCS");
+                                if (!m_gpuSceneWorkModules[i].empty()) {
+                                    smvk::Shader cs{.module = m_gpuSceneWorkModules[i],
+                                                    .entryPoint = "mainCS",
+                                                    .stage = smvk::ShaderStage::Compute};
+                                    m_gpuSceneWorkPrograms[i] = {.shaders = {cs}, .shaderCount = 1};
+                                }
+                            } catch (...) {
+                            }
+                        }
+                    }
+                    if (s_gpuSceneVisibilityProd && m_gpuSceneCompactPrograms[0].shaderCount == 1 &&
+                        m_gpuSceneCompactPrograms[1].shaderCount == 1 &&
+                        m_gpuSceneCompactPrograms[2].shaderCount == 1 &&
+                        m_gpuSceneWorkPrograms[0].shaderCount == 1 &&
+                        m_gpuSceneWorkPrograms[1].shaderCount == 1 &&
+                        m_gpuSceneWorkPrograms[2].shaderCount == 1) {
+                        if (m_gpuVisibilityExpandProgram.shaderCount == 0) {
+                            try {
+                                auto bytes = smvk::shaders::Read(
+                                    "content/shaders/gpu_scene_fused_expand.cs.hlsl.spv");
+                                m_gpuVisibilityExpandModule = m_context->CreateShaderModule(
+                                    std::move(bytes), "gpuSceneFusedExpandCS");
+                                if (!m_gpuVisibilityExpandModule.empty()) {
+                                    smvk::Shader cs{.module = m_gpuVisibilityExpandModule,
+                                                    .entryPoint = "mainCS",
+                                                    .stage = smvk::ShaderStage::Compute};
+                                    m_gpuVisibilityExpandProgram = {.shaders = {cs},
+                                                                    .shaderCount = 1};
+                                }
+                            } catch (...) {
+                            }
+                        }
+                        const uint32_t instanceCount = m_gpuSceneDatabase.instances.Size();
+                        tour::gpu_scene::FusedExpandPush expandPush{};
+                        tour::gpu_scene::CompactCountPush countPush{};
+                        tour::gpu_scene::CompactPrefixPush prefixPush{};
+                        tour::gpu_scene::CompactScatterPush scatterPush{};
+                        tour::gpu_scene::WorkSelectPush workSelect{};
+                        tour::gpu_scene::WorkPrefixPush workPrefix{};
+                        tour::gpu_scene::WorkScatterPush workScatter{};
+                        if (m_gpuVisibilityExpandProgram.shaderCount == 1 &&
+                            m_gpuSceneValidator.PrepareFusedVerdicts(
+                                *m_context, flight, instanceCount) &&
+                            m_gpuSceneValidator.PrepareCompaction(*m_context,
+                                                                  flight,
+                                                                  instanceCount,
+                                                                  countPush,
+                                                                  prefixPush,
+                                                                  scatterPush)) {
+                            // The fused verdict buffer is the expand input; the
+                            // validator's dense verdict buffer is its output.
+                            const uint64_t fusedBda =
+                                m_gpuVisibilityRuntime.FusedVerdictAddress(*m_context, flight);
+                            const uint64_t denseBda = m_context->GetBufferDeviceAddress(
+                                m_gpuSceneValidator.VerdictBuffer(flight));
+                            const bool workReady = m_gpuSceneValidator.PrepareWorkExpansion(
+                                *m_context,
+                                flight,
+                                m_gpuSceneDatabase,
+                                m_gpuSceneUploader.DeviceAddresses(*m_context, flight),
+                                instanceCount,
+                                workSelect,
+                                workPrefix,
+                                workScatter);
+                            if (fusedBda != 0 && denseBda != 0 && workReady) {
+                                workSelect.lodEyeBudget =
+                                    glm::vec4(m_cameraPositioner.cameraPosition_, m_lodPixelBudget);
+                                workSelect.lodProjection =
+                                    glm::vec4(float(renderExtent.height),
+                                              glm::radians(kCameraFovYDegrees),
+                                              m_lodEnabled ? 1.0f : 0.0f,
+                                              0.0f);
+                                expandPush.fused = fusedBda;
+                                expandPush.verdicts = denseBda;
+                                expandPush.counts =
+                                    glm::uvec4(instanceCount, 1u /* Main view bit */, 0u, 0u);
+                                const uint32_t groups = (instanceCount + 63u) / 64u;
+                                auto compactPrograms = m_gpuSceneCompactPrograms;
+                                auto workPrograms = m_gpuSceneWorkPrograms;
+                                auto& prod =
+                                    m_rendergraph->AddComputePass("GpuSceneVisibilityProd");
+                                auto expandProgram = m_gpuVisibilityExpandProgram;
+                                prod.SetRecordingFunc([expandProgram,
+                                                       compactPrograms,
+                                                       workPrograms,
+                                                       expandPush,
+                                                       countPush,
+                                                       prefixPush,
+                                                       scatterPush,
+                                                       workSelect,
+                                                       workPrefix,
+                                                       workScatter,
+                                                       groups](smvk::CommandBuffer& cmd) mutable {
+                                    cmd.BindComputePipeline(expandProgram);
+                                    cmd.PushConstants(0,
+                                                      sizeof(expandPush),
+                                                      &expandPush,
+                                                      smvk::ShaderStage::Compute);
+                                    cmd.Dispatch(groups, 1, 1);
+                                    cmd.EmitGlobalMemoryBarrier();
+                                    cmd.BindComputePipeline(compactPrograms[0]);
+                                    cmd.PushConstants(0,
+                                                      sizeof(countPush),
+                                                      &countPush,
+                                                      smvk::ShaderStage::Compute);
+                                    cmd.Dispatch(groups, 1, 1);
+                                    cmd.EmitGlobalMemoryBarrier();
+                                    cmd.BindComputePipeline(compactPrograms[1]);
+                                    cmd.PushConstants(0,
+                                                      sizeof(prefixPush),
+                                                      &prefixPush,
+                                                      smvk::ShaderStage::Compute);
+                                    cmd.Dispatch(1, 1, 1);
+                                    cmd.EmitGlobalMemoryBarrier();
+                                    cmd.BindComputePipeline(compactPrograms[2]);
+                                    cmd.PushConstants(0,
+                                                      sizeof(scatterPush),
+                                                      &scatterPush,
+                                                      smvk::ShaderStage::Compute);
+                                    cmd.Dispatch(groups, 1, 1);
+                                    cmd.EmitGlobalMemoryBarrier();
+                                    cmd.BindComputePipeline(workPrograms[0]);
+                                    cmd.PushConstants(0,
+                                                      sizeof(workSelect),
+                                                      &workSelect,
+                                                      smvk::ShaderStage::Compute);
+                                    cmd.Dispatch(groups, 1, 1);
+                                    cmd.EmitGlobalMemoryBarrier();
+                                    cmd.BindComputePipeline(workPrograms[1]);
+                                    cmd.PushConstants(0,
+                                                      sizeof(workPrefix),
+                                                      &workPrefix,
+                                                      smvk::ShaderStage::Compute);
+                                    cmd.Dispatch(1, 1, 1);
+                                    cmd.EmitGlobalMemoryBarrier();
+                                    cmd.BindComputePipeline(workPrograms[2]);
+                                    cmd.PushConstants(0,
+                                                      sizeof(workScatter),
+                                                      &workScatter,
+                                                      smvk::ShaderStage::Compute);
+                                    cmd.Dispatch(groups, 1, 1);
+                                });
+                                m_gpuSceneValidator.MarkDispatched(flight);
+                                if (m_frameCounter % 60u == 0u)
+                                    std::fprintf(stderr,
+                                                 "[GpuSceneVisibilityProd] instances=%u "
+                                                 "fused-expand->compact->work dispatched\n",
+                                                 instanceCount);
+                            }
+                        }
+                    }
                 }
             }
         }
