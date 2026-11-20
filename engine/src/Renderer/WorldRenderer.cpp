@@ -16335,7 +16335,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 m_gpuSceneUploader.DeviceAddresses(*m_context, flight).instances,
                 m_gpuSceneRasterView.DeviceAddress(*m_context, flight),
                 m_gpuSceneDatabase.instances.Size(),
-                m_gpuSceneRasterDrawCapacity,
+                // workSlots bounds the WORK-ROW buffer (workCapacity rows), NOT
+                // the indirect command buffer (8x that). The draw-build shader
+                // reserves kRasterPipelineClassCount command slots per work row,
+                // so divide the command capacity back down.
+                m_gpuSceneRasterDrawCapacity / tour::gpu_scene::kRasterPipelineClassCount,
                 gpuSceneMotionHistoryReady
                     ? m_context->GetBufferDeviceAddress(m_gpuScenePrevTransformBuffers[flight])
                     : 0u,
@@ -16435,7 +16439,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                       smvk::ShaderStage::All);
                 };
                 const uint32_t binStride =
-                    motionVsPush.workSlots / tour::gpu_scene::kRasterPipelineClassCount;
+                    m_gpuSceneRasterDrawCapacity / tour::gpu_scene::kRasterPipelineClassCount;
                 constexpr uint32_t kChunk = 65535;
                 const auto drawMotionBin = [&](uint32_t bin) {
                     const uint32_t base = bin * binStride;
