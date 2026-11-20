@@ -1087,7 +1087,12 @@ uint64_t World::InstantiateSceneHierarchy(
         for (const RenderItem& item : drawItems)
             itemFlags.push_back(item.flags);
     }
-    InvalidateLodCache();
+    // Streaming path: the direct Map adapter bypasses ResolveAndFixup_pages(),
+    // so the per-mesh LOD chains are never rebuilt for the meshes a tile just
+    // published. Rebuild them eagerly (matching the resolve tail) — the GPU
+    // work selector and the CPU LOD picker both index lodChains, and a stale
+    // empty chain leaves streamed geometry with no expandable submesh work.
+    RebuildLodChains();
     InvalidateStaticBvh();
     flagLists.clear();
     dirtyCull = true;
