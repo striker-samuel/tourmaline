@@ -1708,3 +1708,12 @@ target_include_directories(GeometryBackendContractTests PRIVATE
 set_target_properties(GeometryBackendContractTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME geometry_backend_contract_tests COMMAND GeometryBackendContractTests)
+
+
+# Backend registry + concrete backend construction (links the engine for the
+# backend impl TUs; CPU-only — no Vulkan device at runtime).
+add_executable(GeometryBackendTests test_geometry_backend.cpp)
+target_link_libraries(GeometryBackendTests PRIVATE engine)
+set_target_properties(GeometryBackendTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME geometry_backend_tests COMMAND GeometryBackendTests)
