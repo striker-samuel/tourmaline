@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #include <Engine/Renderer/GeometryBackend.h>
 #include <cassert>
+#include <initializer_list>
 #include <type_traits>
 
 using namespace engine;
