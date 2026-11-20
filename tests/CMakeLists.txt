@@ -1699,3 +1699,12 @@ add_executable(SourceSceneTests test_source_scene.cpp)
 target_link_libraries(SourceSceneTests PRIVATE gltf_import)
 set_target_properties(SourceSceneTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME source_scene_tests COMMAND SourceSceneTests)
+
+
+# Device-free contract for proposed interchangeable world geometry backends.
+add_executable(GeometryBackendContractTests test_geometry_backend_contract.cpp)
+target_include_directories(GeometryBackendContractTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/include)
+set_target_properties(GeometryBackendContractTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME geometry_backend_contract_tests COMMAND GeometryBackendContractTests)
