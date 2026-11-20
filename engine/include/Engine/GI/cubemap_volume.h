@@ -335,7 +335,14 @@ struct GiVolumeBakeConfig {
     // discarded fraction (clampedEnergyRatio) either way. 8 is the
     // tuned default (the historical value).
     float clampRatio = 8.0f;
-    float smoothingLambda = 0.4f;      // per-pass step (0..1)
+    float smoothingLambda = 0.4f; // per-pass step (0..1)
+    // Surface-side-aware dilation (prototype): when > 0, the validity
+    // dilation weights each same-side donor by its mean luminance raised
+    // to this power, so the BRIGHTEST (exterior/sky-side) donor dominates
+    // the fill instead of the uniform mean. 0 = the classic uniform fill.
+    // A/B knob for the roof-lattice investigation: inside-solid probes
+    // otherwise fill with the dark near-surface average.
+    float dilationBrightnessPower = 0.0f;
     float probeMinClearance = 0.05f;   // probe validity (m, to geometry)
     float captureMinClearance = 0.10f; // INERT (was capture validity)
     // 6-axis visibility cap (m): obstacle distances record at

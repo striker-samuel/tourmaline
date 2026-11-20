@@ -207,6 +207,11 @@ bool ParseArgs(int argc, char** argv, Args& out) {
         } else if (a == "--class-volume") {
             if (!need(out.classVolume, i))
                 return false;
+        } else if (a == "--dilation-brightness") {
+            std::string v;
+            if (!need(v, i))
+                return false;
+            out.dilationBrightness = std::stof(v);
         } else if (a == "--mask-transmission") {
             std::string v;
             if (!need(v, i))
@@ -1535,6 +1540,7 @@ int Run(Args& args) {
             cfg.threadCount = args.threads;
             cfg.diagProbeDir = args.diagProbes;
             cfg.diagClassVolume = args.classVolume;
+            cfg.dilationBrightnessPower = args.dilationBrightness;
             // The per-volume FRESHNESS CHECK (the invalidation model):
             // when the recorded bake-input hash matches the freshly
             // computed one, the re-trace is SKIPPED — the bound artifact

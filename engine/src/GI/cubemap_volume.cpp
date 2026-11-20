@@ -1729,7 +1729,7 @@ bool BakeGiVolume(const GiTraceScene& scene,
                                 if (valid[size_t(v)])
                                     continue;
                                 glm::vec3 acc[kSgLobeCount] = {};
-                                int cnt = 0;
+                                float wSum = 0.0f;
                                 for (int k = 0; k < 6; ++k) {
                                     const int jx = int(ix) + kDx[k];
                                     const int jy = int(iy) + kDy[k];
@@ -1743,13 +1743,29 @@ bool BakeGiVolume(const GiTraceScene& scene,
                                         continue;
                                     if (!sameSide(u, v, k))
                                         continue; // the source cannot see the target: across a wall
+                                    // Surface-side-aware donor weight
+                                    // (dilationBrightnessPower): the donor's
+                                    // mean luminance raised to the power — the
+                                    // brightest (exterior/sky-side) donor
+                                    // dominates the fill instead of the uniform
+                                    // mean. 0 = the classic uniform fill (the
+                                    // weight is 1 for every donor).
+                                    float donorW = 1.0f;
+                                    if (cfg.dilationBrightnessPower > 0.0f) {
+                                        glm::vec3 s(0.0f);
+                                        for (uint32_t i = 0; i < kSgLobeCount; ++i)
+                                            s += outVolume.coeffs[size_t(u) * kSgLobeCount + i];
+                                        donorW = std::pow(std::max(float(Luminance(s)), 1e-6f),
+                                                          cfg.dilationBrightnessPower);
+                                    }
                                     for (uint32_t i = 0; i < kSgLobeCount; ++i)
-                                        acc[i] += outVolume.coeffs[size_t(u) * kSgLobeCount + i];
-                                    ++cnt;
+                                        acc[i] +=
+                                            outVolume.coeffs[size_t(u) * kSgLobeCount + i] * donorW;
+                                    wSum += donorW;
                                 }
-                                if (cnt > 0) {
+                                if (wSum > 0.0f) {
                                     for (uint32_t i = 0; i < kSgLobeCount; ++i)
-                                        fill[size_t(v) * kSgLobeCount + i] = acc[i] / float(cnt);
+                                        fill[size_t(v) * kSgLobeCount + i] = acc[i] / wSum;
                                     fillMask[size_t(v)] = 1;
                                     localAnyFill = true;
                                 }
