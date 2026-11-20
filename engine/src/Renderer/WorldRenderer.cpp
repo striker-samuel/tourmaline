@@ -16373,6 +16373,22 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             motionPass.AddBufferHint(m_gpuScenePrevTransformLogicals[fb.frameIndex], vertRead);
             motionPass.AddBufferHint(m_gpuScenePrevViewLogicals[fb.frameIndex], vertRead);
         }
+        // The batched leg ALSO reads the raster indirect command buffer
+        // (DrawIndexedIndirect) and the work rows (vertex BDA input) — the
+        // SAME streams the lit raster pass declares. Without these edges the
+        // render graph inserts no compute -> indirect / vertex barrier, and
+        // the motion pass can read a partially-written (or stale) command
+        // whose firstInstance is garbage, faulting the motion VS.
+        if (gpuSceneMotionActive && !motionCommands.empty()) {
+            smvk::BufferSyncRequest indirectRead{};
+            indirectRead.barrierMasks.accessMask = smvk::AccessFlags::IndirectCommandRead;
+            indirectRead.barrierMasks.stageMask = smvk::PipelineStageBit_DrawIndirect;
+            motionPass.AddBufferHint(m_gpuSceneRasterIndirectLogical[fb.frameIndex], indirectRead);
+            smvk::BufferSyncRequest vertexRead{};
+            vertexRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+            vertexRead.barrierMasks.stageMask = smvk::PipelineStageBit_Vertex;
+            motionPass.AddBufferHint(m_gpuSceneRasterWorkLogical[fb.frameIndex], vertexRead);
+        }
         motionPass.SetRecordingFunc([this,
                                      motionPC,
                                      gpuSceneMotionActive,
