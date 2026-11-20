@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 #include <Engine/Renderer/GeometryBackendRegistry.h>
 
+#include <Engine/Renderer/ComputeFilterBackend.h>
 #include <Engine/Renderer/CpuIndirectBackend.h>
 #include <Engine/Renderer/GpuSceneIndexedBackend.h>
 
@@ -13,10 +14,11 @@ bool GeometryBackendRegistry::IsAvailable(GeometryBackendKind kind) noexcept {
     case GeometryBackendKind::GpuSceneIndexed:
         return true;
     // Task/mesh needs mesh-shader support + its own adapter (the
-    // WorldRenderer path is not yet wrapped); the legacy filter is not
-    // yet ported. Both report unavailable until their adapters land.
+    // WorldRenderer path is not yet wrapped). ComputeFilter is constructible
+    // but its retired shaders have not been recovered/ported yet. Both
+    // report unavailable until their adapters land.
     case GeometryBackendKind::GpuSceneTaskMesh:
-    case GeometryBackendKind::LegacyGfxFilter:
+    case GeometryBackendKind::ComputeFilter:
         return false;
     }
     return false;
@@ -28,9 +30,10 @@ std::unique_ptr<IGeometryBackend> GeometryBackendRegistry::Create(GeometryBacken
         return std::make_unique<CpuIndirectBackend>();
     case GeometryBackendKind::GpuSceneIndexed:
         return std::make_unique<GpuSceneIndexedBackend>();
+    case GeometryBackendKind::ComputeFilter:
+        return std::make_unique<ComputeFilterBackend>();
     case GeometryBackendKind::GpuSceneTaskMesh:
-    case GeometryBackendKind::LegacyGfxFilter:
-        return nullptr; // not yet adapted/ported
+        return nullptr; // not yet adapted
     }
     return nullptr;
 }

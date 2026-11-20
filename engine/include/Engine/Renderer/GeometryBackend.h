@@ -9,10 +9,10 @@
 namespace engine {
 
 enum class GeometryBackendKind : uint8_t {
-    CpuIndirect,
-    GpuSceneIndexed,
-    GpuSceneTaskMesh,
-    LegacyGfxFilter
+    CpuIndirect,      // CPU-generated/uploaded indexed-indirect commands
+    GpuSceneIndexed,  // GPU-scene cull producing indexed-indirect commands
+    GpuSceneTaskMesh, // GPU-scene cull + task/mesh shader submission
+    ComputeFilter     // compute batch-cull + Hi-Z filter feeding filtered draws
 };
 
 enum class GeometryConfigError : uint8_t {

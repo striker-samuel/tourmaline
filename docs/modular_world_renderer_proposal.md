@@ -39,7 +39,7 @@ App / Editor
       │   ├─ CpuIndirect
       │   ├─ GpuSceneIndexed
       │   ├─ GpuSceneTaskMesh
-      │   └─ LegacyGfxFilter
+      │   └─ ComputeFilter
       └─ shared rendergraph phases (depth/Hi-Z, shadows, lighting, post)
 ```
 

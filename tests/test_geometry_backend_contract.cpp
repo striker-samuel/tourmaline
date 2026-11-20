@@ -8,15 +8,14 @@
 using namespace engine;
 
 static_assert(std::has_virtual_destructor_v<IGeometryBackend>);
-static_assert(ValidateGeometryPipeline(GeometryPipelineConfig{}) ==
-              GeometryConfigError::None);
+static_assert(ValidateGeometryPipeline(GeometryPipelineConfig{}) == GeometryConfigError::None);
 
 int main() {
     GeometryPipelineConfig c{};
     for (const auto backend : {GeometryBackendKind::CpuIndirect,
                                GeometryBackendKind::GpuSceneIndexed,
                                GeometryBackendKind::GpuSceneTaskMesh,
-                               GeometryBackendKind::LegacyGfxFilter}) {
+                               GeometryBackendKind::ComputeFilter}) {
         c.backend = backend;
         assert(ValidateGeometryPipeline(c) == GeometryConfigError::None);
     }

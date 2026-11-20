@@ -16,9 +16,9 @@ class GeometryBackendRegistry {
   public:
     // Capability check for the CURRENT device. False when the backend cannot
     // run: GpuSceneTaskMesh needs mesh-shader support (and a separate adapter
-    // instance), LegacyGfxFilter is not yet ported. CpuIndirect and
-    // GpuSceneIndexed are always constructible (their shader/pipeline
-    // availability is validated at Initialize, not here).
+    // instance), ComputeFilter's retired shaders are not yet ported.
+    // CpuIndirect and GpuSceneIndexed are always constructible (their
+    // shader/pipeline availability is validated at Initialize, not here).
     static bool IsAvailable(GeometryBackendKind kind) noexcept;
 
     // Constructs a backend instance for the requested kind, or null when

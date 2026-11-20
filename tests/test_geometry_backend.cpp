@@ -11,19 +11,21 @@ using namespace engine;
 
 int main() {
     // Availability: the two live backends are constructible; the task/mesh
-    // adapter and the legacy filter are not yet adapted/ported.
+    // adapter and the compute-filter shaders are not yet adapted/ported.
     assert(GeometryBackendRegistry::IsAvailable(GeometryBackendKind::CpuIndirect));
     assert(GeometryBackendRegistry::IsAvailable(GeometryBackendKind::GpuSceneIndexed));
     assert(!GeometryBackendRegistry::IsAvailable(GeometryBackendKind::GpuSceneTaskMesh));
-    assert(!GeometryBackendRegistry::IsAvailable(GeometryBackendKind::LegacyGfxFilter));
+    assert(!GeometryBackendRegistry::IsAvailable(GeometryBackendKind::ComputeFilter));
 
-    // Construction + kind round-trip.
+    // Construction + kind round-trip. ComputeFilter constructs (its class is
+    // the port target) even though it is not yet runnable.
     auto cpu = GeometryBackendRegistry::Create(GeometryBackendKind::CpuIndirect);
     assert(cpu && cpu->Kind() == GeometryBackendKind::CpuIndirect);
     auto gsi = GeometryBackendRegistry::Create(GeometryBackendKind::GpuSceneIndexed);
     assert(gsi && gsi->Kind() == GeometryBackendKind::GpuSceneIndexed);
+    auto cf = GeometryBackendRegistry::Create(GeometryBackendKind::ComputeFilter);
+    assert(cf && cf->Kind() == GeometryBackendKind::ComputeFilter);
     assert(!GeometryBackendRegistry::Create(GeometryBackendKind::GpuSceneTaskMesh));
-    assert(!GeometryBackendRegistry::Create(GeometryBackendKind::LegacyGfxFilter));
 
     return 0;
 }
