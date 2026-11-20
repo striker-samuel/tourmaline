@@ -12562,8 +12562,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                          int(m_debugView),
                          int(GetActiveGIVariant()));
     }
-    if ((s_gpuSceneValidate || gpuSceneRasterMode) && m_world && m_gpuSceneDatabaseReady &&
-        mainRenderView != smvk::RenderViewSet::kInvalidIndex &&
+    if ((s_gpuSceneValidate || gpuSceneRasterMode) && !s_gpuSceneVisibilityProd && m_world &&
+        m_gpuSceneDatabaseReady && mainRenderView != smvk::RenderViewSet::kInvalidIndex &&
         (gpuSceneRasterMode || (m_frameCounter % 120u) == 0u)) {
         if (m_gpuSceneCullProgram.shaderCount == 0) {
             try {
@@ -13977,13 +13977,30 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                             } catch (...) {
                             }
                         }
+                        if (m_gpuSceneRasterBuildProgram.shaderCount == 0) {
+                            try {
+                                auto bytes = smvk::shaders::Read(
+                                    "content/shaders/gpu_scene_raster_work_drawbuild.cs.hlsl.spv");
+                                m_gpuSceneRasterBuildModule = m_context->CreateShaderModule(
+                                    std::move(bytes), "gpuSceneRasterBuildCS");
+                                if (!m_gpuSceneRasterBuildModule.empty()) {
+                                    smvk::Shader cs{.module = m_gpuSceneRasterBuildModule,
+                                                    .entryPoint = "mainCS",
+                                                    .stage = smvk::ShaderStage::Compute};
+                                    m_gpuSceneRasterBuildProgram = {.shaders = {cs},
+                                                                    .shaderCount = 1};
+                                }
+                            } catch (...) {
+                            }
+                        }
                     }
                     if (s_gpuSceneVisibilityProd && m_gpuSceneCompactPrograms[0].shaderCount == 1 &&
                         m_gpuSceneCompactPrograms[1].shaderCount == 1 &&
                         m_gpuSceneCompactPrograms[2].shaderCount == 1 &&
                         m_gpuSceneWorkPrograms[0].shaderCount == 1 &&
                         m_gpuSceneWorkPrograms[1].shaderCount == 1 &&
-                        m_gpuSceneWorkPrograms[2].shaderCount == 1) {
+                        m_gpuSceneWorkPrograms[2].shaderCount == 1 &&
+                        m_gpuSceneRasterBuildProgram.shaderCount == 1) {
                         if (m_gpuVisibilityExpandProgram.shaderCount == 0) {
                             try {
                                 auto bytes = smvk::shaders::Read(
@@ -14032,7 +14049,22 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                 workSelect,
                                 workPrefix,
                                 workScatter);
-                            if (fusedBda != 0 && denseBda != 0 && workReady) {
+                            // Complete the chain through to raster commands (the
+                            // indexed geometry is shared with the CPU path).
+                            tour::gpu_scene::RasterWorkDrawBuildPush rasterPush{};
+                            smvk::BufferHandle rasterCommands{};
+                            const bool rasterReady =
+                                m_gpuSceneRasterBuildProgram.shaderCount == 1 &&
+                                m_gpuSceneValidator.PrepareRasterCommands(
+                                    *m_context,
+                                    flight,
+                                    m_gpuScenePersistentGeometry.DeviceAddress(*m_context, flight),
+                                    m_gpuScenePersistentGeometry.Count(flight),
+                                    m_gpuScenePersistentGeometry.AliasAddress(*m_context, flight),
+                                    m_gpuScenePersistentGeometry.AliasCount(flight),
+                                    rasterPush,
+                                    rasterCommands);
+                            if (fusedBda != 0 && denseBda != 0 && workReady && rasterReady) {
                                 workSelect.lodEyeBudget =
                                     glm::vec4(m_cameraPositioner.cameraPosition_, m_lodPixelBudget);
                                 workSelect.lodProjection =
@@ -14050,9 +14082,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                 auto& prod =
                                     m_rendergraph->AddComputePass("GpuSceneVisibilityProd");
                                 auto expandProgram = m_gpuVisibilityExpandProgram;
+                                auto rasterProgram = m_gpuSceneRasterBuildProgram;
                                 prod.SetRecordingFunc([expandProgram,
                                                        compactPrograms,
                                                        workPrograms,
+                                                       rasterProgram,
                                                        expandPush,
                                                        countPush,
                                                        prefixPush,
@@ -14060,6 +14094,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                                        workSelect,
                                                        workPrefix,
                                                        workScatter,
+                                                       rasterPush,
                                                        groups](smvk::CommandBuffer& cmd) mutable {
                                     cmd.BindComputePipeline(expandProgram);
                                     cmd.PushConstants(0,
@@ -14109,12 +14144,57 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                                       &workScatter,
                                                       smvk::ShaderStage::Compute);
                                     cmd.Dispatch(groups, 1, 1);
+                                    cmd.EmitGlobalMemoryBarrier();
+                                    cmd.BindComputePipeline(rasterProgram);
+                                    cmd.PushConstants(0,
+                                                      sizeof(rasterPush),
+                                                      &rasterPush,
+                                                      smvk::ShaderStage::Compute);
+                                    cmd.Dispatch((rasterPush.commandCapacity + 127u) / 128u, 1, 1);
                                 });
                                 m_gpuSceneValidator.MarkDispatched(flight);
+
+                                // Register the fused raster commands + work as the
+                                // Main draw source (the flip): the CPU raster path
+                                // is skipped when the fused production path owns it.
+                                const smvk::BufferHandle workHandle =
+                                    m_gpuSceneValidator.RasterWorkBuffer(flight);
+                                const uint64_t workBda =
+                                    m_gpuSceneValidator.RasterWorkAddress(*m_context, flight);
+                                if (!rasterCommands.empty() && !workHandle.empty() &&
+                                    workBda != 0) {
+                                    if (m_gpuSceneRasterLogicalBacking[flight] != rasterCommands) {
+                                        if (!m_gpuSceneRasterIndirectLogical[flight].empty())
+                                            m_rendergraph->FreeBuffer(
+                                                m_gpuSceneRasterIndirectLogical[flight]);
+                                        m_gpuSceneRasterIndirectLogical[flight] =
+                                            m_rendergraph->AddExternalBuffer(
+                                                rasterCommands, "GpuSceneRasterIndirect");
+                                        m_gpuSceneRasterLogicalBacking[flight] = rasterCommands;
+                                    }
+                                    if (m_gpuSceneRasterWorkLogicalBacking[flight] != workHandle) {
+                                        if (!m_gpuSceneRasterWorkLogical[flight].empty())
+                                            m_rendergraph->FreeBuffer(
+                                                m_gpuSceneRasterWorkLogical[flight]);
+                                        m_gpuSceneRasterWorkLogical[flight] =
+                                            m_rendergraph->AddExternalBuffer(workHandle,
+                                                                             "GpuSceneRasterWork");
+                                        m_gpuSceneRasterWorkLogicalBacking[flight] = workHandle;
+                                    }
+                                    m_gpuSceneRasterDrawActive =
+                                        !m_gpuSceneRasterIndirectLogical[flight].empty() &&
+                                        !m_gpuSceneRasterWorkLogical[flight].empty();
+                                    if (m_gpuSceneRasterDrawActive) {
+                                        m_gpuSceneRasterOwnership.CommitGpuPrepared();
+                                        m_gpuSceneRasterIndirect = rasterCommands;
+                                        m_gpuSceneRasterWorkBda = workBda;
+                                        m_gpuSceneRasterDrawCapacity = rasterPush.commandCapacity;
+                                    }
+                                }
                                 if (m_frameCounter % 60u == 0u)
                                     std::fprintf(stderr,
                                                  "[GpuSceneVisibilityProd] instances=%u "
-                                                 "fused-expand->compact->work dispatched\n",
+                                                 "fused-expand->compact->work->raster dispatched\n",
                                                  instanceCount);
                             }
                         }
