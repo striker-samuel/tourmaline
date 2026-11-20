@@ -3262,8 +3262,13 @@ std::unique_ptr<WorldPage> DeserializeCluster(
         const uint32_t vertexCount = c.u32();
         const uint32_t indexCount = c.u32();
         const uint32_t surfaceCount = c.u32();
-        if (!c.ok || vertexCount == 0 || vertexCount > 16 * 1024 * 1024 ||
-            indexCount > 64 * 1024 * 1024 || surfaceCount > 4096)
+        // A zero-vertex mesh is a DEGENERATE (empty) primitive, not a
+        // corrupt header: the importer removed every face. It is passed
+        // through to UploadStaticGeometry, which produces an empty mesh
+        // (a valid handle that draws nothing) instead of failing the
+        // whole cluster load. Only the truly insane extents stay fatal.
+        if (!c.ok || vertexCount > 16 * 1024 * 1024 || indexCount > 64 * 1024 * 1024 ||
+            surfaceCount > 4096)
             return fail("truncated/insane mesh header: " + e->path);
         MeshData upload;
         upload.surfaces.reserve(surfaceCount);
