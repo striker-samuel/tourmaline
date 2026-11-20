@@ -13843,12 +13843,18 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             const glm::dvec3 origin(m_cameraPositioner.cameraPosition_);
             const tour::gpu_scene::RelativeFrustum mainView =
                 tour::gpu_scene::LegacyRelativeFrustum(m_renderViews.Get(mainRenderView), origin);
+            // Owner-mask wiring: the fused verdict stream admits ONLY the
+            // canonical GPU-owned sources (static opaque, single-surface,
+            // complete LOD bounds, no skinned/layered/masked/transparent
+            // streams), exactly the mask the CPU raster path uploads.
+            // Legacy-owned sources stay on the legacy path; a recycled slot
+            // or a partial publication fails closed (all-zero mask). This is
+            // what keeps the fused production flip from rasterizing sources
+            // the GPU raster backend does not support.
             std::vector<uint32_t> owner(m_gpuSceneDatabase.instances.Size(), 0u);
-            for (size_t slot = 0; slot < m_gpuSceneDatabase.instances.Rows().size(); ++slot) {
-                const auto& row = m_gpuSceneDatabase.instances.Rows()[slot];
-                if (row.identity.y == 1u)
-                    owner[slot] = row.identity.x;
-            }
+            const bool ownerMaskReady = m_gpuSceneRasterOwnership.BuildGenerationMask(
+                std::span<uint32_t>(owner.data(), owner.size()),
+                [this](tour::gpu_scene::SourceKey key) { return m_gpuSceneSync.Find(key); });
 
             tour::gpu_scene::LeafClassifyPush classify{};
             tour::gpu_scene::LeafCompactPush compact{};
@@ -13872,18 +13878,18 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             }
             const std::span<const tour::gpu_scene::RelativeFrustum> viewsSpan(leafViews.data(),
                                                                               leafViewCount);
-            if (m_gpuVisibilityRuntime.Prepare(
-                    *m_context,
-                    fb.frameIndex,
-                    m_gpuSceneDatabase,
-                    m_gpuSceneUploader.DeviceAddresses(*m_context, fb.frameIndex),
-                    dense,
-                    viewsSpan,
-                    owner,
-                    classify,
-                    compact,
-                    fused,
-                    /*validate=*/true)) {
+            if (ownerMaskReady && m_gpuVisibilityRuntime.Prepare(
+                                      *m_context,
+                                      fb.frameIndex,
+                                      m_gpuSceneDatabase,
+                                      m_gpuSceneUploader.DeviceAddresses(*m_context, fb.frameIndex),
+                                      dense,
+                                      viewsSpan,
+                                      owner,
+                                      classify,
+                                      compact,
+                                      fused,
+                                      /*validate=*/true)) {
                 // Register the fused verdict BDA write with the rendergraph so
                 // compute writes participate in graph synchronization (the
                 // same convention as the cull verdict target). Intermediate
