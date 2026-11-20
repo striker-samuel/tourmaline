@@ -23,8 +23,9 @@
 
 #include <Engine/App/world.h>
 #include <Engine/Asset/pak.h>
-#include <Engine/Memory/pool.h>                   // shard-lease API + kNumPoolShards
-#include <Engine/RHI/resource_manager.h>          // ResourceManager::FlushUploads (complete type)
+#include <Engine/Memory/pool.h>                 // shard-lease API + kNumPoolShards
+#include <Engine/RHI/resource_manager.h>        // ResourceManager::FlushUploads (complete type)
+#include <Engine/Renderer/static_vertex_heap.h> // the global vertex arena (heap-capacity admission)
 #include <Engine/WorldPartition/WorldPartition.h> // IWorldStreamProvider (scene provider seam)
 
 #include <glm/glm.hpp>
@@ -153,6 +154,22 @@ class ScenePageStreamer : public engine::worldpartition::IWorldStreamProvider {
         // skipped page stays unloaded and streams in when a far page evicts.
         uint32_t enqueuedThisTick = 0;
         for (uint32_t i = 0; i < manifest_.sceneCount; ++i) {
+            // Heap-capacity admission: stop admitting once the static vertex
+            // arena is nearly full. The eviction pass above freed any far
+            // pages this tick; if the arena is still near capacity, retry
+            // loading on a later tick (after the camera moves and more far
+            // pages evict) rather than exhausting the arena and failing a
+            // whole page deserialize.
+            if (StaticVertexHeapNearlyFull()) {
+                if (!heapGateLogged_) {
+                    std::cerr << "[PageStreamer] static vertex heap near capacity ("
+                              << smvk::staticVertexFmtHeap.m_staticVertexBlock.Used() << "/"
+                              << smvk::staticVertexFmtHeap.m_staticVertexBlock.Capacity()
+                              << " verts); holding page admission until far pages evict\n";
+                    heapGateLogged_ = true;
+                }
+                break;
+            }
             if (loaded_[i] || dispatched_[i] || i == entryScene_ || !WithinRadius(i, cameraPos))
                 continue;
             if (maxLoadedMeshes_ != 0 &&
@@ -421,6 +438,19 @@ class ScenePageStreamer : public engine::worldpartition::IWorldStreamProvider {
         return StreamingPriority::Normal;
     }
 
+    // Heap-capacity admission: the static VERTEX heap (not the mesh count) is
+    // the binding budget for dense partitioned worlds. The island's ~162k valid
+    // meshes fit under kMaxMeshes but their ~210M vertices overflow the arena,
+    // so admission must ALSO gate on the arena's live usage. 85% leaves headroom
+    // for in-flight bin deserializations that carve asynchronously.
+    static bool StaticVertexHeapNearlyFull() {
+        const smvk::StaticHeapArena& block = smvk::staticVertexFmtHeap.m_staticVertexBlock;
+        const uint64_t cap = block.Capacity();
+        if (cap == 0)
+            return false; // uninitialized arena: let the load fail normally
+        return block.Used() >= (cap * 85u) / 100u;
+    }
+
     World& world_;
     std::shared_ptr<const smvk::PakBackend> backend_;
     smvk::ResourceManager& ctx_;
@@ -442,6 +472,8 @@ class ScenePageStreamer : public engine::worldpartition::IWorldStreamProvider {
     // sets it to the GPU-scene admission ceiling (kMaxMeshes) so streaming
     // never oversubscribes the GPU-driven path.
     uint32_t maxLoadedMeshes_ = 0;
+    // One-shot diagnostic for the heap-capacity gate (see Tick's admission).
+    bool heapGateLogged_ = false;
     std::vector<std::unique_ptr<Bin>> bins_; // heap-owned (Bin is non-movable)
 };
 
