@@ -21,7 +21,8 @@ namespace tour::gpu_scene {
 struct alignas(16) FusedExpandPush {
     uint64_t fused = 0;    // FusedVerdict[instanceSlots] (GPU-written)
     uint64_t verdicts = 0; // InstanceCullVerdict[instanceSlots] (dense output)
-    glm::uvec4 counts{0u}; // x instanceCount, y viewBit (1 << viewIndex)
+    glm::uvec4 counts{0u}; // x instanceCount, y viewBit (1 << viewIndex),
+                           // z shadowFilter (1 = require CastShadow)
 };
 static_assert(sizeof(FusedExpandPush) == 32);
 static_assert(offsetof(FusedExpandPush, counts) == 16);

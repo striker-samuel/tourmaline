@@ -34,8 +34,10 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     if (slot >= pcS.counts.x || slot >= GPU_SCENE_MAX_ROW_SLOTS)
         return;
     const uint viewBit = pcS.counts.y;
+    const bool shadowFilter = pcS.counts.z != 0u; // shadow views require CastShadow
     const uint4 fused = pcS.fused.Get().values[slot];
-    const bool visible = (fused.z & viewBit) != 0u;
+    const bool visible = (fused.z & viewBit) != 0u &&
+                         (!shadowFilter || (fused.w & 1u) != 0u);
     const uint4 outVerdict = visible ? uint4(fused.x, fused.y, 1u, 0u)
                                      : uint4(0xFFFFFFFFu, 0u, 0u, 0u);
     pcS.verdicts.Get().values[slot] = outVerdict;
