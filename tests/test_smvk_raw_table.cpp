@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 #include <Engine/RHI/raw_table.h>
+#include <Engine/Renderer/decal_gpu_records.h>
 #include <Engine/Renderer/light_gpu_records.h>
 #include <Engine/Renderer/texture_gpu_records.h>
 #include <array>
@@ -88,9 +89,21 @@ void CheckLightRecords() {
     CHECK(rows.Erase(id) && !rows.Contains(id));
 }
 
+void CheckDecalRecords() {
+    tour::gpu_records::Decals rows;
+    smvk::ForwardPlusDecal decal{}; decal.bounds.w=4.0f;
+    auto id=rows.Insert(decal);
+    CHECK(rows.Get(id)->bounds.w==4.0f);
+    decal.bounds.w=9.0f;
+    CHECK(rows.Update(id,decal));
+    CHECK(rows.Get(id)->bounds.w==9.0f);
+    CHECK(rows.Erase(id));
+}
+
 int main() {
     CheckTextureRecords();
     CheckLightRecords();
+    CheckDecalRecords();
     TestRaw<Tiny>(); // 8-byte texture-like ABI
     TestRaw<Big>();  // 16-byte and wider ABI
     std::printf("raw_table failures=%d\n",failures);
