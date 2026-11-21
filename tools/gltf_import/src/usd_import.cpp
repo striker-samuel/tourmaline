@@ -132,9 +132,16 @@ bool TriangulateFace(const std::vector<GfVec3f>& polygon,
             span = std::max(span, std::abs(point[axis] - polygon[0][axis]));
     if (span <= 1e-8f)
         return false;
-    for (const auto& point : polygon)
-        if (std::abs(GfDot(point - polygon[0], normal)) > span * 1e-2f)
-            return false;
+    // The planarity gate only guards EAR CLIPPING on n-gons (n >= 5), where a
+    // strongly non-planar polygon would fan nonsense. Triangles and quads
+    // triangulate cleanly regardless of planarity — and a heightfield quad is
+    // a bilinear patch BY CONSTRUCTION (its 4 corners are never coplanar on a
+    // slope), so rejecting it here punched quad-shaped holes in the terrain.
+    if (polygon.size() > 4) {
+        for (const auto& point : polygon)
+            if (std::abs(GfDot(point - polygon[0], normal)) > span * 1e-2f)
+                return false;
+    }
 
     int drop = 0;
     for (int i = 1; i < 3; ++i)
