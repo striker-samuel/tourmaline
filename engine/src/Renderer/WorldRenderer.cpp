@@ -16277,13 +16277,18 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // indirect streams with the motion VS, so the admitted opaque+MASK
         // set submits in four indirect draws instead of a per-node walk.
         // Skinned/legacy/transparent sources stay on the direct path below.
-        // The batched leg is OFF by default: it still device-losts on camera
-        // motion (see the island fly-through repro). TOURMALINE_GPU_SCENE_MOTION=1
-        // re-enables it for the A/B bisect; the direct per-node path is the
-        // proven fallback and does not fault.
+        // The batched leg reuses the indexed raster work/instance/indirect
+        // streams with the motion VS, so the admitted opaque+MASK set submits
+        // in a few indirect draws instead of a per-node walk. Skinned/legacy/
+        // transparent sources stay on the direct path below.
+        // ON by default: the prev-slot bound (see gpu_scene_motion.vert.hlsl)
+        // fences the previous-transform read against streaming growth. The
+        // earlier device-lost was the un-fenced OOB read past the prev buffer;
+        // TOURMALINE_GPU_SCENE_MOTION=0 forces the direct per-node fallback if
+        // a specific fly-through still faults.
         static const bool s_gpuSceneMotion = [] {
             const char* e = std::getenv("TOURMALINE_GPU_SCENE_MOTION");
-            return e && std::strcmp(e, "1") == 0;
+            return !(e && std::strcmp(e, "0") == 0);
         }();
         // GPU submission does not depend on previous-frame history. On the
         // first frame or after a camera/scene reset, the motion VS emits
