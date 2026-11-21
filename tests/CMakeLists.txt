@@ -1692,3 +1692,10 @@ add_executable(SourceSceneTests test_source_scene.cpp)
 target_link_libraries(SourceSceneTests PRIVATE gltf_import)
 set_target_properties(SourceSceneTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME source_scene_tests COMMAND SourceSceneTests)
+
+# smvk raw-payload tables: 8-byte and 16-byte ABIs, all-flight publication.
+add_executable(SmvkRawTableTests test_smvk_raw_table.cpp)
+target_include_directories(SmvkRawTableTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/include
+    ${CMAKE_SOURCE_DIR}/external/glm)
+add_test(NAME smvk_raw_table_tests COMMAND SmvkRawTableTests)
