@@ -4,6 +4,8 @@
 // Device-free GPU-scene database update model: stable identities,
 // coalesced dirty-row ranges, tombstones, and all-flight propagation.
 #include <Engine/Renderer/gpu_scene.h>
+#include <Engine/RHI/table.h>
+#include <type_traits>
 #include <Engine/Renderer/gpu_scene_skinning.h>
 #include <Engine/Renderer/gpu_scene_upload.h>
 
@@ -26,6 +28,12 @@
             std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);                   \
         }                                                                                          \
     } while (0)
+// The GPU-scene interface is now an alias of the reusable smvk table.
+static_assert(std::is_same_v<tour::gpu_scene::Table<tour::gpu_scene::Mesh, 3>,
+                             smvk::table::Table<tour::gpu_scene::Mesh, 3>>);
+static_assert(std::is_same_v<tour::gpu_scene::Row<tour::gpu_scene::Mesh>,
+                             smvk::table::Row<tour::gpu_scene::Mesh>>);
+
 namespace {
 int g_checks = 0;
 int g_failures = 0;
