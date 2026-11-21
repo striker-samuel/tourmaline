@@ -3436,12 +3436,6 @@ size_t ApplySceneReferences(smvk::WorldPage& cluster,
     size_t geometryCacheHits = 0;
     size_t geometryCacheMisses = 0;
     bool preallocatedFlatScene = false;
-    // The MAIN cluster's live static-mesh count. A multi-reference scene (the
-    // island combines many districts) spills each UNSplit reference into its
-    // OWN bounded cluster once the main cluster nears the per-cluster mesh
-    // bound (Pool::kMaxSize) — never overflow. Rebuilt from numObjects() so it
-    // tracks the actual pool after the earlier references land.
-    uint32_t mainPageMeshCount = cluster.staticMeshes.numObjects();
     // HOST-AWARE path utils: vfs::BaseDir/FileName are VFS-RELATIVE
     // utilities — vfs::Normalize REJECTS drive-letter absolutes (C:/...)
     // by design, so calling them on a resolved HOST path returns EMPTY
@@ -4082,20 +4076,16 @@ size_t ApplySceneReferences(smvk::WorldPage& cluster,
                 // shipped meshleted=0.
                 const std::string meshBaseUri =
                     std::filesystem::path(modelSource).is_relative() ? modelSource : resolved;
-                // SPILL BUDGET: the reference's mesh-record count (base blobs +
-                // LOD siblings) against the main cluster's remaining pool
-                // budget. A multi-reference scene (the island combines many
-                // districts) spills an UNSplit reference into its OWN bounded
-                // cluster once the main cluster nears Pool::kMaxSize — never
-                // overflow. Reused (instanced) references add no meshes and
-                // never spill.
-                size_t refMeshRecords = meshAsset.geometry.size();
-                for (const auto& chain : meshAsset.lodChains)
-                    refMeshRecords += chain.size();
+                // SPILL BUDGET: every NON-ROOT unsplit reference becomes its
+                // OWN bounded cluster (a separate streaming page) instead of
+                // merging into the main cluster. The island's districts and
+                // terrain sections are distinct streaming units — the old
+                // "spill only when the main cluster nears Pool::kMaxSize"
+                // rule merged the first few sections into the ROOT page, so
+                // they loaded/unloaded with map_ruins as one blob. Reused
+                // (instanced) references add no meshes and never spill.
                 const bool reuse = builtMeshCache.find(resolved) != builtMeshCache.end();
-                const bool spillToOwnPage = outPartPages && !reuse &&
-                                            (size_t(mainPageMeshCount) + refMeshRecords >
-                                             size_t(cluster.staticMeshes.capacity()));
+                const bool spillToOwnPage = outPartPages && !reuse && !isRoot;
                 if (spillToOwnPage) {
                     // Build this UNSplit reference into its OWN bounded cluster
                     // and register it beside the main cluster (the authoring
@@ -4145,7 +4135,6 @@ size_t ApplySceneReferences(smvk::WorldPage& cluster,
                         builtFromMesh = true;
                         createdReferenceNodes += built;
                     }
-                    mainPageMeshCount = cluster.staticMeshes.numObjects();
                 }
             } else if (partitioned) {
                 // PARTITIONED-FAMILY build (P1): each part imports into its OWN
