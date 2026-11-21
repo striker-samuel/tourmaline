@@ -3,9 +3,12 @@
 The GPU Scene indexed raster VS and task/mesh-stage vertex output both
 already propagate the subtree-inherited `InstanceFlagDitherCloseup` flag
 at location 8. The masked PSO classification is also already published:
-`WithCloseupDitherRasterFlags` routes an opaque dithered object through
-the masked pipeline. This change fixes a separate large-world precision
-error; it does not create a second instance flag or a dither system.
+the `kDitherCloseupFlags` mask (`InstanceFlagDitherCloseup |
+InstanceFlagMasked`) routes an opaque dithered object through the masked
+pipeline — assemble a full instance flag word with
+`MakeInstanceFlags(baseFlags, kDitherCloseupFlags)`. This change fixes a
+separate large-world precision error; it does not create a second
+instance flag or a dither system.
 
 The prior path reconstructed `worldPos = relative + origin.high +
 origin.low` in float32 and computed `distance(worldPos, cameraPos)` in
