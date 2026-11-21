@@ -103,11 +103,11 @@ void CheckDecalRecords() {
 
 void CheckProbeRecords() {
     tour::gpu_records::Probes rows;
-    smvk::ForwardPlusLight probe{}; probe.type=smvk::kForwardPlusProbe;
-    probe.range=12.0f;
+    tour::gpu_records::ProbePayload probe{}; probe.packed.type=smvk::kForwardPlusProbe;
+    probe.packed.range=12.0f;
     auto id=rows.Insert(probe);
     CHECK(tour::gpu_records::IsProbe(*rows.Get(id)));
-    CHECK(rows.Get(id)->range==12.0f);
+    CHECK(rows.Get(id)->packed.range==12.0f);
     CHECK(rows.Erase(id));
     CHECK(!rows.Contains(id));
 }
