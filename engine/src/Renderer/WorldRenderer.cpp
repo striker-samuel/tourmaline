@@ -58,6 +58,7 @@
 #include <Engine/core.h>
 #include <Engine/debug_log.h> // SMVK_TRACE_LOG ([exposure] dashboards)
 #include <Engine/platform.h>  // readFile (exe-relative SPV loads)
+#include <imgui.h>             // DrawHudOverlay (text-only stats overlay)
 #include <gltf_import/gltf.h>
 
 #include <Engine/Renderer/GfxRenderer.h>
@@ -9339,6 +9340,31 @@ void WorldRenderer::LogGpuMemoryToConsole() {
     fflush(stderr);
     m_gpuMemLastLogSec =
         std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+void WorldRenderer::DrawHudOverlay() {
+    if (!m_showHud)
+        return;
+    // Cheap per-frame feedback: everything here is a CPU-side counter or a
+    // swapchain primitive counter — no GPU readback, so the overlay is free
+    // to render every frame.
+    const uint64_t tris = m_swapchain ? m_swapchain->GetPrimitiveCount(0u) : 0u;
+    ImGui::SetNextWindowPos(ImVec2(8.0f, 8.0f), ImGuiCond_Always);
+    ImGui::SetNextWindowBgAlpha(0.55f);
+    if (ImGui::Begin("##statsHud",
+                     nullptr,
+                     ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoInputs |
+                         ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoFocusOnAppearing |
+                         ImGuiWindowFlags_NoNav)) {
+        ImGui::Text("tris     %.2fM", double(tris) / 1.0e6);
+        ImGui::Text("static   %u", m_gpuSceneRasterCompatibleCount);
+        ImGui::Text("transp   %u", m_gpuSceneTransparentCompatibleCount);
+        ImGui::Text("legacy   %u", m_gpuSceneRasterLegacyCount);
+        ImGui::Text("cmds     %u", m_gpuSceneRasterDrawCapacity);
+        ImGui::Text("meshlets %u", m_gpuSceneMeshletCandidateCapacity);
+        ImGui::Text("gpu      %.2f ms", m_gpuMsSmooth);
+    }
+    ImGui::End();
 }
 
 void WorldRenderer::RebuildSwapViews() {
