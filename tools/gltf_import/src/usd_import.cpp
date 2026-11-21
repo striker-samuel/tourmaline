@@ -412,6 +412,13 @@ struct Converter {
         if (points.empty() || counts.empty())
             return Fail("empty mesh: " + prim.GetPath().GetString());
 
+        if (points.size() > 100000)
+            fprintf(stderr,
+                    "[usd] read mesh %s (%zu pts, %zu faces)\n",
+                    prim.GetPath().GetString().c_str(),
+                    points.size(),
+                    counts.size());
+
         const UsdAttribute schemeAttr = mesh.GetSubdivisionSchemeAttr();
         if (schemeAttr.HasAuthoredValue()) {
             TfToken scheme;
@@ -900,6 +907,8 @@ bool LoadUsdFileAsModel(tinygltf::Model& model,
     if (model.meshes.empty())
         return Fail("composed stage has no supported meshes");
     cv.blob.Finish();
+    fprintf(stderr, "[usd] done: %zu meshes, %zu nodes\n", model.meshes.size(), model.nodes.size());
+    fflush(stderr);
     return true;
 }
 

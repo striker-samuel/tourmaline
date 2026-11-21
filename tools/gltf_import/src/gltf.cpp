@@ -2586,7 +2586,10 @@ void SourceSceneImporter::importNodeRecursive(int gltfNodeIndex,
     const int groupNode = addNode(cluster.scene, parentSceneNode, level);
     gltfNodeMap_[size_t(gltfNodeIndex)] = groupNode;
 
-    setNodeName(cluster.scene, groupNode, sourceNode.name.empty() ? "Node" : sourceNode.name);
+    setNodeName(cluster.scene,
+                groupNode,
+                sourceNode.name.empty() ? "Node" : sourceNode.name,
+                /*dedupe=*/false);
 
     // RAW local (as authored). The TOP node of each imported chain
     // (importUnder) additionally carries the coordFix basis on the
@@ -2663,7 +2666,8 @@ void SourceSceneImporter::importNodeRecursive(int gltfNodeIndex,
             setNodeName(cluster.scene,
                         primNode,
                         (sourceNode.name.empty() ? "Node" : sourceNode.name) +
-                            std::string("Shape") + std::to_string(primIndex));
+                            std::string("Shape") + std::to_string(primIndex),
+                        /*dedupe=*/false);
             cluster.scene.localTransform[primNode] = glm::mat4(1.0f);
             cluster.scene.globalTransform[primNode] = glm::mat4(1.0f);
             const smvk::WorldPageStaticMeshHandle primMesh =

@@ -1585,8 +1585,12 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
             partCluster->scene.globalTransform[size_t(root)] = glm::mat4(1.0f);
             const auto& roots = part.activeRoots.empty() ? part.roots : part.activeRoots;
             importer.preloadTextures();
+            fprintf(stderr, "[import] deriving meshes (roots=%zu)...\n", roots.size());
+            fflush(stderr);
             for (uint32_t sourceNode : roots)
                 importer.import(int(sourceNode));
+            fprintf(stderr, "[import] derive done\n");
+            fflush(stderr);
             if (importer.MeshOverflow()) {
                 fail = "static-mesh pool overflow in part '" + geometryFile +
                        "': " + std::to_string(importer.MeshOverflowCount()) +
@@ -1594,8 +1598,14 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
                 return false;
             }
             importer.BuildSkinData();
+            fprintf(stderr, "[import] skin done\n");
+            fflush(stderr);
             RebuildStaticCache(partCluster->scene);
+            fprintf(stderr, "[import] static-cache done\n");
+            fflush(stderr);
             recalculateGlobalTransforms(partCluster->scene);
+            fprintf(stderr, "[import] transforms done\n");
+            fflush(stderr);
             gltfNodeMap = importer.gltfNodeMap();
         }
 
@@ -1810,6 +1820,8 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
                 }
         }
         WriteMeshAsset(dir / geometryFile, mesh, fail);
+        fprintf(stderr, "[import] wrote %s\n", geometryFile.c_str());
+        fflush(stderr);
         cluster = std::move(partCluster);
         return true;
     };
