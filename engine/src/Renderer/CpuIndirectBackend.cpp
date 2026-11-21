@@ -41,7 +41,7 @@ void CpuIndirectBackend::Shutdown(GeometryBackendResources&) noexcept {
     indirect_.reset();
 }
 
-void CpuIndirectBackend::Prepare(const GeometryFrameInputs& inputs) {
+void CpuIndirectBackend::Generate(const GeometryFrameInputs& inputs) {
     // Canonical geometry publication supplies the per-mesh draw list; until
     // then this backend records a single conservative full-scene command so
     // the path is exercised end-to-end without a mesh table.

@@ -52,19 +52,45 @@ struct GeometryFrameInputs;
 struct GeometryPassRecorder;
 struct GeometryBackendResources;
 
-// One backend may own raster submission for an admitted geometry unit.
-// Never run multiple implementations on the same geometry in one pass.
-// Common depth/Hi-Z and shading targets are owned by the frame composer.
-class IGeometryBackend {
+// Work/command generation: the cull (batch cull, filter, fused visibility)
+// that produces the per-flight indirect command stream. This is the PRODUCER
+// half — it owns the cull dispatch and the command buffers it writes, but
+// never records a draw. Separated from IGeometryRenderer so a cull strategy
+// can switch independently of the draw submission (and vice versa).
+class IGeometryWorkGenerator {
   public:
-    virtual ~IGeometryBackend() = default;
-    [[nodiscard]] virtual GeometryBackendKind Kind() const noexcept = 0;
-    virtual bool Initialize(GeometryBackendResources&) = 0;
-    virtual void Shutdown(GeometryBackendResources&) noexcept = 0;
-    virtual void Prepare(const GeometryFrameInputs&) = 0;
+    virtual ~IGeometryWorkGenerator() = default;
+    // Cull + produce the frame's draw commands (the compute passes). The
+    // results land in the command buffers published by the frame inputs.
+    virtual void Generate(const GeometryFrameInputs&) = 0;
+};
+
+// Geometry render: consumes the generated command stream and submits draws
+// (indexed indirect, task/mesh, filtered). This is the CONSUMER half — it
+// owns the raster pipeline binding and the draw calls, but never produces a
+// command. Separated from IGeometryWorkGenerator so the submission strategy
+// can switch independently of the cull.
+class IGeometryRenderer {
+  public:
+    virtual ~IGeometryRenderer() = default;
     virtual void RecordDepth(GeometryPassRecorder&, const GeometryFrameInputs&) = 0;
     virtual void RecordOpaque(GeometryPassRecorder&, const GeometryFrameInputs&) = 0;
     virtual void RecordMasked(GeometryPassRecorder&, const GeometryFrameInputs&) = 0;
+};
+
+// One geometry backend pairs a work generator with a renderer and owns their
+// shared lifecycle. The two halves are reachable by upcast
+// (IGeometryBackend* -> IGeometryWorkGenerator* / IGeometryRenderer*), so a
+// composer can hold one backend but hand the producer/consumer halves to the
+// phases that need them separately. Never run multiple implementations on the
+// same geometry in one pass. Common depth/Hi-Z and shading targets are owned
+// by the frame composer.
+class IGeometryBackend : public IGeometryWorkGenerator, public IGeometryRenderer {
+  public:
+    ~IGeometryBackend() override = default;
+    [[nodiscard]] virtual GeometryBackendKind Kind() const noexcept = 0;
+    virtual bool Initialize(GeometryBackendResources&) = 0;
+    virtual void Shutdown(GeometryBackendResources&) noexcept = 0;
 };
 
 } // namespace engine

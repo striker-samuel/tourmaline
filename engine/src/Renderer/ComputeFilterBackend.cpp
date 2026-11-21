@@ -20,7 +20,7 @@ bool ComputeFilterBackend::Initialize(GeometryBackendResources& resources) {
 
 void ComputeFilterBackend::Shutdown(GeometryBackendResources&) noexcept {}
 
-void ComputeFilterBackend::Prepare(const GeometryFrameInputs&) {}
+void ComputeFilterBackend::Generate(const GeometryFrameInputs&) {}
 
 void ComputeFilterBackend::RecordDepth(GeometryPassRecorder&, const GeometryFrameInputs&) {}
 

@@ -26,7 +26,7 @@ class ComputeFilterBackend final : public IGeometryBackend {
     }
     bool Initialize(GeometryBackendResources& resources) override;
     void Shutdown(GeometryBackendResources& resources) noexcept override;
-    void Prepare(const GeometryFrameInputs& inputs) override;
+    void Generate(const GeometryFrameInputs& inputs) override;
     void RecordDepth(GeometryPassRecorder& recorder, const GeometryFrameInputs& inputs) override;
     void RecordOpaque(GeometryPassRecorder& recorder, const GeometryFrameInputs& inputs) override;
     void RecordMasked(GeometryPassRecorder& recorder, const GeometryFrameInputs& inputs) override;

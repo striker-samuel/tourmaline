@@ -52,7 +52,7 @@ void GpuSceneIndexedBackend::Shutdown(GeometryBackendResources&) noexcept {
     frameIndex_ = 0;
 }
 
-void GpuSceneIndexedBackend::Prepare(const GeometryFrameInputs& inputs) {
+void GpuSceneIndexedBackend::Generate(const GeometryFrameInputs& inputs) {
     // Copy the per-frame counts; the composer owns the addresses for this
     // flight. commandCount_ is the reserved bound, never the GPU survivor
     // count (that is read by the device via the indirect stream).

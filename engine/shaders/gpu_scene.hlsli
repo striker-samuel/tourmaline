@@ -40,6 +40,10 @@ struct GpuSceneSubmesh {
 #define GPU_SCENE_INSTANCE_DITHER_CLOSEUP (1u << 13)
 #define GPU_SCENE_INSTANCE_PROJECT_LIT (1u << 14)
 #define GPU_SCENE_INSTANCE_SKINNED (1u << 15)
+// Per-instance render overrides (mirror InstanceFlag* in gpu_scene.h).
+#define GPU_SCENE_INSTANCE_FORCED_DIRECT (1u << 16)
+#define GPU_SCENE_INSTANCE_FORCE_LOD0 (1u << 17)
+#define GPU_SCENE_INSTANCE_HIGHLIGHT (1u << 18)
 // GPU_STRUCT_NAME(GpuSceneInstance)
 struct GpuSceneInstance {
     DoubleFloat3 worldPosition;

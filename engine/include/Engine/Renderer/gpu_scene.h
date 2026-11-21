@@ -80,9 +80,44 @@ inline constexpr uint32_t InstanceFlagProjectLit = 1u << 14;
 // cooked bounds). Mirrored as GPU_SCENE_INSTANCE_SKINNED in gpu_scene.hlsli.
 inline constexpr uint32_t InstanceFlagSkinned = 1u << 15;
 
-[[nodiscard]] constexpr uint32_t WithCloseupDitherRasterFlags(uint32_t flags,
-                                                              bool ditherCloseup) noexcept {
-    return ditherCloseup ? flags | InstanceFlagDitherCloseup | InstanceFlagMasked : flags;
+// Per-instance render overrides (bits 16..18 of Instance.refs.w). These are
+// PERSISTENT, cull-derivable facts the work-select reads, so an override
+// survives the survivor compaction and needs no per-frame patch pass. The
+// producer (cull) honors them; the consumer (draw) never sees them. Keep the
+// line between persistent facts (here) and per-frame/view conditions (the
+// cull's frame inputs) clean: nothing camera-relative belongs on this row.
+inline constexpr uint32_t InstanceFlagForcedDirect = 1u << 16; // cull omits -> direct leg
+inline constexpr uint32_t InstanceFlagForceLod0 = 1u << 17;    // LOD select clamps to finest
+inline constexpr uint32_t InstanceFlagHighlight = 1u << 18;    // debug: rasterClass override
+
+// Combined override mask (the "is any override set" query).
+inline constexpr uint32_t kInstanceOverrideMask =
+    InstanceFlagForcedDirect | InstanceFlagForceLod0 | InstanceFlagHighlight;
+
+// The dither-closeup flag set: the authored subtree-inherited bit plus the
+// MASK pipeline bit the screen-door path requires. Expressed as flags (not a
+// bool) so every flag edit is a plain mask operation.
+inline constexpr uint32_t kDitherCloseupFlags = InstanceFlagDitherCloseup | InstanceFlagMasked;
+
+[[nodiscard]] constexpr uint32_t SetInstanceOverride(uint32_t flags, uint32_t mask) noexcept {
+    return flags | (mask & kInstanceOverrideMask);
+}
+
+[[nodiscard]] constexpr uint32_t ClearInstanceOverride(uint32_t flags, uint32_t mask) noexcept {
+    return flags & ~(mask & kInstanceOverrideMask);
+}
+
+[[nodiscard]] constexpr bool HasInstanceOverride(uint32_t flags,
+                                                 uint32_t mask = kInstanceOverrideMask) noexcept {
+    return (flags & (mask & kInstanceOverrideMask)) != 0u;
+}
+
+// One-call flag assembly: base flags | the bits to set. Set bits are the
+// existing InstanceFlag* constants (no per-feature bools): dither-closeup is
+// kDitherCloseupFlags, overrides are InstanceFlagForcedDirect/ForceLod0/
+// Highlight.
+[[nodiscard]] constexpr uint32_t MakeInstanceFlags(uint32_t baseFlags, uint32_t setMask) noexcept {
+    return baseFlags | setMask;
 }
 
 GPU_STRUCT_NAME(GpuSceneLod)
