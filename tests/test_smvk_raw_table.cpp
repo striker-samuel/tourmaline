@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 #include <Engine/RHI/raw_table.h>
+#include <Engine/Renderer/texture_gpu_records.h>
 #include <array>
 #include <cstdint>
 #include <cstdio>
@@ -62,7 +63,21 @@ template <typename T> void TestRaw() {
         CHECK(mirror[f][x.slot].a==0 && mirror[f][z.slot].a==0);
     }
 }
+void CheckTextureRecords() {
+    tour::gpu_records::TextureMetadata rows;
+    tour::gfx::TextureMeta m{}; m.longSide=1024; m.fullMips=11;
+    const auto id=rows.Insert(m);
+    CHECK(rows.Contains(id));
+    CHECK(rows.Get(id)->longSide==1024);
+    m.fullMips=7;
+    CHECK(rows.Update(id,m));
+    CHECK(rows.Get(id)->fullMips==7);
+    CHECK(rows.Erase(id));
+    CHECK(!rows.Contains(id));
+}
+
 int main() {
+    CheckTextureRecords();
     TestRaw<Tiny>(); // 8-byte texture-like ABI
     TestRaw<Big>();  // 16-byte and wider ABI
     std::printf("raw_table failures=%d\n",failures);
