@@ -7,6 +7,15 @@
 > here). Rule: one epoch, one independently testable result; no permanent
 > parallel representations.
 
+> **Recovery note (2026-11-21):** the retired filter shaders were recovered
+> from git history into `engine/shaders/` (`gfxbatchcull.cs.hlsl`,
+> `gfxdrawcull.cs.hlsl`, `gfxfilter.cs.hlsl`, `gfxfilter.mesh.hlsl`,
+> `gfxfiltered.vert.hlsl`, `gfxfilteredmotion.vert.hlsl`, plus `gfxmesh.hlsli`)
+> as the `ComputeFilter` geometry backend (`engine/Renderer/ComputeFilterBackend.*`),
+> with the lightmap-pull surface dropped (lightmaps are deprecated). The
+> recovery is shader-side only — the C++ filter/seed/remainder dispatch is not
+> yet ported; the backend reports unavailable until it is.
+
 The external plan is nine epochs. Target architecture:
 
 - **Static geometry** — GPU-scene registration, culling, LOD, and

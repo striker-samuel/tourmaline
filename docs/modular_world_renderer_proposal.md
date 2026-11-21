@@ -1,7 +1,13 @@
 # Proposal: modular world rendering and selectable geometry backends
 
-Status: **scaffold only**. No active render path, shader, rendering behavior,
-resource ownership or existing `IRenderer` ABI is changed by this PR.
+Status: **contract + two live backends + recovered filter shaders landed**
+(2026-11-21). `IGeometryBackend` is split into `IGeometryWorkGenerator`
+(cull → survivor stream) and `IGeometryRenderer` (draws), reachable by
+upcast. `GpuSceneIndexedBackend` + `CpuIndirectBackend` are implemented,
+`ComputeFilterBackend` has its recovered shaders (C++ dispatch still a stub),
+and `GeometryBackendRegistry` maps the four kinds. Runtime selection in
+WorldRenderer is explicitly out of scope for now; the scene/streaming/
+canonical-geometry extraction and the task/mesh adapter remain follow-ups.
 
 ## Goal
 
