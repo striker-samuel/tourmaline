@@ -1699,3 +1699,10 @@ target_include_directories(SmvkRawTableTests PRIVATE
     ${CMAKE_SOURCE_DIR}/engine/include
     ${CMAKE_SOURCE_DIR}/external/glm)
 add_test(NAME smvk_raw_table_tests COMMAND SmvkRawTableTests)
+
+# Experimental descriptor-storage table publisher: CPU-only byte mirrors.
+add_executable(SmvkDescriptorTableTests test_smvk_descriptor_table.cpp)
+target_include_directories(SmvkDescriptorTableTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/include
+    ${CMAKE_SOURCE_DIR}/external/glm)
+add_test(NAME smvk_descriptor_table_tests COMMAND SmvkDescriptorTableTests)
