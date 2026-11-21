@@ -1675,7 +1675,6 @@ class WorldRenderer : public IRenderer {
     }
     // Called by the host UI service between NewFrame and AddPass.
     void DrawSettingsUi(const DebugUiFrame& frame) {
-        DrawHudOverlay(); // Ctrl+T text-only stats overlay (top-left)
         if (m_settingsUiCallback)
             m_settingsUiCallback(*this, frame);
     }

@@ -2258,6 +2258,19 @@ void WorldRenderer::DrawHudOverlay() {
                 m_world ? m_world->LodStatDraws() : 0u,
                 m_world ? m_world->LodStatSwitched() : 0u,
                 (unsigned long long)m_lodShaderDraws);
+    // GPU-scene raster stats (cheap CPU counters + the swapchain primitive
+    // counter — no GPU readback, so the overlay stays free every frame).
+    {
+        const uint64_t tris = m_swapchain ? m_swapchain->GetPrimitiveCount(0u) : 0u;
+        ImGui::Text("tris %.2fM | static %u | transp %u | legacy %u",
+                    double(tris) / 1.0e6,
+                    m_gpuSceneRasterCompatibleCount,
+                    m_gpuSceneTransparentCompatibleCount,
+                    m_gpuSceneRasterLegacyCount);
+        ImGui::Text("cmds %u | meshlets %u",
+                    m_gpuSceneRasterDrawCapacity,
+                    m_gpuSceneMeshletCandidateCapacity);
+    }
     // Exposure (applied + target).
     ImGui::Text("exp %.5f (tgt %.5f)", (double)FrameExposure(), (double)m_exposureTarget);
     // Texture streaming residency.
