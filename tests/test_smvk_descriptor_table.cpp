@@ -77,6 +77,20 @@ int main() {
     copies.fill(0);
     CHECK(upload(0,false) && copies[0]==0);
     CHECK(mirror.GetBinding(table,0).allocationRevision==1);
+    // Cross the first 64-KiB boundary. A failed growth allocation must
+    // withhold the undersized old descriptor instead of exposing an OOB view.
+    while (table.Size() <= 8192)
+        CHECK(bool(table.Insert(Payload{uint32_t(table.Size()),1})));
+    auto failCreate = [&](size_t) -> std::optional<FakeBuffer> {
+        return std::nullopt;
+    };
+    CHECK(!mirror.Publish(table,0,failCreate,
+        [&](const FakeBuffer&,size_t,const void*,size_t){ return true; }));
+    CHECK(!mirror.GetBinding(table,0));
+    CHECK(upload(0,false));
+    CHECK(mirror.GetBinding(table,0).capacityBytes>=128*1024);
+    CHECK(mirror.GetBinding(table,0).allocationRevision==2);
+    CHECK(read(0,c.slot).x==77);
     // The adapter is descriptor-backed only: no device addresses, no textures.
     std::printf("descriptor-table checks complete failures=%d\n",failures);
     return failures ? 1 : 0;

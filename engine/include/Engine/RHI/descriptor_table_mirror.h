@@ -57,6 +57,9 @@ public:
             return false;
         const size_t neededBytes = capacityRows * sizeof(T);
         if (!buffers_[flight] || capacityBytes_[flight] < rows * sizeof(T)) {
+            // A previous mirror is undersized for the new logical table.
+            // Never expose it as a valid descriptor if allocation fails.
+            ready_[flight] = false;
             std::optional<Buffer> fresh = create(neededBytes);
             if (!fresh)
                 return false;
@@ -83,7 +86,8 @@ public:
     [[nodiscard]] Binding GetBinding(const RawTable<T, FrameCount>& table,
                                      uint32_t flight) const {
         if (flight >= FrameCount || !ready_[flight] || !buffers_[flight] ||
-            table.Size() == 0)
+            table.Size() == 0 ||
+            size_t(table.Size()) > capacityBytes_[flight] / sizeof(T))
             return {};
         return {&*buffers_[flight], capacityBytes_[flight], table.Size(),
                 revisions_[flight]};
