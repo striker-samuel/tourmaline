@@ -5,7 +5,7 @@ calls continue unchanged. Device-local staging uploads return a small
 shard/sequence ticket; polls use the existing transfer Submitter timeline.
 No per-upload fences, promises, heap allocations, or forced flushes.
 
-Lifecycle: Rejected (invalid input, stale buffer, oversized range,
+Lifecycle: Rejected (invalid input, stale buffer, oversized range (validated against logical VkBuffer size),
 unsupported host-mappable path); Recorded (copied and recorded in staging);
 Submitted (batch timeline published); Completed (timeline value reached);
 Failed (submission returned no valid point or the poll counter failed).
@@ -22,8 +22,9 @@ Failed (submission returned no valid point or the poll counter failed).
   an older upload may show Submitted longer than necessary.
 - The shard sequence has no long-term archival retention. Tickets are
   scoped to the ResourceManager lifetime and should be polled promptly.
-- No changes to the renderer's material publication callback in this
-  foundational PR; it can adopt checked admission in a follow-up.
+- WorldRenderer material publication uses admission-checked requests. Its
+  per-flight tickets are checked on the next fenced reuse; any incomplete
+  or failed ticket forces a full material table replay.
 - Build, CTest and device testing remain required. GPU device loss and
   submission failure behavior need real-device fault injection before
   adopting this as authoritative recovery.

@@ -198,6 +198,7 @@ struct Buffer {
     VkBufferUsageFlags usage = 0;
     VkMemoryPropertyFlags memoryFlags = 0;
     VkDeviceAddress deviceAddress = 0;
+    VkDeviceSize size = 0; // logical VkBuffer size, not VMA allocation size
     bool isConcurrent = false;
     // ALLOCATION LEDGER (see the smvk.h block): exact committed bytes
     // + the creation type + the arena-owned debug name (same contract

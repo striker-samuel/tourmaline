@@ -1601,6 +1601,8 @@ bool WorldRenderer::onAttach() {
     // world or was detached and attached again.
     m_materialRows.Reset();
     m_materialForceFull.fill(true);
+    for (auto& tickets : m_materialUploadTickets)
+        tickets.clear();
     m_resources.directionalCascadeBuffer = m_context->CreateBuffer(
         sizeof(smvk::GpuDirectionalLightDescription) * m_swapchain->framesInFlight() * viewSlabs,
         smvk::BufferType_Storage,
@@ -6017,21 +6019,38 @@ void WorldRenderer::UpdateMaterials(uint32_t currentFrame) {
     const size_t frameOffset = size_t(currentFrame) * MATERIAL_FRAME_STRIDE;
     if (currentFrame >= smvk::limits::MaxFramesInFlight)
         return;
+    // The current flight is acquired/fenced here. Any upload ticket
+    // still incomplete or failed since its previous use invalidates that
+    // flight's material snapshot: replay the full table.
+    auto& outstanding = m_materialUploadTickets[currentFrame];
+    for (const auto ticket : outstanding) {
+        if (m_context->PollUpload(ticket) != smvk::UploadStatus::Completed)
+            m_materialForceFull[currentFrame] = true;
+    }
+    outstanding.clear();
+
     const bool full = m_materialForceFull[currentFrame];
     const bool ok = m_materialRows.Publish(
         currentFrame, full, [&](size_t offset, const void* bytes, size_t count) {
             if (offset > MATERIAL_FRAME_STRIDE ||
                 count > MATERIAL_FRAME_STRIDE - offset)
                 return false;
-            m_context->UploadDataToBuffer(
+            const smvk::UploadRequest req = m_context->RequestBufferUpload(
                 m_resources.materialsBuffer, bytes, count,
                 smvk::PipelineStageBit_Vertex |
                     smvk::PipelineStageBit_Fragment |
                     smvk::PipelineStageBit_Compute,
-                smvk::AccessFlags::ShaderRead, 0, frameOffset + offset);
+                smvk::AccessFlags::ShaderRead, frameOffset + offset);
+            if (!req.accepted())
+                return false; // preserve the table's dirty journal
+            outstanding.push_back(req.ticket);
             return true;
         });
     if (!ok) {
+        // Some ranges may have staged successfully before another failed.
+        // Force a full replay so the next flight doesn't depend on partial
+        // batch acceptance.
+        m_materialForceFull[currentFrame] = true;
         std::fprintf(stderr, "[WorldRenderer] GPU material table publication failed\\n");
         return;
     }

@@ -3197,6 +3197,8 @@ class WorldRenderer : public IRenderer {
     // physical storage and retains its BDA and fixed MaxMaterials stride.
     tour::gpu_records::Materials m_materialRows;
     std::array<bool, smvk::limits::MaxFramesInFlight> m_materialForceFull{};
+    std::array<std::vector<smvk::UploadTicket>, smvk::limits::MaxFramesInFlight>
+        m_materialUploadTickets{};
     AppResources m_resources{};
     ViewportResources m_viewportResources{};
     // Resolved KHR_lights_punctual set for the loaded scene (snapshotted

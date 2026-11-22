@@ -4340,7 +4340,7 @@ smvk::UploadRequest smvk::UploadStreamer::requestBuffer(
     if (!dstBuf || dstBuf->vkBuffer == VK_NULL_HANDLE ||
         !(dstBuf->usage & VK_BUFFER_USAGE_TRANSFER_DST_BIT) ||
         dstBuf->isMappable() ||
-        dstOffset > dstBuf->allocBytes || size > dstBuf->allocBytes - dstOffset)
+        dstOffset > dstBuf->size || size > dstBuf->size - dstOffset)
         return {};
     const uint32_t shard = CurrentPoolShard();
     if (shard >= kNumPoolShards)
@@ -8568,6 +8568,7 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
     VmaAllocationCreateFlags vmaAllocFlags,
     bool gpuScenePool) {
     Buffer desc{};
+    desc.size = size;
     VkBufferCreateInfo ci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     ci.size = size;
     ci.usage = bufferTypeToUsageFlags[static_cast<size_t>(bufferType)];
