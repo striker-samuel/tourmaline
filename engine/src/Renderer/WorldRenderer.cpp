@@ -1601,8 +1601,7 @@ bool WorldRenderer::onAttach() {
     // world or was detached and attached again.
     m_materialRows.Reset();
     m_materialForceFull.fill(true);
-    for (auto& tickets : m_materialUploadTickets)
-        tickets.clear();
+    m_materialUploadTickets.fill({});
     m_resources.directionalCascadeBuffer = m_context->CreateBuffer(
         sizeof(smvk::GpuDirectionalLightDescription) * m_swapchain->framesInFlight() * viewSlabs,
         smvk::BufferType_Storage,
@@ -6023,11 +6022,10 @@ void WorldRenderer::UpdateMaterials(uint32_t currentFrame) {
     // still incomplete or failed since its previous use invalidates that
     // flight's material snapshot: replay the full table.
     auto& outstanding = m_materialUploadTickets[currentFrame];
-    for (const auto ticket : outstanding) {
-        if (m_context->PollUpload(ticket) != smvk::UploadStatus::Completed)
-            m_materialForceFull[currentFrame] = true;
-    }
-    outstanding.clear();
+    if (outstanding &&
+        m_context->PollUpload(outstanding) != smvk::UploadStatus::Completed)
+        m_materialForceFull[currentFrame] = true;
+    outstanding = {};
 
     const bool full = m_materialForceFull[currentFrame];
     const bool ok = m_materialRows.Publish(
@@ -6043,7 +6041,9 @@ void WorldRenderer::UpdateMaterials(uint32_t currentFrame) {
                 smvk::AccessFlags::ShaderRead, frameOffset + offset);
             if (!req.accepted())
                 return false; // preserve the table's dirty journal
-            outstanding.push_back(req.ticket);
+            // The latest timeline point covers all earlier material writes
+            // in this producer's ordered queue, including auto-flushed batches.
+            outstanding = req.ticket;
             return true;
         });
     if (!ok) {

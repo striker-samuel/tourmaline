@@ -24,8 +24,8 @@ Failed (submission returned no valid point or the poll counter failed).
 - The shard sequence has no long-term archival retention. Tickets are
   scoped to the ResourceManager lifetime and should be polled promptly.
 - WorldRenderer material publication uses admission-checked requests. Its
-  per-flight tickets are checked on the next fenced reuse; any incomplete
-  or failed ticket forces a full material table replay.
+  latest per-flight ticket is checked on the next fenced reuse; any
+  incomplete or failed ticket forces a full material table replay.
 - Build, CTest and device testing remain required. GPU device loss and
   submission failure behavior need real-device fault injection before
   adopting this as authoritative recovery.

@@ -3197,7 +3197,9 @@ class WorldRenderer : public IRenderer {
     // physical storage and retains its BDA and fixed MaxMaterials stride.
     tour::gpu_records::Materials m_materialRows;
     std::array<bool, smvk::limits::MaxFramesInFlight> m_materialForceFull{};
-    std::array<std::vector<smvk::UploadTicket>, smvk::limits::MaxFramesInFlight>
+    // Latest ticket per flight covers earlier uploads on the same ordered
+    // queue timeline; one status query per fenced flight reuse.
+    std::array<smvk::UploadTicket, smvk::limits::MaxFramesInFlight>
         m_materialUploadTickets{};
     AppResources m_resources{};
     ViewportResources m_viewportResources{};
