@@ -3267,6 +3267,14 @@ void TestBakedPlacement() {
                                   sizeof(RenderInstance) * a.instances.size()) == 0;
     }
     Check(cookedExact, "baked.cooked-roundtrip-exact");
+
+    // Configure wires a cooked form into a runtime (the host load path).
+    BakedPlacementRuntime brt;
+    Check(brt.Configure(cookedBack, 8, 2), "baked.configure");
+    Check(brt.tiles == &cookedBack.tiles && brt.protoGeometry == &cookedBack.protoGeometry &&
+              brt.tileSize == 16.0f && brt.slotBudget == 8 && brt.viewBudget == 2,
+          "baked.configure-wires");
+    Check(!brt.Configure(BakedPlacementCooked{}, 8, 1), "baked.configure-empty-refuses");
 }
 
 int main() {

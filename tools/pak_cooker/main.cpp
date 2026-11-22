@@ -2365,6 +2365,26 @@ int Run(const PakArgs& c) {
             }
         }
     }
+    // Baked placement sidecars (<stem>.baked_placement_cooked beside each
+    // .geometry): the cooked PointInstancer cloud. Read + embed as
+    // BakedPlacement-kind blobs at the sidecar path; the host derives the
+    // sidecar path from the .geometry family path.
+    std::vector<std::pair<std::string, std::vector<uint8_t>>> bakedPlacementBlobs;
+    for (const std::string& inVfs : args.inVfsList) {
+        std::string artPath = smvk::NormalizeAssetUri(inVfs).Str();
+        if (artPath.empty())
+            artPath = inVfs;
+        std::string stem = smvk::vfs::FileName(artPath);
+        if (const size_t mdot = stem.rfind(".geometry"); mdot != std::string::npos)
+            stem = stem.substr(0, mdot);
+        const std::string sidecarVfs =
+            smvk::vfs::Join(smvk::vfs::BaseDir(artPath), stem + ".baked_placement_cooked");
+        std::vector<uint8_t> bytes = ReadLooseBakeFile(args.contentDir, sidecarVfs);
+        if (bytes.empty())
+            continue; // no baked placement cooked for this artifact
+        bakedPlacementBlobs.emplace_back(sidecarVfs, std::move(bytes));
+        tool::out() << "Baked placement embedded: " << sidecarVfs << "\n";
+    }
     // ---------------------------------------------------------------------------
     // COOKED STATIC FLAGS (the authored/preserved static pipeline): a
     // cluster with NO skeleton and NO recorded anim refs never animates —
@@ -3030,6 +3050,17 @@ int Run(const PakArgs& c) {
             return 1;
         }
         tool::out() << "Embedded anim clip " << vfsPath << " (" << size << " B text)\n";
+    }
+    // Baked placement cooked blobs: the PointInstancer cloud's resolved
+    // physical ranges + bounds + bucketed tiles, as their own kind (read via
+    // PakReader::Find by path — not VFS, not a content-id asset).
+    for (auto& [vfsPath, bytes] : bakedPlacementBlobs) {
+        const size_t size = bytes.size();
+        if (!writer.AddBlob(smvk::PakAssetKind::BakedPlacement, vfsPath, std::move(bytes))) {
+            tool::err() << "Baked placement AddBlob failed: " << vfsPath << std::endl;
+            return 1;
+        }
+        tool::out() << "Embedded baked placement " << vfsPath << " (" << size << " B)\n";
     }
     // ---- SHADER blobs (the engine-shaders.pak mode) ---------------------
     // (See PackShaderTree/PackShaderList — the shared validated embeds,

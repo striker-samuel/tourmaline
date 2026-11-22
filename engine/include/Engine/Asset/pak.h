@@ -246,6 +246,13 @@ enum class PakAssetKind : uint32_t {
     // name search) and addresses bricks by their content hash. WorldPage-
     // internal, invisible to the VFS backends.
     WorldManifest = 27,
+    // BAKED PLACEMENT (the authored PointInstancer cloud): one blob per
+    // .geometry family at "<stem>.baked_placement_cooked" carrying the
+    // cooked BakedPlacementCooked (resolved physical index ranges + bounds +
+    // bucketed tiles). WorldPage-internal, invisible to the VFS backends —
+    // read via PakReader::Find by path (the host derives it from the
+    // .geometry family path), never by content id.
+    BakedPlacement = 28,
 };
 
 enum PakEntryFlags : uint32_t {

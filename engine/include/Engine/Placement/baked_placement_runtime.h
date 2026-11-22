@@ -430,6 +430,24 @@ class BakedPlacementRuntime {
         return created && pass.Valid();
     }
 
+    // Wires a cooked form into this runtime. The runtime's tiles/protoGeometry
+    // pointers BORROW the cooked storage, which must outlive the runtime.
+    // Returns false when the cooked form is empty (nothing to draw). Call
+    // before Create (the host's load path: deserialize the cooked blob, then
+    // Configure, then SetBakedPlacementRuntime on the renderer).
+    [[nodiscard]] bool Configure(const BakedPlacementCooked& cooked,
+                                 uint32_t slotBudget,
+                                 uint32_t viewBudget = 1) {
+        if (cooked.empty() || cooked.protoGeometry.empty() || slotBudget == 0 || viewBudget == 0)
+            return false;
+        tiles = &cooked.tiles;
+        protoGeometry = &cooked.protoGeometry;
+        tileSize = cooked.tileSize;
+        this->slotBudget = slotBudget;
+        this->viewBudget = viewBudget;
+        return true;
+    }
+
     bool Create(smvk::ResourceManager& ctx, smvk::RenderGraph& rg) {
         if (!tiles || !protoGeometry)
             return false;
