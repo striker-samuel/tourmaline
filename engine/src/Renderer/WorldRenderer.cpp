@@ -12846,6 +12846,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                            "content/shaders/gpu_scene_raster_history.cs.hlsl.spv",
                            "mainCS");
         if (m_gpuSceneCullProgram.shaderCount == 1) {
+            SMVK_PROFILE_CATEGORY("GpuSceneBuild", Optick::Category::Rendering);
             // This is a validation bridge, NOT true large-world camera
             // authority. The source VP remains float32; we only change
             // coordinate frames consistently for the opt-in compute pass.
@@ -16447,6 +16448,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                      motionRasterMaskedTwoSided =
                                          m_gpuSceneRasterMaskedDoubleSidedCount !=
                                          0](smvk::CommandBuffer& cmd) {
+            SMVK_PROFILE_CATEGORY("GpuSceneMotion", Optick::Category::Rendering);
             // GPU context + pass scope come from RenderGraph::Execute.
             // 1x depth stays read-only in both phases (prepass owns it).
             const smvk::DepthSettings motionDepth{
