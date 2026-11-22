@@ -29,27 +29,46 @@ public:
     [[nodiscard]] const T* Get(uint32_t index) const {
         return index < ids_.size() ? table_.Get(ids_[index]) : nullptr;
     }
+    // Resolve only an externally indexed row. No scanning of other rows.
+    [[nodiscard]] bool Set(uint32_t index, const T& value) {
+        if (index >= ids_.size())
+            return false;
+        const T* old = table_.Get(ids_[index]);
+        if (!old)
+            return false;
+        return std::memcmp(old, &value, sizeof(T)) == 0 ||
+               table_.Update(ids_[index], value);
+    }
+    // Grow with default rows so world slot identity remains 1:1.
+    [[nodiscard]] bool EnsureSize(uint32_t count) {
+        while (ids_.size() < count) {
+            const auto id = table_.Insert(T{});
+            if (!id)
+                return false;
+            ids_.push_back(id);
+        }
+        return true;
+    }
+    [[nodiscard]] bool ClearTail(uint32_t logicalCount) {
+        if (logicalCount > ids_.size())
+            return false;
+        for (size_t i = logicalCount; i < ids_.size(); ++i)
+            if (!Set(static_cast<uint32_t>(i), T{}))
+                return false;
+        return true;
+    }
     // External indices remain stable. A scene shrinking from N rows to M
     // clears [M,N) in the GPU mirror even if another flight missed the edit.
     // Grow/reuse simply overwrites those slots with the new resolved value.
     [[nodiscard]] bool Sync(std::span<const T> resolved) {
         if (resolved.size() >= InvalidIndex)
             return false;
-        while (ids_.size() < resolved.size()) {
-            const auto id = table_.Insert(resolved[ids_.size()]);
-            if (!id)
+        if (!EnsureSize(static_cast<uint32_t>(resolved.size())))
+            return false;
+        for (size_t i = 0; i < resolved.size(); ++i)
+            if (!Set(static_cast<uint32_t>(i), resolved[i]))
                 return false;
-            ids_.push_back(id);
-        }
-        for (size_t i = 0; i < ids_.size(); ++i) {
-            const T desired = i < resolved.size() ? resolved[i] : T{};
-            const T* existing = table_.Get(ids_[i]);
-            if (!existing)
-                return false;
-            if (std::memcmp(existing, &desired, sizeof(T)) != 0 &&
-                !table_.Update(ids_[i], desired))
-                return false;
-        }
+        return ClearTail(static_cast<uint32_t>(resolved.size()));
         return true;
     }
     template <typename Writer>

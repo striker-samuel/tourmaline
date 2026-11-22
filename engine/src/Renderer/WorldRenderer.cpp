@@ -1601,6 +1601,14 @@ bool WorldRenderer::onAttach() {
     // world or was detached and attached again.
     m_materialRows.Reset();
     m_materialForceFull.fill(true);
+    m_materialObservedWorld = nullptr;
+    m_materialObservedTopology = ~uint64_t(0);
+    m_materialObservedTextureEpoch = ~uint64_t(0);
+    m_materialObservedRegistryEpoch = ~uint64_t(0);
+    m_materialLogicalCount = 0;
+    m_materialCachedBindless.clear();
+    m_materialTexturedSlots.clear();
+    m_materialHasTextures.clear();
     m_resources.directionalCascadeBuffer = m_context->CreateBuffer(
         sizeof(smvk::GpuDirectionalLightDescription) * m_swapchain->framesInFlight() * viewSlabs,
         smvk::BufferType_Storage,
@@ -5935,83 +5943,159 @@ WorldRenderer::FrameBindlessMap WorldRenderer::BuildPoolToBindlessMap() const {
 }
 
 void WorldRenderer::UpdateMaterials(uint32_t currentFrame) {
-    // Preserve world material slots: shaders index by world materialId,
-    // so a missing slot must stay a hole (default values), not shift
-    // every later material down by one.
-    const uint32_t slotCount = (uint32_t)m_world->materialLocations.size();
-    if (slotCount > engine::renderer::limits::MaxMaterials) {
-        std::cerr << "[WorldRenderer] Material slots (" << slotCount
-                  << ") exceed engine::renderer::limits::MaxMaterials ("
-                  << engine::renderer::limits::MaxMaterials
-                  << ") - clamping upload, trailing materials will use defaults\n";
-    }
+    // Stable external slot == MaterialsBuffer.mats[worldMaterialId].
+    // Reconciliation is O(dirty mutable access) on normal frames. The
+    // world topology, RHI descriptor epoch and URI registry revision
+    // independently invalidate this cache.
+    if (!m_world || currentFrame >= smvk::limits::MaxFramesInFlight)
+        return;
+    const uint32_t slotCount = static_cast<uint32_t>(m_world->materialLocations.size());
     const uint32_t uploadCount = std::min(slotCount, engine::renderer::limits::MaxMaterials);
-    // POOL -> BINDLESS remap (the engine twin of the editor's own
-    // material upload fix): MaterialValues.textures store RHI texture
-    // POOL indices, but the shaders index the bindless descriptor array.
-    // The identity only holds while nothing else churns the bindless
-    // pool (see BuildPoolToBindlessMap). A MISS means the pool index
-    // points at no live texture (stale material reference into a
-    // destroyed texture): upload it raw, matching the editor's
-    // diagnostic behavior - the freed-slot null-write in impl.cpp's
-    // destroy(BindlessImageHandle) makes that a safe black sample
-    // instead of the old dangling-descriptor device death.
-    const FrameBindlessMap bindlessByPool = BuildPoolToBindlessMap();
-    auto remapSlot = [&](int poolIdx) -> int {
+    const bool switchedWorld = m_materialObservedWorld != m_world;
+    const bool topologyDirty =
+        switchedWorld ||
+        m_materialObservedTopology != m_world->gpuSceneTopologyRevision ||
+        m_materialLogicalCount != uploadCount;
+    const uint64_t textureEpoch = m_context->TextureBindingRevision();
+    const bool bindingDirty =
+        topologyDirty ||
+        textureEpoch != m_materialObservedTextureEpoch ||
+        m_world->materialTextureRegistryRevision != m_materialObservedRegistryEpoch;
+    const bool overrideDirty =
+        topologyDirty ||
+        m_materialObservedOverride != m_debugMaterialOverride ||
+        m_materialObservedMetallic != m_debugMaterialMetallic ||
+        m_materialObservedRoughness != m_debugMaterialRoughness;
+
+    // Drain even after a topology invalidation: no stale indices can
+    // survive into a later frame following world-slot remapping.
+    const std::vector<uint32_t> dirtySlots = m_world->TakeMaterialDirtySlots();
+
+    if (slotCount > engine::renderer::limits::MaxMaterials && topologyDirty) {
+        std::fprintf(stderr,
+                     "[WorldRenderer] Material slots (%u) exceed MaxMaterials (%u); clamping\\n",
+                     slotCount, engine::renderer::limits::MaxMaterials);
+    }
+    if (switchedWorld) {
+        m_materialRows.Reset();
+        m_materialForceFull.fill(true);
+        m_materialCachedBindless.clear();
+        m_materialTexturedSlots.clear();
+        m_materialHasTextures.clear();
+    }
+    if (bindingDirty) {
+        // Avoid per-frame map rebuilding; texture creation/destruction,
+        // streaming retarget and URI registration invalidate the cache.
+        const FrameBindlessMap fresh = BuildPoolToBindlessMap();
+        m_materialCachedBindless.clear();
+        m_materialCachedBindless.insert(fresh.begin(), fresh.end());
+    }
+
+    const auto remapSlot = [&](int poolIdx) -> int {
         if (poolIdx < 0)
             return -1;
-        const auto hit = bindlessByPool.find(static_cast<uint32_t>(poolIdx));
-        if (hit == bindlessByPool.end()) {
-            static uint64_t s_matSlotMissTick = 0;
-            if (s_matSlotMissTick++ < 16)
-                std::fprintf(stderr,
-                             "[MATSLOT] engine remap MISS: poolIdx=%d not live (map=%zu) - raw "
-                             "upload (null-sample)\n",
-                             poolIdx,
-                             bindlessByPool.size());
+        const auto hit = m_materialCachedBindless.find(static_cast<uint32_t>(poolIdx));
+        if (hit == m_materialCachedBindless.end()) {
+            // Preserve the pre-migration contract on stale texture refs.
+            // Destroyed descriptors are null-written by the RHI.
             return poolIdx;
         }
         return static_cast<int>(hit->second);
     };
-    // Upload scratch is valid only until the next frame-arena reset.
-    auto* mats = static_cast<smvk::MaterialValues*>(smvk::FrameArena().Allocate(
-        size_t(std::max(1u, uploadCount)) * sizeof(smvk::MaterialValues),
-        alignof(smvk::MaterialValues)));
-    std::uninitialized_value_construct_n(mats, uploadCount);
-    for (uint32_t i = 0; i < uploadCount; ++i) {
-        if (auto* mat = m_world->GetMaterial(i)) {
-            mats[i] = mat->values;
-            mats[i].textures.x = remapSlot(mat->values.textures.x);
-            mats[i].textures.y = remapSlot(mat->values.textures.y);
-            mats[i].textures.z = remapSlot(mat->values.textures.z);
-            mats[i].textures.w = remapSlot(mat->values.textures.w);
-            mats[i].textures2.x = remapSlot(mat->values.textures2.x);
-            // Debug material override (the SSR blur-bucket test rig,
-            // see the SSR UI panel): overwrite metallic/roughness for
-            // EVERY material — params.y/z — and disable the
-            // metallicRoughness texture slot so the slider IS the
-            // final value (the glTF factor x texel convention would
-            // otherwise keep the baked texels in charge). The lit
-            // path, the thin G-buffer (receiver classification) and
-            // the SSR blur radius buckets all read this one table,
-            // so the whole scene re-skins from two sliders.
+    const auto sourceMaterial = [&](uint32_t i) -> const smvk::Material* {
+        // Never use the mutable accessor while the renderer is merely
+        // reading: that would spuriously mark every row dirty.
+        return static_cast<const smvk::World&>(*m_world).GetMaterial(i);
+    };
+    const auto resolve = [&](uint32_t i) -> smvk::MaterialValues {
+        smvk::MaterialValues row{};
+        if (const smvk::Material* mat = sourceMaterial(i)) {
+            row = mat->values;
+            row.textures.x = remapSlot(row.textures.x);
+            row.textures.y = remapSlot(row.textures.y);
+            row.textures.z = remapSlot(row.textures.z);
+            row.textures.w = remapSlot(row.textures.w);
+            row.textures2.x = remapSlot(row.textures2.x);
             if (m_debugMaterialOverride) {
-                mats[i].params.y = std::clamp(m_debugMaterialMetallic, 0.0f, 1.0f);
-                mats[i].params.z = std::clamp(m_debugMaterialRoughness, 0.0f, 1.0f);
-                mats[i].textures.y = -1;
+                row.params.y = std::clamp(m_debugMaterialMetallic, 0.0f, 1.0f);
+                row.params.z = std::clamp(m_debugMaterialRoughness, 0.0f, 1.0f);
+                row.textures.y = -1;
+            }
+        }
+        return row;
+    };
+    const auto recordTextureUsage = [&](uint32_t index) {
+        if (m_materialHasTextures.size() <= index)
+            m_materialHasTextures.resize(size_t(index) + 1, uint8_t(0));
+        bool hasTexture = false;
+        if (const auto* mat = sourceMaterial(index)) {
+            const auto& v = mat->values;
+            hasTexture = v.textures.x >= 0 || v.textures.y >= 0 ||
+                         v.textures.z >= 0 || v.textures.w >= 0 ||
+                         v.textures2.x >= 0;
+        }
+        if (hasTexture && !m_materialHasTextures[index])
+            m_materialTexturedSlots.push_back(index);
+        m_materialHasTextures[index] = hasTexture ? 1 : 0;
+    };
+
+    bool synced = true;
+    if (topologyDirty) {
+        // One full reconciliation when a world's index layout changes,
+        // including shader-visible holes and removed tail tombstones.
+        if (!m_materialRows.EnsureSize(uploadCount))
+            synced = false;
+        if (synced) {
+            m_materialTexturedSlots.clear();
+            m_materialHasTextures.assign(uploadCount, uint8_t(0));
+            for (uint32_t i = 0; i < uploadCount; ++i) {
+                if (!m_materialRows.Set(i, resolve(i))) {
+                    synced = false;
+                    break;
+                }
+                recordTextureUsage(i);
+            }
+        }
+        if (synced && !m_materialRows.ClearTail(uploadCount))
+            synced = false;
+    } else if (overrideDirty) {
+        // A debug slider intentionally changes *all* materials.
+        for (uint32_t i = 0; i < uploadCount; ++i)
+            if (!m_materialRows.Set(i, resolve(i))) { synced = false; break; }
+    } else {
+        // Material edit access marks only the touched world slots.
+        for (uint32_t i : dirtySlots) {
+            if (i >= uploadCount) continue;
+            if (!m_materialRows.Set(i, resolve(i))) { synced = false; break; }
+            recordTextureUsage(i);
+        }
+        if (synced && bindingDirty) {
+            // Descriptor churn only requires re-resolving materials
+            // referencing textures, not every material in the scene.
+            for (uint32_t i : m_materialTexturedSlots) {
+                if (i >= uploadCount || !m_materialHasTextures[i])
+                    continue;
+                if (!m_materialRows.Set(i, resolve(i))) { synced = false; break; }
             }
         }
     }
-
-    // Reconcile world-indexed material rows into the smvk raw GPU table.
-    // Diff after all world texture remaps and debug overrides, so texture
-    // descriptor churn and material edits are visible without a new signal.
-    // Missing/shrunk world slots become MaterialValues{} rather than shifting
-    // any shader-visible materialId.
-    if (!m_materialRows.Sync(std::span<const smvk::MaterialValues>(mats, uploadCount))) {
-        std::fprintf(stderr, "[WorldRenderer] GPU material table sync failed\\n");
+    if (!synced) {
+        // Retain correctness after partial CPU sync, without a per-frame
+        // scan: the next attempt is an explicit full reconciliation.
+        m_materialObservedTopology = ~uint64_t(0);
+        std::fprintf(stderr, "[WorldRenderer] GPU material table synchronization failed\\n");
         return;
     }
+
+    m_materialObservedWorld = m_world;
+    m_materialObservedTopology = m_world->gpuSceneTopologyRevision;
+    m_materialObservedTextureEpoch = textureEpoch;
+    m_materialObservedRegistryEpoch = m_world->materialTextureRegistryRevision;
+    m_materialObservedOverride = m_debugMaterialOverride;
+    m_materialObservedMetallic = m_debugMaterialMetallic;
+    m_materialObservedRoughness = m_debugMaterialRoughness;
+    m_materialLogicalCount = uploadCount;
+
     constexpr size_t MATERIAL_FRAME_STRIDE =
         sizeof(smvk::MaterialValues) * engine::renderer::limits::MaxMaterials;
     const size_t frameOffset = size_t(currentFrame) * MATERIAL_FRAME_STRIDE;
