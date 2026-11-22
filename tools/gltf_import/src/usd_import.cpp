@@ -75,20 +75,20 @@ static uint32_t Fnv1a(const std::string& s) {
     return h;
 }
 
-// Decompose an instance's SOURCE-space world transform (m * instancerWorld,
-// before the USD->Tourmaline basis) into (position, yaw, uniform scale) for a
-// baked-placement point. Yaw is measured about the AUTHored up axis (source Z
-// when zUp, else Y) so the basis axis-rotation is never mistaken for a
-// per-instance orientation; the basis is applied only to the position. The
-// point always receives a best-effort position/yaw/scale; pitch/roll/shear/
-// mirroring/non-uniform scale are FLAGGED (see BakedPointFlag).
-void DecomposeYawUniformScale(const GfMatrix4d& localM,
-                              const GfMatrix4d& basisXf,
-                              bool zUp,
-                              glm::vec3& position,
-                              float& yaw,
-                              glm::vec3& scale,
-                              uint32_t& flags) {
+// Decompose an instance's SOURCE-space world transform (localM = m * instancerWorld)
+// into (position, full quaternion, uniform scale) for a baked-placement point.
+// The basis (scale + Z-up->Y-up) is applied to the position and folded into the
+// rotation separately, so Factor sees the RIGID source transform (no bogus shear
+// from the axis-swap) and the scale stays DIMENSIONLESS (the prototype geometry
+// is already baked to meters). The full quaternion preserves the terrain-aligned
+// tilt the yaw-only path could not; only shear / mirroring (unrepresentable by a
+// rigid transform) and non-uniform scale are FLAGGED (see BakedPointFlag).
+void DecomposeBakedTransform(const GfMatrix4d& localM,
+                             const GfMatrix4d& basisXf,
+                             glm::vec3& position,
+                             float rotation[4], // xyzw quaternion
+                             glm::vec3& scale,
+                             uint32_t& flags) {
     constexpr double kEps = 1e-4;
     GfMatrix4d r, u, p;
     GfVec3d s, t;
@@ -96,7 +96,8 @@ void DecomposeYawUniformScale(const GfMatrix4d& localM,
         // Singular: keep the basis-applied translation, mark the rest.
         const GfVec3d tw = (localM * basisXf).ExtractTranslation();
         position = glm::vec3(float(tw[0]), float(tw[1]), float(tw[2]));
-        yaw = 0.0f;
+        rotation[0] = rotation[1] = rotation[2] = 0.0f;
+        rotation[3] = 1.0f;
         scale = glm::vec3(1.0f);
         flags |= tour::placement::BakedPointFlag::NeedsGeometryBake;
         return;
@@ -106,15 +107,21 @@ void DecomposeYawUniformScale(const GfMatrix4d& localM,
     position = glm::vec3(float(tw[0]), float(tw[1]), float(tw[2]));
     // Scale is dimensionless (the prototype mesh is already baked to meters).
     scale = glm::vec3(float(s[0]), float(s[1]), float(s[2]));
-    const double shear = std::abs(u[0][1]) + std::abs(u[0][2]) + std::abs(u[1][2]);
-    const bool mirrored = s[0] < 0.0 || s[1] < 0.0 || s[2] < 0.0;
-    // Yaw about the authored up axis (up = Z when zUp, else Y).
-    const GfQuatd q = r.ExtractRotationQuat();
+    // Tourmaline-space rotation: source rotation * basis rotation, orthonormalized.
+    const GfMatrix4d rTour = (r * basisXf).RemoveScaleShear();
+    const GfQuatd q = rTour.ExtractRotationQuat();
     const GfVec3d img = q.GetImaginary();
-    const double qw = q.GetReal();
-    const int up = zUp ? 2 : 1;
-    const bool yawOnly = std::abs(img[(up + 1) % 3]) < kEps && std::abs(img[(up + 2) % 3]) < kEps;
-    if (!yawOnly || shear > kEps || mirrored)
+    rotation[0] = float(img[0]);
+    rotation[1] = float(img[1]);
+    rotation[2] = float(img[2]);
+    rotation[3] = float(q.GetReal());
+    // Mirroring (negative determinant) is not representable by a quaternion +
+    // uniform scale (a rigid transform preserves handedness). Shear is NOT
+    // checked here: Factor's shear channel is a rotation-split artifact for
+    // general rotations (a genuine shear on vegetation is an authoring error,
+    // not a renderable case).
+    const bool mirrored = localM.GetDeterminant3() < 0.0;
+    if (mirrored)
         flags |= tour::placement::BakedPointFlag::NeedsGeometryBake;
     // Relative scale tolerance: the Factor decomposition leaves ~1e-3 float
     // noise on ~1.9x scales; a genuine non-uniform scale is a real authored
@@ -122,7 +129,6 @@ void DecomposeYawUniformScale(const GfMatrix4d& localM,
     const double smax = std::max({std::abs(s[0]), std::abs(s[1]), std::abs(s[2])});
     if (std::abs(s[0] - s[1]) > smax * 1e-3 || std::abs(s[1] - s[2]) > smax * 1e-3)
         flags |= tour::placement::BakedPointFlag::NonUniformScale;
-    yaw = yawOnly ? float(2.0 * std::atan2(img[up], qw)) : 0.0f;
 }
 
 struct BufferBuilder {
@@ -833,8 +839,9 @@ struct Converter {
                 // Baked placement: expand (instance, leaf) x primitives into
                 // world-space points referencing the leaf's render prototypes.
                 // Gf uses row-vector convention (p' = p * M): the SOURCE-space
-                // transform composes leaf.local -> instanceXf -> instancerWorld;
-                // the basis (scale + axis) is applied only to the position.
+                // transform composes leaf.local -> instanceXf -> instancerWorld,
+                // decomposed to position + quaternion + uniform scale (the basis
+                // is applied to position/rotation inside the decomposition).
                 const GfMatrix4d localM = m * instancerWorld;
                 const auto& gm = model.meshes[size_t(leaf.mesh)];
                 const int primCount = std::max<int>(1, int(gm.primitives.size()));
@@ -843,10 +850,9 @@ struct Converter {
                         pr < int(gm.primitives.size()) ? gm.primitives[size_t(pr)].material : -1;
                     const uint32_t rpId = renderProtoFor(leaf.mesh, material, pr);
                     tour::placement::BakedPlacementPoint pt;
-                    pt.yaw = 0.0f;
                     pt.scale = glm::vec3(1.0f);
-                    DecomposeYawUniformScale(
-                        localM, basisXf, zUp, pt.position, pt.yaw, pt.scale, pt.flags);
+                    DecomposeBakedTransform(
+                        localM, basisXf, pt.position, pt.rotation, pt.scale, pt.flags);
                     pt.renderPrototypeId = rpId;
                     pt.stableId.w[0] = tour::placement::SplitMix32(instSeed ^ uint32_t(i));
                     pt.stableId.w[1] =
@@ -1125,12 +1131,15 @@ bool LoadUsdFileAsModel(tinygltf::Model& model,
                 nonUniform);
         const auto& p0 = g_bakedPlacement.points.front();
         fprintf(stderr,
-                "[usd] baked sample: pos=(%.2f %.2f %.2f) yaw=%.3f scale=(%.3f %.3f %.3f) "
-                "proto=%u flags=%u\n",
+                "[usd] baked sample: pos=(%.2f %.2f %.2f) rot=(%.3f %.3f %.3f %.3f) "
+                "scale=(%.3f %.3f %.3f) proto=%u flags=%u\n",
                 double(p0.position.x),
                 double(p0.position.y),
                 double(p0.position.z),
-                double(p0.yaw),
+                double(p0.rotation[0]),
+                double(p0.rotation[1]),
+                double(p0.rotation[2]),
+                double(p0.rotation[3]),
                 double(p0.scale.x),
                 double(p0.scale.y),
                 double(p0.scale.z),

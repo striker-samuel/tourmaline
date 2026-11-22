@@ -52,18 +52,20 @@ static_assert(sizeof(BakedRenderPrototype) == 16, "keep the packed layout");
 
 // ---------------------------------------------------------------------------
 // A baked point: one (instance, leaf) pair with the COMPOSED transform
-// (instanceXf * leaf.local) decomposed to translation + yaw + uniform scale.
+// (instanceXf * leaf.local) decomposed to translation + full quaternion +
+// uniform scale. The quaternion preserves the terrain-aligned tilt the
+// yaw-only RenderInstance could not represent.
 // ---------------------------------------------------------------------------
 struct BakedPlacementPoint {
-    glm::vec3 position{0.0f};       // 12
-    float yaw = 0.0f;               // 4  (Y-axis rotation; matches RenderInstance)
-    glm::vec3 scale{1.0f};          // 12 (UNIFORM — validated at import; see flags)
-    uint32_t renderPrototypeId = 0; // 4  index into the asset's renderPrototypes
-    StableID stableId{};            // 16 (4x32) — authored identity
-    uint32_t flags = 0;             // 4  see PointFlag below
-    uint32_t reserved = 0;          // 4
+    glm::vec3 position{0.0f};                     // 12
+    float rotation[4] = {0.0f, 0.0f, 0.0f, 1.0f}; // 16 quaternion (xyzw)
+    glm::vec3 scale{1.0f};                        // 12 (UNIFORM — validated at import; see flags)
+    uint32_t renderPrototypeId = 0;               // 4  index into the asset's renderPrototypes
+    StableID stableId{};                          // 16 (4x32) — authored identity
+    uint32_t flags = 0;                           // 4  see PointFlag below
+    uint32_t reserved = 0;                        // 4
 };
-static_assert(sizeof(BakedPlacementPoint) == 56, "keep the packed layout");
+static_assert(sizeof(BakedPlacementPoint) == 68, "keep the packed layout");
 
 namespace BakedPointFlag {
 // The composed transform (instanceXf * leaf.local) was NOT decomposable to

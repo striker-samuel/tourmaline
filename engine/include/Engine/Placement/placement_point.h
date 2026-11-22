@@ -7,6 +7,7 @@
 // Scene NEVER stores these (see docs below) — they live in PlacementSystem's
 // TileCache and reach the renderer as transient draws / GPU instance buffers.
 
+#include <cmath>
 #include <cstdint>
 #include <vector>
 
@@ -65,18 +66,29 @@ struct PlacementPoints {
     }
 };
 
+// Yaw (rotation about +Y, radians) -> normalized quaternion (xyzw). Matches the
+// existing sincos(yaw) rotation convention in placement_instanced.vert.hlsl.
+inline glm::vec4 QuatFromYaw(float yaw) {
+    return glm::vec4(0.0f, -std::sin(yaw * 0.5f), 0.0f, std::cos(yaw * 0.5f));
+}
+
 // GPU instance record fed to the renderer (culling/LOD/indirect).
-// Must match placement_common.hlsli RenderInstance (40 bytes).
+// Must match placement_common.hlsli PlacementRenderInstance (56 bytes):
+// pos(12) pad(4) rotation(16) scale(12) proto(4) stableLow(4) customB(4).
+// rotation is a full quaternion (xyzw) so baked vegetation keeps its
+// terrain-aligned tilt; the procedural scatter path writes QuatFromYaw(yaw).
 struct RenderInstance {
-    glm::vec3 position{0.0f}; // 12
-    float yaw = 0.0f;         // yaw-only fast path MVP; full quat later (4)
-    glm::vec3 scale{1.0f};    // 12
-    uint32_t prototypeId = 0; // 4
-    uint32_t stableLow = 0;   // low 32 bits of StableID.lo (identity for overrides/debug)
-    uint32_t customB = 0;     // MVP: original candidateIndex (lets GPU constraint
-                              // passes recompute the full StableID without an ID buffer)
+    glm::vec3 position{0.0f};                   // 12
+    float padRotAlign = 0.0f;                   // 4  (aligns rotation to 16 in the GPU view)
+    glm::vec4 rotation{0.0f, 0.0f, 0.0f, 1.0f}; // 16 quaternion (xyzw)
+    glm::vec3 scale{1.0f};                      // 12
+    uint32_t prototypeId = 0;                   // 4
+    uint32_t stableLow = 0; // 4  low 32 bits of StableID.lo (identity for overrides/debug)
+    uint32_t customB = 0;   // 4  original candidateIndex (GPU constraint passes
+                            //    recompute the full StableID without an ID buffer)
 };
-static_assert(sizeof(RenderInstance) == 40, "RenderInstance size changed — update HLSL mirror");
+static_assert(sizeof(RenderInstance) == 56,
+              "RenderInstance size changed — update placement_common.hlsli");
 
 // Single scatter layer reference stored on ONE Scene node (params only).
 // The Scene holds this; individual instances NEVER become Scene nodes.
@@ -98,5 +110,6 @@ struct PlacementRef {
 namespace smvk::placement {
 using ::tour::placement::PlacementPoints;
 using ::tour::placement::PlacementRef;
+using ::tour::placement::QuatFromYaw;
 using ::tour::placement::RenderInstance;
 } // namespace smvk::placement

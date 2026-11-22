@@ -194,12 +194,14 @@ void TestPointsSoA() {
 }
 
 void TestRenderInstanceAbi() {
-    Check(sizeof(smvk::placement::RenderInstance) == 40, "place.abi.instance-40B");
-    Check(offsetof(smvk::placement::RenderInstance, yaw) == 12, "place.abi.yaw-offset");
-    Check(offsetof(smvk::placement::RenderInstance, scale) == 16, "place.abi.scale-offset");
-    Check(offsetof(smvk::placement::RenderInstance, prototypeId) == 28, "place.abi.proto-offset");
-    Check(offsetof(smvk::placement::RenderInstance, stableLow) == 32, "place.abi.stable-offset");
-    Check(offsetof(smvk::placement::RenderInstance, customB) == 36, "place.abi.custom-offset");
+    Check(sizeof(smvk::placement::RenderInstance) == 56, "place.abi.instance-56B");
+    Check(offsetof(smvk::placement::RenderInstance, position) == 0, "place.abi.pos-offset");
+    Check(offsetof(smvk::placement::RenderInstance, padRotAlign) == 12, "place.abi.pad-offset");
+    Check(offsetof(smvk::placement::RenderInstance, rotation) == 16, "place.abi.rotation-offset");
+    Check(offsetof(smvk::placement::RenderInstance, scale) == 32, "place.abi.scale-offset");
+    Check(offsetof(smvk::placement::RenderInstance, prototypeId) == 44, "place.abi.proto-offset");
+    Check(offsetof(smvk::placement::RenderInstance, stableLow) == 48, "place.abi.stable-offset");
+    Check(offsetof(smvk::placement::RenderInstance, customB) == 52, "place.abi.custom-offset");
     // PlacementRef is params-only: no per-instance data
     smvk::placement::PlacementRef ref;
     Check(ref.densityScale == 1.0f && ref.tileSize == 64.0f, "place.ref.defaults");
@@ -965,7 +967,7 @@ void TestOverrideAllAttrs() {
     std::vector<RenderInstance> inst(1);
     std::vector<StableID> ids;
     inst[0].position = glm::vec3(1, 2, 3);
-    inst[0].yaw = 0.25f;
+    inst[0].rotation = QuatFromYaw(0.25f);
     inst[0].scale = glm::vec3(1);
     inst[0].prototypeId = 0;
     inst[0].customB = 7;
@@ -983,7 +985,7 @@ void TestOverrideAllAttrs() {
     layer.apply(inst, ids);
     Check(inst.size() == 1, "place.override-all.kept");
     Check(inst[0].position == glm::vec3(9, 8, 7), "place.override-all.position");
-    Check(inst[0].yaw == 1.5f, "place.override-all.yaw");
+    Check(inst[0].rotation == QuatFromYaw(1.5f), "place.override-all.yaw");
     Check(inst[0].scale == glm::vec3(2, 3, 4), "place.override-all.scale");
     Check(inst[0].prototypeId == 11, "place.override-all.proto");
     Check(inst[0].customB == 99, "place.override-all.customB");
@@ -1069,7 +1071,8 @@ void TestOverrideNodeFilter() {
         g.yaw = 0.5f;
         layer.addNodeRule(g);
         layer.apply(inst, ids);
-        Check(inst[0].yaw == 0.5f && inst[2].yaw == 0.5f, "place.override-node.global-legacy");
+        Check(inst[0].rotation == QuatFromYaw(0.5f) && inst[2].rotation == QuatFromYaw(0.5f),
+              "place.override-node.global-legacy");
     }
     // Bulk delete clears the scope; exact delete still works.
     {
@@ -1442,7 +1445,7 @@ void TestKernelAlgorithmParity() {
         uint32_t proto = lb.prototypes.select(rv).value_or(0);
         RenderInstance in;
         in.position = s.p;
-        in.yaw = YawFromId(id);
+        in.rotation = QuatFromYaw(YawFromId(id));
         float sc = UniformScaleFromId(id, 0.7f, 1.3f);
         in.scale = glm::vec3(sc);
         in.prototypeId = proto;
@@ -1453,8 +1456,8 @@ void TestKernelAlgorithmParity() {
     bool same = oracle.size() == mirror.size();
     if (same) {
         for (size_t i = 0; i < oracle.size(); ++i) {
-            if (oracle[i].position != mirror[i].position || oracle[i].yaw != mirror[i].yaw ||
-                oracle[i].scale != mirror[i].scale ||
+            if (oracle[i].position != mirror[i].position ||
+                oracle[i].rotation != mirror[i].rotation || oracle[i].scale != mirror[i].scale ||
                 oracle[i].prototypeId != mirror[i].prototypeId ||
                 oracle[i].stableLow != mirror[i].stableLow ||
                 oracle[i].customB != mirror[i].customB) {
@@ -1633,7 +1636,7 @@ void TestMeshKernelParity() {
             continue;
         RenderInstance in;
         in.position = s.p;
-        in.yaw = YawFromId(id);
+        in.rotation = QuatFromYaw(YawFromId(id));
         float sc = UniformScaleFromId(id, 0.9f, 1.1f);
         in.scale = glm::vec3(sc);
         in.prototypeId = 0;
@@ -1644,7 +1647,8 @@ void TestMeshKernelParity() {
     bool same = oracle.size() == mirror.size();
     if (same) {
         for (size_t i = 0; i < oracle.size(); ++i)
-            if (oracle[i].position != mirror[i].position || oracle[i].yaw != mirror[i].yaw ||
+            if (oracle[i].position != mirror[i].position ||
+                oracle[i].rotation != mirror[i].rotation ||
                 oracle[i].stableLow != mirror[i].stableLow ||
                 oracle[i].customB != mirror[i].customB) {
                 same = false;
@@ -1692,7 +1696,7 @@ void TestHfKernelParity() {
             continue;
         RenderInstance in;
         in.position = s.p;
-        in.yaw = YawFromId(id);
+        in.rotation = QuatFromYaw(YawFromId(id));
         float sc = UniformScaleFromId(id, 0.8f, 1.2f);
         in.scale = glm::vec3(sc);
         in.prototypeId = 0;
@@ -1703,7 +1707,8 @@ void TestHfKernelParity() {
     bool same = oracle.size() == mirror.size();
     if (same) {
         for (size_t i = 0; i < oracle.size(); ++i)
-            if (oracle[i].position != mirror[i].position || oracle[i].yaw != mirror[i].yaw ||
+            if (oracle[i].position != mirror[i].position ||
+                oracle[i].rotation != mirror[i].rotation ||
                 oracle[i].stableLow != mirror[i].stableLow) {
                 same = false;
                 break;
@@ -2031,13 +2036,13 @@ void TestDrawFeed() {
               "place.draw.cull-fill-view");
     }
     // Matrix convention: yaw=0 -> identity rotation + translation.
-    glm::mat4 m0 = ComposeInstanceMatrix(glm::vec3(1, 2, 3), 0.0f, glm::vec3(2));
+    glm::mat4 m0 = ComposeInstanceMatrix(glm::vec3(1, 2, 3), QuatFromYaw(0.0f), glm::vec3(2));
     Check(m0[3] == glm::vec4(1, 2, 3, 1), "place.draw.matrix-translation");
     Check(std::abs(m0[0].x - 2.0f) < 1e-6f && std::abs(m0[1].y - 2.0f) < 1e-6f,
           "place.draw.matrix-scale");
     Check(std::abs(m0[0].z) < 1e-6f && std::abs(m0[2].x) < 1e-6f, "place.draw.matrix-yaw0");
     // yaw=pi/2 rotates +X to -Z (right-handed RotY, matches the VS).
-    glm::mat4 m1 = ComposeInstanceMatrix(glm::vec3(0), 1.5707963f, glm::vec3(1));
+    glm::mat4 m1 = ComposeInstanceMatrix(glm::vec3(0), QuatFromYaw(1.5707963f), glm::vec3(1));
     Check(std::abs(m1[0].x) < 1e-5f && std::abs(m1[0].z + 1.0f) < 1e-5f, "place.draw.matrix-yaw90");
     // Round-trip through the VS formula implicitly: column-major layout.
     Check(m1[3] == glm::vec4(0, 0, 0, 1), "place.draw.matrix-origin");
