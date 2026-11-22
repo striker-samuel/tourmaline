@@ -239,6 +239,16 @@ void* ResourceManager::MapBuffer(BufferHandle handle) {
 void ResourceManager::UnmapBuffer(BufferHandle handle) {
     impl_->vulkan.UnmapBuffer(handle);
 }
+UploadRequest ResourceManager::RequestBufferUpload(
+    BufferHandle dst, const void* data, size_t bytes,
+    PipelineStage stages, AccessFlags access, size_t dstOffset) {
+    return impl_->vulkan.RequestBufferUpload(
+        dst, data, bytes, toVkPipelineStage(stages),
+        toVkAccess(access), dstOffset);
+}
+UploadStatus ResourceManager::PollUpload(UploadTicket ticket) const noexcept {
+    return impl_->vulkan.PollUpload(ticket);
+}
 void ResourceManager::UploadDataToBuffer(BufferHandle buffer,
                                          const void* data,
                                          size_t dataSize,
