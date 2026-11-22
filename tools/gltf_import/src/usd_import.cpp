@@ -162,6 +162,24 @@ bool TriangulateFace(const std::vector<GfVec3f>& polygon,
     const double epsilon = double(span) * span * 1e-12;
     if (std::abs(area) <= epsilon)
         return false;
+    // Triangles and quads triangulate DIRECTLY — the ear clipper is for
+    // n-gons (>= 5) only. A quad is a bilinear patch whose corners are
+    // never exactly coplanar on a slope (the planarity gate above already
+    // exempts them), and the fan (0,1,2)+(0,2,3) covers any SIMPLE quad
+    // exactly, including the degenerate "quad with a duplicate vertex"
+    // (a triangle in disguise) that the ear clipper otherwise drops whole
+    // — the quad-shaped holes in floors/walls. The caller's collinear-skip
+    // discards the degenerate fan half in the duplicate-vertex case, so
+    // the real triangle survives.
+    if (polygon.size() == 3) {
+        triangles.push_back({0, 1, 2});
+        return true;
+    }
+    if (polygon.size() == 4) {
+        triangles.push_back({0, 1, 2});
+        triangles.push_back({0, 2, 3});
+        return true;
+    }
     const double sign = area > 0.0 ? 1.0 : -1.0;
     std::vector<size_t> remaining(polygon.size());
     std::iota(remaining.begin(), remaining.end(), 0);
