@@ -10724,8 +10724,9 @@ void WorldRenderer::RefreshGpuScenePhysicalIndexedRanges(bool nativeOnly) {
                     ? UINT32_MAX
                     : smvk::gfx::GfxMeshForLod(m_gfxRenderer.State(), worldMesh, lod);
             if (gfxId >= conflicting.size()) {
-                // Native-suffix geometry: makes the task/mesh backend
-                // incompatible. Log the exact trigger (nativeOnly vs
+                // Native-suffix geometry: drawn by the indexed-raster leg of
+                // the mixed path (the task/mesh shader skips ids >= the meshlet
+                // mesh count). Log the exact trigger (nativeOnly vs
                 // multiSurface vs a GfxMeshForLod miss returning UINT32_MAX).
                 static uint32_t s_incompatReported = 0;
                 if (s_incompatReported < 12) {
@@ -10733,7 +10734,7 @@ void WorldRenderer::RefreshGpuScenePhysicalIndexedRanges(bool nativeOnly) {
                     std::fprintf(stderr,
                                  "[GpuSceneTaskMesh] native-suffix worldMesh=%u lod=%u "
                                  "surfaces=%u nativeOnly=%d multiSurface=%d gfxId=%u "
-                                 "gfxMeshes=%zu (-> ids incompatible)\n",
+                                 "gfxMeshes=%zu (-> indexed raster)\n",
                                  worldMesh,
                                  lod,
                                  surfaceCount,
