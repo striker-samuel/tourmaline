@@ -2219,17 +2219,19 @@ bool ImportMeshSource(const std::filesystem::path& gltfPath,
             scene, gltfPath, gltfGuid, prevIdentity, config, outManifest, outStats, err, extraDeps))
         return false;
     // Persist the baked placement cloud (the USD PointInstancer expansion)
-    // beside the source AFTER the derivation resolved its mesh identity
-    // (tinygltf mesh index -> the engine's WorldPageStaticMeshHandle pool
-    // index). Non-USD sources leave it absent (the global is null). Leading
-    // `::tour` — inside smvk::assets the bare `tour` is the `::tour::asset`
-    // alias (tour.h).
+    // beside the .geometry (same stem) AFTER the derivation resolved its mesh
+    // identity (tinygltf mesh index -> the FLAT surface/blob index + the asset
+    // MeshKey stays 0 for the project pipeline). Non-USD sources leave it absent
+    // (the global is null). Leading `::tour` — inside smvk::assets the bare
+    // `tour` is the `::tour::asset` alias (tour.h).
     if (const ::tour::placement::BakedPlacementAsset* baked = LastImportedBakedPlacement()) {
         std::vector<uint8_t> blob;
         if (!::tour::placement::SerializeBakedPlacement(*baked, blob))
             return giveUp("baked placement serialization failed");
+        const std::filesystem::path sidecar =
+            gltfPath.parent_path() / (gltfPath.stem().string() + ".baked_placement");
         std::string werr;
-        if (!WriteFileBytes(gltfPath.string() + ".baked_placement", blob, werr))
+        if (!WriteFileBytes(sidecar, blob, werr))
             return giveUp(werr);
         std::fprintf(stderr,
                      "[import] baked placement: %zu points, %zu render prototypes -> "
