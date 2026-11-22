@@ -108,7 +108,9 @@ void DecomposeBakedTransform(const GfMatrix4d& localM,
     // Scale is dimensionless (the prototype mesh is already baked to meters).
     scale = glm::vec3(float(s[0]), float(s[1]), float(s[2]));
     // Tourmaline-space rotation: source rotation * basis rotation, orthonormalized.
-    const GfMatrix4d rTour = (r * basisXf).RemoveScaleShear();
+    // Use RemoveScaleShear (not Factor's r channel, which splits general
+    // rotations into the shear channel) so the terrain-aligned tilt survives.
+    const GfMatrix4d rTour = localM.RemoveScaleShear() * basisXf.RemoveScaleShear();
     const GfQuatd q = rTour.ExtractRotationQuat();
     const GfVec3d img = q.GetImaginary();
     rotation[0] = float(img[0]);
@@ -1085,15 +1087,16 @@ bool LoadUsdFileAsModel(tinygltf::Model& model,
     cv.zUp = (UsdGeomGetStageUpAxis(stage) == UsdGeomTokens->z);
     if (cv.zUp) {
         basis.matrix = {scale, 0, 0, 0, 0, 0, -scale, 0, 0, scale, 0, 0, 0, 0, 0, 1};
-        // Z-up -> Y-up: M maps USD (x, y, z) -> (sx, sz, -sy).
+        // Z-up -> Y-up: Gf is row-vector (p' = p * M), so p * basisXf maps USD
+        // (x, y, z) -> (sx, sz, -sy) (USD +Z up -> Tourmaline +Y up).
         cv.basisXf[0][0] = scale;
         cv.basisXf[0][1] = 0.0;
         cv.basisXf[0][2] = 0.0;
         cv.basisXf[1][0] = 0.0;
         cv.basisXf[1][1] = 0.0;
-        cv.basisXf[1][2] = scale;
+        cv.basisXf[1][2] = -scale;
         cv.basisXf[2][0] = 0.0;
-        cv.basisXf[2][1] = -scale;
+        cv.basisXf[2][1] = scale;
         cv.basisXf[2][2] = 0.0;
     } else {
         basis.matrix = {scale, 0, 0, 0, 0, scale, 0, 0, 0, 0, scale, 0, 0, 0, 0, 1};
