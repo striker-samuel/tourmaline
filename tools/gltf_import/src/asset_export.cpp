@@ -1819,25 +1819,27 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
                 ++stats.instances;
             }
             // Resolve the baked placement's mesh identity: the USD adapter
-            // recorded the tinygltf mesh index (the only identity available
-            // pre-decode); the native derivation maps it to the engine's
-            // WorldPageStaticMeshHandle pool index (the identity the cook and
-            // runtime use). Keyed by (tinygltf mesh N, primitive M).
+            // recorded the tinygltf mesh index + primitive index in
+            // (meshKey, surfaceIndex) as temporaries. The native derivation
+            // rewrites surfaceIndex to the FLAT SURFACE (the .geometry blob
+            // index — the PointInstancer's surfaces are flat, non-hierarchical)
+            // and clears meshKey (0 = the asset's project MeshKey, resolved
+            // later by the project pipeline, which owns the catalog).
             if (auto* baked = MutableLastImportedBakedPlacement()) {
-                std::map<std::pair<uint32_t, uint32_t>, uint32_t> poolOf;
+                std::map<std::pair<uint32_t, uint32_t>, uint32_t> surfaceOf;
                 for (const auto& [poolIdx, blobIdx] : blobOf) {
                     uint32_t n = 0, m = 0;
                     if (blobIdx < mesh.geometry.size() &&
                         ParseMeshPrimFragment(mesh.geometry[blobIdx].uriFragment, n, m))
-                        poolOf[{n, m}] = poolIdx;
+                        surfaceOf[{n, m}] = blobIdx;
                 }
                 for (auto& rp : baked->renderPrototypes) {
-                    const auto it = poolOf.find({rp.meshId, rp.surfaceIndex});
-                    if (it != poolOf.end()) {
-                        rp.meshId = it->second; // the engine pool index
-                        rp.surfaceIndex = 0;    // the handle encodes the primitive
+                    const auto it = surfaceOf.find({uint32_t(rp.meshKey), rp.surfaceIndex});
+                    if (it != surfaceOf.end()) {
+                        rp.surfaceIndex = it->second; // the flat surface (blob index)
+                        rp.meshKey = 0;               // asset -> project MeshKey (project pipeline)
                     } else {
-                        rp.meshId = 0xFFFFFFFFu; // loud: unresolved mesh
+                        rp.surfaceIndex = 0xFFFFFFFFu; // loud: unresolved surface
                     }
                 }
             }

@@ -82,16 +82,17 @@ struct BakedSurfaceRef {
 };
 
 // Resolves the asset's render prototypes to GPU geometry via a mesh-registry
-// callback: resolve(meshId, surfaceIndex, out) fills the indexed range + bounds
-// for one render prototype. meshId is the ENGINE's WorldPageStaticMeshHandle
-// pool index (resolved at import by DeriveNativeAssets), surfaceIndex is 0 (the
-// handle already encodes the primitive). Returning false for an out-of-range
-// mesh refuses the WHOLE asset (never a silent mis-reference). The output is
-// keyed by the asset's GLOBAL renderPrototypeId, so the tile-local palettes
-// built by BucketBakedPlacement resolve through it directly.
+// callback: resolve(meshKey, surfaceIndex, out) fills the indexed range + bounds
+// for one render prototype. meshKey is the project's MeshKey (the .geometry
+// asset id, a uint64) and surfaceIndex is the FLAT surface (the .geometry blob
+// index) within that asset — together they address one non-hierarchical
+// surface. Returning false for an out-of-range mesh/surface refuses the WHOLE
+// asset (never a silent mis-reference). The output is keyed by the asset's
+// GLOBAL renderPrototypeId, so the tile-local palettes built by
+// BucketBakedPlacement resolve through it directly.
 [[nodiscard]] inline bool ResolveBakedPrototypes(
     const BakedPlacementAsset& asset,
-    const std::function<bool(uint32_t meshId, uint32_t surfaceIndex, BakedSurfaceRef& out)>&
+    const std::function<bool(uint64_t meshKey, uint32_t surfaceIndex, BakedSurfaceRef& out)>&
         resolve,
     std::vector<BakedProtoGeometry>& out) {
     out.clear();
@@ -99,7 +100,7 @@ struct BakedSurfaceRef {
     for (size_t i = 0; i < asset.renderPrototypes.size(); ++i) {
         const BakedRenderPrototype& rp = asset.renderPrototypes[i];
         BakedSurfaceRef ref;
-        if (!resolve(rp.meshId, rp.surfaceIndex, ref))
+        if (!resolve(rp.meshKey, rp.surfaceIndex, ref))
             return false;
         BakedProtoGeometry& g = out[i];
         g.boundsMin = ref.boundsMin;

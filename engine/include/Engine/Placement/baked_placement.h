@@ -40,17 +40,16 @@ namespace tour::placement {
 // A leaf mesh with several primitives expands to several render prototypes.
 // ---------------------------------------------------------------------------
 struct BakedRenderPrototype {
-    // The leaf mesh, as the ENGINE's WorldPageStaticMeshHandle pool index —
-    // NOT the tinygltf mesh index. The native derivation (DeriveNativeAssets)
-    // resolves the importer's tinygltf index to this pool index; the cook then
-    // resolves it to a world mesh index (World::meshLocations) + physical
-    // indexed range.
-    uint32_t meshId = 0;
+    // The owning .geometry ASSET, as the project's MeshKey (the content-as-code
+    // catalog id, a uint64 — resolved by the project pipeline, not the raw
+    // import). 0 at import (the raw import runs before the catalog). Combined
+    // with surfaceIndex below this addresses ONE flat surface.
+    uint64_t meshKey = 0;
     uint32_t materialId = 0;   // world material (resolved cook-side)
-    uint32_t surfaceIndex = 0; // 0 after resolution — the handle encodes the primitive
+    uint32_t surfaceIndex = 0; // the flat surface (the .geometry blob index) within the asset
     uint32_t flags = 0;        // reserved (e.g. future doubleSided/masked hints)
 };
-static_assert(sizeof(BakedRenderPrototype) == 16, "keep the packed layout");
+static_assert(sizeof(BakedRenderPrototype) == 24, "keep the packed layout");
 
 // ---------------------------------------------------------------------------
 // A baked point: one (instance, leaf) pair with the COMPOSED transform
@@ -119,7 +118,8 @@ struct BakedPlacementAsset {
 // source transforms and counts survive exactly.
 // ---------------------------------------------------------------------------
 inline constexpr uint32_t kBakedPlacementMagic = 0x424B504C; // 'BKPL'
-inline constexpr uint32_t kBakedPlacementVersion = 1;
+inline constexpr uint32_t kBakedPlacementVersion =
+    2; // v2: BakedRenderPrototype.meshKey (uint64) + surfaceIndex
 
 [[nodiscard]] inline bool SerializeBakedPlacement(const BakedPlacementAsset& asset,
                                                   std::vector<uint8_t>& out) {

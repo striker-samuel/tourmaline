@@ -2884,8 +2884,10 @@ int main() {
         // of the tile-local palette).
         BakedPlacementAsset asset;
         BakedRenderPrototype rp0, rp1;
-        rp0.meshId = 0;
-        rp1.meshId = 1;
+        rp0.meshKey = 0;
+        rp0.surfaceIndex = 0;
+        rp1.meshKey = 1;
+        rp1.surfaceIndex = 0;
         asset.renderPrototypes = {rp0, rp1};
         const auto add = [&](glm::vec3 p, uint32_t proto, uint32_t lo) {
             BakedPlacementPoint pt;

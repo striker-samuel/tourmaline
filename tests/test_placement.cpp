@@ -3115,9 +3115,12 @@ void TestBakedPlacement() {
     // silently — it is counted and reported). ----
     BakedPlacementAsset asset;
     BakedRenderPrototype rp0, rp1, rp2;
-    rp0.meshId = 0;
-    rp1.meshId = 1;
-    rp2.meshId = 2;
+    rp0.meshKey = 0; // asset 0
+    rp0.surfaceIndex = 0;
+    rp1.meshKey = 0; // asset 0, a different surface
+    rp1.surfaceIndex = 1;
+    rp2.meshKey = 1; // a different asset
+    rp2.surfaceIndex = 0;
     asset.renderPrototypes = {rp0, rp1, rp2};
     const float rotId[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     const float rotTilt[4] = {0.0f, 0.38268343f, 0.0f, 0.92387953f}; // +45° pitch
@@ -3189,32 +3192,32 @@ void TestBakedPlacement() {
           "baked.roundtrip-exact");
 
     // ResolveBakedPrototypes: the cook/load mesh-registry bridge — map each
-    // (meshId, surfaceIndex) to its indexed range + bounds, keyed by the global
-    // renderPrototypeId. An out-of-range mesh/surface refuses the WHOLE asset.
+    // (meshKey, surfaceIndex) to its indexed range + bounds, keyed by the global
+    // renderPrototypeId. An out-of-range asset/surface refuses the WHOLE asset.
     std::vector<BakedProtoGeometry> geo;
     const bool resolved = ResolveBakedPrototypes(
         asset,
-        [](uint32_t meshId, uint32_t surfaceIndex, BakedSurfaceRef& out) {
+        [](uint64_t meshKey, uint32_t surfaceIndex, BakedSurfaceRef& out) {
             out.indexCount = 300;
-            out.firstIndex = meshId * 64u + surfaceIndex * 16u;
+            out.firstIndex = uint32_t(meshKey) * 64u + surfaceIndex * 16u;
             out.vertexOffset = 0;
             out.boundsMin = glm::vec3(-1.0f);
             out.boundsMax = glm::vec3(1.0f);
-            return meshId < 3u;
+            return meshKey < 2u;
         },
         geo);
     Check(resolved && geo.size() == 3, "baked.resolve");
-    Check(geo[0].firstIndex == 0 && geo[1].firstIndex == 64 && geo[2].firstIndex == 128,
+    Check(geo[0].firstIndex == 0 && geo[1].firstIndex == 16 && geo[2].firstIndex == 64,
           "baked.resolve-index-ranges");
     Check(geo[0].boundsMax == glm::vec3(1.0f) && geo[0].drawDistance == 0.0f,
           "baked.resolve-bounds");
     std::vector<BakedProtoGeometry> refused;
     const bool refusedOk = ResolveBakedPrototypes(
         asset,
-        [](uint32_t meshId, uint32_t, BakedSurfaceRef& out) {
+        [](uint64_t meshKey, uint32_t, BakedSurfaceRef& out) {
             out.indexCount = 300;
-            out.firstIndex = meshId;
-            return meshId != 2u; // proto 2's mesh is out of range
+            out.firstIndex = uint32_t(meshKey);
+            return meshKey != 1u; // proto 2's asset is out of range
         },
         refused);
     Check(!refusedOk, "baked.resolve-refuses-out-of-range");
@@ -3226,13 +3229,13 @@ void TestBakedPlacement() {
     const bool cookedOk = CookBakedPlacement(
         asset,
         16.0f,
-        [](uint32_t meshId, uint32_t surfaceIndex, BakedSurfaceRef& out) {
+        [](uint64_t meshKey, uint32_t surfaceIndex, BakedSurfaceRef& out) {
             out.indexCount = 300;
-            out.firstIndex = meshId * 64u + surfaceIndex * 16u;
+            out.firstIndex = uint32_t(meshKey) * 64u + surfaceIndex * 16u;
             out.vertexOffset = 0;
             out.boundsMin = glm::vec3(-1.0f);
             out.boundsMax = glm::vec3(1.0f);
-            return meshId < 3u;
+            return meshKey < 2u;
         },
         cooked,
         &cookedSkipped);

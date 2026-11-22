@@ -803,9 +803,11 @@ struct Converter {
             if (it != renderProtoMap.end())
                 return it->second;
             tour::placement::BakedRenderPrototype rp;
-            rp.meshId = uint32_t(mesh);
+            rp.meshKey = uint64_t(
+                mesh); // temporary: the tinygltf mesh index; DeriveNativeAssets resolves it
             rp.materialId = uint32_t(material);
-            rp.surfaceIndex = uint32_t(surface);
+            rp.surfaceIndex =
+                uint32_t(surface); // temporary: the primitive index; resolved to the blob index
             rp.flags = 0;
             const uint32_t id = uint32_t(bakedPlacement.renderPrototypes.size());
             bakedPlacement.renderPrototypes.push_back(rp);
