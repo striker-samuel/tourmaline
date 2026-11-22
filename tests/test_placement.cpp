@@ -1973,24 +1973,27 @@ void TestDrawFeed() {
     Check(offsetof(PlacementVsPush, cullFlags) == 28, "place.draw.flags-offset");
     Check(kPlacementVsPushOffset == 192, "place.draw.tail-offset");
     // PR03 chain ABI: the bins slab, the indirect command, the cull push.
-    Check(sizeof(PlacementBinsGpu) == 128, "place.draw.bins-128B");
+    // The bins slab is sized to kPlacementMaxProtos (1024) — the runtime
+    // prototype count, not the fixed 8 — so the per-tile bin capacity is
+    // 3*1024 words + the total + pad.
+    Check(sizeof(PlacementBinsGpu) == (3u * kPlacementMaxProtos + 8u) * sizeof(uint32_t),
+          "place.draw.bins-sized-to-max-protos");
+    Check(sizeof(PlacementProtoRow) == 32, "place.draw.proto-row-32B");
     Check(sizeof(PlacementIndirectCmd) == 20 && kPlacementIndirectStride == 20,
           "place.draw.indirect-20B");
-    Check(sizeof(PlacementCullPush) == 240, "place.draw.cull-push-240B");
-    Check(offsetof(PlacementCullPush, protoBounds) == 64 &&
-              offsetof(PlacementCullPush, protoDist) == 192 &&
-              offsetof(PlacementCullPush, camPos) == 224,
+    Check(sizeof(PlacementCullPush) == 96, "place.draw.cull-push-96B");
+    Check(offsetof(PlacementCullPush, protoTable) == 48 &&
+              offsetof(PlacementCullPush, camPos) == 80,
           "place.draw.cull-push-tail");
     Check(sizeof(PlacementScatterVisPush) == 48, "place.draw.scatter-vis-48B");
-    // The push-carried prototype table (PR1: draw-build owns the
-    // COMPLETE command - the immutable halves ride the push).
-    Check(sizeof(PlacementDrawBuildPush) == 128, "place.draw.build-push-128B");
-    Check(offsetof(PlacementDrawBuildPush, indexCount) == 32 &&
-              offsetof(PlacementDrawBuildPush, firstIndex) == 64 &&
-              offsetof(PlacementDrawBuildPush, vertexOffset) == 96,
-          "place.draw.build-push-table-offsets");
-    // FillCullPush: the cooked-mesh bounds -> conservative spheres, the
-    // species distances, the layer's scale bound.
+    // The prototype table (PR2: bounds/distance + index ranges moved off the
+    // 256-byte push onto a BDA buffer, so the draw-build push is a 32-byte
+    // header carrying the table's BDA).
+    Check(sizeof(PlacementDrawBuildPush) == 32, "place.draw.build-push-32B");
+    Check(offsetof(PlacementDrawBuildPush, protoTable) == 16, "place.draw.build-push-table-offset");
+    // FillCullPush: the per-proto metadata now rides a BDA table, so the
+    // push carries its address + count (the cooked-mesh bounds -> spheres
+    // move to SeedIndirect's table build).
     {
         PlacementSystem::LayerBinding lb;
         lb.config.maxScale = 2.5f;
@@ -2017,21 +2020,17 @@ void TestDrawFeed() {
                      0x55,
                      0x66,
                      2,
+                     0x77,
+                     3,
                      glm::vec3(7, 8, 9),
                      kPlacementCullFrustum | kPlacementCullAlive,
                      cp);
         Check(cp.instances == 0x11 && cp.count == 0x22 && cp.mask == 0x33 && cp.bins == 0x44 &&
                   cp.alive == 0x55 && cp.renderViews == 0x66,
               "place.draw.cull-fill-bdas");
-        Check(cp.protoCount == 3 && cp.renderViewIndex == 2 &&
+        Check(cp.protoTable == 0x77 && cp.protoCount == 3 && cp.renderViewIndex == 2 &&
                   cp.cullFlags == (kPlacementCullFrustum | kPlacementCullAlive),
               "place.draw.cull-fill-flags");
-        Check(cp.protoBounds[0] == glm::vec4(0, 1, 0, glm::length(glm::vec3(1, 1, 1))),
-              "place.draw.cull-fill-sphere0");
-        Check(cp.protoBounds[1] == glm::vec4(0, 0, 0, glm::length(glm::vec3(0.5f))),
-              "place.draw.cull-fill-sphere1");
-        Check(cp.protoDist[0] == 40.0f && cp.protoDist[1] == 0.0f && cp.protoDist[2] == 120.0f,
-              "place.draw.cull-fill-distances");
         Check(cp.camPos == glm::vec3(7, 8, 9) && cp.maxInstanceScale == 2.5f,
               "place.draw.cull-fill-view");
     }

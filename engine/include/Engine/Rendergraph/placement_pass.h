@@ -762,16 +762,18 @@ struct PlacementDrawPrograms {
 //   cull -> prefix -> scatter -> drawbuild  (four compute passes; the
 //                 rendergraph's buffer-hint edges order them)
 //   SeedIndirect — once per prototype-table change, at the RUNTIME
-//                 level: pure metadata (the table rides draw-build's
-//                 push; no GPU write — the indirect buffer is
-//                 single-scope-written by drawbuild every frame)
+//                 level: uploads the proto table (bounds + distance +
+//                 index range) as a read-only BDA buffer; the cull and
+//                 draw-build reads carry its address. The indirect
+//                 buffer stays single-scope-written by drawbuild every
+//                 frame.
 // ---------------------------------------------------------------------------
 struct PlacementVisibleSet {
     smvk::Holder<smvk::BufferHandle> mask;    // bitpack verdict: maxInstances/32 words
-    smvk::Holder<smvk::BufferHandle> bins;    // PlacementBinsGpu (128B)
+    smvk::Holder<smvk::BufferHandle> bins;    // PlacementBinsGpu (3*kPlacementMaxProtos+8 words)
     smvk::Holder<smvk::BufferHandle> visible; // uint32[maxInstances]
     smvk::Holder<smvk::BufferHandle>
-        indirect; // PlacementIndirectCmd[8] (smvk::BufferType_Indirect)
+        indirect; // PlacementIndirectCmd[kPlacementMaxProtos] (smvk::BufferType_Indirect)
     smvk::LogicalBufferHandle maskL{}, binsL{}, visibleL{}, indirectL{};
     uint32_t maxInstances = 0;
 
@@ -845,8 +847,8 @@ struct PlacementVisibleSet {
                                0);
     }
     // NOTE: no indirect seeding here. The draw-build kernel owns the
-    // COMPLETE command (the prototype table rides its push — the
-    // runtime's SeedIndirect metadata cache); the indirect buffer is
+    // COMPLETE command (the immutable halves read from the proto-table
+    // BDA that SeedIndirect uploaded); the indirect buffer is
     // single-scope-written (COMPUTE) per frame. The old
     // SeedIndirect-uploaded immutable halves were the
     // stranded-upload-write hazard (todo.txt): an UPLOAD's bytes on a
@@ -1071,11 +1073,11 @@ struct PlacementCullPrograms {
     static void PushAndDispatchDrawBuild(smvk::CommandBuffer& cmd,
                                          smvk::ShaderProgram& program,
                                          const PlacementDrawBuildPush& push) {
-        assert(push.bins != 0 && push.indirect != 0);
+        assert(push.bins != 0 && push.indirect != 0 && push.protoTable != 0);
         assert(push.protoCount >= 1 && push.protoCount <= kPlacementMaxProtos);
         cmd.BindComputePipeline(program);
         cmd.PushConstants(0, sizeof(push), &push, smvk::ShaderStage::All);
-        cmd.Dispatch(1, 1, 1);
+        cmd.Dispatch((push.protoCount + 63u) / 64u, 1, 1);
     }
 };
 
@@ -1093,6 +1095,8 @@ inline void FillCullPush(const PlacementSystem::LayerBinding& layer,
                          uint64_t aliveBDA,
                          uint64_t renderViewsBDA,
                          uint32_t renderViewIndex,
+                         uint64_t protoTableBDA,
+                         uint32_t protoCount,
                          const glm::vec3& camPos,
                          uint32_t cullFlags,
                          PlacementCullPush& out) {
@@ -1105,18 +1109,8 @@ inline void FillCullPush(const PlacementSystem::LayerBinding& layer,
     out.renderViews = renderViewsBDA;
     out.renderViewIndex = renderViewIndex;
     out.cullFlags = cullFlags;
-    const size_t n = layer.prototypes.size() > kPlacementMaxProtos ? kPlacementMaxProtos
-                                                                   : layer.prototypes.size();
-    out.protoCount = (uint32_t)(n == 0 ? 1 : n);
-    for (size_t i = 0; i < n; ++i) {
-        const Prototype& p = layer.prototypes.at(i);
-        const glm::vec3 center = (p.boundsMin + p.boundsMax) * 0.5f;
-        const glm::vec3 halfDiag = (p.boundsMax - p.boundsMin) * 0.5f;
-        out.protoBounds[i] = glm::vec4(center, glm::length(halfDiag));
-        out.protoDist[i] = p.maxDrawDistance;
-    }
-    if (n == 0)
-        out.protoBounds[0] = glm::vec4(0.0f, 0.0f, 0.0f, 0.5f);
+    out.protoTable = protoTableBDA; // per-proto bounds + distances live here
+    out.protoCount = protoCount == 0 ? 1 : protoCount;
     out.camPos = camPos;
     out.maxInstanceScale = layer.config.maxScale;
 }
@@ -2123,14 +2117,21 @@ struct PlacementWorldRuntime {
     PlacementProgramGpu program;          // the uploaded graph SSA
     PlacementGpuTiles slots;              // TileKey -> pass-slot map + tokens
     std::vector<PlacementVisibleSet> vis; // [slot * viewBudget + view]
-    // The prototype draw-command table (the immutable indirect halves),
-    // CACHED: SeedIndirect registers it here and RecordCullChain
-    // push-carries it into every draw-build recording (the kernel owns
-    // the COMPLETE command — the table is the push's 96-byte tail, not
-    // a GPU upload; the old upload form was the stranded-upload-write
-    // hazard, see todo.txt).
-    PlacementIndirectCmd protoSeeds[kPlacementMaxProtos] = {};
-    uint32_t protoSeedCount = 0;
+    // The prototype table (bounds + species distance + index range per
+    // proto), a READ-ONLY BDA buffer uploaded by SeedIndirect once per
+    // mesh-table change. RecordCullChain passes its BDA into the cull and
+    // draw-build pushes (the metadata no longer rides the 256-byte push, so
+    // the prototype count is bounded by the table buffer, not the push).
+    smvk::Holder<smvk::BufferHandle> protoTableBuffer;
+    smvk::LogicalBufferHandle protoTableLogical{};
+    uint32_t protoTableCount = 0;
+    // The seed cache: SeedIndirect is called EVERY frame (the per-frame
+    // publication commit) but must only re-upload when the mesh table
+    // actually changed — an unchanged seed set is a no-op return. The
+    // prototype count is tracked separately so a layer prototype-list
+    // edit (same seed commands, different bounds/distance) re-uploads too.
+    std::vector<PlacementIndirectCmd> protoSeedCache;
+    uint32_t protoSeedProtoCount = 0;
     // The program revision (the hashed graph inputs + deps) — a change
     // re-uploads the GPU SSA so an editor graph edit reaches the tiles
     // regenerating under it (the review's finding: the once-at-Create
@@ -2237,6 +2238,13 @@ struct PlacementWorldRuntime {
         cullPrograms.Destroy();
         scatter.Destroy();
         pass.Destroy(rg);
+        if (!protoTableLogical.empty())
+            rg.FreeBuffer(protoTableLogical);
+        protoTableLogical = {};
+        protoTableBuffer = {};
+        protoTableCount = 0;
+        protoSeedCache.clear();
+        protoSeedProtoCount = 0;
         slots.Init(0);
         created = false;
     }
@@ -2250,16 +2258,14 @@ struct PlacementWorldRuntime {
             return nullptr;
         return &vis[size_t(slot) * size_t(viewBudget) + size_t(view)];
     }
-    // The prototype table the renderer registers once per mesh-table
-    // change (protoCount <= kPlacementMaxProtos): the immutable indirect
-    // halves draw-build push-carries. The table is CACHED here and
-    // captured by-value by the NEXT RecordCullChain recording (a
-    // re-registration is seen by the next recorded frame). Pure
-    // metadata — no GPU write; the indirect buffer is single-scope-
-    // written (COMPUTE) by draw-build every frame, so the bytes this
-    // used to upload can never strand from the draw's barrier (the
-    // old upload was the stranded-upload-write hazard; see todo.txt).
-    bool SeedIndirect(smvk::ResourceManager& /*ctx*/,
+    // The prototype table the renderer registers once per mesh-table change:
+    // builds the per-proto rows (bounds + species distance from the layer's
+    // prototypes, index range from the seeds) and uploads them as a read-only
+    // BDA buffer. A re-registration re-uploads; the NEXT RecordCullChain
+    // recording captures its BDA by value (an already-recorded pass never sees
+    // a later re-registration).
+    bool SeedIndirect(smvk::ResourceManager& ctx,
+                      smvk::RenderGraph& rg,
                       uint32_t view,
                       const PlacementIndirectCmd* seeds,
                       uint32_t cmdCount) {
@@ -2267,10 +2273,45 @@ struct PlacementWorldRuntime {
             return false;
         if (!seeds || cmdCount == 0 || cmdCount > kPlacementMaxProtos)
             return false;
-        for (uint32_t i = 0; i < cmdCount; ++i)
-            protoSeeds[i] = seeds[i];
-        protoSeedCount = cmdCount;
-        return true;
+        const uint32_t protoCount = layer ? uint32_t(layer->prototypes.size()) : 0u;
+        const uint32_t n = std::min(cmdCount, protoCount);
+        if (n == 0)
+            return false;
+        // Idempotence: the per-frame call is a no-op unless the mesh table
+        // (seeds) or the layer prototype list (bounds/distance) changed.
+        if (!protoTableBuffer.empty() && protoTableCount == n &&
+            protoSeedProtoCount == protoCount && protoSeedCache.size() == n &&
+            std::memcmp(protoSeedCache.data(), seeds, n * sizeof(PlacementIndirectCmd)) == 0)
+            return true;
+        std::vector<PlacementProtoRow> rows(n);
+        for (uint32_t i = 0; i < n; ++i) {
+            const Prototype& p = layer->prototypes.at(i);
+            const glm::vec3 center = (p.boundsMin + p.boundsMax) * 0.5f;
+            const glm::vec3 halfDiag = (p.boundsMax - p.boundsMin) * 0.5f;
+            rows[i].bounds = glm::vec4(center, glm::length(halfDiag));
+            rows[i].drawDistance = p.maxDrawDistance;
+            rows[i].indexCount = seeds[i].indexCount;
+            rows[i].firstIndex = seeds[i].firstIndex;
+            rows[i].vertexOffset = seeds[i].vertexOffset;
+        }
+        if (!protoTableLogical.empty())
+            rg.FreeBuffer(protoTableLogical);
+        protoTableBuffer = ctx.CreateBuffer(
+            n * sizeof(PlacementProtoRow), smvk::BufferType_Storage, "placement proto table");
+        if (protoTableBuffer.empty())
+            return false;
+        ctx.UploadDataToBuffer(protoTableBuffer,
+                               rows.data(),
+                               n * sizeof(PlacementProtoRow),
+                               smvk::PipelineStageBit_Compute,
+                               smvk::AccessFlags::ShaderRead,
+                               0,
+                               0);
+        protoTableLogical = rg.AddExternalBuffer(protoTableBuffer, "placement proto table");
+        protoTableCount = n;
+        protoSeedCache.assign(seeds, seeds + n);
+        protoSeedProtoCount = protoCount;
+        return !protoTableLogical.empty();
     }
 
     // ---- THE FRAME TICK -------------------------------------------------
@@ -2671,6 +2712,17 @@ struct PlacementWorldRuntime {
                          uint32_t cullFlags) {
         if (!created || view >= viewBudget)
             return;
+        // The cull + draw-build both read the prototype table's BDA (bounds/
+        // distance for cull, index ranges for draw-build). An unseeded table
+        // is a null-BDA bind — loud, not silent (the renderer seeds it once
+        // per mesh-table change via SeedIndirect before any chain records).
+        if (protoTableCount == 0 || protoTableBuffer.empty()) {
+            std::fprintf(stderr,
+                         "[Placement] RecordCullChain: prototype table not seeded "
+                         "(SeedIndirect not called) - skipping the chain rather "
+                         "than binding a null BDA\n");
+            return;
+        }
         for (size_t s = 0; s < active.size(); ++s) {
             const ActiveTile& at = active[s];
             if (!at.published || at.slot < 0)
@@ -2692,6 +2744,8 @@ struct PlacementWorldRuntime {
                          at.aliveBDA,
                          renderViewsBDA,
                          renderViewIndex,
+                         ctx.GetBufferDeviceAddress(protoTableBuffer),
+                         protoTableCount,
                          camPos,
                          cullFlags | aliveFlag,
                          cullPush);
@@ -2705,34 +2759,8 @@ struct PlacementWorldRuntime {
             PlacementDrawBuildPush dbPush{};
             dbPush.bins = vs.BinsAddress(ctx);
             dbPush.indirect = vs.IndirectAddress(ctx);
-            dbPush.protoCount = cullPush.protoCount;
-            // The prototype table (SeedIndirect's cache) rides the push:
-            // draw-build owns the COMPLETE command, so the table must be
-            // captured here, BY VALUE (an already-recorded pass never
-            // sees a later re-registration). The FULL 8-slot table is
-            // initialized: entries past the registered count carry zeros
-            // (indexCount 0 = a no-op draw — the graceful unseeded state,
-            // the same class the creation-zero buffer always had). A
-            // table SMALLER than the layer's bin count draws nothing for
-            // the uncovered bins — loud, not silent.
-            {
-                const uint32_t tableCount = std::min(protoSeedCount, uint32_t(kPlacementMaxProtos));
-                if (tableCount < cullPush.protoCount)
-                    std::fprintf(stderr,
-                                 "[Placement] prototype table (%u entries) smaller"
-                                 " than the layer's protoCount (%u) - bins past the"
-                                 " table carry zero indexCount (no-op draws)\n",
-                                 tableCount,
-                                 cullPush.protoCount);
-                dbPush.protoCount = std::min(cullPush.protoCount, uint32_t(kPlacementMaxProtos));
-                for (uint32_t i = 0; i < kPlacementMaxProtos; ++i) {
-                    const PlacementIndirectCmd& seed =
-                        i < tableCount ? protoSeeds[i] : PlacementIndirectCmd{};
-                    dbPush.indexCount[i] = seed.indexCount;
-                    dbPush.firstIndex[i] = seed.firstIndex;
-                    dbPush.vertexOffset[i] = seed.vertexOffset;
-                }
-            }
+            dbPush.protoTable = ctx.GetBufferDeviceAddress(protoTableBuffer);
+            dbPush.protoCount = protoTableCount;
 
             smvk::RenderPass& cull = PlacementCullPrograms::AddCullPass(
                 rg, pass, uint32_t(s), vs, at.aliveL, renderViewsLogical);
@@ -2758,6 +2786,15 @@ struct PlacementWorldRuntime {
                 PlacementCullPrograms::PushAndDispatchDrawBuild(
                     cmd, cullPrograms.buildProgram, dbPush);
             });
+            // The read-only proto table feeds both the cull (bounds/distance)
+            // and the draw-build (index range) — hint the shared read.
+            if (!protoTableLogical.empty()) {
+                smvk::BufferSyncRequest protoRead{};
+                protoRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+                protoRead.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+                cull.AddBufferHint(protoTableLogical, protoRead);
+                db.AddBufferHint(protoTableLogical, protoRead);
+            }
         }
     }
 };

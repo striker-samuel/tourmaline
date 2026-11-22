@@ -2462,6 +2462,7 @@ bool WorldRenderer::onAttach() {
             if (rt->viewBudget < m_swapchain->framesInFlight() ||
                 !m_gpuPlacementDraw->Ensure(*m_context) ||
                 !rt->SeedIndirect(*m_context,
+                                  *m_rendergraph,
                                   uint32_t(frameIndex % rt->viewBudget),
                                   m_gpuPlacementSeeds,
                                   m_gpuPlacementSeedCount))
@@ -12498,7 +12499,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             if (rows.size() == meshPs.desc.maxEmitters)
                 break;
         }
-        if (meshPs.SeedIndirect(*m_context, m_gpuPlacementSeeds, m_gpuPlacementSeedCount)) {
+        if (meshPs.SeedIndirect(
+                *m_context, *m_rendergraph, m_gpuPlacementSeeds, m_gpuPlacementSeedCount)) {
             meshSimulationRun = !rows.empty() || m_meshParticleTailSeconds > 0.0f;
             if (!rows.empty()) {
                 meshEmitterCount = uint32_t(rows.size());
@@ -14657,12 +14659,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             tour::placement::PlacementDrawBuildPush build{};
             build.bins = cull.bins;
             build.indirect = meshPs.IndirectAddress(*m_context);
-            build.protoCount = cull.binCount;
-            for (uint32_t i = 0; i < cull.binCount; ++i) {
-                build.indexCount[i] = meshPs.protoSeeds[i].indexCount;
-                build.firstIndex[i] = meshPs.protoSeeds[i].firstIndex;
-                build.vertexOffset[i] = meshPs.protoSeeds[i].vertexOffset;
-            }
+            build.protoTable = m_context->GetBufferDeviceAddress(meshPs.protoTableBuffer);
+            build.protoCount = meshPs.protoTableCount;
             auto& buildPass = meshPs.AddDrawBuildPass(*m_rendergraph);
             buildPass.SetRecordingFunc([this, build](smvk::CommandBuffer& cmd) {
                 smvk::MeshParticles::PushAndDispatchDrawBuild(
@@ -17754,7 +17752,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                                  0u};
             cmd.PushConstants(
                 smvk::kMeshParticlesVsPushOffset, sizeof(tail), &tail, smvk::ShaderStage::All);
-            for (uint32_t bin = 0; bin < mp.protoSeedCount; ++bin)
+            for (uint32_t bin = 0; bin < mp.protoTableCount; ++bin)
                 cmd.DrawIndexedIndirect(mp.IndirectHandle(),
                                         uint64_t(bin) * tour::placement::kPlacementIndirectStride,
                                         1,

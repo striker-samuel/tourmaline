@@ -203,6 +203,48 @@ bool SortedSubset(const std::vector<RenderInstance>& needle,
     return std::includes(hk.begin(), hk.end(), nk.begin(), nk.end());
 }
 
+// Build + upload a proto table (bounds + distance from the layer, index
+// range from the seeds) for the BDA-carried pushes. The cull reads
+// bounds/distance; the draw-build reads the index range.
+struct ProtoTableUpload {
+    smvk::Holder<smvk::BufferHandle> buffer;
+    smvk::LogicalBufferHandle logical{};
+    uint32_t count = 0;
+    [[nodiscard]] uint64_t BDA(smvk::ResourceManager& rm) const {
+        return rm.GetBufferDeviceAddress(buffer);
+    }
+};
+ProtoTableUpload MakeProtoTable(smvk::ResourceManager& rm,
+                                smvk::RenderGraph& rg,
+                                const PlacementSystem::LayerBinding& layer,
+                                const PlacementIndirectCmd* seeds,
+                                uint32_t count) {
+    ProtoTableUpload t;
+    t.count = count;
+    std::vector<PlacementProtoRow> rows(count);
+    for (uint32_t i = 0; i < count; ++i) {
+        const Prototype& p = layer.prototypes.at(i);
+        const glm::vec3 c = (p.boundsMin + p.boundsMax) * 0.5f;
+        const glm::vec3 h = (p.boundsMax - p.boundsMin) * 0.5f;
+        rows[i].bounds = glm::vec4(c, glm::length(h));
+        rows[i].drawDistance = p.maxDrawDistance;
+        rows[i].indexCount = seeds[i].indexCount;
+        rows[i].firstIndex = seeds[i].firstIndex;
+        rows[i].vertexOffset = seeds[i].vertexOffset;
+    }
+    t.buffer = rm.CreateBuffer(
+        count * sizeof(PlacementProtoRow), smvk::BufferType_Storage, "test proto table");
+    rm.UploadDataToBuffer(t.buffer,
+                          rows.data(),
+                          count * sizeof(PlacementProtoRow),
+                          smvk::PipelineStageBit_Compute,
+                          smvk::AccessFlags::ShaderRead,
+                          0,
+                          0);
+    t.logical = rg.AddExternalBuffer(t.buffer, "test proto table");
+    return t;
+}
+
 GridDomain MakeGrid(glm::vec3 origin, uint32_t cells) {
     GridDomain g;
     g.origin = origin;
@@ -1028,6 +1070,15 @@ int main() {
         Check(ok, "gpu.vis-scatter-push");
 
         PlacementCullPush cullPush;
+        // The prototype table (fake mesh geometry: proto i draws 300
+        // indices at firstIndex i*64) is a BDA buffer the kernels read.
+        PlacementIndirectCmd seeds[4] = {};
+        for (int i = 0; i < 4; ++i) {
+            seeds[i].indexCount = 300;
+            seeds[i].firstIndex = uint32_t(i) * 64;
+            seeds[i].vertexOffset = 0;
+        }
+        ProtoTableUpload table = MakeProtoTable(rm, rg, lb, seeds, 4);
         FillCullPush(lb,
                      pass2.TileInstancesAddress(rm, 0),
                      pass2.TileCountAddress(rm, 0),
@@ -1036,10 +1087,12 @@ int main() {
                      0 /* no constraint tile: skip alive */,
                      rm.GetBufferDeviceAddress(viewSlab),
                      0,
+                     table.BDA(rm),
+                     4,
                      glm::vec3(0, 5, 0),
                      kPlacementCullFrustum | kPlacementCullDistance,
                      cullPush);
-        Check(cullPush.protoCount == 4 && cullPush.protoDist[1] == 12.0f,
+        Check(cullPush.protoCount == 4 && cullPush.protoTable == table.BDA(rm),
               "gpu.vis-cull-push-filled");
         PlacementScatterVisPush scPush{};
         scPush.instances = pass2.TileInstancesAddress(rm, 0);
@@ -1051,23 +1104,8 @@ int main() {
         PlacementDrawBuildPush dbPush{};
         dbPush.bins = vis.BinsAddress(rm);
         dbPush.indirect = vis.IndirectAddress(rm);
+        dbPush.protoTable = table.BDA(rm);
         dbPush.protoCount = 4;
-        // The prototype table (fake mesh geometry: proto i draws 300
-        // indices at firstIndex i*64) rides the PUSH - draw-build owns
-        // the COMPLETE command (no seed upload anywhere; the stranded-
-        // upload-write class cannot exist in this chain anymore).
-        PlacementIndirectCmd seeds[4] = {};
-        for (int i = 0; i < 4; ++i) {
-            seeds[i].indexCount = 300;
-            seeds[i].firstIndex = uint32_t(i) * 64;
-            seeds[i].vertexOffset = 0;
-        }
-        for (uint32_t i = 0; i < kPlacementMaxProtos; ++i) {
-            const PlacementIndirectCmd& s = i < 4 ? seeds[i] : PlacementIndirectCmd{};
-            dbPush.indexCount[i] = s.indexCount;
-            dbPush.firstIndex[i] = s.firstIndex;
-            dbPush.vertexOffset[i] = s.vertexOffset;
-        }
         vis.ClearFrame(rm); // zero mask + bin atomics (the frame cadence)
 
         host.RunFrame([&](smvk::RenderGraph& g) {
@@ -1445,6 +1483,18 @@ int main() {
         Check(rt->Create(rm, rg), "gpu.rt-create");
         Check(rt->Valid(), "gpu.rt-valid");
 
+        // Seed the prototype table ONCE before the first chain record: the
+        // cull + draw-build both read its BDA (bounds/distance for cull, index
+        // ranges for draw-build) — the seed-once-at-init contract.
+        {
+            PlacementIndirectCmd seeds[2] = {};
+            seeds[0].indexCount = 300;
+            seeds[0].firstIndex = 0;
+            seeds[1].indexCount = 300;
+            seeds[1].firstIndex = 64;
+            Check(rt->SeedIndirect(rm, rg, 0, seeds, 2), "gpu.rt-seed-at-init");
+        }
+
         DependencyVersions deps;
         const glm::vec4 interest[1] = {glm::vec4(0.0f, 0.0f, 8.0f, 8.0f)};
         // Frame 1: BeginFrame (the scatter) + the cull chain — same frame,
@@ -1678,7 +1728,7 @@ int main() {
             seeds[0].firstIndex = 0;
             seeds[1].indexCount = 300;
             seeds[1].firstIndex = 64;
-            Check(rt->SeedIndirect(rm, 0, seeds, 2), "gpu.rr-seed-at-init");
+            Check(rt->SeedIndirect(rm, rg, 0, seeds, 2), "gpu.rr-seed-at-init");
         }
 
         // The frame driver: BeginFrame + the ALIVE-ONLY cull (no frustum, no
@@ -1980,24 +2030,17 @@ int main() {
             smvk::placement::PlacementDrawBuildPush dbp;
             dbp.bins = mp.BinsAddress(rm);
             dbp.indirect = mp.IndirectAddress(rm);
-            dbp.protoCount = 2;
-            // The prototype table (fake geometry: 300 idx/bin) rides the
-            // push EVERY frame - the shared drawbuild kernel owns the
-            // COMPLETE command (SeedIndirect is the metadata
-            // registration; there is no seed upload anywhere).
+            // The prototype table (fake geometry: 300 idx/bin) is a BDA
+            // buffer uploaded by SeedIndirect once per mesh table.
             smvk::placement::PlacementIndirectCmd seeds[2] = {};
             seeds[0].indexCount = 300;
             seeds[0].firstIndex = 0;
             seeds[1].indexCount = 300;
             seeds[1].firstIndex = 64;
-            for (uint32_t i = 0; i < smvk::placement::kPlacementMaxProtos; ++i) {
-                const auto& s = i < 2 ? seeds[i] : smvk::placement::PlacementIndirectCmd{};
-                dbp.indexCount[i] = s.indexCount;
-                dbp.firstIndex[i] = s.firstIndex;
-                dbp.vertexOffset[i] = s.vertexOffset;
-            }
             if (f == 0)
-                Check(mp.SeedIndirect(rm, seeds, 2), "gpu.mp-seed-indirect");
+                Check(mp.SeedIndirect(rm, rg, seeds, 2), "gpu.mp-seed-indirect");
+            dbp.protoTable = rm.GetBufferDeviceAddress(mp.protoTableBuffer);
+            dbp.protoCount = mp.protoTableCount;
             host.RunFrame([&](smvk::RenderGraph& g) {
                 smvk::RenderPass& emit = mp.AddEmitPass(g);
                 emit.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
@@ -2432,6 +2475,14 @@ int main() {
             }
         };
 
+        // Seed the prototype table BEFORE the first chain record: frame 1's
+        // cull + draw-build both read its BDA (bounds/distance + index ranges).
+        {
+            PlacementIndirectCmd seeds[3];
+            fillSeeds(seeds);
+            Check(rt->SeedIndirect(rm, rg, 0, seeds, 3), "gpu.draw-seed-indirect");
+        }
+
         // ---- frame 1: the scatter + the chain (the tile publishes). ----
         DependencyVersions deps;
         const glm::vec4 interest[1] = {glm::vec4(0.0f, 0.0f, 8.0f, 8.0f)};
@@ -2452,19 +2503,10 @@ int main() {
         // ---- frame 2: the chain re-runs (the idle tile, no re-dispatch)
         // + THE DRAW into the external target. ----
         int32_t drawSlot = -1;
-        bool seeded = false;
         const auto recordDrawFrame = [&](smvk::RenderGraph& g) {
             rt->BeginFrame(rm, g, interest, 1, deps);
-            // REGISTER THE PROTOTYPE METADATA BEFORE the chain records:
-            // draw-build's push captures the table BY VALUE at recording
-            // time, so the earliest recording must already see it. Pure
-            // metadata (no GPU write) - publishing needs no seed event.
-            if (!seeded) {
-                PlacementIndirectCmd seeds[3];
-                fillSeeds(seeds);
-                Check(rt->SeedIndirect(rm, 0, seeds, 3), "gpu.draw-seed-indirect");
-                seeded = true;
-            }
+            // The prototype table was seeded before frame 1 (the seed-once-
+            // at-init contract); the chain's cull + draw-build read its BDA.
             rt->RecordCullChain(rm,
                                 g,
                                 0,
@@ -2652,7 +2694,7 @@ int main() {
             PlacementIndirectCmd seeds2[3];
             fillSeeds(seeds2);
             seeds2[1].firstIndex = surf.firstIndex + 1;
-            Check(rt->SeedIndirect(rm, 0, seeds2, 3), "gpu.draw-table-reregistered");
+            Check(rt->SeedIndirect(rm, rg, 0, seeds2, 3), "gpu.draw-table-reregistered");
             host.RunFrame(recordDrawFrame);
             rm.FlushUploads();
             rm.WaitForUploads();
@@ -2743,6 +2785,23 @@ int main() {
                               0,
                               0);
 
+        // The single-proto table (bounds + index range) for the cull + drawbuild.
+        PlacementProtoRow prows[1] = {};
+        prows[0].bounds = glm::vec4(0, 0, 0, 0.5f);
+        prows[0].indexCount = 300;
+        prows[0].firstIndex = 0;
+        prows[0].vertexOffset = 0;
+        smvk::Holder<smvk::BufferHandle> ptab =
+            rm.CreateBuffer(sizeof(prows), smvk::BufferType_Storage, "smoke proto table");
+        rm.UploadDataToBuffer(ptab,
+                              prows,
+                              sizeof(prows),
+                              smvk::PipelineStageBit_Compute,
+                              smvk::AccessFlags::ShaderRead,
+                              0,
+                              0);
+        const uint64_t ptabBDA = rm.GetBufferDeviceAddress(ptab);
+
         PlacementCullPush cp{};
         cp.instances = bp.TileInstancesAddress(rm, 0);
         cp.count = bp.TileCountAddress(rm, 0);
@@ -2752,9 +2811,8 @@ int main() {
         cp.renderViews = rm.GetBufferDeviceAddress(viewSlab);
         cp.renderViewIndex = 0;
         cp.cullFlags = kPlacementCullFrustum;
+        cp.protoTable = ptabBDA;
         cp.protoCount = 1;
-        cp.protoBounds[0] = glm::vec4(0, 0, 0, 0.5f);
-        cp.protoDist[0] = 0.0f;
         cp.camPos = glm::vec3(0, 0, 0);
         cp.maxInstanceScale = 2.0f;
 
@@ -2769,10 +2827,8 @@ int main() {
         PlacementDrawBuildPush dp{};
         dp.bins = bv.BinsAddress(rm);
         dp.indirect = bv.IndirectAddress(rm);
+        dp.protoTable = ptabBDA;
         dp.protoCount = 1;
-        dp.indexCount[0] = 300;
-        dp.firstIndex[0] = 0;
-        dp.vertexOffset[0] = 0;
 
         bv.ClearFrame(rm);
 

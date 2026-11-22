@@ -17,8 +17,9 @@ GPU_PUSH(PlacementCullPush, pc);
 void mainCS()
 {
     uint acc = 0;
-    [unroll]
-    for (uint p = 0; p < PLACEMENT_MAX_PROTOS; ++p)
+    // Serial over the RUNTIME proto count (not the fixed 8): the bin count is
+    // the tile's local prototype palette, so a serial scan stays cheap.
+    for (uint p = 0; p < pc.protoCount; ++p)
     {
         pc.bins.Get().v[PLACEMENT_BINS_OFFSET_BASE + p] = acc;
         acc += pc.bins.Get().v[PLACEMENT_BINS_COUNT_BASE + p];

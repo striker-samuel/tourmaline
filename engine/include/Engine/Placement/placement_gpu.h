@@ -389,20 +389,35 @@ static_assert(sizeof(PlacementScatterPush) == 64,
 // deterministic within-bin order is ever needed.
 // ---------------------------------------------------------------------------
 
-// The per-(tile slot, view) bin slab (128 bytes).
+// The per-(tile slot, view) bin slab. Sized to kPlacementMaxProtos (the
+// per-tile prototype CAPACITY); the kernels touch only the first protoCount
+// entries (the runtime prototype count carried in the pushes). The procedural
+// scatter keeps protoCount <= 8; the baked path uses up to 695.
+inline constexpr uint32_t kPlacementMaxProtos = 1024;
 struct PlacementBinsGpu {
-    uint32_t counts[8] = {};     // cull's atomics: per-proto visible counts
-    uint32_t offsets[8] = {};    // prefix's exclusive sums (bin base in visible[])
-    uint32_t appendNext[8] = {}; // scatter's per-bin append cursors (re-zeroed)
-    uint32_t total = 0;          // sum of counts
+    uint32_t counts[kPlacementMaxProtos] = {};  // cull's atomics: per-proto visible counts
+    uint32_t offsets[kPlacementMaxProtos] = {}; // prefix's exclusive sums (bin base in visible[])
+    uint32_t appendNext[kPlacementMaxProtos] = {}; // scatter's per-bin append cursors (re-zeroed)
+    uint32_t total = 0;                            // sum of counts
     uint32_t pad[7] = {};
 };
-static_assert(sizeof(PlacementBinsGpu) == 128,
-              "PlacementBinsGpu moved — update placement_cull.hlsli");
+
+// Per-proto metadata (a BDA buffer, replacing the push-carried arrays): the
+// cull's conservative sphere + species draw distance, and the drawbuild's
+// mesh addressing. One row per prototype; the pushes carry the BDA + count.
+struct PlacementProtoRow {
+    glm::vec4 bounds{0.0f, 0.0f, 0.0f, 0.5f}; // center.xyz, radius.w
+    float drawDistance = 0.0f;                // species distance (0 = unlimited)
+    uint32_t indexCount = 0;
+    uint32_t firstIndex = 0;
+    int32_t vertexOffset = 0;
+};
+static_assert(sizeof(PlacementProtoRow) == 32, "PlacementProtoRow moved — update the HLSL mirror");
 
 // VkDrawIndexedIndirectCommand shape (the gfxfilter GfxIndirectCmd
-// precedent). The CPU seeds indexCount/firstIndex/vertexOffset per
-// prototype; the GPU writes instanceCount/firstInstance per frame.
+// precedent). The immutable halves (indexCount/firstIndex/vertexOffset)
+// are carried per-prototype by the proto table; drawbuild copies them and
+// the GPU writes instanceCount/firstInstance per frame.
 struct PlacementIndirectCmd {
     uint32_t indexCount = 0;
     uint32_t instanceCount = 0;
@@ -413,7 +428,6 @@ struct PlacementIndirectCmd {
 static_assert(sizeof(PlacementIndirectCmd) == 20,
               "PlacementIndirectCmd moved — update placement_cull.hlsli");
 inline constexpr uint32_t kPlacementIndirectStride = sizeof(PlacementIndirectCmd);
-inline constexpr uint32_t kPlacementMaxProtos = 8;
 // The HLSL view bound (PlacementInstanceBuffer.items[...]) — the C++
 // spelling (placement_common.hlsli's PLACEMENT_MAX_TILE_INSTANCES).
 inline constexpr uint32_t kPlacementMaxTileInstances = 65536;
@@ -423,9 +437,12 @@ inline constexpr uint32_t kPlacementCullFrustum = 1;
 inline constexpr uint32_t kPlacementCullAlive = 2;
 inline constexpr uint32_t kPlacementCullDistance = 4;
 
-// Must match placement_cull.hlsli PlacementCullPush (240 bytes, dx-layout).
+// Must match placement_cull.hlsli PlacementCullPush (96 bytes, dx-layout).
 // The kernels SELF-BOUND the live count from the count buffer
 // (min(raw, capacity)); the dispatch width is the CPU-known capacity.
+// The per-proto conservative spheres + draw distances live in the proto
+// table (protoTable BDA) — no push-carried arrays, so the prototype count
+// is bounded by the table buffer, not the 256-byte push budget.
 struct PlacementCullPush {
     uint64_t instances = 0;   // BDA of the tile's PlacementInstanceBuffer
     uint64_t count = 0;       // BDA of the tile's PlacementCountBuffer
@@ -433,19 +450,16 @@ struct PlacementCullPush {
     uint64_t bins = 0;        // BDA of PlacementBinsGpu
     uint64_t alive = 0;       // BDA of flag2, 0 = skip the alive test
     uint64_t renderViews = 0; // BDA of the RenderView slab
+    uint64_t protoTable = 0;  // BDA of PlacementProtoRow[protoCount]
     uint32_t renderViewIndex = 0;
     uint32_t cullFlags = kPlacementCullFrustum | kPlacementCullAlive;
     uint32_t protoCount = 1;
-    uint32_t padD = 0; // (was liveCount — self-bounded on device)
-    // Per-proto conservative spheres (center.xyz, radius.w) from the
-    // cooked mesh bounds — NOT a made-up guard factor; and per-proto max
-    // draw distances (0 = unlimited).
-    glm::vec4 protoBounds[kPlacementMaxProtos]{glm::vec4(0.0f, 0.0f, 0.0f, 0.5f)};
-    float protoDist[kPlacementMaxProtos] = {};
+    uint32_t padD = 0;             // (was liveCount — self-bounded on device)
+    uint32_t padE[2] = {};         // align camPos to 16 (the HLSL dx-layout float3)
     glm::vec3 camPos{0.0f};        // species-distance origin (per-view CPU data)
     float maxInstanceScale = 1.0f; // radius scaling bound (config.maxScale)
 };
-static_assert(sizeof(PlacementCullPush) == 240,
+static_assert(sizeof(PlacementCullPush) == 96,
               "PlacementCullPush moved — update placement_cull.hlsli");
 
 inline constexpr const char* kPlacementCullCsPath = "content/shaders/placement_cull.cs.hlsl.spv";
@@ -472,37 +486,23 @@ static_assert(sizeof(PlacementScatterVisPush) == 48,
               "PlacementScatterVisPush moved — update placement_scatter_visible.cs.hlsl");
 
 // Must match placement_drawbuild.cs.hlsl PlacementDrawBuildPush
-// (128 bytes). The prototype table rides the push (8 protos x
-// {indexCount, firstIndex, vertexOffset} = the 96B tail) so the KERNEL
-// owns the COMPLETE command: the stranded-upload-write class (an
-// UPLOAD's bytes seeding a buffer a same-frame kernel re-writes leaves
-// the upload's write scope stranded from the draw's barrier — Vulkan
-// memory dependencies are not transitive; see todo.txt) cannot exist
-// here BY CONSTRUCTION: the indirect buffer is single-scope-written
-// (COMPUTE) per frame, so the draw's compute-write ->
-// indirect-command-read barrier is always complete.
+// (32 bytes). The immutable command halves (indexCount/firstIndex/
+// vertexOffset) live in the proto table (protoTable BDA) — the KERNEL
+// owns the COMPLETE command: the stranded-upload-write class (an UPLOAD's
+// bytes seeding a buffer a same-frame kernel re-writes leaves the upload's
+// write scope stranded from the draw's barrier — Vulkan memory dependencies
+// are not transitive; see todo.txt) cannot exist here BY CONSTRUCTION: the
+// indirect buffer is single-scope-written (COMPUTE) per frame, so the draw's
+// compute-write -> indirect-command-read barrier is always complete.
 struct PlacementDrawBuildPush {
     uint64_t bins = 0;       // 0  PlacementBinsGpu BDA
     uint64_t indirect = 0;   // 8  PlacementIndirectBuffer BDA
-    uint32_t protoCount = 1; // 16 live bins (<= the table below)
-    uint32_t pad0 = 0;       // 20
-    uint32_t pad1 = 0;       // 24
-    uint32_t pad2 = 0;       // 28
-    // The immutable command halves (the prototype table's mesh
-    // addressing). instanceCount/firstInstance are the per-frame
-    // dynamic halves the kernel derives from the bins. Entries past
-    // the registered table stay zero (a zero indexCount draws nothing —
-    // the graceful unseeded state).
-    uint32_t indexCount[kPlacementMaxProtos] = {};  // 32
-    uint32_t firstIndex[kPlacementMaxProtos] = {};  // 64
-    int32_t vertexOffset[kPlacementMaxProtos] = {}; // 96
+    uint64_t protoTable = 0; // 16 PlacementProtoRow[protoCount] BDA
+    uint32_t protoCount = 1; // 24 live bins
+    uint32_t pad0 = 0;       // 28
 };
-static_assert(sizeof(PlacementDrawBuildPush) == 128,
+static_assert(sizeof(PlacementDrawBuildPush) == 32,
               "PlacementDrawBuildPush moved — update placement_drawbuild.cs.hlsl");
-static_assert(offsetof(PlacementDrawBuildPush, indexCount) == 32 &&
-                  offsetof(PlacementDrawBuildPush, firstIndex) == 64 &&
-                  offsetof(PlacementDrawBuildPush, vertexOffset) == 96,
-              "PlacementDrawBuildPush array offsets moved — update the HLSL mirror");
 
 } // namespace tour::placement
 
@@ -542,6 +542,7 @@ using ::tour::placement::PlacementEcoView;
 using ::tour::placement::PlacementIndirectCmd;
 using ::tour::placement::PlacementInstanceBuffer;
 using ::tour::placement::PlacementProgramView;
+using ::tour::placement::PlacementProtoRow;
 using ::tour::placement::PlacementScatterPush;
 using ::tour::placement::PlacementScatterVisPush;
 using ::tour::placement::PlacementTilePush;
