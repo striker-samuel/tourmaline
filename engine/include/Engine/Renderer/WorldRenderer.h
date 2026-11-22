@@ -3208,6 +3208,10 @@ class WorldRenderer : public IRenderer {
     std::vector<uint32_t> m_materialTexturedSlots;
     std::vector<uint8_t> m_materialHasTextures;
     std::array<bool, smvk::limits::MaxFramesInFlight> m_materialForceFull{};
+    // Latest ticket per flight covers earlier uploads on the same ordered
+    // queue timeline; one status query per fenced flight reuse.
+    std::array<smvk::UploadTicket, smvk::limits::MaxFramesInFlight>
+        m_materialUploadTickets{};
     AppResources m_resources{};
     ViewportResources m_viewportResources{};
     // Resolved KHR_lights_punctual set for the loaded scene (snapshotted

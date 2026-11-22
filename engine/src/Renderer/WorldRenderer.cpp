@@ -1601,6 +1601,7 @@ bool WorldRenderer::onAttach() {
     // world or was detached and attached again.
     m_materialRows.Reset();
     m_materialForceFull.fill(true);
+    m_materialUploadTickets.fill({});
     m_materialObservedWorld = nullptr;
     m_materialObservedTopology = ~uint64_t(0);
     m_materialObservedTextureEpoch = ~uint64_t(0);
@@ -6101,21 +6102,39 @@ void WorldRenderer::UpdateMaterials(uint32_t currentFrame) {
     const size_t frameOffset = size_t(currentFrame) * MATERIAL_FRAME_STRIDE;
     if (currentFrame >= smvk::limits::MaxFramesInFlight)
         return;
+    // The current flight is acquired/fenced here. Any upload ticket
+    // still incomplete or failed since its previous use invalidates that
+    // flight's material snapshot: replay the full table.
+    auto& outstanding = m_materialUploadTickets[currentFrame];
+    if (outstanding &&
+        m_context->PollUpload(outstanding) != smvk::UploadStatus::Completed)
+        m_materialForceFull[currentFrame] = true;
+    outstanding = {};
+
     const bool full = m_materialForceFull[currentFrame];
     const bool ok = m_materialRows.Publish(
         currentFrame, full, [&](size_t offset, const void* bytes, size_t count) {
             if (offset > MATERIAL_FRAME_STRIDE ||
                 count > MATERIAL_FRAME_STRIDE - offset)
                 return false;
-            m_context->UploadDataToBuffer(
+            const smvk::UploadRequest req = m_context->RequestBufferUpload(
                 m_resources.materialsBuffer, bytes, count,
                 smvk::PipelineStageBit_Vertex |
                     smvk::PipelineStageBit_Fragment |
                     smvk::PipelineStageBit_Compute,
-                smvk::AccessFlags::ShaderRead, 0, frameOffset + offset);
+                smvk::AccessFlags::ShaderRead, frameOffset + offset);
+            if (!req.accepted())
+                return false; // preserve the table's dirty journal
+            // The latest timeline point covers all earlier material writes
+            // in this producer's ordered queue, including auto-flushed batches.
+            outstanding = req.ticket;
             return true;
         });
     if (!ok) {
+        // Some ranges may have staged successfully before another failed.
+        // Force a full replay so the next flight doesn't depend on partial
+        // batch acceptance.
+        m_materialForceFull[currentFrame] = true;
         std::fprintf(stderr, "[WorldRenderer] GPU material table publication failed\\n");
         return;
     }
