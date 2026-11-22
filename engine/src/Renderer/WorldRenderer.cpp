@@ -1609,6 +1609,7 @@ bool WorldRenderer::onAttach() {
     m_materialCachedBindless.clear();
     m_materialTexturedSlots.clear();
     m_materialHasTextures.clear();
+    m_materialTextureListed.clear();
     m_resources.directionalCascadeBuffer = m_context->CreateBuffer(
         sizeof(smvk::GpuDirectionalLightDescription) * m_swapchain->framesInFlight() * viewSlabs,
         smvk::BufferType_Storage,
@@ -5982,6 +5983,7 @@ void WorldRenderer::UpdateMaterials(uint32_t currentFrame) {
         m_materialCachedBindless.clear();
         m_materialTexturedSlots.clear();
         m_materialHasTextures.clear();
+        m_materialTextureListed.clear();
     }
     if (bindingDirty) {
         // Avoid per-frame map rebuilding; texture creation/destruction,
@@ -6025,8 +6027,10 @@ void WorldRenderer::UpdateMaterials(uint32_t currentFrame) {
         return row;
     };
     const auto recordTextureUsage = [&](uint32_t index) {
-        if (m_materialHasTextures.size() <= index)
+        if (m_materialHasTextures.size() <= index) {
             m_materialHasTextures.resize(size_t(index) + 1, uint8_t(0));
+            m_materialTextureListed.resize(size_t(index) + 1, uint8_t(0));
+        }
         bool hasTexture = false;
         if (const auto* mat = sourceMaterial(index)) {
             const auto& v = mat->values;
@@ -6034,8 +6038,10 @@ void WorldRenderer::UpdateMaterials(uint32_t currentFrame) {
                          v.textures.z >= 0 || v.textures.w >= 0 ||
                          v.textures2.x >= 0;
         }
-        if (hasTexture && !m_materialHasTextures[index])
+        if (hasTexture && !m_materialTextureListed[index]) {
             m_materialTexturedSlots.push_back(index);
+            m_materialTextureListed[index] = 1;
+        }
         m_materialHasTextures[index] = hasTexture ? 1 : 0;
     };
 
@@ -6048,6 +6054,7 @@ void WorldRenderer::UpdateMaterials(uint32_t currentFrame) {
         if (synced) {
             m_materialTexturedSlots.clear();
             m_materialHasTextures.assign(uploadCount, uint8_t(0));
+            m_materialTextureListed.assign(uploadCount, uint8_t(0));
             for (uint32_t i = 0; i < uploadCount; ++i) {
                 if (!m_materialRows.Set(i, resolve(i))) {
                     synced = false;
@@ -6060,8 +6067,10 @@ void WorldRenderer::UpdateMaterials(uint32_t currentFrame) {
             synced = false;
     } else if (overrideDirty) {
         // A debug slider intentionally changes *all* materials.
-        for (uint32_t i = 0; i < uploadCount; ++i)
+        for (uint32_t i = 0; i < uploadCount; ++i) {
             if (!m_materialRows.Set(i, resolve(i))) { synced = false; break; }
+            recordTextureUsage(i);
+        }
     } else {
         // Material edit access marks only the touched world slots.
         for (uint32_t i : dirtySlots) {

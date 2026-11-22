@@ -3207,6 +3207,8 @@ class WorldRenderer : public IRenderer {
     std::unordered_map<uint32_t, uint32_t> m_materialCachedBindless;
     std::vector<uint32_t> m_materialTexturedSlots;
     std::vector<uint8_t> m_materialHasTextures;
+    // Append each index at most once until world topology is rebuilt.
+    std::vector<uint8_t> m_materialTextureListed;
     std::array<bool, smvk::limits::MaxFramesInFlight> m_materialForceFull{};
     AppResources m_resources{};
     ViewportResources m_viewportResources{};
