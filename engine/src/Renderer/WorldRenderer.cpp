@@ -156,7 +156,7 @@ smvk::ShaderProgram& WorldRenderer::MainLitProgramFor(uint32_t materialId) {
     const bool layered = [&]() {
         if (!m_world)
             return true;
-        const smvk::Material* mat = m_world->GetMaterial(materialId);
+        const smvk::Material* mat = static_cast<const smvk::World&>(*m_world).GetMaterial(materialId);
         return mat ? (mat->values.layerMaterials.w > 1) : true;
     }();
     // ProjectLit family first (design §9: the SAME hook code on
@@ -2703,7 +2703,7 @@ bool WorldRenderer::onAttach() {
         m_gfxRenderer.ConfigureMaterialLayered([this](uint32_t materialId) -> bool {
             if (!m_world)
                 return true;
-            const smvk::Material* mat = m_world->GetMaterial(materialId);
+            const smvk::Material* mat = static_cast<const smvk::World&>(*m_world).GetMaterial(materialId);
             return mat ? (mat->values.layerMaterials.w > 1) : true;
         });
         // PROJECT-LIT family: the same modules the direct family
@@ -2727,7 +2727,7 @@ bool WorldRenderer::onAttach() {
             [this](uint32_t materialId) -> engine::MaterialDepthState {
                 if (!m_world)
                     return {};
-                const smvk::Material* mat = m_world->GetMaterial(materialId);
+                const smvk::Material* mat = static_cast<const smvk::World&>(*m_world).GetMaterial(materialId);
                 if (!mat)
                     return {};
                 return {mat->pipeline.raster.cullMode,
@@ -6171,7 +6171,7 @@ void WorldRenderer::UpdateTextureStreaming(const FrameUniforms& frameData,
             smvk::IteratorFlagBit_Renderable, [&](const smvk::World::RenderItem& item) {
                 if (item.material == smvk::World::kInvalidIndex)
                     return;
-                const smvk::Material* mat = m_world->GetMaterial(item.material);
+                const smvk::Material* mat = static_cast<const smvk::World&>(*m_world).GetMaterial(item.material);
                 if (!mat)
                     return;
                 const glm::mat4& model = m_world->scene.globalTransform[item.node];
@@ -9110,7 +9110,7 @@ void WorldRenderer::RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
             return;
         if (maskedPhase) {
             smvk::CullMode cull = smvk::CullMode::None;
-            if (const smvk::Material* mat = m_world->GetMaterial(item.material))
+            if (const smvk::Material* mat = static_cast<const smvk::World&>(*m_world).GetMaterial(item.material))
                 cull = mat->pipeline.raster.cullMode;
             ensureShadowMaskedPipeline(cull);
         }
@@ -11518,7 +11518,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow,
             [&](const smvk::World::RenderItem& item) {
                 const smvk::Material* mat = item.material != smvk::World::kInvalidIndex
-                                                ? m_world->GetMaterial(item.material)
+                                                ? static_cast<const smvk::World&>(*m_world).GetMaterial(item.material)
                                                 : nullptr;
                 const bool masked = mat && mat->alphaMode == smvk::AlphaMode::Mask;
                 // A masked material without OMM support MUST NOT be
@@ -12045,7 +12045,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 // base material ID; layers 1..3 resolve from MaterialValues.
                 // Only opaque layering shares the existing depth/G-buffer
                 // contract. Cutout/BLEND layering requires coverage parity.
-                const smvk::Material* itemMaterial = m_world->GetMaterial(item.material);
+                const smvk::Material* itemMaterial = static_cast<const smvk::World&>(*m_world).GetMaterial(item.material);
                 const bool materialRasterEligible =
                     itemMaterial && tour::gpu_scene::OpaqueLayeredRasterEligible(*itemMaterial);
                 // ProjectLit admission: the family rides the SAME indexed
@@ -15093,7 +15093,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         if (layerIds[i] < 0)
                             continue;
                         const smvk::Material* layer =
-                            m_world->GetMaterial(static_cast<uint32_t>(layerIds[i]));
+                            static_cast<const smvk::World&>(*m_world).GetMaterial(static_cast<uint32_t>(layerIds[i]));
                         if (!layer)
                             continue;
                         const uint32_t lref = smvk::stencil::ReceiverRef(layer->values);
@@ -15115,7 +15115,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             std::fprintf(stderr,
                          "[MaterialCensus] id | metal rough shade mrTex | layers | class\n");
             for (uint32_t i = 0; i < m_world->materialLocations.size(); ++i) {
-                const smvk::Material* mat = m_world->GetMaterial(i);
+                const smvk::Material* mat = static_cast<const smvk::World&>(*m_world).GetMaterial(i);
                 const char* cls = classify(mat);
                 if (!mat) {
                     std::fprintf(stderr, "[MaterialCensus] %4u | <null> | - | -\n", i);
@@ -16090,7 +16090,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     return;
                 if (maskedPhase) {
                     smvk::CullMode cull = smvk::CullMode::None;
-                    if (const smvk::Material* mat = m_world->GetMaterial(item.material))
+                    if (const smvk::Material* mat = static_cast<const smvk::World&>(*m_world).GetMaterial(item.material))
                         cull = mat->pipeline.raster.cullMode;
                     ensureMotionMaskedPipeline(cull);
                 } else {
@@ -16099,7 +16099,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     // backfaces would carry zero motion and ghost under
                     // the T2x resolve).
                     smvk::CullMode cull = smvk::CullMode::Back;
-                    if (const smvk::Material* mat = m_world->GetMaterial(item.material))
+                    if (const smvk::Material* mat = static_cast<const smvk::World&>(*m_world).GetMaterial(item.material))
                         cull = mat->pipeline.raster.cullMode;
                     ensureMotionSolidPipeline(cull);
                 }
@@ -16914,7 +16914,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             smvk::BlendSettings blend = smvk::BlendSettings::Opaque();
             smvk::RasterSettings raster{};
             bool maskedCutout = false;
-            if (smvk::Material* mat = m_world->GetMaterial(materialId)) {
+            if (smvk::Material* mat = static_cast<const smvk::World&>(*m_world).GetMaterial(materialId)) {
                 blend = mat->pipeline.blend;
                 raster = mat->pipeline.raster;
                 maskedCutout = mat->shadingModel == smvk::ShadingModel::Masked;
@@ -17916,7 +17916,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                             // Opaque state: the FS discard does the work.
                             smvk::BlendSettings opaqueBlend = smvk::BlendSettings::Opaque();
                             smvk::RasterSettings raster{};
-                            if (smvk::Material* mat = m_world->GetMaterial(d.materialId)) {
+                            if (smvk::Material* mat = static_cast<const smvk::World&>(*m_world).GetMaterial(d.materialId)) {
                                 raster = mat->pipeline.raster;
                             }
                             cmd.BindRenderPipeline(wireTwinOf(m_resources.vertexLitProgram),
@@ -17961,7 +17961,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         if (ditheredTransp) {
                             smvk::BlendSettings opaqueBlend = smvk::BlendSettings::Opaque();
                             smvk::RasterSettings raster{};
-                            if (smvk::Material* mat = m_world->GetMaterial(d.materialId)) {
+                            if (smvk::Material* mat = static_cast<const smvk::World&>(*m_world).GetMaterial(d.materialId)) {
                                 raster = mat->pipeline.raster;
                             }
                             cmd.BindRenderPipeline(wireTwinOf(farSpecTrans->main),
@@ -18008,7 +18008,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         // from material.pipeline); depth follows opaque.
                         smvk::BlendSettings opaqueBlend = smvk::BlendSettings::Opaque();
                         smvk::RasterSettings raster{};
-                        if (smvk::Material* mat = m_world->GetMaterial(d.materialId)) {
+                        if (smvk::Material* mat = static_cast<const smvk::World&>(*m_world).GetMaterial(d.materialId)) {
                             raster = mat->pipeline.raster;
                         }
                         cmd.BindRenderPipeline(wireTwinOf(*prog),

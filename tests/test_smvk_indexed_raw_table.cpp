@@ -40,6 +40,9 @@ int main() {
     writes.fill(0);
     for(uint32_t f=0;f<3;++f) CHECK(publish(f));
     CHECK(writes[0]==0 && writes[1]==0 && writes[2]==0);
+    CHECK(table.Set(2, Material{30,2,48,0}));
+    CHECK(table.PendingRows(0)==0);
+    CHECK(!table.Set(5, Material{}));
     // One changed material or bindless mapping affects one row per flight.
     auto changed=initial;
     changed[2].bindless=99;
