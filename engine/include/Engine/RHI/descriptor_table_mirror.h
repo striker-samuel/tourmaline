@@ -18,25 +18,28 @@ namespace smvk::table {
 // Write: bool(const Buffer&, size_t offsetBytes, const void*, size_t bytes).
 // The caller binds the returned buffer as a storage-buffer descriptor;
 // this helper does not alter shaders or silently use a device address.
-template <typename T, uint32_t FrameCount, typename Buffer>
-class DescriptorTableMirror {
+template <typename T, uint32_t FrameCount, typename Buffer> class DescriptorTableMirror {
     static_assert(FrameCount > 0);
     static constexpr size_t kPageBytes = 64u * 1024u;
-    static constexpr size_t kRowsPerPage =
-        sizeof(T) > kPageBytes ? size_t(1) : kPageBytes / sizeof(T);
+    static constexpr size_t kRowsPerPage = sizeof(T) > kPageBytes ? size_t(1)
+                                                                  : kPageBytes / sizeof(T);
 
-public:
+  public:
     struct Binding {
         const Buffer* buffer = nullptr; // valid while mirror remains alive
         size_t capacityBytes = 0;
-        uint32_t rowCount = 0;          // includes tombstones
+        uint32_t rowCount = 0; // includes tombstones
         uint64_t allocationRevision = 0;
-        explicit operator bool() const { return buffer != nullptr && rowCount != 0; }
+        explicit operator bool() const {
+            return buffer != nullptr && rowCount != 0;
+        }
     };
 
     template <typename Create, typename Write>
-    [[nodiscard]] bool Publish(RawTable<T, FrameCount>& table, uint32_t flight,
-                               Create&& create, Write&& write) {
+    [[nodiscard]] bool Publish(RawTable<T, FrameCount>& table,
+                               uint32_t flight,
+                               Create&& create,
+                               Write&& write) {
         if (flight >= FrameCount)
             return false;
         const size_t rows = table.Size();
@@ -70,8 +73,7 @@ public:
             ready_[flight] = false;
         }
         const bool ok = table.Publish(
-            flight, forceFull_[flight],
-            [&](size_t offset, const void* src, size_t bytes) {
+            flight, forceFull_[flight], [&](size_t offset, const void* src, size_t bytes) {
                 return write(*buffers_[flight], offset, src, bytes);
             });
         if (!ok) {
@@ -83,17 +85,19 @@ public:
         return true;
     }
 
-    [[nodiscard]] Binding GetBinding(const RawTable<T, FrameCount>& table,
-                                     uint32_t flight) const {
-        if (flight >= FrameCount || !ready_[flight] || !buffers_[flight] ||
-            table.Size() == 0 ||
+    [[nodiscard]] Binding GetBinding(const RawTable<T, FrameCount>& table, uint32_t flight) const {
+        // A binding is the GPU-published snapshot. Reject it whenever the
+        // table has UNPUBLISHED edits for this flight (PendingRows != 0) —
+        // otherwise the caller reads a mix of stale and current rows and
+        // cannot tell which. The caller must Publish before re-binding.
+        if (flight >= FrameCount || !ready_[flight] || !buffers_[flight] || table.Size() == 0 ||
+            table.PendingRows(flight) != 0 ||
             size_t(table.Size()) > capacityBytes_[flight] / sizeof(T))
             return {};
-        return {&*buffers_[flight], capacityBytes_[flight], table.Size(),
-                revisions_[flight]};
+        return {&*buffers_[flight], capacityBytes_[flight], table.Size(), revisions_[flight]};
     }
 
-private:
+  private:
     std::array<std::optional<Buffer>, FrameCount> buffers_{};
     std::array<size_t, FrameCount> capacityBytes_{};
     std::array<uint64_t, FrameCount> revisions_{};

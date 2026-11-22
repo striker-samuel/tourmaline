@@ -9,12 +9,18 @@ This stack adds a buffer-table publication seam which does not request
   flight; it grows in 64-KiB row-aligned quanta, replays all rows on
   reallocation, and uploads only dirty payload runs otherwise.
 - Failed writes retain the table's pending state. An uninitialized or
-  failed flight exposes no binding. All flights must converge independently.
+  failed flight exposes no binding, and a flight with UNPUBLISHED edits
+  also exposes no binding (`GetBinding` rejects while `PendingRows(flight)`
+  is nonzero) — the binding is the GPU-published snapshot, never a mix of
+  stale and current rows. All flights must converge independently.
 - `DescriptorStoragePublisher<T,N>` adapts that to
   `ResourceManager::CreateBuffer(BufferType_Storage)` and
-  `UploadDataToBuffer`, returning a `BufferHandle` and allocation
-  revision. The application supplies the descriptor-set binding and
-  appropriate render-graph storage-buffer hazards.
+  `UploadDataToBuffer`. `Publish` returns an explicit `State` (`Queued` /
+  `Failed`) and takes the destination stage/access mask (default
+  compute + vertex + fragment — lighting/decal/material tables are
+  fragment-consumed); `Flush` submits the staged copies. The application
+  supplies the descriptor-set binding and appropriate render-graph
+  storage-buffer hazards.
 - Buffer retirement is through existing `Holder<BufferHandle>` lifetime.
   Publication must run only on a fenced, acquired flight, before consumers.
 

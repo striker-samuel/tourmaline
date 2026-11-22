@@ -1694,7 +1694,11 @@ set_target_properties(SourceSceneTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMA
 add_test(NAME source_scene_tests COMMAND SourceSceneTests)
 
 # smvk raw-payload tables: 8-byte and 16-byte ABIs, all-flight publication.
+# The table headers forward to Core/Memory/arena.h, so these targets must
+# see core/include — link the same core target the engine links (PUBLIC
+# include dir), never a hand-duplicated path.
 add_executable(SmvkRawTableTests test_smvk_raw_table.cpp)
+target_link_libraries(SmvkRawTableTests PRIVATE tourmaline_core)
 target_include_directories(SmvkRawTableTests PRIVATE
     ${CMAKE_SOURCE_DIR}/engine/include
     ${CMAKE_SOURCE_DIR}/external/glm)
@@ -1702,7 +1706,18 @@ add_test(NAME smvk_raw_table_tests COMMAND SmvkRawTableTests)
 
 # Experimental descriptor-storage table publisher: CPU-only byte mirrors.
 add_executable(SmvkDescriptorTableTests test_smvk_descriptor_table.cpp)
+target_link_libraries(SmvkDescriptorTableTests PRIVATE tourmaline_core)
 target_include_directories(SmvkDescriptorTableTests PRIVATE
     ${CMAKE_SOURCE_DIR}/engine/include
     ${CMAKE_SOURCE_DIR}/external/glm)
 add_test(NAME smvk_descriptor_table_tests COMMAND SmvkDescriptorTableTests)
+
+# Production RHI adapter compilation test (no GPU): instantiates the full
+# DescriptorStoragePublisher against the real ResourceManager/Holder types so a
+# broken stage mask or return-state shape is caught without a device.
+add_executable(SmvkDescriptorRhiTests test_smvk_descriptor_rhi.cpp)
+target_link_libraries(SmvkDescriptorRhiTests PRIVATE tourmaline_core)
+target_include_directories(SmvkDescriptorRhiTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/include
+    ${CMAKE_SOURCE_DIR}/external/glm)
+add_test(NAME smvk_descriptor_rhi_tests COMMAND SmvkDescriptorRhiTests)
