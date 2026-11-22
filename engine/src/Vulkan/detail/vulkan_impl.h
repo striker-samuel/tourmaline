@@ -15,6 +15,7 @@
 #define VK_NO_PROTOTYPES
 #endif
 
+#include <Engine/RHI/upload_ticket.h>
 #include <Engine/Memory/arena.h>
 #include <Engine/Memory/linear_vector.h>
 #include <Engine/Memory/memory.h>
@@ -549,7 +550,11 @@ struct UploadStreamer {
 
     bool init(VkDeviceSize ringCapacity = mem::config::Runtime().streamerTotalBudget);
     void destroy();
-    void uploadBuffer(BufferHandle dst,
+    [[nodiscard]] UploadRequest requestBuffer(BufferHandle dst,
+                      const void* data, size_t size, size_t dstOffset,
+                      VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess);
+    [[nodiscard]] UploadStatus pollUpload(UploadTicket ticket) const noexcept;
+    bool uploadBuffer(BufferHandle dst,
                       const void* data,
                       size_t size,
                       size_t dstOffset,
@@ -675,6 +680,7 @@ struct UploadStreamer {
         CommandSubmitHandle curHandle{};
         VkCommandBuffer curCmd = VK_NULL_HANDLE;
         bool hasPending = false;
+        UploadSequence ticketSequence{};
         // Flush contract (see flush/flushAndGetTimeline): each shard has
         // ONE owner at a time. A producer (uploadBuffer/uploadImage/
         // uploadImageKtx/uploadBufferBulk) marks its shard ACTIVE for the
@@ -958,6 +964,10 @@ struct VulkanResourceManager final /*: public IResourceManager*/ {
     // unconditional. Call BEFORE reading any mapped staging bytes.
     void InvalidateStagingRange(BufferHandle handle, VkDeviceSize offset, VkDeviceSize size);
 
+    [[nodiscard]] UploadRequest RequestBufferUpload(
+        BufferHandle buffer, const void* data, size_t dataSize,
+        VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t destOffset);
+    [[nodiscard]] UploadStatus PollUpload(UploadTicket ticket) const noexcept;
     void UploadDataToBuffer(BufferHandle buffer,
                             const void* data,
                             size_t dataSize,

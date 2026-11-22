@@ -1713,3 +1713,8 @@ target_include_directories(SmvkIndexedRawTableTests PRIVATE
     ${CMAKE_SOURCE_DIR}/engine/include
     ${CMAKE_SOURCE_DIR}/external/glm)
 add_test(NAME smvk_indexed_raw_table_tests COMMAND SmvkIndexedRawTableTests)
+
+# Backend-independent upload request sequence and batch ticket semantics.
+add_executable(SmvkUploadTicketTests test_smvk_upload_ticket.cpp)
+target_include_directories(SmvkUploadTicketTests PRIVATE ${CMAKE_SOURCE_DIR}/engine/include)
+add_test(NAME smvk_upload_ticket_tests COMMAND SmvkUploadTicketTests)
