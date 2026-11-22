@@ -1831,7 +1831,7 @@ void World::RebuildDerivedCaches(bool incremental) {
                         continue;
                     worldMatIdx = static_cast<uint32_t>(materialLocations.size());
                     ++materialTopologyRevision;
-            materialLocations.push_back(
+                    materialLocations.push_back(
                         MaterialLocation{.cluster = cluster, .handle = layerHandle});
                     worldMatByClusterMat_[matKey] = worldMatIdx;
                 }
@@ -1857,7 +1857,7 @@ void World::RebuildDerivedCaches(bool incremental) {
             } else {
                 defaultMaterialIndex = static_cast<uint32_t>(materialLocations.size());
                 ++materialTopologyRevision;
-            materialLocations.push_back(MaterialLocation{.cluster = cl, .handle = *hit});
+                materialLocations.push_back(MaterialLocation{.cluster = cl, .handle = *hit});
             }
         }
     }
