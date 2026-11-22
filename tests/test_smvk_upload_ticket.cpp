@@ -31,6 +31,12 @@ int main() {
     s.Failed(c);
     CHECK(s.Poll(c,UINT64_MAX)==UploadStatus::Failed);
     CHECK(s.Poll(b,8)==UploadStatus::Completed);
+    UploadSequence recovered;
+    const auto abandoned = recovered.Issue(); // no ticket on rejected upload
+    const auto accepted = recovered.Issue();
+    CHECK(abandoned == 1 && accepted == 2);
+    recovered.Submitted(accepted, 12);
+    CHECK(recovered.Poll(accepted,12)==UploadStatus::Completed);
     std::printf("upload ticket tests: %d failures\\n",fails);
     return fails?1:0;
 }

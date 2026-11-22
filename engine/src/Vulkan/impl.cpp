@@ -4350,7 +4350,8 @@ smvk::UploadRequest smvk::UploadStreamer::requestBuffer(
         TimelinePoint submitted{};
         if (!uploadBuffer(dst, data, size, dstOffset, dstStages, dstAccess, &submitted) ||
             !submitted.valid()) {
-            st.hostTicketSequence.Failed(seq);
+            // No ticket escapes: a rejected request must not poison later
+            // accepted requests from this shard.
             return {UploadStatus::Rejected, {}};
         }
         st.hostTicketSequence.Submitted(seq, submitted.value);
@@ -4358,7 +4359,7 @@ smvk::UploadRequest smvk::UploadStreamer::requestBuffer(
     }
     const uint64_t seq = st.ticketSequence.Issue();
     if (!uploadBuffer(dst, data, size, dstOffset, dstStages, dstAccess)) {
-        st.ticketSequence.Failed(seq);
+        // No public ticket on rejection. Keep future sequences usable.
         return {UploadStatus::Rejected, {}};
     }
     const bool alreadySubmitted =

@@ -29,3 +29,6 @@ Failed (submission returned no valid point or the poll counter failed).
 - Build, CTest and device testing remain required. GPU device loss and
   submission failure behavior need real-device fault injection before
   adopting this as authoritative recovery.
+
+An admission-rejected request returns no ticket; its unused internal
+sequence must not poison later successful requests in the same shard.
