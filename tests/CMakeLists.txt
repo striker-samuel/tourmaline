@@ -1706,3 +1706,10 @@ target_include_directories(SmvkDescriptorTableTests PRIVATE
     ${CMAKE_SOURCE_DIR}/engine/include
     ${CMAKE_SOURCE_DIR}/external/glm)
 add_test(NAME smvk_descriptor_table_tests COMMAND SmvkDescriptorTableTests)
+
+# Material world-slot indexed GPU table: all-flight dirty publication.
+add_executable(SmvkIndexedRawTableTests test_smvk_indexed_raw_table.cpp)
+target_include_directories(SmvkIndexedRawTableTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/include
+    ${CMAKE_SOURCE_DIR}/external/glm)
+add_test(NAME smvk_indexed_raw_table_tests COMMAND SmvkIndexedRawTableTests)

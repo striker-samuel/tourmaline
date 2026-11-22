@@ -109,6 +109,7 @@
 #include <Engine/Renderer/GfxRenderer.h>
 #include <Engine/Renderer/Renderer.h>
 #include <Engine/Renderer/WorldRendererConfig.h>
+#include <Engine/Renderer/material_gpu_records.h>
 #include <Engine/Rendergraph/ForwardPlusRenderer.h>
 #include <Engine/Rendergraph/FrameContext.h>
 #include <Engine/Rendergraph/contact_shadow.h>
@@ -3191,6 +3192,11 @@ class WorldRenderer : public IRenderer {
 
     // The control element owns the overlay; this pointer is borrowed.
     UiTextureService m_uiTextureService{};
+    // GPU material publication: world slot is the shader's raw material index.
+    // smvk owns the per-flight dirty journal; the existing RHI buffer owns
+    // physical storage and retains its BDA and fixed MaxMaterials stride.
+    tour::gpu_records::Materials m_materialRows;
+    std::array<bool, smvk::limits::MaxFramesInFlight> m_materialForceFull{};
     AppResources m_resources{};
     ViewportResources m_viewportResources{};
     // Resolved KHR_lights_punctual set for the loaded scene (snapshotted

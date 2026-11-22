@@ -1596,6 +1596,11 @@ bool WorldRenderer::onAttach() {
             m_swapchain->framesInFlight(),
         smvk::BufferType_Storage,
         "materials buffer");
+    // Fresh per-flight material slabs require full initialization before
+    // their first read, even if this renderer previously published another
+    // world or was detached and attached again.
+    m_materialRows.Reset();
+    m_materialForceFull.fill(true);
     m_resources.directionalCascadeBuffer = m_context->CreateBuffer(
         sizeof(smvk::GpuDirectionalLightDescription) * m_swapchain->framesInFlight() * viewSlabs,
         smvk::BufferType_Storage,
@@ -5998,22 +6003,39 @@ void WorldRenderer::UpdateMaterials(uint32_t currentFrame) {
         }
     }
 
+    // Reconcile world-indexed material rows into the smvk raw GPU table.
+    // Diff after all world texture remaps and debug overrides, so texture
+    // descriptor churn and material edits are visible without a new signal.
+    // Missing/shrunk world slots become MaterialValues{} rather than shifting
+    // any shader-visible materialId.
+    if (!m_materialRows.Sync(std::span<const smvk::MaterialValues>(mats, uploadCount))) {
+        std::fprintf(stderr, "[WorldRenderer] GPU material table sync failed\\n");
+        return;
+    }
     constexpr size_t MATERIAL_FRAME_STRIDE =
         sizeof(smvk::MaterialValues) * engine::renderer::limits::MaxMaterials;
-
-    size_t frameOffset = currentFrame * MATERIAL_FRAME_STRIDE;
-
-    if (uploadCount != 0) {
-        m_context->UploadDataToBuffer(m_resources.materialsBuffer,
-                                      mats,
-                                      sizeof(smvk::MaterialValues) * uploadCount,
-                                      smvk::PipelineStageBit_Vertex |
-                                          smvk::PipelineStageBit_Fragment |
-                                          smvk::PipelineStageBit_Compute,
-                                      smvk::AccessFlags::ShaderRead,
-                                      0,
-                                      frameOffset);
+    const size_t frameOffset = size_t(currentFrame) * MATERIAL_FRAME_STRIDE;
+    if (currentFrame >= smvk::limits::MaxFramesInFlight)
+        return;
+    const bool full = m_materialForceFull[currentFrame];
+    const bool ok = m_materialRows.Publish(
+        currentFrame, full, [&](size_t offset, const void* bytes, size_t count) {
+            if (offset > MATERIAL_FRAME_STRIDE ||
+                count > MATERIAL_FRAME_STRIDE - offset)
+                return false;
+            m_context->UploadDataToBuffer(
+                m_resources.materialsBuffer, bytes, count,
+                smvk::PipelineStageBit_Vertex |
+                    smvk::PipelineStageBit_Fragment |
+                    smvk::PipelineStageBit_Compute,
+                smvk::AccessFlags::ShaderRead, 0, frameOffset + offset);
+            return true;
+        });
+    if (!ok) {
+        std::fprintf(stderr, "[WorldRenderer] GPU material table publication failed\\n");
+        return;
     }
+    m_materialForceFull[currentFrame] = false;
 }
 
 // Texture-streaming tick (see Engine/Renderer/texture_streamer.h).
