@@ -19,6 +19,7 @@
 #include <Engine/Asset/lut_handle.h>
 #include <Engine/Asset/mesh_handle.h>
 #include <Engine/Asset/mesh_optimizer.h>
+#include <Engine/Placement/baked_placement.h>
 #include <Engine/Rendergraph/terrain_hfield.h>
 #include <Engine/Scene/entity_handle.h> // smvk::AudioSourceHandle (typed)
 #include <Engine/Scene/region_registry.h>
@@ -150,6 +151,18 @@ struct World {
             tour::transformhierarchy::CrashNodeBudget(
                 "late World budget", scene.hierarchy.size(), slots);
         scene.ReserveNodeSlots(slots);
+    }
+
+    // Prespecified baked placement instancers (the authored PointInstancer
+    // clouds). The world loader registers each .geometry family that carried
+    // one; the renderer auto-loads the cooked cloud and drives its PR03
+    // chain — no per-app runtime wiring.
+    void AddBakedPlacementRef(tour::placement::BakedPlacementRef ref) {
+        bakedPlacementRefs.push_back(std::move(ref));
+    }
+    [[nodiscard]] const std::vector<tour::placement::BakedPlacementRef>& BakedPlacementRefs()
+        const noexcept {
+        return bakedPlacementRefs;
     }
 
     // The World owns nodes. The project catalog names assets; LoadMesh
@@ -536,6 +549,9 @@ struct World {
     // WorldPage so resources stay owned by pages.
     std::vector<MeshLocation> meshLocations;
     std::vector<MaterialLocation> materialLocations;
+    // Prespecified baked placement instancers (the authored PointInstancer
+    // clouds) registered by the world loader; the renderer auto-loads them.
+    std::vector<tour::placement::BakedPlacementRef> bakedPlacementRefs;
     // The fallback material for renderable surfaces that carry no material
     // row (Caldera strips materials). A world index into materialLocations,
     // resolved once by ResolveAndFixup_pages from the cooked

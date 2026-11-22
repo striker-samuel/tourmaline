@@ -14,6 +14,7 @@
 #include <vector>
 
 #include <Engine/Placement/baked_placement.h>
+#include <Engine/Placement/baked_placement_pak.h>
 #include <Engine/Placement/baked_placement_runtime.h>
 #include <Engine/Placement/placement_cache.h>
 #include <Engine/Placement/placement_domain.h>
@@ -3275,6 +3276,13 @@ void TestBakedPlacement() {
               brt.tileSize == 16.0f && brt.slotBudget == 8 && brt.viewBudget == 2,
           "baked.configure-wires");
     Check(!brt.Configure(BakedPlacementCooked{}, 8, 1), "baked.configure-empty-refuses");
+
+    // The world-level declaration (the "prespecified instancer"): default
+    // residency knobs + the .geometry -> sidecar path derivation.
+    BakedPlacementRef ref;
+    Check(ref.interestRadius == 64.0f && ref.slotBudget == 32, "baked.ref-defaults");
+    Check(BakedPlacementSidecarPath("models/st_b.geometry") == "models/st_b.baked_placement_cooked",
+          "baked.ref-sidecar-path");
 }
 
 int main() {

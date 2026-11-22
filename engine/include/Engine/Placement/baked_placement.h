@@ -112,6 +112,16 @@ struct BakedPlacementAsset {
     }
 };
 
+// A world-level declaration of a baked placement cloud: the .geometry family
+// it was cooked beside + the residency knobs. The world loader populates these
+// (the "prespecified instancers"); the renderer auto-loads them — no per-app
+// runtime wiring. Distinct from BakedPlacementAsset (the flat import form).
+struct BakedPlacementRef {
+    std::string familyPath;       // "<stem>.geometry" the cloud was cooked beside
+    float interestRadius = 64.0f; // camera radius that keeps tiles resident
+    uint32_t slotBudget = 32;     // concurrent resident GPU tiles
+};
+
 // ---------------------------------------------------------------------------
 // Binary serialization (Phase 1 round-trip). Little-endian, versioned, and
 // lossless: the round-trip test asserts serialize(deserialize(x)) == x, i.e.
@@ -230,6 +240,7 @@ inline constexpr uint32_t kBakedPlacementVersion =
 namespace smvk::placement {
 using ::tour::placement::BakedPlacementAsset;
 using ::tour::placement::BakedPlacementPoint;
+using ::tour::placement::BakedPlacementRef;
 using ::tour::placement::BakedRenderPrototype;
 using ::tour::placement::DeserializeBakedPlacement;
 using ::tour::placement::SerializeBakedPlacement;
