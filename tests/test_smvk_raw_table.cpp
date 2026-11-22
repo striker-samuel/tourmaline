@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 #include <Engine/RHI/raw_table.h>
+#include <Engine/Renderer/probe_gpu_records.h>
 #include <Engine/Renderer/decal_gpu_records.h>
 #include <Engine/Renderer/light_gpu_records.h>
 #include <Engine/Renderer/texture_gpu_records.h>
@@ -100,10 +101,22 @@ void CheckDecalRecords() {
     CHECK(rows.Erase(id));
 }
 
+void CheckProbeRecords() {
+    tour::gpu_records::Probes rows;
+    tour::gpu_records::ProbePayload probe{}; probe.packed.type=smvk::kForwardPlusProbe;
+    probe.packed.range=12.0f;
+    auto id=rows.Insert(probe);
+    CHECK(tour::gpu_records::IsProbe(*rows.Get(id)));
+    CHECK(rows.Get(id)->packed.range==12.0f);
+    CHECK(rows.Erase(id));
+    CHECK(!rows.Contains(id));
+}
+
 int main() {
     CheckTextureRecords();
     CheckLightRecords();
     CheckDecalRecords();
+    CheckProbeRecords();
     TestRaw<Tiny>(); // 8-byte texture-like ABI
     TestRaw<Big>();  // 16-byte and wider ABI
     std::printf("raw_table failures=%d\n",failures);
