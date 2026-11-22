@@ -1002,20 +1002,21 @@ struct Converter {
 
 // The baked placement asset produced by the last successful USD import. The
 // importer fills it in LoadUsdFileAsModel; the native derivation + tests read
-// it through LastImportedBakedPlacement (the fixed UsdFileAsModel dispatch
-// signature has no out-param for it). Single-threaded import path.
+// it through the LastImportedBakedPlacement dispatch pointer (the fixed
+// UsdFileAsModel dispatch signature has no out-param for it). Single-threaded
+// import path.
 static tour::placement::BakedPlacementAsset g_bakedPlacement;
 
-const tour::placement::BakedPlacementAsset* LastImportedBakedPlacement() {
+static const tour::placement::BakedPlacementAsset* BakedPlacementImpl() {
     return g_bakedPlacement.empty() ? nullptr : &g_bakedPlacement;
 }
 
-// The native derivation's mutator: resolves each render prototype's meshId
-// from the tinygltf mesh index to the engine's WorldPageStaticMeshHandle pool
-// index (the identity the cook/runtime use). The importer records the tinygltf
-// index (the only identity available pre-decode); DeriveNativeAssets rewrites
-// it once the cluster's URI -> handle map exists.
-tour::placement::BakedPlacementAsset* MutableLastImportedBakedPlacement() {
+// The native derivation's mutator: resolves each render prototype's mesh
+// identity (the tinygltf mesh index + primitive -> the FLAT surface/blob index
+// within the .geometry asset). The importer records the tinygltf index + the
+// primitive as temporaries; DeriveNativeAssets rewrites surfaceIndex once the
+// cluster's URI -> blob map exists.
+static tour::placement::BakedPlacementAsset* MutableBakedPlacementImpl() {
     return &g_bakedPlacement;
 }
 
@@ -1171,6 +1172,8 @@ namespace {
 struct UsdAdapterRegistrar {
     UsdAdapterRegistrar() {
         UsdFileAsModel = &LoadUsdFileAsModel;
+        LastImportedBakedPlacement = &BakedPlacementImpl;
+        MutableLastImportedBakedPlacement = &MutableBakedPlacementImpl;
     }
 };
 const UsdAdapterRegistrar g_usdAdapterRegistrar;

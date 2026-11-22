@@ -112,6 +112,7 @@
 #include <Engine/GI/bake_inputs.h> // the invalidation model (unit hashes)
 #include <Engine/GI/cubemap_volume.h>
 #include <Engine/GI/lightmap.h>
+#include <Engine/Placement/baked_placement_runtime.h>
 #include <Engine/Renderer/cubemap.h>
 #include <Engine/Renderer/cubemap_placement.h>
 #include <Engine/Renderer/cubemap_prefilter.h>
@@ -504,6 +505,41 @@ std::vector<uint8_t> ReadLooseBakeFile(const std::string& contentDir, const std:
         return {};
     return std::vector<uint8_t>((std::istreambuf_iterator<char>(in)),
                                 std::istreambuf_iterator<char>());
+}
+
+// Resolves the baked placement's render prototypes against the rebuilt cluster
+// and cooks them (resolve + bucket) into the runtime's cooked form.
+// surfaceIndex (the .geometry blob index) -> the cluster's StaticMesh surface
+// range + bounds (the mesh URI fragment "mesh.N/prim.M" is the join key).
+// meshKey is the asset's project MeshKey (0 here — the cook runs before the
+// project catalog resolves it).
+bool CookBakedPlacementForCluster(const ::tour::placement::BakedPlacementAsset& baked,
+                                  const smvk::assets::MeshAsset& meshAsset,
+                                  const smvk::WorldPage& cluster,
+                                  const std::string& meshBaseUri,
+                                  float tileSize,
+                                  ::tour::placement::BakedPlacementCooked& out,
+                                  size_t* skipped = nullptr) {
+    auto resolve =
+        [&](uint64_t /*meshKey*/, uint32_t surfaceIndex, ::tour::placement::BakedSurfaceRef& ref) {
+            if (surfaceIndex >= meshAsset.geometry.size())
+                return false;
+            const std::string frag = meshAsset.geometry[surfaceIndex].uriFragment;
+            const std::string fullUri = meshBaseUri + "#" + frag;
+            const auto h = cluster.FindMeshByUri(smvk::StringViewT(fullUri));
+            if (!h)
+                return false;
+            const smvk::StaticMesh* sm = cluster.staticMeshes.get(*h);
+            if (!sm || sm->geometry.surfaces.empty())
+                return false;
+            ref.indexCount = sm->geometry.surfaces[0].indexCount;
+            ref.firstIndex = sm->geometry.surfaces[0].firstIndex;
+            ref.vertexOffset = sm->geometry.surfaces[0].baseVertex;
+            ref.boundsMin = sm->geometry.aabbMin;
+            ref.boundsMax = sm->geometry.aabbMax;
+            return true;
+        };
+    return ::tour::placement::CookBakedPlacement(baked, tileSize, resolve, out, skipped);
 }
 
 // Bake-file name stems (see the GI bake-file discovery in main): the pak
@@ -4740,6 +4776,66 @@ int Run(const CookArgs& c) {
                             << cluster->lights.numObjects() << " lights"
                             << " (dir=" << nDir << " point=" << nPoint << " spot=" << nSpot
                             << ", links=" << cluster->scene.tables.lights.size() << ")\n";
+            }
+            // Baked placement (the authored PointInstancer cloud): read the
+            // <stem>.baked_placement sidecar, resolve each render prototype's
+            // surface -> the cluster's StaticMesh physical range + bounds, and
+            // write the cooked form (<stem>.baked_placement_cooked) for the
+            // pak/host.
+            {
+                std::string stem = smvk::vfs::FileName(artPath);
+                const size_t mdot = stem.rfind(".geometry");
+                if (mdot != std::string::npos)
+                    stem = stem.substr(0, mdot);
+                const std::string sidecarVfs =
+                    smvk::vfs::Join(smvk::vfs::BaseDir(artPath), stem + ".baked_placement");
+                if (auto sidecarBytes = vfs.TryRead(sidecarVfs)) {
+                    if (!sidecarBytes->empty()) {
+                        ::tour::placement::BakedPlacementAsset baked;
+                        if (!::tour::placement::DeserializeBakedPlacement(
+                                sidecarBytes->data(), sidecarBytes->size(), baked)) {
+                            tool::err()
+                                << "Baked placement sidecar parse failed: '" << sidecarVfs << "'\n";
+                        } else {
+                            ::tour::placement::BakedPlacementCooked cooked;
+                            size_t skipped = 0;
+                            if (!CookBakedPlacementForCluster(
+                                    baked, meshAsset, *cluster, artPath, 64.0f, cooked, &skipped)) {
+                                tool::err() << "Baked placement cook failed for '" << inVfs
+                                            << "' (unresolved mesh/surface)\n";
+                            } else {
+                                std::vector<uint8_t> cookedBlob;
+                                if (!::tour::placement::SerializeBakedPlacementCooked(cooked,
+                                                                                      cookedBlob)) {
+                                    tool::err() << "Baked placement cooked serialize failed\n";
+                                } else {
+                                    const std::filesystem::path cookedHost =
+                                        std::filesystem::path(args.contentDir) /
+                                        smvk::vfs::BaseDir(artPath) /
+                                        (stem + ".baked_placement_cooked");
+                                    std::error_code ec;
+                                    std::filesystem::create_directories(cookedHost.parent_path(),
+                                                                        ec);
+                                    std::ofstream out(cookedHost,
+                                                      std::ios::binary | std::ios::trunc);
+                                    if (out) {
+                                        out.write(reinterpret_cast<const char*>(cookedBlob.data()),
+                                                  std::streamsize(cookedBlob.size()));
+                                        out.close();
+                                        tool::out()
+                                            << "Baked placement: " << baked.points.size()
+                                            << " points, " << cooked.tiles.size()
+                                            << " tiles (skipped " << skipped << " needs-bake) -> "
+                                            << cookedHost.generic_string() << "\n";
+                                    } else {
+                                        tool::err() << "Baked placement cooked write failed: '"
+                                                    << cookedHost.generic_string() << "'\n";
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
             tool::out() << "Cooking artifact: '" << inVfs << "'\n";
             sceneNames.push_back("");

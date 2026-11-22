@@ -1825,21 +1825,23 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
             // index — the PointInstancer's surfaces are flat, non-hierarchical)
             // and clears meshKey (0 = the asset's project MeshKey, resolved
             // later by the project pipeline, which owns the catalog).
-            if (auto* baked = MutableLastImportedBakedPlacement()) {
-                std::map<std::pair<uint32_t, uint32_t>, uint32_t> surfaceOf;
-                for (const auto& [poolIdx, blobIdx] : blobOf) {
-                    uint32_t n = 0, m = 0;
-                    if (blobIdx < mesh.geometry.size() &&
-                        ParseMeshPrimFragment(mesh.geometry[blobIdx].uriFragment, n, m))
-                        surfaceOf[{n, m}] = blobIdx;
-                }
-                for (auto& rp : baked->renderPrototypes) {
-                    const auto it = surfaceOf.find({uint32_t(rp.meshKey), rp.surfaceIndex});
-                    if (it != surfaceOf.end()) {
-                        rp.surfaceIndex = it->second; // the flat surface (blob index)
-                        rp.meshKey = 0;               // asset -> project MeshKey (project pipeline)
-                    } else {
-                        rp.surfaceIndex = 0xFFFFFFFFu; // loud: unresolved surface
+            if (MutableLastImportedBakedPlacement) {
+                if (auto* baked = MutableLastImportedBakedPlacement()) {
+                    std::map<std::pair<uint32_t, uint32_t>, uint32_t> surfaceOf;
+                    for (const auto& [poolIdx, blobIdx] : blobOf) {
+                        uint32_t n = 0, m = 0;
+                        if (blobIdx < mesh.geometry.size() &&
+                            ParseMeshPrimFragment(mesh.geometry[blobIdx].uriFragment, n, m))
+                            surfaceOf[{n, m}] = blobIdx;
+                    }
+                    for (auto& rp : baked->renderPrototypes) {
+                        const auto it = surfaceOf.find({uint32_t(rp.meshKey), rp.surfaceIndex});
+                        if (it != surfaceOf.end()) {
+                            rp.surfaceIndex = it->second; // the flat surface (blob index)
+                            rp.meshKey = 0; // asset -> project MeshKey (project pipeline)
+                        } else {
+                            rp.surfaceIndex = 0xFFFFFFFFu; // loud: unresolved surface
+                        }
                     }
                 }
             }
@@ -2224,22 +2226,24 @@ bool ImportMeshSource(const std::filesystem::path& gltfPath,
     // MeshKey stays 0 for the project pipeline). Non-USD sources leave it absent
     // (the global is null). Leading `::tour` — inside smvk::assets the bare
     // `tour` is the `::tour::asset` alias (tour.h).
-    if (const ::tour::placement::BakedPlacementAsset* baked = LastImportedBakedPlacement()) {
-        std::vector<uint8_t> blob;
-        if (!::tour::placement::SerializeBakedPlacement(*baked, blob))
-            return giveUp("baked placement serialization failed");
-        const std::filesystem::path sidecar =
-            gltfPath.parent_path() / (gltfPath.stem().string() + ".baked_placement");
-        std::string werr;
-        if (!WriteFileBytes(sidecar, blob, werr))
-            return giveUp(werr);
-        std::fprintf(stderr,
-                     "[import] baked placement: %zu points, %zu render prototypes -> "
-                     "%s.baked_placement\n",
-                     baked->points.size(),
-                     baked->renderPrototypes.size(),
-                     gltfPath.stem().string().c_str());
-        std::fflush(stderr);
+    if (LastImportedBakedPlacement) {
+        if (const ::tour::placement::BakedPlacementAsset* baked = LastImportedBakedPlacement()) {
+            std::vector<uint8_t> blob;
+            if (!::tour::placement::SerializeBakedPlacement(*baked, blob))
+                return giveUp("baked placement serialization failed");
+            const std::filesystem::path sidecar =
+                gltfPath.parent_path() / (gltfPath.stem().string() + ".baked_placement");
+            std::string werr;
+            if (!WriteFileBytes(sidecar, blob, werr))
+                return giveUp(werr);
+            std::fprintf(stderr,
+                         "[import] baked placement: %zu points, %zu render prototypes -> "
+                         "%s.baked_placement\n",
+                         baked->points.size(),
+                         baked->renderPrototypes.size(),
+                         gltfPath.stem().string().c_str());
+            std::fflush(stderr);
+        }
     }
     return true;
 }

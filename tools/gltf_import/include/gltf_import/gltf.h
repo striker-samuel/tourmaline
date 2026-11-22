@@ -429,8 +429,11 @@ extern bool (*UsdFileAsModel)(tinygltf::Model&,
 namespace tour::placement {
 struct BakedPlacementAsset;
 }
-const tour::placement::BakedPlacementAsset* LastImportedBakedPlacement();
-tour::placement::BakedPlacementAsset* MutableLastImportedBakedPlacement();
+// The baked-placement accessors (the USD PointInstancer expansion), NULL when
+// the USD adapter is not linked (usd_import's static registrar sets them — the
+// same indirection as the UsdFileAsModel dispatch pointer).
+extern const tour::placement::BakedPlacementAsset* (*LastImportedBakedPlacement)();
+extern tour::placement::BakedPlacementAsset* (*MutableLastImportedBakedPlacement)();
 
 // Source adapter boundary: tinygltf types never reach native asset derivation.
 bool DecodeGltfSourceScene(const tinygltf::Model& input,

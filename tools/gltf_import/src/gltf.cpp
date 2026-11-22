@@ -948,6 +948,11 @@ bool (*UsdFileAsModel)(tinygltf::Model&,
                        const std::filesystem::path&,
                        std::vector<std::string>&) = nullptr;
 
+// The baked-placement accessors (the USD PointInstancer expansion), same
+// indirection: null in the runtime/cookers, set by usd_import's registrar.
+const tour::placement::BakedPlacementAsset* (*LastImportedBakedPlacement)() = nullptr;
+tour::placement::BakedPlacementAsset* (*MutableLastImportedBakedPlacement)() = nullptr;
+
 bool LoadModelFromSourceFile(tinygltf::Model& model,
                              const char* filename,
                              std::vector<std::string>* extraDeps) {
