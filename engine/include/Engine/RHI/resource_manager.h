@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
-#include <Engine/RHI/gpu_memory_spill.h>
 #include <Engine/RHI/upload_ticket.h>
+#include <Engine/RHI/gpu_memory_spill.h>
 #include <Engine/smvk.h>
 // Windowing is SDL3 (see App/app.h). Forward-declared so RHI headers stay
 // light; .cpp files include <SDL3/SDL_video.h>.
@@ -269,6 +269,9 @@ class ResourceManager {
     uint32_t GetBindlessIndex(BindlessImageHandle handle) const;
     // Bindless descriptor-array slot of a TextureHandle (its sampled view).
     uint32_t GetTextureBindlessIndex(TextureHandle handle) const;
+    // Monotonic descriptor-mapping revision. Read once per render frame;
+    // a change invalidates cached pool-index -> bindless-slot resolution.
+    [[nodiscard]] uint64_t TextureBindingRevision() const noexcept;
     // Live-texture listing for debug UIs (the texture inspector): one row
     // per live texture, pool order, NO content filter. RENDER THREAD ONLY —
     // the pool walk is unsynchronized (the ShardedPool forEach contract).

@@ -1306,6 +1306,9 @@ void World::ResolveAndFixup_pages() {
         scene = TransformHierarchy{};
     meshLocations.clear();
     materialLocations.clear();
+    ++materialTopologyRevision;
+    dirtyMaterialSlots_.clear();
+    dirtyMaterialFlags_.clear();
     textureLocations.clear();
     lightLocations.clear();
     cameraLocations.clear();
@@ -1540,6 +1543,7 @@ void World::MergePage(WorldPage& cluster, uint32_t clusterOrdinal, bool isIdenti
 
             WorldPageMaterialHandle handle = cluster.materials.getHandle(row.material);
 
+            ++materialTopologyRevision;
             materialLocations.push_back(MaterialLocation{.cluster = &cluster, .handle = handle});
             worldMatByClusterMat_[matKey] = worldMatIdx;
             SetMaterial(scene, worldNode, worldMatIdx);
@@ -1826,7 +1830,8 @@ void World::RebuildDerivedCaches(bool incremental) {
                     if (layerHandle.empty())
                         continue;
                     worldMatIdx = static_cast<uint32_t>(materialLocations.size());
-                    materialLocations.push_back(
+                    ++materialTopologyRevision;
+            materialLocations.push_back(
                         MaterialLocation{.cluster = cluster, .handle = layerHandle});
                     worldMatByClusterMat_[matKey] = worldMatIdx;
                 }
@@ -1851,7 +1856,8 @@ void World::RebuildDerivedCaches(bool incremental) {
                 defaultMaterialIndex = existing;
             } else {
                 defaultMaterialIndex = static_cast<uint32_t>(materialLocations.size());
-                materialLocations.push_back(MaterialLocation{.cluster = cl, .handle = *hit});
+                ++materialTopologyRevision;
+            materialLocations.push_back(MaterialLocation{.cluster = cl, .handle = *hit});
             }
         }
     }
@@ -2393,6 +2399,26 @@ const StaticMesh* World::GetMesh(uint32_t meshIndex) const {
     return loc.cluster->staticMeshes.get(loc.handle);
 }
 
+void World::MarkMaterialDirty(uint32_t materialIndex) {
+    if (materialIndex >= materialLocations.size())
+        return;
+    if (dirtyMaterialFlags_.size() < materialLocations.size())
+        dirtyMaterialFlags_.resize(materialLocations.size(), uint8_t(0));
+    if (!dirtyMaterialFlags_[materialIndex]) {
+        dirtyMaterialFlags_[materialIndex] = 1;
+        dirtyMaterialSlots_.push_back(materialIndex);
+    }
+}
+
+std::vector<uint32_t> World::TakeMaterialDirtySlots() {
+    std::vector<uint32_t> out;
+    out.swap(dirtyMaterialSlots_);
+    for (uint32_t index : out)
+        if (index < dirtyMaterialFlags_.size())
+            dirtyMaterialFlags_[index] = 0;
+    return out;
+}
+
 Material* World::GetMaterial(uint32_t materialIndex) {
     if (materialIndex >= materialLocations.size())
         return nullptr;
@@ -2401,7 +2427,9 @@ Material* World::GetMaterial(uint32_t materialIndex) {
     if (loc.cluster == nullptr || !loc.handle.valid())
         return nullptr;
 
-    return loc.cluster->materials.get(loc.handle);
+    Material* result = loc.cluster->materials.get(loc.handle);
+    if (result) MarkMaterialDirty(materialIndex);
+    return result;
 }
 
 const Material* World::GetMaterial(uint32_t materialIndex) const {

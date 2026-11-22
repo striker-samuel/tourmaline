@@ -1697,21 +1697,27 @@ add_test(NAME source_scene_tests COMMAND SourceSceneTests)
 add_executable(SmvkRawTableTests test_smvk_raw_table.cpp)
 target_include_directories(SmvkRawTableTests PRIVATE
     ${CMAKE_SOURCE_DIR}/engine/include
+    ${CMAKE_SOURCE_DIR}/core/include
     ${CMAKE_SOURCE_DIR}/external/glm)
+target_link_libraries(SmvkRawTableTests PRIVATE engine)
 add_test(NAME smvk_raw_table_tests COMMAND SmvkRawTableTests)
 
 # Experimental descriptor-storage table publisher: CPU-only byte mirrors.
 add_executable(SmvkDescriptorTableTests test_smvk_descriptor_table.cpp)
 target_include_directories(SmvkDescriptorTableTests PRIVATE
     ${CMAKE_SOURCE_DIR}/engine/include
+    ${CMAKE_SOURCE_DIR}/core/include
     ${CMAKE_SOURCE_DIR}/external/glm)
+target_link_libraries(SmvkDescriptorTableTests PRIVATE engine)
 add_test(NAME smvk_descriptor_table_tests COMMAND SmvkDescriptorTableTests)
 
 # Material world-slot indexed GPU table: all-flight dirty publication.
 add_executable(SmvkIndexedRawTableTests test_smvk_indexed_raw_table.cpp)
 target_include_directories(SmvkIndexedRawTableTests PRIVATE
     ${CMAKE_SOURCE_DIR}/engine/include
+    ${CMAKE_SOURCE_DIR}/core/include
     ${CMAKE_SOURCE_DIR}/external/glm)
+target_link_libraries(SmvkIndexedRawTableTests PRIVATE engine)
 add_test(NAME smvk_indexed_raw_table_tests COMMAND SmvkIndexedRawTableTests)
 
 # Backend-independent upload request sequence and batch ticket semantics.

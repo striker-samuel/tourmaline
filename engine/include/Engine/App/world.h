@@ -338,6 +338,20 @@ struct World {
     // Monotonic per-World owner registration identity; never use a
     // recycled WorldPage* address as the permanent GPU scene key.
     uint64_t gpuSceneTopologyRevision = 0;
+    // CPU material mutation journal. Mutable GetMaterial implies edit intent;
+    // direct long-lived pointers must call MarkMaterialDirty after each edit.
+    // Renderer drains once per update, independently of the GPU per-flight
+    // dirty journal. Editing on the render thread/at a frame boundary only.
+    void MarkMaterialDirty(uint32_t materialIndex);
+    [[nodiscard]] std::vector<uint32_t> TakeMaterialDirtySlots();
+    // URI registrations can change independently of world topology.
+    uint64_t materialTextureRegistryRevision = 1;
+    // Changes only when world material indices/locations are rebuilt,
+    // NOT when unrelated GPU-scene instances or userdata mutate.
+    uint64_t materialTopologyRevision = 1;
+    std::vector<uint32_t> dirtyMaterialSlots_;
+    std::vector<uint8_t> dirtyMaterialFlags_;
+
     uint64_t nextGpuScenePageId = 1;
     // Monotonic stable fold id source (WorldPage::pageOrdinal): the
     // incremental merge's stable discriminator, independent of the dense

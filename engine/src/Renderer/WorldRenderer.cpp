@@ -156,7 +156,7 @@ smvk::ShaderProgram& WorldRenderer::MainLitProgramFor(uint32_t materialId) {
     const bool layered = [&]() {
         if (!m_world)
             return true;
-        const smvk::Material* mat = m_world->GetMaterial(materialId);
+        const smvk::Material* mat = static_cast<const smvk::World&>(*m_world).GetMaterial(materialId);
         return mat ? (mat->values.layerMaterials.w > 1) : true;
     }();
     // ProjectLit family first (design §9: the SAME hook code on
@@ -1602,6 +1602,14 @@ bool WorldRenderer::onAttach() {
     m_materialRows.Reset();
     m_materialForceFull.fill(true);
     m_materialUploadTickets.fill({});
+    m_materialObservedWorld = nullptr;
+    m_materialObservedTopology = ~uint64_t(0);
+    m_materialObservedTextureEpoch = ~uint64_t(0);
+    m_materialObservedRegistryEpoch = ~uint64_t(0);
+    m_materialLogicalCount = 0;
+    m_materialCachedBindless.clear();
+    m_materialTexturedSlots.clear();
+    m_materialHasTextures.clear();
     m_resources.directionalCascadeBuffer = m_context->CreateBuffer(
         sizeof(smvk::GpuDirectionalLightDescription) * m_swapchain->framesInFlight() * viewSlabs,
         smvk::BufferType_Storage,
@@ -2696,7 +2704,7 @@ bool WorldRenderer::onAttach() {
         m_gfxRenderer.ConfigureMaterialLayered([this](uint32_t materialId) -> bool {
             if (!m_world)
                 return true;
-            const smvk::Material* mat = m_world->GetMaterial(materialId);
+            const smvk::Material* mat = static_cast<const smvk::World&>(*m_world).GetMaterial(materialId);
             return mat ? (mat->values.layerMaterials.w > 1) : true;
         });
         // PROJECT-LIT family: the same modules the direct family
@@ -2720,7 +2728,7 @@ bool WorldRenderer::onAttach() {
             [this](uint32_t materialId) -> engine::MaterialDepthState {
                 if (!m_world)
                     return {};
-                const smvk::Material* mat = m_world->GetMaterial(materialId);
+                const smvk::Material* mat = static_cast<const smvk::World&>(*m_world).GetMaterial(materialId);
                 if (!mat)
                     return {};
                 return {mat->pipeline.raster.cullMode,
@@ -5936,83 +5944,159 @@ WorldRenderer::FrameBindlessMap WorldRenderer::BuildPoolToBindlessMap() const {
 }
 
 void WorldRenderer::UpdateMaterials(uint32_t currentFrame) {
-    // Preserve world material slots: shaders index by world materialId,
-    // so a missing slot must stay a hole (default values), not shift
-    // every later material down by one.
-    const uint32_t slotCount = (uint32_t)m_world->materialLocations.size();
-    if (slotCount > engine::renderer::limits::MaxMaterials) {
-        std::cerr << "[WorldRenderer] Material slots (" << slotCount
-                  << ") exceed engine::renderer::limits::MaxMaterials ("
-                  << engine::renderer::limits::MaxMaterials
-                  << ") - clamping upload, trailing materials will use defaults\n";
-    }
+    // Stable external slot == MaterialsBuffer.mats[worldMaterialId].
+    // Reconciliation is O(dirty mutable access) on normal frames. The
+    // world topology, RHI descriptor epoch and URI registry revision
+    // independently invalidate this cache.
+    if (!m_world || currentFrame >= smvk::limits::MaxFramesInFlight)
+        return;
+    const uint32_t slotCount = static_cast<uint32_t>(m_world->materialLocations.size());
     const uint32_t uploadCount = std::min(slotCount, engine::renderer::limits::MaxMaterials);
-    // POOL -> BINDLESS remap (the engine twin of the editor's own
-    // material upload fix): MaterialValues.textures store RHI texture
-    // POOL indices, but the shaders index the bindless descriptor array.
-    // The identity only holds while nothing else churns the bindless
-    // pool (see BuildPoolToBindlessMap). A MISS means the pool index
-    // points at no live texture (stale material reference into a
-    // destroyed texture): upload it raw, matching the editor's
-    // diagnostic behavior - the freed-slot null-write in impl.cpp's
-    // destroy(BindlessImageHandle) makes that a safe black sample
-    // instead of the old dangling-descriptor device death.
-    const FrameBindlessMap bindlessByPool = BuildPoolToBindlessMap();
-    auto remapSlot = [&](int poolIdx) -> int {
+    const bool switchedWorld = m_materialObservedWorld != m_world;
+    const bool topologyDirty =
+        switchedWorld ||
+        m_materialObservedTopology != m_world->materialTopologyRevision ||
+        m_materialLogicalCount != uploadCount;
+    const uint64_t textureEpoch = m_context->TextureBindingRevision();
+    const bool bindingDirty =
+        topologyDirty ||
+        textureEpoch != m_materialObservedTextureEpoch ||
+        m_world->materialTextureRegistryRevision != m_materialObservedRegistryEpoch;
+    const bool overrideDirty =
+        topologyDirty ||
+        m_materialObservedOverride != m_debugMaterialOverride ||
+        m_materialObservedMetallic != m_debugMaterialMetallic ||
+        m_materialObservedRoughness != m_debugMaterialRoughness;
+
+    // Drain even after a topology invalidation: no stale indices can
+    // survive into a later frame following world-slot remapping.
+    const std::vector<uint32_t> dirtySlots = m_world->TakeMaterialDirtySlots();
+
+    if (slotCount > engine::renderer::limits::MaxMaterials && topologyDirty) {
+        std::fprintf(stderr,
+                     "[WorldRenderer] Material slots (%u) exceed MaxMaterials (%u); clamping\\n",
+                     slotCount, engine::renderer::limits::MaxMaterials);
+    }
+    if (switchedWorld) {
+        m_materialRows.Reset();
+        m_materialForceFull.fill(true);
+        m_materialCachedBindless.clear();
+        m_materialTexturedSlots.clear();
+        m_materialHasTextures.clear();
+    }
+    if (bindingDirty) {
+        // Avoid per-frame map rebuilding; texture creation/destruction,
+        // streaming retarget and URI registration invalidate the cache.
+        const FrameBindlessMap fresh = BuildPoolToBindlessMap();
+        m_materialCachedBindless.clear();
+        m_materialCachedBindless.insert(fresh.begin(), fresh.end());
+    }
+
+    const auto remapSlot = [&](int poolIdx) -> int {
         if (poolIdx < 0)
             return -1;
-        const auto hit = bindlessByPool.find(static_cast<uint32_t>(poolIdx));
-        if (hit == bindlessByPool.end()) {
-            static uint64_t s_matSlotMissTick = 0;
-            if (s_matSlotMissTick++ < 16)
-                std::fprintf(stderr,
-                             "[MATSLOT] engine remap MISS: poolIdx=%d not live (map=%zu) - raw "
-                             "upload (null-sample)\n",
-                             poolIdx,
-                             bindlessByPool.size());
+        const auto hit = m_materialCachedBindless.find(static_cast<uint32_t>(poolIdx));
+        if (hit == m_materialCachedBindless.end()) {
+            // Preserve the pre-migration contract on stale texture refs.
+            // Destroyed descriptors are null-written by the RHI.
             return poolIdx;
         }
         return static_cast<int>(hit->second);
     };
-    // Upload scratch is valid only until the next frame-arena reset.
-    auto* mats = static_cast<smvk::MaterialValues*>(smvk::FrameArena().Allocate(
-        size_t(std::max(1u, uploadCount)) * sizeof(smvk::MaterialValues),
-        alignof(smvk::MaterialValues)));
-    std::uninitialized_value_construct_n(mats, uploadCount);
-    for (uint32_t i = 0; i < uploadCount; ++i) {
-        if (auto* mat = m_world->GetMaterial(i)) {
-            mats[i] = mat->values;
-            mats[i].textures.x = remapSlot(mat->values.textures.x);
-            mats[i].textures.y = remapSlot(mat->values.textures.y);
-            mats[i].textures.z = remapSlot(mat->values.textures.z);
-            mats[i].textures.w = remapSlot(mat->values.textures.w);
-            mats[i].textures2.x = remapSlot(mat->values.textures2.x);
-            // Debug material override (the SSR blur-bucket test rig,
-            // see the SSR UI panel): overwrite metallic/roughness for
-            // EVERY material — params.y/z — and disable the
-            // metallicRoughness texture slot so the slider IS the
-            // final value (the glTF factor x texel convention would
-            // otherwise keep the baked texels in charge). The lit
-            // path, the thin G-buffer (receiver classification) and
-            // the SSR blur radius buckets all read this one table,
-            // so the whole scene re-skins from two sliders.
+    const auto sourceMaterial = [&](uint32_t i) -> const smvk::Material* {
+        // Never use the mutable accessor while the renderer is merely
+        // reading: that would spuriously mark every row dirty.
+        return static_cast<const smvk::World&>(*m_world).GetMaterial(i);
+    };
+    const auto resolve = [&](uint32_t i) -> smvk::MaterialValues {
+        smvk::MaterialValues row{};
+        if (const smvk::Material* mat = sourceMaterial(i)) {
+            row = mat->values;
+            row.textures.x = remapSlot(row.textures.x);
+            row.textures.y = remapSlot(row.textures.y);
+            row.textures.z = remapSlot(row.textures.z);
+            row.textures.w = remapSlot(row.textures.w);
+            row.textures2.x = remapSlot(row.textures2.x);
             if (m_debugMaterialOverride) {
-                mats[i].params.y = std::clamp(m_debugMaterialMetallic, 0.0f, 1.0f);
-                mats[i].params.z = std::clamp(m_debugMaterialRoughness, 0.0f, 1.0f);
-                mats[i].textures.y = -1;
+                row.params.y = std::clamp(m_debugMaterialMetallic, 0.0f, 1.0f);
+                row.params.z = std::clamp(m_debugMaterialRoughness, 0.0f, 1.0f);
+                row.textures.y = -1;
+            }
+        }
+        return row;
+    };
+    const auto recordTextureUsage = [&](uint32_t index) {
+        if (m_materialHasTextures.size() <= index)
+            m_materialHasTextures.resize(size_t(index) + 1, uint8_t(0));
+        bool hasTexture = false;
+        if (const auto* mat = sourceMaterial(index)) {
+            const auto& v = mat->values;
+            hasTexture = v.textures.x >= 0 || v.textures.y >= 0 ||
+                         v.textures.z >= 0 || v.textures.w >= 0 ||
+                         v.textures2.x >= 0;
+        }
+        if (hasTexture && !m_materialHasTextures[index])
+            m_materialTexturedSlots.push_back(index);
+        m_materialHasTextures[index] = hasTexture ? 1 : 0;
+    };
+
+    bool synced = true;
+    if (topologyDirty) {
+        // One full reconciliation when a world's index layout changes,
+        // including shader-visible holes and removed tail tombstones.
+        if (!m_materialRows.EnsureSize(uploadCount))
+            synced = false;
+        if (synced) {
+            m_materialTexturedSlots.clear();
+            m_materialHasTextures.assign(uploadCount, uint8_t(0));
+            for (uint32_t i = 0; i < uploadCount; ++i) {
+                if (!m_materialRows.Set(i, resolve(i))) {
+                    synced = false;
+                    break;
+                }
+                recordTextureUsage(i);
+            }
+        }
+        if (synced && !m_materialRows.ClearTail(uploadCount))
+            synced = false;
+    } else if (overrideDirty) {
+        // A debug slider intentionally changes *all* materials.
+        for (uint32_t i = 0; i < uploadCount; ++i)
+            if (!m_materialRows.Set(i, resolve(i))) { synced = false; break; }
+    } else {
+        // Material edit access marks only the touched world slots.
+        for (uint32_t i : dirtySlots) {
+            if (i >= uploadCount) continue;
+            if (!m_materialRows.Set(i, resolve(i))) { synced = false; break; }
+            recordTextureUsage(i);
+        }
+        if (synced && bindingDirty) {
+            // Descriptor churn only requires re-resolving materials
+            // referencing textures, not every material in the scene.
+            for (uint32_t i : m_materialTexturedSlots) {
+                if (i >= uploadCount || !m_materialHasTextures[i])
+                    continue;
+                if (!m_materialRows.Set(i, resolve(i))) { synced = false; break; }
             }
         }
     }
-
-    // Reconcile world-indexed material rows into the smvk raw GPU table.
-    // Diff after all world texture remaps and debug overrides, so texture
-    // descriptor churn and material edits are visible without a new signal.
-    // Missing/shrunk world slots become MaterialValues{} rather than shifting
-    // any shader-visible materialId.
-    if (!m_materialRows.Sync(std::span<const smvk::MaterialValues>(mats, uploadCount))) {
-        std::fprintf(stderr, "[WorldRenderer] GPU material table sync failed\\n");
+    if (!synced) {
+        // Retain correctness after partial CPU sync, without a per-frame
+        // scan: the next attempt is an explicit full reconciliation.
+        m_materialObservedTopology = ~uint64_t(0);
+        std::fprintf(stderr, "[WorldRenderer] GPU material table synchronization failed\\n");
         return;
     }
+
+    m_materialObservedWorld = m_world;
+    m_materialObservedTopology = m_world->materialTopologyRevision;
+    m_materialObservedTextureEpoch = textureEpoch;
+    m_materialObservedRegistryEpoch = m_world->materialTextureRegistryRevision;
+    m_materialObservedOverride = m_debugMaterialOverride;
+    m_materialObservedMetallic = m_debugMaterialMetallic;
+    m_materialObservedRoughness = m_debugMaterialRoughness;
+    m_materialLogicalCount = uploadCount;
+
     constexpr size_t MATERIAL_FRAME_STRIDE =
         sizeof(smvk::MaterialValues) * engine::renderer::limits::MaxMaterials;
     const size_t frameOffset = size_t(currentFrame) * MATERIAL_FRAME_STRIDE;
@@ -6106,7 +6190,7 @@ void WorldRenderer::UpdateTextureStreaming(const FrameUniforms& frameData,
             smvk::IteratorFlagBit_Renderable, [&](const smvk::World::RenderItem& item) {
                 if (item.material == smvk::World::kInvalidIndex)
                     return;
-                const smvk::Material* mat = m_world->GetMaterial(item.material);
+                const smvk::Material* mat = static_cast<const smvk::World&>(*m_world).GetMaterial(item.material);
                 if (!mat)
                     return;
                 const glm::mat4& model = m_world->scene.globalTransform[item.node];
@@ -9045,7 +9129,7 @@ void WorldRenderer::RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
             return;
         if (maskedPhase) {
             smvk::CullMode cull = smvk::CullMode::None;
-            if (const smvk::Material* mat = m_world->GetMaterial(item.material))
+            if (const smvk::Material* mat = static_cast<const smvk::World&>(*m_world).GetMaterial(item.material))
                 cull = mat->pipeline.raster.cullMode;
             ensureShadowMaskedPipeline(cull);
         }
@@ -10623,7 +10707,7 @@ void WorldRenderer::RefreshGpuScenePhysicalIndexedRanges(bool nativeOnly) {
     m_gpuScenePhysicalLodIds.clear();
     m_gpuSceneTaskGeometryIdsCompatible = !nativeOnly;
     m_gpuScenePhysicalWorld = m_world;
-    m_gpuScenePhysicalTopologyRevision = m_world ? m_world->gpuSceneTopologyRevision : ~uint64_t(0);
+    m_gpuScenePhysicalTopologyRevision = m_world ? m_world->materialTopologyRevision : ~uint64_t(0);
     if (!m_world)
         return;
     m_gpuScenePhysicalLodIds.resize(m_world->lodChains.size());
@@ -11453,7 +11537,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow,
             [&](const smvk::World::RenderItem& item) {
                 const smvk::Material* mat = item.material != smvk::World::kInvalidIndex
-                                                ? m_world->GetMaterial(item.material)
+                                                ? static_cast<const smvk::World&>(*m_world).GetMaterial(item.material)
                                                 : nullptr;
                 const bool masked = mat && mat->alphaMode == smvk::AlphaMode::Mask;
                 // A masked material without OMM support MUST NOT be
@@ -11845,7 +11929,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // then flight-safe GPU table publication. Draws still use GfxFilter.
     if (m_world) {
         if (m_gpuScenePhysicalWorld != m_world ||
-            m_gpuScenePhysicalTopologyRevision != m_world->gpuSceneTopologyRevision) {
+            m_gpuScenePhysicalTopologyRevision != m_world->materialTopologyRevision) {
             // World topology can mutate independently of LOD streaming:
             // GPU-scene must not reuse a Gfx mesh ID from an obsolete map.
             // Rebuild physical ranges using native-only transient IDs and
@@ -11902,10 +11986,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     m_gpuSceneRasterOwnership.BeginFrame();
     if (m_gpuSceneRasterEnabled && m_world && m_gpuSceneDatabaseReady) {
         if (m_gpuSceneRasterEligibilityWorld != m_world ||
-            m_gpuSceneRasterEligibilityTopologyRevision != m_world->gpuSceneTopologyRevision ||
+            m_gpuSceneRasterEligibilityTopologyRevision != m_world->materialTopologyRevision ||
             m_gpuSceneRasterEligibilityGeometryRevision != m_gpuSceneGeometryRevision) {
             m_gpuSceneRasterEligibilityWorld = m_world;
-            m_gpuSceneRasterEligibilityTopologyRevision = m_world->gpuSceneTopologyRevision;
+            m_gpuSceneRasterEligibilityTopologyRevision = m_world->materialTopologyRevision;
             m_gpuSceneRasterEligibilityGeometryRevision = m_gpuSceneGeometryRevision;
             const size_t total = m_world->drawItems.size();
             if (total > m_gpuSceneRasterEntryCapacity) {
@@ -11980,7 +12064,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 // base material ID; layers 1..3 resolve from MaterialValues.
                 // Only opaque layering shares the existing depth/G-buffer
                 // contract. Cutout/BLEND layering requires coverage parity.
-                const smvk::Material* itemMaterial = m_world->GetMaterial(item.material);
+                const smvk::Material* itemMaterial = static_cast<const smvk::World&>(*m_world).GetMaterial(item.material);
                 const bool materialRasterEligible =
                     itemMaterial && tour::gpu_scene::OpaqueLayeredRasterEligible(*itemMaterial);
                 // ProjectLit admission: the family rides the SAME indexed
@@ -13124,7 +13208,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                         fb.frameIndex,
                                         inputs.clusterCount,
                                         uint64_t(m_gpuSceneGeometryRevision) ^
-                                            (uint64_t(m_world->gpuSceneTopologyRevision) << 1u),
+                                            (uint64_t(m_world->materialTopologyRevision) << 1u),
                                         temporalTaskPlan)) {
                                     temporalTaskPrepared = true;
                                     inputs.historyPrevious = temporalTaskPlan.previous;
@@ -13274,7 +13358,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     const bool changed =
                         m_gpuSceneRasterOwnerMaskWorld[flight] != m_world ||
                         m_gpuSceneRasterOwnerMaskTopologyRev[flight] !=
-                            m_world->gpuSceneTopologyRevision ||
+                            m_world->materialTopologyRevision ||
                         m_gpuSceneRasterOwnerMaskGeometryRev[flight] !=
                             m_gpuSceneGeometryRevision ||
                         m_gpuSceneRasterOwnerMaskBuffers[flight].empty() ||
@@ -13330,7 +13414,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                                               smvk::AccessFlags::ShaderRead);
                                 m_gpuSceneRasterOwnerMaskWorld[flight] = m_world;
                                 m_gpuSceneRasterOwnerMaskTopologyRev[flight] =
-                                    m_world->gpuSceneTopologyRevision;
+                                    m_world->materialTopologyRevision;
                                 m_gpuSceneRasterOwnerMaskGeometryRev[flight] =
                                     m_gpuSceneGeometryRevision;
                             }
@@ -14794,7 +14878,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         gpuHistoryValid =
             previousFlight < smvk::limits::MaxFramesInFlight &&
             m_gpuSceneRasterHistoryWorld == m_world &&
-            m_gpuSceneRasterHistoryTopologyRevision == m_world->gpuSceneTopologyRevision &&
+            m_gpuSceneRasterHistoryTopologyRevision == m_world->materialTopologyRevision &&
             m_gpuSceneRasterHistoryGeometryRevision == m_gpuSceneGeometryRevision &&
             m_gpuSceneRasterHistoryWidth == renderExtent.width &&
             m_gpuSceneRasterHistoryHeight == renderExtent.height;
@@ -15028,7 +15112,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         if (layerIds[i] < 0)
                             continue;
                         const smvk::Material* layer =
-                            m_world->GetMaterial(static_cast<uint32_t>(layerIds[i]));
+                            static_cast<const smvk::World&>(*m_world).GetMaterial(static_cast<uint32_t>(layerIds[i]));
                         if (!layer)
                             continue;
                         const uint32_t lref = smvk::stencil::ReceiverRef(layer->values);
@@ -15050,7 +15134,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             std::fprintf(stderr,
                          "[MaterialCensus] id | metal rough shade mrTex | layers | class\n");
             for (uint32_t i = 0; i < m_world->materialLocations.size(); ++i) {
-                const smvk::Material* mat = m_world->GetMaterial(i);
+                const smvk::Material* mat = static_cast<const smvk::World&>(*m_world).GetMaterial(i);
                 const char* cls = classify(mat);
                 if (!mat) {
                     std::fprintf(stderr, "[MaterialCensus] %4u | <null> | - | -\n", i);
@@ -15421,7 +15505,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             });
             m_gpuSceneRasterLastHistoryFlight = temporalFlight;
             m_gpuSceneRasterHistoryWorld = m_world;
-            m_gpuSceneRasterHistoryTopologyRevision = m_world->gpuSceneTopologyRevision;
+            m_gpuSceneRasterHistoryTopologyRevision = m_world->materialTopologyRevision;
             m_gpuSceneRasterHistoryGeometryRevision = m_gpuSceneGeometryRevision;
             m_gpuSceneRasterHistoryWidth = renderExtent.width;
             m_gpuSceneRasterHistoryHeight = renderExtent.height;
@@ -16025,7 +16109,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     return;
                 if (maskedPhase) {
                     smvk::CullMode cull = smvk::CullMode::None;
-                    if (const smvk::Material* mat = m_world->GetMaterial(item.material))
+                    if (const smvk::Material* mat = static_cast<const smvk::World&>(*m_world).GetMaterial(item.material))
                         cull = mat->pipeline.raster.cullMode;
                     ensureMotionMaskedPipeline(cull);
                 } else {
@@ -16034,7 +16118,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     // backfaces would carry zero motion and ghost under
                     // the T2x resolve).
                     smvk::CullMode cull = smvk::CullMode::Back;
-                    if (const smvk::Material* mat = m_world->GetMaterial(item.material))
+                    if (const smvk::Material* mat = static_cast<const smvk::World&>(*m_world).GetMaterial(item.material))
                         cull = mat->pipeline.raster.cullMode;
                     ensureMotionSolidPipeline(cull);
                 }
@@ -16849,7 +16933,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             smvk::BlendSettings blend = smvk::BlendSettings::Opaque();
             smvk::RasterSettings raster{};
             bool maskedCutout = false;
-            if (smvk::Material* mat = m_world->GetMaterial(materialId)) {
+            if (smvk::Material* mat = static_cast<const smvk::World&>(*m_world).GetMaterial(materialId)) {
                 blend = mat->pipeline.blend;
                 raster = mat->pipeline.raster;
                 maskedCutout = mat->shadingModel == smvk::ShadingModel::Masked;
@@ -17851,7 +17935,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                             // Opaque state: the FS discard does the work.
                             smvk::BlendSettings opaqueBlend = smvk::BlendSettings::Opaque();
                             smvk::RasterSettings raster{};
-                            if (smvk::Material* mat = m_world->GetMaterial(d.materialId)) {
+                            if (smvk::Material* mat = static_cast<const smvk::World&>(*m_world).GetMaterial(d.materialId)) {
                                 raster = mat->pipeline.raster;
                             }
                             cmd.BindRenderPipeline(wireTwinOf(m_resources.vertexLitProgram),
@@ -17896,7 +17980,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         if (ditheredTransp) {
                             smvk::BlendSettings opaqueBlend = smvk::BlendSettings::Opaque();
                             smvk::RasterSettings raster{};
-                            if (smvk::Material* mat = m_world->GetMaterial(d.materialId)) {
+                            if (smvk::Material* mat = static_cast<const smvk::World&>(*m_world).GetMaterial(d.materialId)) {
                                 raster = mat->pipeline.raster;
                             }
                             cmd.BindRenderPipeline(wireTwinOf(farSpecTrans->main),
@@ -17943,7 +18027,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         // from material.pipeline); depth follows opaque.
                         smvk::BlendSettings opaqueBlend = smvk::BlendSettings::Opaque();
                         smvk::RasterSettings raster{};
-                        if (smvk::Material* mat = m_world->GetMaterial(d.materialId)) {
+                        if (smvk::Material* mat = static_cast<const smvk::World&>(*m_world).GetMaterial(d.materialId)) {
                             raster = mat->pipeline.raster;
                         }
                         cmd.BindRenderPipeline(wireTwinOf(*prog),

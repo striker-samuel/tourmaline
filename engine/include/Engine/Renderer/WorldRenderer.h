@@ -3196,6 +3196,17 @@ class WorldRenderer : public IRenderer {
     // smvk owns the per-flight dirty journal; the existing RHI buffer owns
     // physical storage and retains its BDA and fixed MaxMaterials stride.
     tour::gpu_records::Materials m_materialRows;
+    const smvk::World* m_materialObservedWorld = nullptr;
+    uint64_t m_materialObservedTopology = ~uint64_t(0);
+    uint64_t m_materialObservedTextureEpoch = ~uint64_t(0);
+    uint64_t m_materialObservedRegistryEpoch = ~uint64_t(0);
+    bool m_materialObservedOverride = false;
+    float m_materialObservedMetallic = 0.0f;
+    float m_materialObservedRoughness = 0.5f;
+    uint32_t m_materialLogicalCount = 0;
+    std::unordered_map<uint32_t, uint32_t> m_materialCachedBindless;
+    std::vector<uint32_t> m_materialTexturedSlots;
+    std::vector<uint8_t> m_materialHasTextures;
     std::array<bool, smvk::limits::MaxFramesInFlight> m_materialForceFull{};
     // Latest ticket per flight covers earlier uploads on the same ordered
     // queue timeline; one status query per fenced flight reuse.
