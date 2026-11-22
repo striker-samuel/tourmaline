@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <map>
 #include <set>
@@ -66,6 +67,46 @@ struct BakedProtoGeometry {
     uint32_t firstIndex = 0;
     int32_t vertexOffset = 0;
 };
+
+// A resolved surface view: the fields the cook/load resolution reads from a
+// static mesh's surface (indexed range) + the mesh bounds. Decouples the
+// resolution from the concrete StaticMesh type so it stays headless-testable.
+struct BakedSurfaceRef {
+    uint32_t indexCount = 0;
+    uint32_t firstIndex = 0;
+    int32_t vertexOffset = 0;
+    glm::vec3 boundsMin{0.0f};
+    glm::vec3 boundsMax{0.0f};
+};
+
+// Resolves the asset's render prototypes to GPU geometry via a mesh-registry
+// callback: resolve(meshId, surfaceIndex, out) fills the indexed range + bounds
+// for one (mesh, surface); returning false for an out-of-range mesh/surface
+// refuses the WHOLE asset (never a silent mis-reference). The output is keyed
+// by the asset's GLOBAL renderPrototypeId, so the tile-local palettes built by
+// BucketBakedPlacement resolve through it directly.
+[[nodiscard]] inline bool ResolveBakedPrototypes(
+    const BakedPlacementAsset& asset,
+    const std::function<bool(uint32_t meshId, uint32_t surfaceIndex, BakedSurfaceRef& out)>&
+        resolve,
+    std::vector<BakedProtoGeometry>& out) {
+    out.clear();
+    out.resize(asset.renderPrototypes.size());
+    for (size_t i = 0; i < asset.renderPrototypes.size(); ++i) {
+        const BakedRenderPrototype& rp = asset.renderPrototypes[i];
+        BakedSurfaceRef ref;
+        if (!resolve(rp.meshId, rp.surfaceIndex, ref))
+            return false;
+        BakedProtoGeometry& g = out[i];
+        g.boundsMin = ref.boundsMin;
+        g.boundsMax = ref.boundsMax;
+        g.drawDistance = 0.0f;
+        g.indexCount = ref.indexCount;
+        g.firstIndex = ref.firstIndex;
+        g.vertexOffset = ref.vertexOffset;
+    }
+    return true;
+}
 
 // Buckets a flat baked asset into world-XZ tiles with local proto palettes.
 // Returns tiles sorted by key (x then z). Points whose renderPrototypeId is
@@ -508,5 +549,7 @@ namespace smvk::placement {
 using ::tour::placement::BakedPlacementRuntime;
 using ::tour::placement::BakedPlacementTile;
 using ::tour::placement::BakedProtoGeometry;
+using ::tour::placement::BakedSurfaceRef;
 using ::tour::placement::BucketBakedPlacement;
+using ::tour::placement::ResolveBakedPrototypes;
 } // namespace smvk::placement

@@ -72,6 +72,7 @@
 
 #include <Engine/App/scene_page_streamer.h> // ScenePageStreamer (WorldPartition scene provider)
 #include <Engine/App/world_snapshot.h>
+#include <Engine/Placement/baked_placement_runtime.h>
 #include <Engine/Profile/profile.h>
 #include <Engine/Renderer/WorldRenderer.h>
 #include <Engine/Rendergraph/placement_pass.h>
@@ -3087,6 +3088,8 @@ void WorldRenderer::onDetach() {
     m_host.WaitForDeviceIdle();
     if (m_gpuPlacementRuntime && m_gpuPlacementRuntime->Valid())
         m_gpuPlacementRuntime->Destroy(*m_rendergraph);
+    if (m_bakedPlacementRuntime && m_bakedPlacementRuntime->Valid())
+        m_bakedPlacementRuntime->Destroy(*m_rendergraph);
     if (m_gpuPlacementDraw) {
         m_gpuPlacementDraw->Destroy();
         delete m_gpuPlacementDraw;
@@ -3098,6 +3101,7 @@ void WorldRenderer::onDetach() {
         m_rendergraph->FreeBuffer(m_gpuPlacementViewLogical);
     m_gpuPlacementViewLogical = {};
     m_gpuPlacementReady = false;
+    m_bakedPlacementReady = false;
     // World fields: drain every in-flight async generation and
     // detach the work pool BEFORE it dies (member destruction order
     // would otherwise leave the system pointing at a dead pool).
@@ -14597,6 +14601,49 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         }
     }
 
+    // Baked placement (the authored PointInstancer cloud): static — upload the
+    // camera-neighbour tiles + drive the per-tile PR03 chain. No terrain deps,
+    // no regeneration, no separate commit callback (BeginFrame + RecordCullChain
+    // share this frame's recording; the uploads land at this frame's flush and
+    // the cull reads them through the graph's buffer hints).
+    m_bakedPlacementReady = false;
+    if (m_bakedPlacementRuntime && mainRenderView != smvk::RenderViewSet::kInvalidIndex) {
+        tour::placement::BakedPlacementRuntime* brt = m_bakedPlacementRuntime;
+        // The baked path shares the placement instanced VS/FS (the draw program
+        // is created on demand here too, so a baked-only host needs no
+        // procedural runtime).
+        if (!m_gpuPlacementDraw)
+            m_gpuPlacementDraw = new tour::placement::PlacementDrawPrograms();
+        if (m_gpuPlacementDraw->Ensure(*m_context)) {
+            if (!brt->Valid()) {
+                if (brt->viewBudget < m_swapchain->framesInFlight())
+                    brt->viewBudget = m_swapchain->framesInFlight();
+                brt->Create(*m_context, *m_rendergraph);
+            }
+            if (brt->Valid()) {
+                const glm::vec3 cam = m_cameraPositioner.cameraPosition_;
+                const float r = m_bakedPlacementRadius;
+                const glm::vec4 rect(cam.x - r, cam.z - r, cam.x + r, cam.z + r);
+                brt->BeginFrame(*m_context, *m_rendergraph, &rect, 1);
+                if (m_gpuPlacementViewLogical.empty())
+                    m_gpuPlacementViewLogical = m_rendergraph->AddExternalBuffer(
+                        m_renderViews.Buffer(), "BakedPlacementRenderViews");
+                if (!m_gpuPlacementViewLogical.empty()) {
+                    brt->RecordCullChain(*m_context,
+                                         *m_rendergraph,
+                                         fb.frameIndex,
+                                         m_gpuPlacementViewLogical,
+                                         renderViewsAddress,
+                                         mainRenderView,
+                                         cam,
+                                         tour::placement::kPlacementCullFrustum |
+                                             tour::placement::kPlacementCullDistance);
+                    m_bakedPlacementReady = true;
+                }
+            }
+        }
+    }
+
     // Mesh-particle visibility: the same frustum slab and prototype
     // indexed geometry as GPU placement, with independent GPU bins.
     if (meshSimulationRun && mainRenderView != smvk::RenderViewSet::kInvalidIndex) {
@@ -17323,6 +17370,24 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             mainPass.AddBufferHint(vs->indirectL, indirectRead);
         }
     }
+    if (m_bakedPlacementReady && m_bakedPlacementRuntime) {
+        smvk::BufferSyncRequest vertRead{};
+        vertRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+        vertRead.barrierMasks.stageMask = smvk::PipelineStageBit_Vertex;
+        smvk::BufferSyncRequest indirectRead{};
+        indirectRead.barrierMasks.accessMask = smvk::AccessFlags::IndirectCommandRead;
+        indirectRead.barrierMasks.stageMask = smvk::PipelineStageBit_DrawIndirect;
+        mainPass.AddBufferHint(m_gpuPlacementViewLogical, vertRead);
+        const auto& brt = *m_bakedPlacementRuntime;
+        for (size_t s = 0; s < brt.active.size(); ++s) {
+            const auto* vs = brt.VisSet(int32_t(s), fb.frameIndex);
+            if (!vs)
+                continue;
+            mainPass.AddBufferHint(brt.pass.instanceLogicals[s], vertRead);
+            mainPass.AddBufferHint(vs->visibleL, vertRead);
+            mainPass.AddBufferHint(vs->indirectL, indirectRead);
+        }
+    }
     if (m_meshParticlesReady) {
         smvk::BufferSyncRequest vertexRead{};
         vertexRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
@@ -17723,6 +17788,46 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                   &tail,
                                   smvk::ShaderStage::All);
                 for (uint32_t proto = 0; proto < m_gpuPlacementSeedCount; ++proto)
+                    cmd.DrawIndexedIndirect(vs->IndirectBuffer(),
+                                            uint64_t(proto) *
+                                                tour::placement::kPlacementIndirectStride,
+                                            1,
+                                            tour::placement::kPlacementIndirectStride);
+            }
+        }
+
+        // Baked placement (the authored PointInstancer cloud): the same VS/FS
+        // + static heap as the procedural path, but per-tile LOCAL proto counts
+        // (the tile's palette, not the global prototype count).
+        if (m_bakedPlacementReady && m_bakedPlacementRuntime && m_gpuPlacementDraw) {
+            auto& brt = *m_bakedPlacementRuntime;
+            cmd.BindStaticVertexFmt();
+            cmd.BindRenderPipeline(m_gpuPlacementDraw->program,
+                                   ::tour::vertex_layouts::Static,
+                                   opaqueDepth,
+                                   noStencil,
+                                   smvk::BlendSettings::Opaque(),
+                                   msaaSettings,
+                                   smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+            cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &pc, smvk::ShaderStage::All);
+            for (size_t s = 0; s < brt.active.size(); ++s) {
+                const auto* vs = brt.VisSet(int32_t(s), placementFlight);
+                if (!vs)
+                    continue;
+                const uint32_t protoCount = brt.TileProtoCount(int32_t(s));
+                if (protoCount == 0)
+                    continue;
+                const tour::placement::PlacementVsPush tail{
+                    vs->VisibleAddress(*m_context),
+                    brt.pass.TileInstancesAddress(*m_context, uint32_t(s)),
+                    renderViewsAddress,
+                    mainRenderView,
+                    0u};
+                cmd.PushConstants(tour::placement::kPlacementVsPushOffset,
+                                  sizeof(tail),
+                                  &tail,
+                                  smvk::ShaderStage::All);
+                for (uint32_t proto = 0; proto < protoCount; ++proto)
                     cmd.DrawIndexedIndirect(vs->IndirectBuffer(),
                                             uint64_t(proto) *
                                                 tour::placement::kPlacementIndirectStride,
