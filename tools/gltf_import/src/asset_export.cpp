@@ -37,6 +37,7 @@
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/tour.h>
 #include <Engine/Asset/touranim.h>
+#include <Engine/Placement/baked_placement.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Utils/ktx_error_texture.h> // EnsureClusterErrorTexture mint
 #include <Engine/Utils/texture_loader.h>
@@ -2160,6 +2161,26 @@ bool ImportMeshSource(const std::filesystem::path& gltfPath,
     std::vector<std::string> extraDeps;
     if (!LoadModelFromSourceFile(model, gltfPath.string().c_str(), &extraDeps))
         return giveUp("source parse failed: " + gltfPath.generic_string());
+    // Persist the baked placement cloud (the USD PointInstancer expansion)
+    // beside the source: the cook step consumes it to resolve the render
+    // prototypes + bucket the tiles. Non-USD sources leave it absent
+    // (LastImportedBakedPlacement returns null). Leading `::tour` — inside
+    // smvk::assets the bare `tour` is the `::tour::asset` alias (tour.h).
+    if (const ::tour::placement::BakedPlacementAsset* baked = LastImportedBakedPlacement()) {
+        std::vector<uint8_t> blob;
+        if (!::tour::placement::SerializeBakedPlacement(*baked, blob))
+            return giveUp("baked placement serialization failed");
+        std::string werr;
+        if (!WriteFileBytes(gltfPath.string() + ".baked_placement", blob, werr))
+            return giveUp(werr);
+        std::fprintf(stderr,
+                     "[import] baked placement: %zu points, %zu render prototypes -> "
+                     "%s.baked_placement\n",
+                     baked->points.size(),
+                     baked->renderPrototypes.size(),
+                     gltfPath.stem().string().c_str());
+        std::fflush(stderr);
+    }
     smvk::source::Scene scene;
     std::string conversionError;
     if (!DecodeGltfSourceScene(model, scene, &conversionError))
