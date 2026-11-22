@@ -4254,7 +4254,7 @@ void smvk::UploadStreamer::submitState(ThreadUploadState& ust, bool waitOldestIf
         if (ust.curCmd != VK_NULL_HANDLE) {
             auto tp = submitTransfer(ust.curHandle);
             if (tp.valid())
-                ust.ticketSequence.Submitted(ust.ticketSequence.issued.load(std::memory_order_relaxed), tp.value);
+                ust.ticketSequence.Submitted(ust.ticketRecordedThrough, tp.value);
             else
                 ust.ticketSequence.Failed(1);
             recordSubmittedRange(ust);
@@ -4272,7 +4272,7 @@ void smvk::UploadStreamer::submitState(ThreadUploadState& ust, bool waitOldestIf
     }
     auto tp = submitTransfer(ust.curHandle);
     if (tp.valid())
-        ust.ticketSequence.Submitted(ust.ticketSequence.issued.load(std::memory_order_relaxed), tp.value);
+        ust.ticketSequence.Submitted(ust.ticketRecordedThrough, tp.value);
     else
         ust.ticketSequence.Failed(1);
     recordSubmittedRange(ust);
@@ -4514,6 +4514,8 @@ bool smvk::UploadStreamer::uploadBuffer(BufferHandle dst,
             st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess));
         st.masks.accessMask = FromVkAccess(dstAccess);
         m_rm->SetBufferSyncState(dst, st);
+        ust.ticketRecordedThrough =
+            ust.ticketSequence.issued.load(std::memory_order_relaxed);
         ust.stagedBytesSinceFlush += size;
         if (ust.stagedBytesSinceFlush >= flushThreshold_) {
             submitState(ust, false);
@@ -4579,6 +4581,8 @@ bool smvk::UploadStreamer::uploadBuffer(BufferHandle dst,
         st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess));
     st.masks.accessMask = FromVkAccess(dstAccess);
     m_rm->SetBufferSyncState(dst, st);
+    ust.ticketRecordedThrough =
+        ust.ticketSequence.issued.load(std::memory_order_relaxed);
     ust.stagedBytesSinceFlush += size;
     if (ust.stagedBytesSinceFlush >= flushThreshold_) {
         submitState(ust, false);

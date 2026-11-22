@@ -683,6 +683,10 @@ struct UploadStreamer {
         VkCommandBuffer curCmd = VK_NULL_HANDLE;
         bool hasPending = false;
         UploadSequence ticketSequence{};
+        // Last ticket whose copy has actually entered this command batch.
+        // An allocFromRing wrap can submit the preceding batch AFTER Issue
+        // but BEFORE the new upload is recorded.
+        uint64_t ticketRecordedThrough = 0;
         UploadSequence hostTicketSequence{};
         // Flush contract (see flush/flushAndGetTimeline): each shard has
         // ONE owner at a time. A producer (uploadBuffer/uploadImage/
