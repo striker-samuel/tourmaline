@@ -5954,7 +5954,7 @@ void WorldRenderer::UpdateMaterials(uint32_t currentFrame) {
     const bool switchedWorld = m_materialObservedWorld != m_world;
     const bool topologyDirty =
         switchedWorld ||
-        m_materialObservedTopology != m_world->gpuSceneTopologyRevision ||
+        m_materialObservedTopology != m_world->materialTopologyRevision ||
         m_materialLogicalCount != uploadCount;
     const uint64_t textureEpoch = m_context->TextureBindingRevision();
     const bool bindingDirty =
@@ -6088,7 +6088,7 @@ void WorldRenderer::UpdateMaterials(uint32_t currentFrame) {
     }
 
     m_materialObservedWorld = m_world;
-    m_materialObservedTopology = m_world->gpuSceneTopologyRevision;
+    m_materialObservedTopology = m_world->materialTopologyRevision;
     m_materialObservedTextureEpoch = textureEpoch;
     m_materialObservedRegistryEpoch = m_world->materialTextureRegistryRevision;
     m_materialObservedOverride = m_debugMaterialOverride;
@@ -10688,7 +10688,7 @@ void WorldRenderer::RefreshGpuScenePhysicalIndexedRanges(bool nativeOnly) {
     m_gpuScenePhysicalLodIds.clear();
     m_gpuSceneTaskGeometryIdsCompatible = !nativeOnly;
     m_gpuScenePhysicalWorld = m_world;
-    m_gpuScenePhysicalTopologyRevision = m_world ? m_world->gpuSceneTopologyRevision : ~uint64_t(0);
+    m_gpuScenePhysicalTopologyRevision = m_world ? m_world->materialTopologyRevision : ~uint64_t(0);
     if (!m_world)
         return;
     m_gpuScenePhysicalLodIds.resize(m_world->lodChains.size());
@@ -11910,7 +11910,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // then flight-safe GPU table publication. Draws still use GfxFilter.
     if (m_world) {
         if (m_gpuScenePhysicalWorld != m_world ||
-            m_gpuScenePhysicalTopologyRevision != m_world->gpuSceneTopologyRevision) {
+            m_gpuScenePhysicalTopologyRevision != m_world->materialTopologyRevision) {
             // World topology can mutate independently of LOD streaming:
             // GPU-scene must not reuse a Gfx mesh ID from an obsolete map.
             // Rebuild physical ranges using native-only transient IDs and
@@ -11967,10 +11967,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     m_gpuSceneRasterOwnership.BeginFrame();
     if (m_gpuSceneRasterEnabled && m_world && m_gpuSceneDatabaseReady) {
         if (m_gpuSceneRasterEligibilityWorld != m_world ||
-            m_gpuSceneRasterEligibilityTopologyRevision != m_world->gpuSceneTopologyRevision ||
+            m_gpuSceneRasterEligibilityTopologyRevision != m_world->materialTopologyRevision ||
             m_gpuSceneRasterEligibilityGeometryRevision != m_gpuSceneGeometryRevision) {
             m_gpuSceneRasterEligibilityWorld = m_world;
-            m_gpuSceneRasterEligibilityTopologyRevision = m_world->gpuSceneTopologyRevision;
+            m_gpuSceneRasterEligibilityTopologyRevision = m_world->materialTopologyRevision;
             m_gpuSceneRasterEligibilityGeometryRevision = m_gpuSceneGeometryRevision;
             const size_t total = m_world->drawItems.size();
             if (total > m_gpuSceneRasterEntryCapacity) {
@@ -13189,7 +13189,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                         fb.frameIndex,
                                         inputs.clusterCount,
                                         uint64_t(m_gpuSceneGeometryRevision) ^
-                                            (uint64_t(m_world->gpuSceneTopologyRevision) << 1u),
+                                            (uint64_t(m_world->materialTopologyRevision) << 1u),
                                         temporalTaskPlan)) {
                                     temporalTaskPrepared = true;
                                     inputs.historyPrevious = temporalTaskPlan.previous;
@@ -13339,7 +13339,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     const bool changed =
                         m_gpuSceneRasterOwnerMaskWorld[flight] != m_world ||
                         m_gpuSceneRasterOwnerMaskTopologyRev[flight] !=
-                            m_world->gpuSceneTopologyRevision ||
+                            m_world->materialTopologyRevision ||
                         m_gpuSceneRasterOwnerMaskGeometryRev[flight] !=
                             m_gpuSceneGeometryRevision ||
                         m_gpuSceneRasterOwnerMaskBuffers[flight].empty() ||
@@ -13395,7 +13395,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                                               smvk::AccessFlags::ShaderRead);
                                 m_gpuSceneRasterOwnerMaskWorld[flight] = m_world;
                                 m_gpuSceneRasterOwnerMaskTopologyRev[flight] =
-                                    m_world->gpuSceneTopologyRevision;
+                                    m_world->materialTopologyRevision;
                                 m_gpuSceneRasterOwnerMaskGeometryRev[flight] =
                                     m_gpuSceneGeometryRevision;
                             }
@@ -14859,7 +14859,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         gpuHistoryValid =
             previousFlight < smvk::limits::MaxFramesInFlight &&
             m_gpuSceneRasterHistoryWorld == m_world &&
-            m_gpuSceneRasterHistoryTopologyRevision == m_world->gpuSceneTopologyRevision &&
+            m_gpuSceneRasterHistoryTopologyRevision == m_world->materialTopologyRevision &&
             m_gpuSceneRasterHistoryGeometryRevision == m_gpuSceneGeometryRevision &&
             m_gpuSceneRasterHistoryWidth == renderExtent.width &&
             m_gpuSceneRasterHistoryHeight == renderExtent.height;
@@ -15486,7 +15486,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             });
             m_gpuSceneRasterLastHistoryFlight = temporalFlight;
             m_gpuSceneRasterHistoryWorld = m_world;
-            m_gpuSceneRasterHistoryTopologyRevision = m_world->gpuSceneTopologyRevision;
+            m_gpuSceneRasterHistoryTopologyRevision = m_world->materialTopologyRevision;
             m_gpuSceneRasterHistoryGeometryRevision = m_gpuSceneGeometryRevision;
             m_gpuSceneRasterHistoryWidth = renderExtent.width;
             m_gpuSceneRasterHistoryHeight = renderExtent.height;

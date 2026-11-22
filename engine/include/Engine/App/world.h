@@ -346,6 +346,9 @@ struct World {
     [[nodiscard]] std::vector<uint32_t> TakeMaterialDirtySlots();
     // URI registrations can change independently of world topology.
     uint64_t materialTextureRegistryRevision = 1;
+    // Changes only when world material indices/locations are rebuilt,
+    // NOT when unrelated GPU-scene instances or userdata mutate.
+    uint64_t materialTopologyRevision = 1;
     std::vector<uint32_t> dirtyMaterialSlots_;
     std::vector<uint8_t> dirtyMaterialFlags_;
 

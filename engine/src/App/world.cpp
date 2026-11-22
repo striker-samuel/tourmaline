@@ -1306,6 +1306,7 @@ void World::ResolveAndFixup_pages() {
         scene = TransformHierarchy{};
     meshLocations.clear();
     materialLocations.clear();
+    ++materialTopologyRevision;
     dirtyMaterialSlots_.clear();
     dirtyMaterialFlags_.clear();
     textureLocations.clear();
@@ -1542,6 +1543,7 @@ void World::MergePage(WorldPage& cluster, uint32_t clusterOrdinal, bool isIdenti
 
             WorldPageMaterialHandle handle = cluster.materials.getHandle(row.material);
 
+            ++materialTopologyRevision;
             materialLocations.push_back(MaterialLocation{.cluster = &cluster, .handle = handle});
             worldMatByClusterMat_[matKey] = worldMatIdx;
             SetMaterial(scene, worldNode, worldMatIdx);
@@ -1828,7 +1830,8 @@ void World::RebuildDerivedCaches(bool incremental) {
                     if (layerHandle.empty())
                         continue;
                     worldMatIdx = static_cast<uint32_t>(materialLocations.size());
-                    materialLocations.push_back(
+                    ++materialTopologyRevision;
+            materialLocations.push_back(
                         MaterialLocation{.cluster = cluster, .handle = layerHandle});
                     worldMatByClusterMat_[matKey] = worldMatIdx;
                 }
@@ -1853,7 +1856,8 @@ void World::RebuildDerivedCaches(bool incremental) {
                 defaultMaterialIndex = existing;
             } else {
                 defaultMaterialIndex = static_cast<uint32_t>(materialLocations.size());
-                materialLocations.push_back(MaterialLocation{.cluster = cl, .handle = *hit});
+                ++materialTopologyRevision;
+            materialLocations.push_back(MaterialLocation{.cluster = cl, .handle = *hit});
             }
         }
     }

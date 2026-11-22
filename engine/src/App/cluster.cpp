@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <Engine/App/cluster.h>
+#include <Engine/App/world.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/static_vertex_heap.h>
 #include <Engine/Renderer/vertex_pack.h>
@@ -1195,5 +1196,14 @@ smvk::WorldPageMaterialHandle smvk::WorldPage::CreateMaterialFromValues(
 }
 
 void smvk::WorldPage::DestroyMaterial(smvk::WorldPageMaterialHandle handle) {
+    // World material IDs can outlive the owning pool row until the next
+    // incremental resolve. Publish a zero tombstone at its old GPU slot.
+    if (world) {
+        for (uint32_t i = 0; i < world->materialLocations.size(); ++i) {
+            const auto& loc = world->materialLocations[i];
+            if (loc.cluster == this && loc.handle == handle)
+                world->MarkMaterialDirty(i);
+        }
+    }
     materials.destroy(handle);
 }

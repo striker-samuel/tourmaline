@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 #pragma once
+#include <cstddef>
 #include <Engine/RHI/indexed_raw_table.h>
 #include <Engine/RHI/FrameConfig.h>
 #include <Engine/Renderer/mesh.h>
