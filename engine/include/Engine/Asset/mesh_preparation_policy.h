@@ -58,7 +58,16 @@ inline bool EligibleForSpatialDerivatives(const glm::vec3& aabbMin,
 // (below lodMinTriangles) would not already drop. Skipping both for such
 // meshes is a pure cook-time win with no runtime difference (a chair leg
 // does not need four LOD levels).
-inline constexpr size_t kGpuDrivenMeshMinTriangles = 64;
+//
+// LOWERED to 1: the task/mesh backend is ALL-OR-NOTHING — it requires every
+// mesh to be registered (meshleted), and a sub-threshold mesh has no meshlet
+// AND no runtime retained upload (that is import-time only), so it maps to a
+// native-suffix geometry id that flips m_gpuSceneTaskGeometryIdsCompatible and
+// disables the whole meshlet path. Mesheting every non-degenerate mesh keeps
+// the task/mesh path engageable. (The proper follow-up is a MIXED path — mesh-
+// leted meshes via task/mesh, sub-threshold meshes via indexed raster — instead
+// of this blanket floor.)
+inline constexpr size_t kGpuDrivenMeshMinTriangles = 1;
 
 inline bool EligibleForGpuDrivenMesh(size_t triangleCount) {
     return triangleCount >= kGpuDrivenMeshMinTriangles;
