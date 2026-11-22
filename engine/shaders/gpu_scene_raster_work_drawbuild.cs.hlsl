@@ -51,7 +51,7 @@ struct RasterWorkDrawBuildPush {
     uint binStride; // number of work slots per raster class
     GPU_PTR_READ(AliasBuffer) aliases;
     uint aliasCount;
-    uint padding;
+    uint meshletBoundary; // task/mesh owns ids < this boundary when non-zero
 };
 GPU_PUSH(RasterWorkDrawBuildPush, pc);
 
@@ -89,6 +89,7 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
             const uint transientId = work.identity.z;
             if (work.identity.x != GS_INVALID && work.identity.y != 0u &&
                 work.detail.z == bin &&
+                transientId >= pc.meshletBoundary &&
                 transientId < pc.aliasCount && transientId < GS_RASTER_MAX_GEO) {
                 const uint geometry = pc.aliases.Get().slots[transientId];
                 if (geometry < pc.geometryCount && geometry < GS_RASTER_MAX_GEO) {

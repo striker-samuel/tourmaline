@@ -82,11 +82,18 @@ namespace tour::gpu_scene {
 // IDs in its prefix, but allow a native-only suffix for valid World LODs
 // with no cooked meshlet registration. A collision tombstones the slot so
 // no later indirect work can address ambiguous physical allocations.
+//
+// A native-suffix id does NOT disable the task/mesh path (mixed-path
+// refactor): the task/mesh shaders already skip ids >= the meshlet mesh
+// count, and the indexed-raster draw-build skips ids < that count when the
+// task/mesh path owns them. `hasNativeSuffix` is reported so the frame can
+// submit the indexed-raster prepass alongside the task/mesh prepass only
+// when such geometry actually exists.
 [[nodiscard]] inline uint32_t RegisterNativeIndexedRange(std::vector<tour::gfx::IndexedRange>& rows,
                                                          std::span<uint8_t> conflicting,
                                                          const tour::gfx::IndexedRange& physical,
                                                          uint32_t gfxId,
-                                                         bool& taskIdsCompatible) {
+                                                         bool& hasNativeSuffix) {
     if (!physical.indexCount)
         return InvalidIndex;
     if (gfxId < conflicting.size()) {
@@ -105,7 +112,7 @@ namespace tour::gpu_scene {
     }
     if (rows.size() >= kMaxRasterDrawGroups)
         return InvalidIndex;
-    taskIdsCompatible = false;
+    hasNativeSuffix = true;
     const uint32_t id = uint32_t(rows.size());
     rows.push_back(physical);
     return id;

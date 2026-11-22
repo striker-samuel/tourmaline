@@ -114,7 +114,11 @@ struct RasterWorkDrawBuildPush {
     uint32_t reserved = 0;        // per-class command stride (work capacity)
     uint64_t geometryAliases = 0; // revision-local ID -> stable descriptor slot
     uint32_t aliasCount = 0;
-    uint32_t padding = 0;
+    // Meshlet ownership boundary (mixed path): when the task/mesh path owns
+    // the meshleted meshes this frame, the draw-build skips transient ids
+    // below this boundary (they are drawn by the mesh shader), leaving only
+    // the native-suffix (indexed-raster) subset. 0 disables the skip.
+    uint32_t meshletBoundary = 0;
 };
 
 // CPU oracle for GPU Scene's camera-relative dither input. Subtract the

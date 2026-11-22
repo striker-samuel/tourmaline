@@ -2753,6 +2753,12 @@ class WorldRenderer : public IRenderer {
     // registration.
     std::vector<std::vector<std::vector<uint32_t>>> m_gpuScenePhysicalLodIds;
     bool m_gpuSceneTaskGeometryIdsCompatible = false;
+    // True when the current physical registration emitted at least one
+    // native-suffix geometry id (a valid World LOD with no cooked meshlet
+    // registration). The task/mesh path still engages (drawing only the
+    // meshleted ids); the frame uses this to ALSO submit the indexed-raster
+    // prepass for the native-suffix subset (mixed path).
+    bool m_gpuSceneNativeSuffixPresent = false;
     const smvk::World* m_gpuScenePhysicalWorld = nullptr;
     uint64_t m_gpuScenePhysicalTopologyRevision = ~uint64_t(0);
     void RefreshGpuScenePhysicalIndexedRanges(bool nativeOnly = false);

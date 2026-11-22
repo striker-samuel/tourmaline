@@ -10650,6 +10650,7 @@ void WorldRenderer::RefreshGpuScenePhysicalIndexedRanges(bool nativeOnly) {
     m_gpuScenePhysicalIndexedRanges.assign(gfx.meshes.size(), {});
     m_gpuScenePhysicalLodIds.clear();
     m_gpuSceneTaskGeometryIdsCompatible = !nativeOnly;
+    m_gpuSceneNativeSuffixPresent = false;
     m_gpuScenePhysicalWorld = m_world;
     m_gpuScenePhysicalTopologyRevision = m_world ? m_world->gpuSceneTopologyRevision : ~uint64_t(0);
     if (!m_world)
@@ -10744,12 +10745,12 @@ void WorldRenderer::RefreshGpuScenePhysicalIndexedRanges(bool nativeOnly) {
             }
             surfaceIds.resize(surfaceCount);
             for (uint32_t s = 0; s < surfaceCount; ++s) {
-                surfaceIds[s] = tour::gpu_scene::RegisterNativeIndexedRange(
-                    m_gpuScenePhysicalIndexedRanges,
-                    conflicting,
-                    physical[s],
-                    gfxId,
-                    m_gpuSceneTaskGeometryIdsCompatible);
+                surfaceIds[s] =
+                    tour::gpu_scene::RegisterNativeIndexedRange(m_gpuScenePhysicalIndexedRanges,
+                                                                conflicting,
+                                                                physical[s],
+                                                                gfxId,
+                                                                m_gpuSceneNativeSuffixPresent);
             }
         }
     }
@@ -13469,6 +13470,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 m_gpuSceneTaskMeshActive = taskReady;
                 m_gpuSceneTaskMeshPlan =
                     taskReady ? taskPlan : tour::gpu_scene::TaskMeshDispatchPlan{};
+                // Mixed path: when the task/mesh shader owns the meshleted
+                // subset this frame, tell the indexed-raster draw-build to skip
+                // those ids (they are drawn by the mesh shader) so only the
+                // native-suffix geometry reaches the raster indirect commands.
+                rasterPush.meshletBoundary =
+                    taskReady ? uint32_t(m_gfxRenderer.State().meshes.size()) : 0u;
                 m_gpuSceneTaskTemporalReady = taskReady && temporalTaskPrepared;
                 m_gpuSceneTaskTemporalFrame = m_gpuSceneTaskTemporalReady
                                                   ? temporalTaskPlan
@@ -14081,9 +14088,14 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                               &meshletPlan.psoScatter,
                                               smvk::ShaderStage::Compute);
                             cmd.Dispatch(meshletPlan.psoBlocks, 1, 1);
-                        } else if (rasterReady) {
+                        }
+                        if (rasterReady && !meshletCompactReady) {
                             // GPU work -> indexed draw argument visibility; no
                             // CPU readback, and all 20 command bytes are GPU-written.
+                            // Mixed path: when the task/mesh shader owns the
+                            // meshleted subset (meshletBoundary set above), this
+                            // build skips those ids and emits commands only for
+                            // the native-suffix (indexed-raster) geometry.
                             cmd.EmitGlobalMemoryBarrier();
                             cmd.BindComputePipeline(rasterProgram);
                             cmd.PushConstants(
@@ -16325,7 +16337,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 // Compact-meshlet frames draw the depth/G-buffer lane with
                 // device-read per-class counts (the temporal seed lane
                 // never runs compact v1, so this is always the full list).
-                const bool remainderPrimed =
+                bool remainderPrimed =
                     taskTemporalActive         ? true
                     : m_gpuSceneTaskMeshActive ? m_fpRenderer.AppendGpuSceneTaskPrepass(
                                                      fc,
@@ -16377,6 +16389,30 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                               m_gpuSceneRasterMaskedBackCount != 0,
                               m_gpuSceneRasterMaskedDoubleSidedCount != 0,
                               m_gpuSceneRasterProjectLitCount != 0);
+                // Mixed path: the task/mesh prepass owns only the meshleted
+                // subset; also prime depth for the native-suffix (non-meshleted)
+                // geometry via indexed raster when such geometry exists this
+                // frame (the raster indirect buffer holds only native-suffix
+                // commands while the task/mesh path owns the meshleted ids).
+                if (m_gpuSceneTaskMeshActive && m_gpuSceneNativeSuffixPresent) {
+                    remainderPrimed =
+                        remainderPrimed && m_fpRenderer.AppendGpuScenePrepass(
+                                               fc,
+                                               fc.ssrGbufferWanted ? m_gpuSceneRasterGbufferProgram
+                                                                   : m_gpuSceneRasterDepthProgram,
+                                               commands,
+                                               logical,
+                                               m_gpuSceneRasterWorkLogical[flight],
+                                               m_gpuSceneRasterDrawCapacity,
+                                               tail,
+                                               /*hizOccluder=*/false,
+                                               m_gpuSceneRasterDoubleSidedCount != 0,
+                                               m_gpuSceneRasterMaskedDepthProgram,
+                                               m_gpuSceneRasterMaskedGbufferProgram,
+                                               m_gpuSceneRasterMaskedBackCount != 0,
+                                               m_gpuSceneRasterMaskedDoubleSidedCount != 0,
+                                               m_gpuSceneRasterProjectLitCount != 0);
+                }
                 gpuDepthPrimed = remainderPrimed;
                 fc.gpuSceneDepthPrimed = gpuDepthPrimed;
             }
@@ -17323,6 +17359,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             if (!hz.logical.empty())
                 mainPass.AddBufferHint(hz.logical, taskRead);
         }
+        // Mixed path: the indexed-raster leg also consumes its own indirect
+        // command buffer for the native-suffix (non-meshleted) subset.
+        if (m_gpuSceneNativeSuffixPresent)
+            mainPass.AddBufferHint(m_gpuSceneRasterIndirectLogical[fb.frameIndex], indirectRead);
     } else if (m_gpuSceneRasterDrawActive && m_gpuSceneRasterDrawCapacity > 0) {
         smvk::BufferSyncRequest indirectRead{};
         indirectRead.barrierMasks.accessMask = smvk::AccessFlags::IndirectCommandRead;
@@ -17346,6 +17386,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     }
     const bool sceneRasterActive = m_gpuSceneRasterDrawActive;
     const bool sceneTaskActive = m_gpuSceneTaskMeshActive;
+    const bool sceneNativeSuffix = m_gpuSceneNativeSuffixPresent;
     const uint32_t sceneGiVariant = gpuSceneGiVariant;
     const bool sceneTaskTemporalActive = taskTemporalActive;
     const auto sceneTaskPlan = m_gpuSceneTaskMeshPlan;
@@ -17371,6 +17412,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                gfxSlot,
                                sceneRasterActive,
                                sceneTaskActive,
+                               sceneNativeSuffix,
                                sceneGiVariant,
                                sceneTaskTemporalActive,
                                sceneTaskPlan,
@@ -17801,7 +17843,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                          .count();
             }
         }
-        if (sceneRasterActive && sceneRasterCommandCount > 0 && !sceneTaskActive) {
+        if (sceneRasterActive && sceneRasterCommandCount > 0 &&
+            (!sceneTaskActive || sceneNativeSuffix)) {
             // Shading debug views ride the indexed raster leg with their
             // filtered twin (gpu_scene_raster.vert + the view's debug FS) —
             // the SAME FS the task/mesh twin binds, so the two GPU Scene
