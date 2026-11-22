@@ -55,6 +55,13 @@ struct TaskMeshInputs {
     uint64_t historyCurrent = 0;
     uint32_t historyCapacity = 0;
     uint32_t historyValid = 0;
+    // Motion tail (batched motion mesh shader): previous camera-relative
+    // view + previous instance transforms, generation-validated. 0 = no
+    // history (first frame / camera cut).
+    uint64_t prevView = 0;
+    uint64_t prevTransforms = 0;
+    uint32_t prevValid = 0;
+    uint32_t prevSlots = 0;
 };
 // Clear once before seed; dispatch ceil(capacity / 256) workgroups.
 struct TaskMeshHistoryClearPush {
@@ -331,7 +338,11 @@ class TaskMeshRuntime {
                             in.historyPrevious,
                             in.historyCurrent,
                             in.historyCapacity,
-                            in.historyValid};
+                            in.historyValid,
+                            in.prevView,
+                            in.prevTransforms,
+                            in.prevValid,
+                            in.prevSlots};
         ctx.UploadDataToBuffer(
             f.params,
             &p,

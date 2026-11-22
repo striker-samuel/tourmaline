@@ -2575,6 +2575,10 @@ class WorldRenderer : public IRenderer {
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneMotionVsModule{};
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneMotionFsModule{};
     smvk::ShaderProgram m_gpuSceneMotionProgram{};
+    // Batched motion via the task/mesh path (reuses the task shader + motion
+    // FS; the mesh stage emits pos + prevClip). 3 stages: task + mesh + FS.
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneMotionMeshMsModule{};
+    smvk::ShaderProgram m_gpuSceneMotionMeshProgram{};
     std::array<smvk::Holder<smvk::BufferHandle>, smvk::limits::MaxFramesInFlight>
         m_gpuScenePrevTransformBuffers{};
     std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>

@@ -71,6 +71,19 @@ struct GsTemporalHistory {
     GsTemporalEntry entries[GS_TEMPORAL_HASH_LIMIT];
 };
 
+// Previous-frame instance transform (the batched motion mesh shader's
+// history). Indexed by PERSISTENT instance slot; generation matches the
+// instance row's identity.x at snapshot time so a recycled slot never
+// ghosts motion. Layout mirrors C++ GpuScenePrevTransform (96 B).
+struct GsPrevTransform {
+    DoubleFloat3 worldPosition;
+    float4 basisX;
+    float4 basisY;
+    float4 basisZ;
+    uint4 generation; // x = instance generation at snapshot, yzw pad
+};
+struct GsPrevTransforms { GsPrevTransform rows[GS_MAX_INSTANCES]; };
+
 // This struct is a GPU-addressable parameter buffer, NOT push constants.
 // Both shader stages receive a short push containing its BDA, group slice
 // and raster class. Do not change its member order without an ABI check.
@@ -111,6 +124,13 @@ struct GsTaskMeshParams {
     GPU_PTR(GsTemporalHistory) historyCurrent;
     uint historyCapacity;
     uint historyValid;
+    // Motion tail (appended for the batched motion mesh shader): the previous
+    // camera-relative view + previous instance transforms, generation-
+    // validated. prevSlots bounds the prev read against a shrunken snapshot.
+    GPU_PTR_READ(GsRasterView) prevView;
+    GPU_PTR_READ(GsPrevTransforms) prevTransforms;
+    uint prevValid; // 1 = previous history is usable
+    uint prevSlots; // previous snapshot's instance count
 };
 struct GsTaskMeshPush {
     // Preserve the fragment shader's 192-byte scene push constants.
