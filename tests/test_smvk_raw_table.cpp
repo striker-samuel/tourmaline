@@ -1,6 +1,7 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 #include <Engine/RHI/raw_table.h>
+#include <Engine/Renderer/light_gpu_records.h>
 #include <Engine/Renderer/texture_gpu_records.h>
 #include <array>
 #include <cstdint>
@@ -76,8 +77,20 @@ void CheckTextureRecords() {
     CHECK(!rows.Contains(id));
 }
 
+void CheckLightRecords() {
+    tour::gpu_records::Lights rows;
+    smvk::ForwardPlusLight light{}; light.intensity=15.0f;
+    const auto id=rows.Insert(light);
+    CHECK(rows.Get(id)->intensity==15.0f);
+    light.intensity=8.0f;
+    CHECK(rows.Update(id,light));
+    CHECK(rows.Get(id)->intensity==8.0f);
+    CHECK(rows.Erase(id) && !rows.Contains(id));
+}
+
 int main() {
     CheckTextureRecords();
+    CheckLightRecords();
     TestRaw<Tiny>(); // 8-byte texture-like ABI
     TestRaw<Big>();  // 16-byte and wider ABI
     std::printf("raw_table failures=%d\n",failures);
