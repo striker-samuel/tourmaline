@@ -137,35 +137,44 @@ bool SortedEqual(std::vector<RenderInstance> a, std::vector<RenderInstance> b) {
             x.stableLow == y.stableLow && x.customB == y.customB && x.prototypeId == y.prototypeId;
         const bool transform =
             NearlyEqualF(x.position.x, y.position.x) && NearlyEqualF(x.position.y, y.position.y) &&
-            NearlyEqualF(x.position.z, y.position.z) && NearlyEqualF(x.yaw, y.yaw) &&
-            NearlyEqualF(x.scale.x, y.scale.x) && NearlyEqualF(x.scale.y, y.scale.y) &&
-            NearlyEqualF(x.scale.z, y.scale.z);
+            NearlyEqualF(x.position.z, y.position.z) && NearlyEqualF(x.rotation.x, y.rotation.x) &&
+            NearlyEqualF(x.rotation.y, y.rotation.y) && NearlyEqualF(x.rotation.z, y.rotation.z) &&
+            NearlyEqualF(x.rotation.w, y.rotation.w) && NearlyEqualF(x.scale.x, y.scale.x) &&
+            NearlyEqualF(x.scale.y, y.scale.y) && NearlyEqualF(x.scale.z, y.scale.z);
         if (!identity || !transform) {
-            std::fprintf(stderr,
-                         "[place-gpu] first diff at %zu/%zu: "
-                         "gpu(pos %.6f %.6f %.6f yaw %.6f scale %.3f proto %u low %08x cb %u)"
-                         " cpu(pos %.6f %.6f %.6f yaw %.6f scale %.3f proto %u low %08x cb %u)"
-                         " identity=%d transform=%d\n",
-                         i,
-                         a.size(),
-                         x.position.x,
-                         x.position.y,
-                         x.position.z,
-                         x.yaw,
-                         x.scale.x,
-                         x.prototypeId,
-                         x.stableLow,
-                         x.customB,
-                         y.position.x,
-                         y.position.y,
-                         y.position.z,
-                         y.yaw,
-                         y.scale.x,
-                         y.prototypeId,
-                         y.stableLow,
-                         y.customB,
-                         int(identity),
-                         int(transform));
+            std::fprintf(
+                stderr,
+                "[place-gpu] first diff at %zu/%zu: "
+                "gpu(pos %.6f %.6f %.6f rot %.3f %.3f %.3f %.3f scale %.3f proto %u low %08x cb %u)"
+                " cpu(pos %.6f %.6f %.6f rot %.3f %.3f %.3f %.3f scale %.3f proto %u low %08x cb "
+                "%u)"
+                " identity=%d transform=%d\n",
+                i,
+                a.size(),
+                x.position.x,
+                x.position.y,
+                x.position.z,
+                x.rotation.x,
+                x.rotation.y,
+                x.rotation.z,
+                x.rotation.w,
+                x.scale.x,
+                x.prototypeId,
+                x.stableLow,
+                x.customB,
+                y.position.x,
+                y.position.y,
+                y.position.z,
+                y.rotation.x,
+                y.rotation.y,
+                y.rotation.z,
+                y.rotation.w,
+                y.scale.x,
+                y.prototypeId,
+                y.stableLow,
+                y.customB,
+                int(identity),
+                int(transform));
             return false;
         }
     }
@@ -2668,6 +2677,142 @@ int main() {
             }
         }
         rt->Destroy(rg);
+    }
+
+    // =====================================================================
+    // Render smoke: bake-authored FULL-quaternion instances uploaded DIRECTLY
+    // (no procedural scatter) run the PR03 chain and round-trip the quaternion
+    // through the GPU buffers — the ABI + feed entry point for the baked
+    // placement runtime.
+    // =====================================================================
+    std::fprintf(stderr, "[place-gpu] stage: full-quaternion round-trip\n");
+    {
+        PlacementCullPrograms cullProgs;
+        ok = cullProgs.Ensure(rm);
+        Check(ok && cullProgs.Valid(), "gpu.smoke-programs");
+        PlacementPass bp;
+        PlacementPassDesc bd{};
+        bd.maxInstancesPerTile = 64;
+        bd.maxTiles = 1;
+        ok = bp.Ensure(rm, rg, bd);
+        Check(ok && bp.Valid(), "gpu.smoke-pass");
+        PlacementVisibleSet bv;
+        ok = bv.Create(rm, rg, 64);
+        Check(ok && bv.Valid(), "gpu.smoke-visset");
+
+        // Three authored instances: identity, 90deg yaw, and 90deg yaw + a
+        // 45deg tilt — a full quaternion with pitch the yaw-only path drops.
+        std::vector<RenderInstance> authored(3);
+        authored[0].position = glm::vec3(0, 0, 0);
+        authored[0].rotation = glm::vec4(0, 0, 0, 1);
+        authored[0].scale = glm::vec3(1);
+        authored[0].prototypeId = 0;
+        authored[0].stableLow = 9000;
+        authored[0].customB = 0;
+        authored[1].position = glm::vec3(2, 0, 0);
+        authored[1].rotation = QuatFromYaw(1.5707963f);
+        authored[1].scale = glm::vec3(2);
+        authored[1].prototypeId = 0;
+        authored[1].stableLow = 9001;
+        authored[1].customB = 1;
+        glm::quat qy = glm::angleAxis(1.5707963f, glm::vec3(0, 1, 0));
+        glm::quat qx = glm::angleAxis(0.7853981f, glm::vec3(1, 0, 0));
+        glm::quat q = qx * qy;
+        authored[2].position = glm::vec3(4, 0, 0);
+        authored[2].rotation = glm::vec4(q.x, q.y, q.z, q.w);
+        authored[2].scale = glm::vec3(1.5f);
+        authored[2].prototypeId = 0;
+        authored[2].stableLow = 9002;
+        authored[2].customB = 2;
+
+        // The baked runtime's feed: upload the instances + the count directly.
+        bp.ClearTile(rm, 0);
+        rm.UploadDataToBuffer(bp.instanceBuffers[0],
+                              authored.data(),
+                              sizeof(RenderInstance) * authored.size(),
+                              smvk::PipelineStageBit_Compute,
+                              smvk::AccessFlags::ShaderRead,
+                              0,
+                              0);
+        PlacementCountGpu cnt{uint32_t(authored.size()), 0, 64, 0};
+        rm.UploadDataToBuffer(bp.countBuffers[0],
+                              &cnt,
+                              sizeof(cnt),
+                              smvk::PipelineStageBit_Compute,
+                              smvk::AccessFlags::ShaderRead,
+                              0,
+                              0);
+
+        PlacementCullPush cp{};
+        cp.instances = bp.TileInstancesAddress(rm, 0);
+        cp.count = bp.TileCountAddress(rm, 0);
+        cp.mask = bv.MaskAddress(rm);
+        cp.bins = bv.BinsAddress(rm);
+        cp.alive = 0;
+        cp.renderViews = rm.GetBufferDeviceAddress(viewSlab);
+        cp.renderViewIndex = 0;
+        cp.cullFlags = kPlacementCullFrustum;
+        cp.protoCount = 1;
+        cp.protoBounds[0] = glm::vec4(0, 0, 0, 0.5f);
+        cp.protoDist[0] = 0.0f;
+        cp.camPos = glm::vec3(0, 0, 0);
+        cp.maxInstanceScale = 2.0f;
+
+        PlacementScatterVisPush sp{};
+        sp.instances = bp.TileInstancesAddress(rm, 0);
+        sp.count = bp.TileCountAddress(rm, 0);
+        sp.mask = bv.MaskAddress(rm);
+        sp.bins = bv.BinsAddress(rm);
+        sp.visible = bv.VisibleAddress(rm);
+        sp.protoCount = 1;
+
+        PlacementDrawBuildPush dp{};
+        dp.bins = bv.BinsAddress(rm);
+        dp.indirect = bv.IndirectAddress(rm);
+        dp.protoCount = 1;
+        dp.indexCount[0] = 300;
+        dp.firstIndex[0] = 0;
+        dp.vertexOffset[0] = 0;
+
+        bv.ClearFrame(rm);
+
+        host.RunFrame([&](smvk::RenderGraph& g) {
+            smvk::RenderPass& cull = PlacementCullPrograms::AddCullPass(
+                g, bp, 0, bv, smvk::LogicalBufferHandle{}, viewSlabL);
+            cull.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
+                PlacementCullPrograms::PushAndDispatchCull(cmd, cullProgs.cullProgram, cp, 64);
+            });
+            smvk::RenderPass& pre = PlacementCullPrograms::AddPrefixPass(g, bv);
+            pre.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
+                PlacementCullPrograms::PushAndDispatchPrefix(cmd, cullProgs.prefixProgram, cp);
+            });
+            smvk::RenderPass& sc = PlacementCullPrograms::AddScatterVisPass(g, bp, 0, bv);
+            sc.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
+                PlacementCullPrograms::PushAndDispatchScatterVis(
+                    cmd, cullProgs.scatterProgram, sp, 64);
+            });
+            smvk::RenderPass& db = PlacementCullPrograms::AddDrawBuildPass(g, bv);
+            db.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
+                PlacementCullPrograms::PushAndDispatchDrawBuild(cmd, cullProgs.buildProgram, dp);
+            });
+        });
+        rm.FlushUploads();
+        rm.WaitForUploads();
+
+        // The quaternion + position + scale must survive the GPU round-trip.
+        std::vector<RenderInstance> readback(3);
+        ok = rm.DownloadDataFromBuffer(
+            bp.instanceBuffers[0], readback.data(), sizeof(RenderInstance) * 3);
+        Check(ok, "gpu.smoke-instance-readback");
+        Check(SortedEqual(authored, readback), "gpu.smoke-quaternion-roundtrip");
+
+        // All three visible -> one bin of 3, the indirect command instanceCount 3.
+        PlacementBinsGpu binsOut;
+        ok = rm.DownloadDataFromBuffer(bv.bins, &binsOut, sizeof(binsOut));
+        Check(ok && binsOut.counts[0] == 3 && binsOut.total == 3, "gpu.smoke-bins");
+        PlacementIndirectCmd cmdOut;
+        ok = rm.DownloadDataFromBuffer(bv.indirect, &cmdOut, kPlacementIndirectStride);
+        Check(ok && cmdOut.instanceCount == 3 && cmdOut.indexCount == 300, "gpu.smoke-indirect");
     }
 
     std::printf("[place-gpu] done: %d checks, %d failures\n", g_checks, g_failures);
