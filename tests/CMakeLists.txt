@@ -1005,6 +1005,13 @@ set_target_properties(WorldPartitionTests PROPERTIES
 
 add_test(NAME world_partition_tests COMMAND WorldPartitionTests)
 
+# WorldChannels: independent heightfield/biome data and world-scoped registry.
+add_executable(WorldChannelsTests test_world_channels.cpp)
+target_link_libraries(WorldChannelsTests PRIVATE engine)
+set_target_properties(WorldChannelsTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME world_channels_tests COMMAND WorldChannelsTests)
+
 # The cooked-brick asset form (milestone 4): BC4 codec error bounds, the
 # .wfb builder/reader roundtrip, sqrt-density fidelity vs a dense
 # reference, and the CookedBrickSource through the paging system.
