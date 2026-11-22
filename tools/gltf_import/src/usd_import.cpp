@@ -12,6 +12,7 @@
 #include <gltf_import/gltf.h>
 
 #include <pxr/base/gf/matrix4d.h>
+#include <pxr/base/gf/rotation.h>
 #include <pxr/base/gf/vec2f.h>
 #include <pxr/base/gf/vec3f.h>
 #include <pxr/base/vt/array.h>
@@ -39,6 +40,8 @@
 #include <pxr/usd/usdShade/materialBindingAPI.h>
 #include <pxr/usd/usdShade/shader.h>
 
+#include <Engine/Placement/baked_placement.h>
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -47,10 +50,12 @@
 #include <filesystem>
 #include <functional>
 #include <iostream>
+#include <limits>
 #include <map>
 #include <numeric>
 #include <set>
 #include <string>
+#include <tuple>
 #include <vector>
 
 PXR_NAMESPACE_USING_DIRECTIVE
@@ -60,6 +65,64 @@ namespace {
 bool Fail(const std::string& message) {
     std::cerr << "USD import: " << message << '\n';
     return false;
+}
+
+// Deterministic FNV-1a (stable across runs and platforms, unlike std::hash).
+static uint32_t Fnv1a(const std::string& s) {
+    uint32_t h = 2166136261u;
+    for (unsigned char c : s)
+        h = (h ^ c) * 16777619u;
+    return h;
+}
+
+// Decompose an instance's SOURCE-space world transform (m * instancerWorld,
+// before the USD->Tourmaline basis) into (position, yaw, uniform scale) for a
+// baked-placement point. Yaw is measured about the AUTHored up axis (source Z
+// when zUp, else Y) so the basis axis-rotation is never mistaken for a
+// per-instance orientation; the basis is applied only to the position. The
+// point always receives a best-effort position/yaw/scale; pitch/roll/shear/
+// mirroring/non-uniform scale are FLAGGED (see BakedPointFlag).
+void DecomposeYawUniformScale(const GfMatrix4d& localM,
+                              const GfMatrix4d& basisXf,
+                              bool zUp,
+                              glm::vec3& position,
+                              float& yaw,
+                              glm::vec3& scale,
+                              uint32_t& flags) {
+    constexpr double kEps = 1e-4;
+    GfMatrix4d r, u, p;
+    GfVec3d s, t;
+    if (!localM.Factor(&r, &s, &u, &t, &p, 1e-10)) {
+        // Singular: keep the basis-applied translation, mark the rest.
+        const GfVec3d tw = (localM * basisXf).ExtractTranslation();
+        position = glm::vec3(float(tw[0]), float(tw[1]), float(tw[2]));
+        yaw = 0.0f;
+        scale = glm::vec3(1.0f);
+        flags |= tour::placement::BakedPointFlag::NeedsGeometryBake;
+        return;
+    }
+    // Position in Tourmaline meters (apply the basis to the source translation).
+    const GfVec3d tw = (localM * basisXf).ExtractTranslation();
+    position = glm::vec3(float(tw[0]), float(tw[1]), float(tw[2]));
+    // Scale is dimensionless (the prototype mesh is already baked to meters).
+    scale = glm::vec3(float(s[0]), float(s[1]), float(s[2]));
+    const double shear = std::abs(u[0][1]) + std::abs(u[0][2]) + std::abs(u[1][2]);
+    const bool mirrored = s[0] < 0.0 || s[1] < 0.0 || s[2] < 0.0;
+    // Yaw about the authored up axis (up = Z when zUp, else Y).
+    const GfQuatd q = r.ExtractRotationQuat();
+    const GfVec3d img = q.GetImaginary();
+    const double qw = q.GetReal();
+    const int up = zUp ? 2 : 1;
+    const bool yawOnly = std::abs(img[(up + 1) % 3]) < kEps && std::abs(img[(up + 2) % 3]) < kEps;
+    if (!yawOnly || shear > kEps || mirrored)
+        flags |= tour::placement::BakedPointFlag::NeedsGeometryBake;
+    // Relative scale tolerance: the Factor decomposition leaves ~1e-3 float
+    // noise on ~1.9x scales; a genuine non-uniform scale is a real authored
+    // difference, not that noise.
+    const double smax = std::max({std::abs(s[0]), std::abs(s[1]), std::abs(s[2])});
+    if (std::abs(s[0] - s[1]) > smax * 1e-3 || std::abs(s[1] - s[2]) > smax * 1e-3)
+        flags |= tour::placement::BakedPointFlag::NonUniformScale;
+    yaw = yawOnly ? float(2.0 * std::atan2(img[up], qw)) : 0.0f;
 }
 
 struct BufferBuilder {
@@ -233,6 +296,21 @@ struct Converter {
     // once per instance proxy, so the identity is recomputed thousands of
     // times without this cache.
     std::map<std::string, std::string> identityCache;
+    // The baked placement asset (PointInstancer vegetation/clutter): explicit
+    // points + a render-prototype table, serialized into the source scene and
+    // rendered through the placement instanced-draw chain instead of flattened
+    // per-instance nodes.
+    tour::placement::BakedPlacementAsset bakedPlacement;
+    // The USD -> Tourmaline basis (meters-per-unit scale + Z-up -> Y-up), the
+    // same transform the __usd_to_tourmaline_basis root node applies. Set by
+    // LoadUsdFileAsModel before the hierarchy walk; ReadPointInstancer folds it
+    // into the baked points so they land in Tourmaline WORLD space (the
+    // flattened-node path gets it from the root node instead).
+    GfMatrix4d basisXf{1.0};
+    // The authored up axis (false = Y-up, true = Z-up). "Yaw" is measured about
+    // THIS axis in source space (mapped to Tourmaline Y after the basis), so the
+    // basis rotation is NOT mistaken for a per-instance orientation.
+    bool zUp = false;
 
     explicit Converter(tinygltf::Model& m) : model(m), blob{m, {}} {}
 
@@ -702,6 +780,32 @@ struct Converter {
                         prim.GetPath().GetString());
 
         const std::string instancerName = prim.GetPath().GetString();
+        // The instancer's own world transform — the flat baked points are
+        // WORLD-space (the flattened-node path carries this on the hierarchy).
+        const GfMatrix4d instancerWorld = xfCache.GetLocalToWorldTransform(prim);
+
+        // Build the render-prototype table: one entry per (leaf mesh, material,
+        // surface). An authored prototype with several leaves (or a multi-prim
+        // leaf) expands to several render prototypes — the asset never assumes
+        // authored-prototype == single mesh.
+        std::map<std::tuple<int, int, int>, uint32_t> renderProtoMap;
+        auto renderProtoFor = [&](int mesh, int material, int surface) -> uint32_t {
+            const auto key = std::make_tuple(mesh, material, surface);
+            const auto it = renderProtoMap.find(key);
+            if (it != renderProtoMap.end())
+                return it->second;
+            tour::placement::BakedRenderPrototype rp;
+            rp.meshId = uint32_t(mesh);
+            rp.materialId = uint32_t(material);
+            rp.surfaceIndex = uint32_t(surface);
+            rp.flags = 0;
+            const uint32_t id = uint32_t(bakedPlacement.renderPrototypes.size());
+            bakedPlacement.renderPrototypes.push_back(rp);
+            renderProtoMap.emplace(key, id);
+            return id;
+        };
+
+        const uint32_t instSeed = Fnv1a(instancerName);
         for (size_t i = 0; i < protoIndices.size(); ++i) {
             const int pi = protoIndices[i];
             if (pi < 0 || size_t(pi) >= prototypes.size())
@@ -709,7 +813,9 @@ struct Converter {
                             prim.GetPath().GetString());
             const GfMatrix4d instanceXf = instanceXforms[i];
             const size_t id = i;
-            for (const ProtoLeaf& leaf : protoLeaves[size_t(pi)]) {
+            const auto& leaves = protoLeaves[size_t(pi)];
+            for (size_t leafIdx = 0; leafIdx < leaves.size(); ++leafIdx) {
+                const ProtoLeaf& leaf = leaves[leafIdx];
                 tinygltf::Node node{};
                 node.name = instancerName + ":inst:" + std::to_string(id);
                 const GfMatrix4d m = instanceXf * leaf.local;
@@ -723,7 +829,46 @@ struct Converter {
                     model.nodes[size_t(parent)].children.push_back(nodeId);
                 else
                     model.scenes.front().nodes.push_back(nodeId);
+
+                // Baked placement: expand (instance, leaf) x primitives into
+                // world-space points referencing the leaf's render prototypes.
+                // Gf uses row-vector convention (p' = p * M): the SOURCE-space
+                // transform composes leaf.local -> instanceXf -> instancerWorld;
+                // the basis (scale + axis) is applied only to the position.
+                const GfMatrix4d localM = m * instancerWorld;
+                const auto& gm = model.meshes[size_t(leaf.mesh)];
+                const int primCount = std::max<int>(1, int(gm.primitives.size()));
+                for (int pr = 0; pr < primCount; ++pr) {
+                    const int material =
+                        pr < int(gm.primitives.size()) ? gm.primitives[size_t(pr)].material : -1;
+                    const uint32_t rpId = renderProtoFor(leaf.mesh, material, pr);
+                    tour::placement::BakedPlacementPoint pt;
+                    pt.yaw = 0.0f;
+                    pt.scale = glm::vec3(1.0f);
+                    DecomposeYawUniformScale(
+                        localM, basisXf, zUp, pt.position, pt.yaw, pt.scale, pt.flags);
+                    pt.renderPrototypeId = rpId;
+                    pt.stableId.w[0] = tour::placement::SplitMix32(instSeed ^ uint32_t(i));
+                    pt.stableId.w[1] =
+                        tour::placement::SplitMix32(instSeed ^ uint32_t(leafIdx) ^ 0x9e3779b9u);
+                    pt.stableId.w[2] =
+                        tour::placement::SplitMix32(instSeed ^ uint32_t(pr) ^ 0x85ebca6bu);
+                    pt.stableId.w[3] = 0u;
+                    pt.reserved = 0;
+                    bakedPlacement.points.push_back(pt);
+                }
             }
+        }
+        if (!bakedPlacement.points.empty()) {
+            bakedPlacement.instancerPath = instancerName;
+            glm::vec3 mn(std::numeric_limits<float>::infinity());
+            glm::vec3 mx(-std::numeric_limits<float>::infinity());
+            for (const auto& p : bakedPlacement.points) {
+                mn = glm::min(mn, p.position);
+                mx = glm::max(mx, p.position);
+            }
+            bakedPlacement.boundsMin = mn;
+            bakedPlacement.boundsMax = mx;
         }
         return true;
     }
@@ -845,6 +990,16 @@ struct Converter {
 
 } // namespace
 
+// The baked placement asset produced by the last successful USD import. The
+// importer fills it in LoadUsdFileAsModel; the native derivation + tests read
+// it through LastImportedBakedPlacement (the fixed UsdFileAsModel dispatch
+// signature has no out-param for it). Single-threaded import path.
+static tour::placement::BakedPlacementAsset g_bakedPlacement;
+
+const tour::placement::BakedPlacementAsset* LastImportedBakedPlacement() {
+    return g_bakedPlacement.empty() ? nullptr : &g_bakedPlacement;
+}
+
 bool LoadUsdFileAsModel(tinygltf::Model& model,
                         const std::filesystem::path& path,
                         std::vector<std::string>& deps) {
@@ -920,10 +1075,25 @@ bool LoadUsdFileAsModel(tinygltf::Model& model,
         return Fail("invalid metersPerUnit");
     tinygltf::Node basis{};
     basis.name = "__usd_to_tourmaline_basis";
-    if (UsdGeomGetStageUpAxis(stage) == UsdGeomTokens->z) {
+    cv.basisXf = GfMatrix4d(1.0);
+    cv.zUp = (UsdGeomGetStageUpAxis(stage) == UsdGeomTokens->z);
+    if (cv.zUp) {
         basis.matrix = {scale, 0, 0, 0, 0, 0, -scale, 0, 0, scale, 0, 0, 0, 0, 0, 1};
+        // Z-up -> Y-up: M maps USD (x, y, z) -> (sx, sz, -sy).
+        cv.basisXf[0][0] = scale;
+        cv.basisXf[0][1] = 0.0;
+        cv.basisXf[0][2] = 0.0;
+        cv.basisXf[1][0] = 0.0;
+        cv.basisXf[1][1] = 0.0;
+        cv.basisXf[1][2] = scale;
+        cv.basisXf[2][0] = 0.0;
+        cv.basisXf[2][1] = -scale;
+        cv.basisXf[2][2] = 0.0;
     } else {
         basis.matrix = {scale, 0, 0, 0, 0, scale, 0, 0, 0, 0, scale, 0, 0, 0, 0, 1};
+        cv.basisXf[0][0] = scale;
+        cv.basisXf[1][1] = scale;
+        cv.basisXf[2][2] = scale;
     }
     model.nodes.push_back(std::move(basis));
     model.scenes.front().nodes.push_back(0);
@@ -932,7 +1102,41 @@ bool LoadUsdFileAsModel(tinygltf::Model& model,
     if (model.meshes.empty())
         return Fail("composed stage has no supported meshes");
     cv.blob.Finish();
+    g_bakedPlacement = std::move(cv.bakedPlacement);
     fprintf(stderr, "[usd] done: %zu meshes, %zu nodes\n", model.meshes.size(), model.nodes.size());
+    if (!g_bakedPlacement.points.empty()) {
+        uint32_t needsBake = 0, nonUniform = 0;
+        for (const auto& p : g_bakedPlacement.points) {
+            if (p.flags & tour::placement::BakedPointFlag::NeedsGeometryBake)
+                ++needsBake;
+            if (p.flags & tour::placement::BakedPointFlag::NonUniformScale)
+                ++nonUniform;
+        }
+        fprintf(stderr,
+                "[usd] baked placement: %zu points, %zu render prototypes "
+                "(instancer '%s', scale=%g, bounds %.1f..%.1f, needsBake=%u nonUniform=%u)\n",
+                g_bakedPlacement.points.size(),
+                g_bakedPlacement.renderPrototypes.size(),
+                g_bakedPlacement.instancerPath.c_str(),
+                scale,
+                double(g_bakedPlacement.boundsMin.x),
+                double(g_bakedPlacement.boundsMax.x),
+                needsBake,
+                nonUniform);
+        const auto& p0 = g_bakedPlacement.points.front();
+        fprintf(stderr,
+                "[usd] baked sample: pos=(%.2f %.2f %.2f) yaw=%.3f scale=(%.3f %.3f %.3f) "
+                "proto=%u flags=%u\n",
+                double(p0.position.x),
+                double(p0.position.y),
+                double(p0.position.z),
+                double(p0.yaw),
+                double(p0.scale.x),
+                double(p0.scale.y),
+                double(p0.scale.z),
+                p0.renderPrototypeId,
+                p0.flags);
+    }
     fflush(stderr);
     return true;
 }
