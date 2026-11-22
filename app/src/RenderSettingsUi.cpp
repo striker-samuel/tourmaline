@@ -3,6 +3,7 @@
 // This UI is compiled only into the standalone App host, not the renderer.
 // WorldRenderer exposes renderer state through a host-supplied UI callback.
 #include <Engine/App/app.h>
+#include <Engine/App/scene_page_streamer.h> // ScenePageStreamer (WorldMap tile viz + reset)
 #include <Engine/App/world.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/RendererLimits.h>
@@ -2258,9 +2259,25 @@ void WorldRenderer::DrawHudOverlay() {
                 m_world ? m_world->LodStatDraws() : 0u,
                 m_world ? m_world->LodStatSwitched() : 0u,
                 (unsigned long long)m_lodShaderDraws);
-    // GPU-scene raster stats (cheap CPU counters + the swapchain primitive
-    // counter — no GPU readback, so the overlay stays free every frame).
+    // GPU-scene render path + raster stats (cheap CPU counters + the
+    // swapchain primitive counter — no GPU readback, so the overlay stays
+    // free every frame). The PATH line is the at-a-glance answer to "are
+    // meshlets running?" — green = task/mesh meshlet path (the only leg
+    // that computes F3/F5 flat debug colors), amber = indexed raster
+    // fallback (no meshlet debug colors), red = direct legacy.
     {
+        if (m_gpuSceneTaskMeshActive) {
+            ImGui::TextColored(ImVec4(0.35f, 1.0f, 0.45f, 1.0f),
+                               "path: TASK/MESH meshlets (work %u groups %u)",
+                               m_gpuSceneTaskMeshPlan.workCapacity,
+                               m_gpuSceneTaskMeshPlan.taskGroupCapacity);
+        } else if (m_gpuSceneRasterDrawActive) {
+            ImGui::TextColored(ImVec4(1.0f, 0.60f, 0.20f, 1.0f),
+                               "path: indexed raster (NO meshlet debug colors)");
+        } else {
+            ImGui::TextColored(ImVec4(1.0f, 0.40f, 0.40f, 1.0f),
+                               "path: direct legacy (no GPU scene)");
+        }
         const uint64_t tris = m_swapchain ? m_swapchain->GetPrimitiveCount(0u) : 0u;
         ImGui::Text("tris %.2fM | static %u | transp %u | legacy %u",
                     double(tris) / 1.0e6,
@@ -2403,6 +2420,14 @@ void WorldRenderer::DrawWorldMapWindow() {
         const glm::vec3 eye(center.x, b.mx.y + height, center.z);
         m_cameraPositioner.lookAt(eye, center, glm::vec3(0.0f, 1.0f, 0.0f));
     }
+    ImGui::SameLine();
+    if (ImGui::Button("Reset world") && m_world && m_world->PageStreamer()) {
+        // Force a restream: abort every in-flight district deserialize,
+        // unload all non-entry pages, and re-stream the pages around the
+        // current camera position (deferred to the next frame's streaming
+        // update — safe, not mid-frame).
+        m_world->PageStreamer()->RequestReset();
+    }
     // Streaming layers (the WorldFields + WorldPartition debug — see
     // the draw blocks below): field residency, the fog density
     // reference heat, the partition interest cells.
@@ -2411,6 +2436,8 @@ void WorldRenderer::DrawWorldMapWindow() {
     ImGui::Checkbox("Fog heat (proc. ref)", &m_worldMapFogHeat);
     ImGui::SameLine();
     ImGui::Checkbox("Cells", &m_worldMapCells);
+    ImGui::SameLine();
+    ImGui::Checkbox("Scene tiles", &m_worldMapSceneTiles);
     // World extent: terrain bounds, else scene bounds, else default.
     float minX = -2048.0f, minZ = -2048.0f;
     float sizeX = 4096.0f, sizeZ = 4096.0f;
@@ -2613,6 +2640,50 @@ void WorldRenderer::DrawWorldMapWindow() {
                             ImVec2(p.x + float(lead.x) * s, p.y + float(lead.z) * s),
                             IM_COL32(255, 235, 130, 220),
                             2.0f);
+            }
+        }
+    }
+    uint32_t nSceneTilesLoaded = 0, nSceneTilesInFlight = 0, nSceneTilesAvailable = 0;
+    if (m_worldMapSceneTiles && m_world && m_world->PageStreamer()) {
+        // ---- Scene-layer streaming tiles (the ScenePageStreamer districts):
+        // one AABB per manifest scene, colored by residency — loaded (green,
+        // filled), in-flight/queued (amber outline), available-but-not-loaded
+        // (faint gray). The pinned entry scene gets a white ring. This is the
+        // district-level picture of what the streamer currently owns. ----
+        const tour::ScenePageStreamer* ps = m_world->PageStreamer();
+        const uint32_t sc = ps->SceneCount();
+        const float x1view = vx0 + cw / s;
+        const float z1view = vz0 + ch / s;
+        for (uint32_t i = 0; i < sc; ++i) {
+            glm::vec3 mn, mx;
+            ps->SceneAabb(i, mn, mx);
+            if (mx.x < vx0 || mn.x > x1view || mx.z < vz0 || mn.z > z1view)
+                continue; // cull off-canvas
+            ImU32 col;
+            if (ps->SceneLoaded(i)) {
+                ++nSceneTilesLoaded;
+                col = IM_COL32(70, 210, 95, 230); // resident
+            } else if (ps->SceneDispatched(i)) {
+                ++nSceneTilesInFlight;
+                col = IM_COL32(235, 180, 60, 220); // in-flight / queued
+            } else {
+                ++nSceneTilesAvailable;
+                col = IM_COL32(125, 132, 155, 90); // available, not resident
+            }
+            const ImVec2 p0(WX(mn.x), WZ(mn.z));
+            const ImVec2 p1(WX(mx.x), WZ(mx.z));
+            if (ps->SceneLoaded(i))
+                dl->AddRectFilled(p0, p1, IM_COL32(70, 210, 95, 34));
+            dl->AddRect(p0, p1, col, 1.5f);
+            if (i == ps->EntryScene())
+                dl->AddRect(ImVec2(p0.x - 2.0f, p0.y - 2.0f),
+                            ImVec2(p1.x + 2.0f, p1.y + 2.0f),
+                            IM_COL32(255, 255, 255, 210),
+                            1.0f);
+            if (s > 0.8f) {
+                char label[16];
+                std::snprintf(label, sizeof(label), "%u", i);
+                dl->AddText(ImVec2(p0.x + 3.0f, p0.y + 3.0f), col, label);
             }
         }
     }
@@ -3062,6 +3133,18 @@ void WorldRenderer::DrawWorldMapWindow() {
             std::snprintf(line, sizeof(line), "fields: off (TOURMALINE_WORLD_FIELDS=1)");
         }
         ImGui::TextDisabled("%s", line);
+    }
+    // Scene-tile streaming summary (the ScenePageStreamer districts):
+    // resident vs in-flight vs available, plus the total district count.
+    if (m_worldMapSceneTiles && m_world && m_world->PageStreamer()) {
+        const tour::ScenePageStreamer* ps = m_world->PageStreamer();
+        ImGui::TextDisabled("scene tiles: %u loaded  %u in-flight  %u available  "
+                            "(%u total, entry %u pinned)",
+                            nSceneTilesLoaded,
+                            nSceneTilesInFlight,
+                            nSceneTilesAvailable,
+                            ps->SceneCount(),
+                            ps->EntryScene());
     }
     ImGui::End();
 }

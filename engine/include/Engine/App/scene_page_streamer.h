@@ -128,6 +128,14 @@ class ScenePageStreamer : public engine::worldpartition::IWorldStreamProvider {
             viewDir_ = viewDir;
         bool changed = false;
 
+        // A debug-triggered restream: abort every in-flight/queued deserialize
+        // and unload every non-entry page, then let the load pass below
+        // re-enqueue the pages around the current camera position.
+        if (resetRequested_) {
+            resetRequested_ = false;
+            changed |= ResetStreaming();
+        }
+
         // Unload far pages FIRST (incremental retire; never the pinned
         // entry). Doing this before the load pass keeps the dense page slots
         // stable for the newly-appended pages below.
@@ -226,6 +234,34 @@ class ScenePageStreamer : public engine::worldpartition::IWorldStreamProvider {
         return n;
     }
 
+    // ---- debug inspection (the WorldMap "Scene tiles" layer + reset) ----
+    // Per-district tile state: the world manifest's scene AABBs + the
+    // streamer's live residency (loaded) and in-flight (dispatched) flags.
+    uint32_t SceneCount() const {
+        return manifest_.sceneCount;
+    }
+    void SceneAabb(uint32_t i, glm::vec3& mn, glm::vec3& mx) const {
+        manifest_.Aabb(i, mn, mx);
+    }
+    bool SceneLoaded(uint32_t i) const {
+        return i < loaded_.size() && loaded_[i] != nullptr;
+    }
+    bool SceneDispatched(uint32_t i) const {
+        return i < dispatched_.size() && dispatched_[i];
+    }
+    uint32_t EntryScene() const {
+        return entryScene_;
+    }
+    // Queues a full restream for the NEXT Tick (the frame's streaming update
+    // section — safe, not mid-frame): aborts every in-flight/queued district
+    // deserialize, unloads every non-entry page, and lets the same tick's
+    // load pass re-enqueue the pages around the current camera position. The
+    // entry scene stays pinned.
+    void RequestReset() {
+        resetRequested_ = true;
+        std::fprintf(stderr, "[PageStreamer] reset requested (loaded=%zu)\n", LoadedCount());
+    }
+
     // ---- IWorldStreamProvider (Scene layer) ----
     // The streamer is a first-class WorldPartition scene provider: the frame's
     // Scene-layer StreamingInterest (camera position + radius) drives district
@@ -271,9 +307,11 @@ class ScenePageStreamer : public engine::worldpartition::IWorldStreamProvider {
     struct PageRequest {
         uint32_t sceneIndex = 0;
         StreamingPriority priority = StreamingPriority::Background;
+        uint64_t generation = 0; // the streamer generation it was enqueued under
     };
     struct PageResult {
         uint32_t sceneIndex = 0;
+        uint64_t generation = 0;         // enqueue generation; stale results are discarded
         std::unique_ptr<WorldPage> page; // null = deserialize failed
     };
     struct Bin {
@@ -293,12 +331,46 @@ class ScenePageStreamer : public engine::worldpartition::IWorldStreamProvider {
         return (sceneIndex * 0x9E3779B1u) % binCount;
     }
 
+    // Aborts all in-flight/queued district deserialization and unloads every
+    // non-entry page, returning true when anything was unloaded. Runs on the
+    // render thread inside Tick (the frame's streaming update section).
+    // Generation-tagged: the running bin thread's CURRENT deserialize is left
+    // to finish (it owns a shard lease + staging); its result carries the old
+    // generation and is discarded by FoldCompleted without re-touching
+    // dispatched_ (already cleared here, or re-dispatched by a newer enqueue).
+    bool ResetStreaming() {
+        ++generation_;
+        for (auto& binPtr : bins_) {
+            std::lock_guard<std::mutex> lock(binPtr->mutex);
+            binPtr->pending.clear();
+            binPtr->done.clear();
+        }
+        bool changed = false;
+        for (uint32_t i = 0; i < manifest_.sceneCount; ++i) {
+            dispatched_[i] = false;
+            if (i == entryScene_ || !loaded_[i])
+                continue;
+            try {
+                world_.UnmergePage(*loaded_[i]);
+            } catch (const std::exception& e) {
+                std::cerr << "[PageStreamer] reset unload page " << i << " failed: " << e.what()
+                          << "\n";
+            }
+            loaded_[i] = nullptr;
+            changed = true;
+        }
+        heapGateLogged_ = false;
+        std::cerr << "[PageStreamer] reset: aborted in-flight, unloaded non-entry pages,"
+                  << " restreaming around camera\n";
+        return changed;
+    }
+
     bool Enqueue(uint32_t sceneIndex, StreamingPriority priority) {
         Bin& bin = *bins_[HashBin(sceneIndex, uint32_t(bins_.size()))];
         std::unique_lock<std::mutex> lock(bin.mutex);
         if (bin.pending.size() >= smvk::mem::config::kStreamMaxPendingPerBin)
             return false; // fixed-size backpressure: retry next tick
-        bin.pending.push_back(PageRequest{sceneIndex, priority});
+        bin.pending.push_back(PageRequest{sceneIndex, priority, generation_});
         dispatched_[sceneIndex] = true;
         lock.unlock();
         bin.cvRequest.notify_one();
@@ -334,6 +406,12 @@ class ScenePageStreamer : public engine::worldpartition::IWorldStreamProvider {
                 results.swap(bin.done);
             }
             for (PageResult& r : results) {
+                // Stale result: a ResetStreaming aborted this page mid-flight and
+                // bumped the generation. Its dispatched_ flag was already cleared
+                // (or re-dispatched by a NEWER enqueue of the same scene), so we
+                // must not touch it — only discard the (now-superseded) payload.
+                if (r.generation != generation_)
+                    continue;
                 dispatched_[r.sceneIndex] = false;
                 if (!r.page)
                     continue; // deserialize failed (logged in DeserializeCluster)
@@ -406,7 +484,7 @@ class ScenePageStreamer : public engine::worldpartition::IWorldStreamProvider {
 
             {
                 std::lock_guard<std::mutex> lock(bin->mutex);
-                bin->done.push_back(PageResult{req.sceneIndex, std::move(page)});
+                bin->done.push_back(PageResult{req.sceneIndex, req.generation, std::move(page)});
             }
         }
     }
@@ -503,6 +581,13 @@ class ScenePageStreamer : public engine::worldpartition::IWorldStreamProvider {
     glm::vec3 pendingCameraPos_{0.0f};
     float pendingRadius_ = 0.0f;
     bool hasInterest_ = false;
+    // Monotonic enqueue generation. ResetStreaming bumps it; stale async
+    // results (older generation) are discarded by FoldCompleted so an
+    // aborted page can never fold after its unload/restream.
+    uint64_t generation_ = 0;
+    // Debug restream latch: set by RequestReset (the WorldMap button),
+    // consumed at the top of the next Tick (the streaming update section).
+    bool resetRequested_ = false;
     // Resident-mesh budget (0 = unbounded): the load pass stops admitting
     // pages once the merged world's mesh count would exceed this. The host
     // sets it to the GPU-scene admission ceiling (kMaxMeshes) so streaming

@@ -10771,6 +10771,63 @@ static tour::gpu_scene::IndexedGeometryTables GpuSceneIndexedTables(
     return tables;
 }
 
+// Tight per-instance upper bound on the total task/mesh group count (the
+// "tighter per-instance sum" that replaces the worst-case workCapacity *
+// ceil(worstMeshlets/32) product). Sums ceil(clusterCount/32) over every LIVE
+// instance, resolving instance -> GPU-scene mesh -> resident LODs -> submeshes
+// -> gfx geometryId -> cluster count. Only ONE LOD is selected per instance,
+// so take the max group count across resident LODs (a safe upper bound). A
+// single high-meshlet mesh (the island's 56k-cluster terrain section) inflated
+// the worst-case bound ~500x past this exact total.
+uint64_t WorldRenderer::ComputeTaskMeshTotalGroups(const smvk::gfx::State& gfx) const {
+    uint64_t total = 0;
+    const auto& instanceRows = m_gpuSceneDatabase.instances.Rows();
+    const auto& meshRows = m_gpuSceneDatabase.meshes.Rows();
+    const auto& lodRows = m_gpuSceneDatabase.lods.Rows();
+    const auto& submeshRows = m_gpuSceneDatabase.submeshes.Rows();
+    const uint32_t meshCount = uint32_t(gfx.meshes.size());
+    for (const auto& instRow : instanceRows) {
+        if (instRow.identity.y != 1u)
+            continue; // tombstone
+        const auto& inst = instRow.value;
+        if (inst.refs.x >= meshRows.size())
+            continue;
+        const auto& meshRow = meshRows[inst.refs.x];
+        if (meshRow.identity.y != 1u || meshRow.identity.x != inst.refs.y)
+            continue; // stale/generation-mismatched mesh reference
+        const auto& mesh = meshRow.value;
+        uint64_t instanceGroups = 0;
+        const uint32_t lodCount = mesh.lodCount;
+        for (uint32_t level = 0; level < lodCount && level < 16u; ++level) {
+            if ((mesh.residentMask & (1u << level)) == 0u)
+                continue;
+            if (mesh.firstLod + level >= lodRows.size())
+                continue;
+            const auto& lodRow = lodRows[mesh.firstLod + level];
+            if (lodRow.identity.y != 1u)
+                continue;
+            const uint32_t subCount = lodRow.value.submeshCount;
+            if (subCount == 0u || subCount > tour::gpu_scene::kMaxSubmeshesPerLod ||
+                lodRow.value.firstSubmesh >= submeshRows.size() ||
+                subCount > submeshRows.size() - lodRow.value.firstSubmesh)
+                continue;
+            uint64_t lodGroups = 0;
+            for (uint32_t s = 0; s < subCount; ++s) {
+                const auto& subRow = submeshRows[lodRow.value.firstSubmesh + s];
+                if (subRow.identity.y != 1u ||
+                    subRow.value.geometryId == tour::gpu_scene::InvalidIndex ||
+                    subRow.value.geometryId >= meshCount)
+                    continue;
+                const uint32_t clusters = gfx.meshes[subRow.value.geometryId].clusterCount;
+                lodGroups += uint64_t(clusters) / 32u + ((clusters % 32u) != 0u ? 1u : 0u);
+            }
+            instanceGroups = std::max(instanceGroups, lodGroups);
+        }
+        total += instanceGroups;
+    }
+    return total;
+}
+
 void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     SMVK_PROFILE_FUNCTION();
     SMVK_PROFILE_TAG("frameIndex", fb.frameIndex);
@@ -12966,21 +13023,33 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 tour::gpu_scene::TaskMeshTemporalFrame temporalTaskPlan{};
                 bool temporalTaskPrepared = false;
                 bool taskReady = false;
-                if (s_gpuSceneTaskMesh && gpuSceneRasterMode && workReady && rasterReady &&
-                    m_gpuSceneTaskGeometryIdsCompatible &&
-                    m_gpuSceneRasterProjectLitCount == 0 && // no meshlet ProjectLit twins yet
-                    m_gfxRenderer.State().indexedRangesResident && smvk::SupportsMeshShaders() &&
-                    m_gpuSceneTaskMainProgram.shaderCount == 3 &&
-                    (gpuSceneGiVariant == 0u ||
-                     m_gpuSceneTaskGiPrograms[gpuSceneGiVariant].shaderCount == 3) &&
-                    m_gpuSceneTaskDepthProgram.shaderCount == 2 &&
-                    (!m_gpuSceneRasterMaskedBackCount && !m_gpuSceneRasterMaskedDoubleSidedCount ||
-                     (m_gpuSceneTaskMaskedDepthProgram.shaderCount == 3 &&
-                      m_gpuSceneTaskMaskedGbufferProgram.shaderCount == 3)) &&
-                    m_gpuSceneTaskGbufferProgram.shaderCount == 3 &&
+                // Named cutover gates so a fallback can NAME its reason (the
+                // "why indexed raster?" answer) instead of silently skipping
+                // the meshlet path. Evaluated unconditionally (all pure reads;
+                // g_gi keeps its internal short-circuit for the variant index).
+                const bool g_taskMeshOn = s_gpuSceneTaskMesh;
+                const bool g_rasterMode = gpuSceneRasterMode;
+                const bool g_workReady = workReady && rasterReady;
+                const bool g_geoIds = m_gpuSceneTaskGeometryIdsCompatible;
+                const bool g_noProjectLit = m_gpuSceneRasterProjectLitCount == 0;
+                const bool g_rangesResident = m_gfxRenderer.State().indexedRangesResident;
+                const bool g_meshShader = smvk::SupportsMeshShaders();
+                const bool g_main = m_gpuSceneTaskMainProgram.shaderCount == 3;
+                const bool g_gi = gpuSceneGiVariant == 0u ||
+                                  m_gpuSceneTaskGiPrograms[gpuSceneGiVariant].shaderCount == 3;
+                const bool g_depth = m_gpuSceneTaskDepthProgram.shaderCount == 2;
+                const bool g_noMasked =
+                    !m_gpuSceneRasterMaskedBackCount && !m_gpuSceneRasterMaskedDoubleSidedCount;
+                const bool g_maskedTwins = m_gpuSceneTaskMaskedDepthProgram.shaderCount == 3 &&
+                                           m_gpuSceneTaskMaskedGbufferProgram.shaderCount == 3;
+                const bool g_gbuffer = m_gpuSceneTaskGbufferProgram.shaderCount == 3;
+                const bool g_compute =
                     std::all_of(m_gpuSceneTaskComputePrograms.begin(),
                                 m_gpuSceneTaskComputePrograms.end(),
-                                [](const smvk::ShaderProgram& p) { return p.shaderCount == 1; })) {
+                                [](const smvk::ShaderProgram& p) { return p.shaderCount == 1; });
+                if (g_taskMeshOn && g_rasterMode && g_workReady && g_geoIds && g_noProjectLit &&
+                    g_rangesResident && g_meshShader && g_main && g_gi && g_depth &&
+                    (g_noMasked || g_maskedTwins) && g_gbuffer && g_compute) {
                     const auto& gfx = m_gfxRenderer.State();
                     // The task/mesh index bound mirrors the 2048 MiB static index
                     // monoblock (2^29 uint32 words; raised from 512 MiB). The old
@@ -13155,6 +13224,22 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                 inputs.indexWordCapacity = indexCap;
                                 inputs.vertexCapacity = vertexCap;
                                 inputs.worstMeshlets = worstMeshlets;
+                                // Tight per-instance group bound (cached per
+                                // topology revision): the exact-ish total of
+                                // ceil(clusterCount/32) over every instance,
+                                // which is ~500x smaller than the worst-case
+                                // workCapacity * worstMeshlets product on the
+                                // island (one mesh has 56k clusters). Pass it
+                                // so Prepare sizes the groups buffer tightly.
+                                {
+                                    const uint64_t rev =
+                                        m_world ? m_world->gpuSceneTopologyRevision : ~uint64_t(0);
+                                    if (m_gpuSceneTaskTotalGroupsRevision != rev) {
+                                        m_gpuSceneTaskTotalGroupsRevision = rev;
+                                        m_gpuSceneTaskTotalGroups = ComputeTaskMeshTotalGroups(gfx);
+                                    }
+                                    inputs.totalGroups = m_gpuSceneTaskTotalGroups;
+                                }
                                 // Flat debug views (Meshlets F3) render the
                                 // real GPU Scene cull survivors through the
                                 // meshlet debug color (mesh shader), not the
@@ -13169,6 +13254,21 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                                               ? 3u
                                                               : (m_debugMeshletMode == 2 ? 4u : 1u))
                                                        : (m_debugView == ViewMode::Lods ? 2u : 0u);
+                                // One-shot: confirm the flat-debug mode is
+                                // actually reaching the task/mesh params (the
+                                // F3 "no random colors" diagnosis).
+                                if (inputs.debugMode != 0u) {
+                                    static uint32_t s_dbgModeReported = 0u;
+                                    if (s_dbgModeReported != inputs.debugMode) {
+                                        s_dbgModeReported = inputs.debugMode;
+                                        std::fprintf(stderr,
+                                                     "[GpuSceneTaskMesh] debugMode=%u (view=%d "
+                                                     "meshletMode=%d)\n",
+                                                     inputs.debugMode,
+                                                     int(m_debugView),
+                                                     int(m_debugMeshletMode));
+                                    }
+                                }
                                 // Diagnostic isolation toggles for the task
                                 // shader's per-meshlet visibility tests (one-shot
                                 // static latches, documented diagnostic knobs):
@@ -13317,6 +13417,26 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                 }
                                 taskReady = m_gpuSceneTaskMeshRuntime.Prepare(
                                     *m_context, *m_rendergraph, fb.frameIndex, inputs, taskPlan);
+                                if (!taskReady) {
+                                    // Prepare's worst-case group bound failed:
+                                    // workCapacity * ceil(worstMeshlets/32) >
+                                    // MaxTaskGroups. Report the exact numbers so
+                                    // the cap can be sized to the real island.
+                                    const uint64_t upper = uint64_t(inputs.workCapacity) *
+                                                           ((uint64_t(worstMeshlets) + 31u) / 32u);
+                                    static bool s_prepareFailReported = false;
+                                    if (!s_prepareFailReported) {
+                                        s_prepareFailReported = true;
+                                        std::fprintf(
+                                            stderr,
+                                            "[GpuSceneTaskMesh] Prepare rejected: workCapacity=%u "
+                                            "worstMeshlets=%u upperBound=%llu maxTaskGroups=%u\n",
+                                            inputs.workCapacity,
+                                            worstMeshlets,
+                                            (unsigned long long)upper,
+                                            tour::gpu_scene::TaskMeshRuntime::MaxTaskGroups);
+                                    }
+                                }
                             }
                         }
                     }
@@ -13345,6 +13465,31 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                      taskPlan.workCapacity,
                                      taskPlan.taskGroupCapacity,
                                      taskPlan.scanBlocks);
+                    }
+                } else if (g_taskMeshOn) {
+                    // One-shot: NAME the reason the meshlet path sat out (the
+                    // "why indexed raster?" answer). Silent when the path is
+                    // deliberately opt-OUT (TOURMALINE_GPU_SCENE_TASK_MESH=0).
+                    static bool s_taskFallbackReported = false;
+                    if (!s_taskFallbackReported) {
+                        s_taskFallbackReported = true;
+                        const char* reason =
+                            !g_rasterMode       ? "indexed raster mode not eligible"
+                            : !g_workReady      ? "cull work/raster selection not ready"
+                            : !g_geoIds         ? "geometry ids incompatible"
+                            : !g_noProjectLit   ? "ProjectLit meshes present (no task/mesh twins)"
+                            : !g_rangesResident ? "indexed ranges not resident"
+                            : !g_meshShader     ? "mesh shaders unsupported"
+                            : !g_main           ? "task/mesh main program missing"
+                            : !g_gi             ? "task/mesh GI program missing"
+                            : !g_depth          ? "task/mesh depth program missing"
+                            : (!g_noMasked && !g_maskedTwins) ? "masked task/mesh programs missing"
+                            : !g_gbuffer                      ? "task/mesh gbuffer program missing"
+                            : !g_compute                      ? "task/mesh compute programs missing"
+                                         : "topology validation or Prepare failed (see the "
+                                           "topology diagnostic)";
+                        std::fprintf(
+                            stderr, "[GpuSceneTaskMesh] fallback to indexed raster: %s\n", reason);
                     }
                 }
                 tour::gpu_scene::SceneIndirectArgsPush indirectArgs{};

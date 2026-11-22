@@ -2499,6 +2499,17 @@ class WorldRenderer : public IRenderer {
     std::array<smvk::ShaderProgram, size_t(DebugFs::Count)> m_gpuSceneTaskDebugPrograms{};
     bool m_gpuSceneTaskMeshActive = false;
     tour::gpu_scene::TaskMeshDispatchPlan m_gpuSceneTaskMeshPlan{};
+    // Cached tight per-instance group bound (TaskMeshInputs::totalGroups):
+    // recomputed only when the world topology revision changes (streaming
+    // loads/unloads districts), never per frame. See the "tighter per-instance
+    // sum" note in gpu_scene_task_mesh_runtime.h.
+    uint64_t m_gpuSceneTaskTotalGroups = 0;
+    uint64_t m_gpuSceneTaskTotalGroupsRevision = ~uint64_t(0);
+    // Tight per-instance group bound (TaskMeshInputs::totalGroups): sum of
+    // ceil(clusterCount/32) over every live instance, resolving each
+    // instance's mesh -> resident LODs -> submeshes -> gfx cluster count.
+    // Cached by m_gpuSceneTaskTotalGroupsRevision. See ComputeTaskMeshTotalGroups.
+    uint64_t ComputeTaskMeshTotalGroups(const smvk::gfx::State& gfx) const;
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneTaskTemporalClearModule{};
     smvk::ShaderProgram m_gpuSceneTaskTemporalClearProgram{};
     tour::gpu_scene::TaskMeshTemporalFrame m_gpuSceneTaskTemporalFrame{};
@@ -5126,6 +5137,10 @@ class WorldRenderer : public IRenderer {
     // WorldPartition layer: the streaming interest (position + velocity
     // lead) and the 256 m root-cell / 64 m subcell grid under its radius.
     bool m_worldMapCells = false;
+    // Scene-layer streaming tiles (the ScenePageStreamer districts): one
+    // AABB per manifest scene, colored by residency (loaded / in-flight /
+    // available) — the district-level streaming debug.
+    bool m_worldMapSceneTiles = false;
     // Per-draw collection scratch (the WorldFields debug API, reused).
     std::vector<worldfields::WorldFieldSystem::WorldFieldDebugBrick> m_worldMapBrickScratch;
     glm::vec2 m_worldMapCenter{0.0f, 0.0f}; // world XZ, canvas center

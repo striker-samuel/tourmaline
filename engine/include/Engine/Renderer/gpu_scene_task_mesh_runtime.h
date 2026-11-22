@@ -45,6 +45,13 @@ struct TaskMeshInputs {
     uint32_t clusterCount = 0, instanceCount = 0, indexBase = 0;
     uint32_t indexWordCapacity = 0, vertexCapacity = 0;
     uint32_t worstMeshlets = 0;
+    // Tight per-instance upper bound on the total mesh-group count (the
+    // "tighter per-instance sum" follow-up). When nonzero, Prepare sizes the
+    // groups buffer by this instead of the worst-case workCapacity *
+    // ceil(worstMeshlets/32) product — a single high-meshlet mesh (the
+    // island's 56k-cluster terrain section) inflates the worst case ~500x
+    // past the exact total and would otherwise reject the whole island.
+    uint64_t totalGroups = 0;
     uint32_t coneEnabled = 1;
     uint32_t debugMode = 0; // 0 lit, 1 meshlet colors, 2 LOD colors
     uint64_t hiz = 0;       // reversed-Z MIN Hi-Z BDA (meshlet occlusion)
@@ -236,7 +243,14 @@ class TaskMeshRuntime {
              (in.historyCapacity & (in.historyCapacity - 1u)) != 0u || in.historyCurrent == 0u))
             return false;
         const uint64_t groupsPerWork = (uint64_t(in.worstMeshlets) + 31u) / 32u;
-        const uint64_t upperBound = uint64_t(in.workCapacity) * groupsPerWork;
+        uint64_t upperBound = uint64_t(in.workCapacity) * groupsPerWork;
+        // Tight per-instance group sum: the caller's exact-ish bound is a
+        // valid upper bound too (it sums ceil(clusterCount/32) over every
+        // instance), so min() with the worst-case product stays >= the exact
+        // GPU total while shrinking the buffer ~500x on one-mesh-is-huge
+        // scenes. 0 = caller didn't compute one -> keep the worst case.
+        if (in.totalGroups != 0u && in.totalGroups < upperBound)
+            upperBound = in.totalGroups;
         if (upperBound == 0 || upperBound > MaxTaskGroups)
             return false;
         const uint32_t groupCapacity = uint32_t(upperBound);
