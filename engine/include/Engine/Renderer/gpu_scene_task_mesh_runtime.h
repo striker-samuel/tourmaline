@@ -229,7 +229,7 @@ class TaskMeshRuntime {
             in.sceneCandidateCount > 1048576u || in.meshCount > kMaxRasterDrawGroups ||
             in.aliasCount > kMaxRasterDrawGroups || in.geometryCount > kMaxRasterDrawGroups ||
             in.clusterCount > 4194304u || in.instanceCount > 4194304u ||
-            in.indexWordCapacity > 512u * 1024u * 1024u / 4u || in.vertexCapacity > 44739242u)
+            in.indexWordCapacity > 2048u * 1024u * 1024u / 4u || in.vertexCapacity > 44739242u)
             return false;
         if (in.historyCapacity != 0u &&
             (in.historyCapacity > 1048576u ||

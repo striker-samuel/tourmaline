@@ -17,11 +17,11 @@
 #define GS_MAX_CLUSTERS 4194304u
 #define GS_MAX_GEO 524288u
 #define GS_MAX_VERTICES 44739242u
-// The static index monoblock is 512 MiB (mem::config::Runtime().staticIndexHeap,
-// default) = 2^27 uint32 index words. The old 65536*128*3 (25M) cap rejected
-// large scenes (bistro's cluster index range is ~26.6M words) even though the
-// heap holds them; size the HLSL bound to the actual heap.
-#define GS_MAX_INDEX_WORDS (512u * 1024u * 1024u / 4u)
+// The static index monoblock is 2048 MiB (mem::config::Runtime().staticIndexHeap,
+// default; raised from 512 MiB) = 2^29 uint32 index words. The old 512 MiB cap
+// rejected large scenes (the caldera island's cluster index range is ~136M
+// words) even though the heap holds them; size the HLSL bound to the actual heap.
+#define GS_MAX_INDEX_WORDS (2048u * 1024u * 1024u / 4u)
 
 struct GsTaskGroup {
     uint workSlot;

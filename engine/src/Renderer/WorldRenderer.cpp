@@ -12982,12 +12982,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                 m_gpuSceneTaskComputePrograms.end(),
                                 [](const smvk::ShaderProgram& p) { return p.shaderCount == 1; })) {
                     const auto& gfx = m_gfxRenderer.State();
-                    // The task/mesh index bound mirrors the 512 MiB static index
-                    // monoblock (2^27 uint32 words); the old 65536*128*3 cap
-                    // rejected large scenes (bistro ~26.6M words) that the heap
-                    // actually holds. Mirrors GS_MAX_INDEX_WORDS in
-                    // gpu_scene_task_mesh.hlsli.
-                    constexpr uint32_t kTaskIndexWords = 512u * 1024u * 1024u / 4u;
+                    // The task/mesh index bound mirrors the 2048 MiB static index
+                    // monoblock (2^29 uint32 words; raised from 512 MiB). The old
+                    // 512 MiB cap rejected large scenes (caldera island ~136M
+                    // words) that the heap actually holds. Mirrors GS_MAX_INDEX_WORDS
+                    // in gpu_scene_task_mesh.hlsli.
+                    constexpr uint32_t kTaskIndexWords = 2048u * 1024u * 1024u / 4u;
                     constexpr uint32_t kTaskVertexLimit = 44739242u;
                     const uint64_t vertexCap64 =
                         smvk::staticVertexFmtHeap.m_staticVertexBlock.Capacity();
@@ -13009,9 +13009,23 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     // CLOSED here, and the silent indexed fallback made that
                     // impossible to see from the perf output alone.
                     const char* topoFailReason = nullptr;
-                    uint32_t topoFailMesh = 0u, topoFailCluster = 0u;
+                    // UINT32_MAX = the global gate failed (no specific mesh/cluster);
+                    // the per-mesh loop below overwrites these with a real index.
+                    uint32_t topoFailMesh = UINT32_MAX, topoFailCluster = UINT32_MAX;
+                    char topoFailBuf[320] = {};
                     if (!topologyValid) {
-                        topoFailReason = "empty cluster/index topology or index base over capacity";
+                        std::snprintf(topoFailBuf,
+                                      sizeof(topoFailBuf),
+                                      "empty cluster/index topology or index base over "
+                                      "capacity (meshes=%zu clusters=%zu filterIndices=%zu "
+                                      "clusterIndexBase=%u indexCap=%u vertexCap=%u)",
+                                      gfx.meshes.size(),
+                                      gfx.clusters.size(),
+                                      gfx.filterIndices.size(),
+                                      gfx.clusterIndexBase,
+                                      indexCap,
+                                      vertexCap);
+                        topoFailReason = topoFailBuf;
                     } else {
                         const auto tables =
                             GpuSceneIndexedTables(gfx, m_gpuScenePhysicalIndexedRanges);
@@ -13061,12 +13075,18 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         static bool s_taskTopoFailReported = false;
                         if (!s_taskTopoFailReported) {
                             s_taskTopoFailReported = true;
-                            std::fprintf(stderr,
-                                         "[GpuSceneTaskMesh] topology rejected (indexed fallback): "
-                                         "%s (mesh=%u cluster=%u)\n",
-                                         topoFailReason,
-                                         topoFailMesh,
-                                         topoFailCluster);
+                            if (topoFailMesh != UINT32_MAX)
+                                std::fprintf(stderr,
+                                             "[GpuSceneTaskMesh] topology rejected (indexed "
+                                             "fallback): %s (mesh=%u cluster=%u)\n",
+                                             topoFailReason,
+                                             topoFailMesh,
+                                             topoFailCluster);
+                            else
+                                std::fprintf(stderr,
+                                             "[GpuSceneTaskMesh] topology rejected (indexed "
+                                             "fallback): %s\n",
+                                             topoFailReason);
                         }
                     }
                     if (topologyValid) {
