@@ -3218,6 +3218,52 @@ void TestBakedPlacement() {
         },
         refused);
     Check(!refusedOk, "baked.resolve-refuses-out-of-range");
+
+    // Cook + cooked round-trip: resolve the prototypes + bucket the points into
+    // the pak-able cooked form, then serialize/deserialize losslessly.
+    BakedPlacementCooked cooked;
+    size_t cookedSkipped = 0;
+    const bool cookedOk = CookBakedPlacement(
+        asset,
+        16.0f,
+        [](uint32_t meshId, uint32_t surfaceIndex, BakedSurfaceRef& out) {
+            out.indexCount = 300;
+            out.firstIndex = meshId * 64u + surfaceIndex * 16u;
+            out.vertexOffset = 0;
+            out.boundsMin = glm::vec3(-1.0f);
+            out.boundsMax = glm::vec3(1.0f);
+            return meshId < 3u;
+        },
+        cooked,
+        &cookedSkipped);
+    Check(cookedOk && cooked.protoGeometry.size() == 3 && cooked.tiles.size() == 2 &&
+              cooked.tileSize == 16.0f && cookedSkipped == 1,
+          "baked.cook");
+    Check(cooked.boundsMin == glm::vec3(1.0f, 0.0f, 1.0f) &&
+              cooked.boundsMax == glm::vec3(17.0f, 0.0f, 3.0f),
+          "baked.cook-cloud-bounds");
+    std::vector<uint8_t> cookedBlob;
+    Check(SerializeBakedPlacementCooked(cooked, cookedBlob), "baked.cooked-serialize");
+    BakedPlacementCooked cookedBack;
+    Check(DeserializeBakedPlacementCooked(cookedBlob.data(), cookedBlob.size(), cookedBack),
+          "baked.cooked-deserialize");
+    Check(cookedBack.tileSize == 16.0f && cookedBack.protoGeometry.size() == 3 &&
+              cookedBack.tiles.size() == 2 && cookedBack.instancerPath == cooked.instancerPath,
+          "baked.cooked-roundtrip-shape");
+    bool cookedExact = std::memcmp(cookedBack.protoGeometry.data(),
+                                   cooked.protoGeometry.data(),
+                                   sizeof(BakedProtoGeometry) * 3) == 0 &&
+                       cookedBack.tiles.size() == cooked.tiles.size();
+    for (size_t i = 0; cookedExact && i < cooked.tiles.size(); ++i) {
+        const BakedPlacementTile& a = cooked.tiles[i];
+        const BakedPlacementTile& b = cookedBack.tiles[i];
+        cookedExact = a.key == b.key && a.boundsMin == b.boundsMin && a.boundsMax == b.boundsMax &&
+                      a.localProtos == b.localProtos && a.instances.size() == b.instances.size() &&
+                      std::memcmp(a.instances.data(),
+                                  b.instances.data(),
+                                  sizeof(RenderInstance) * a.instances.size()) == 0;
+    }
+    Check(cookedExact, "baked.cooked-roundtrip-exact");
 }
 
 int main() {

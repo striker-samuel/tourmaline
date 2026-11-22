@@ -67,6 +67,8 @@ struct BakedProtoGeometry {
     uint32_t firstIndex = 0;
     int32_t vertexOffset = 0;
 };
+static_assert(sizeof(BakedProtoGeometry) == 40,
+              "BakedProtoGeometry moved — update the cooked serialization");
 
 // A resolved surface view: the fields the cook/load resolution reads from a
 // static mesh's surface (indexed range) + the mesh bounds. Decouples the
@@ -172,6 +174,209 @@ struct BakedSurfaceRef {
         return a.key.z < b.key.z;
     });
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// The cooked form: the runtime's direct inputs (resolved proto geometry + the
+// bucketed tiles), produced at cook and serialized into the pak. Loaded at
+// startup by the host and fed to BakedPlacementRuntime (tiles + protoGeometry).
+// ---------------------------------------------------------------------------
+struct BakedPlacementCooked {
+    std::vector<BakedProtoGeometry> protoGeometry; // by GLOBAL renderPrototypeId
+    std::vector<BakedPlacementTile> tiles;         // bucketed, sorted by key
+    float tileSize = 0.0f;
+    glm::vec3 boundsMin{0.0f};
+    glm::vec3 boundsMax{0.0f};
+    std::string instancerPath;
+
+    void clear() {
+        protoGeometry.clear();
+        tiles.clear();
+        tileSize = 0.0f;
+        boundsMin = boundsMax = glm::vec3(0.0f);
+        instancerPath.clear();
+    }
+    [[nodiscard]] bool empty() const {
+        return tiles.empty();
+    }
+};
+
+// Cooks a flat imported asset: resolves the render prototypes (via the
+// mesh-registry callback) + buckets the points into tiles with local palettes.
+// The whole cloud's bounds are the union of the bucketed tiles (valid even when
+// the import left the flat envelope unset). Fails only when a mesh/surface is
+// out of range (never a partial cook).
+[[nodiscard]] inline bool CookBakedPlacement(
+    const BakedPlacementAsset& asset,
+    float tileSize,
+    const std::function<bool(uint32_t meshId, uint32_t surfaceIndex, BakedSurfaceRef& out)>&
+        resolve,
+    BakedPlacementCooked& out,
+    size_t* skippedNeedsBake = nullptr) {
+    out.clear();
+    if (tileSize <= 0.0f)
+        tileSize = asset.tileSize > 0.0f ? asset.tileSize : 64.0f;
+    if (!ResolveBakedPrototypes(asset, resolve, out.protoGeometry))
+        return false;
+    out.tiles = BucketBakedPlacement(asset, tileSize, skippedNeedsBake);
+    out.tileSize = tileSize;
+    if (!out.tiles.empty()) {
+        out.boundsMin = out.tiles.front().boundsMin;
+        out.boundsMax = out.tiles.front().boundsMax;
+        for (const BakedPlacementTile& t : out.tiles) {
+            out.boundsMin = glm::min(out.boundsMin, t.boundsMin);
+            out.boundsMax = glm::max(out.boundsMax, t.boundsMax);
+        }
+    }
+    out.instancerPath = asset.instancerPath;
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Cooked binary serialization (little-endian, versioned, lossless): the
+// round-trip test asserts serialize(deserialize(x)) == x, i.e. the resolved
+// index ranges, tile palettes and quaternion instances survive exactly.
+// ---------------------------------------------------------------------------
+inline constexpr uint32_t kBakedPlacementCookedMagic = 0x424B434B; // 'BKCK'
+inline constexpr uint32_t kBakedPlacementCookedVersion = 1;
+
+[[nodiscard]] inline bool SerializeBakedPlacementCooked(const BakedPlacementCooked& cooked,
+                                                        std::vector<uint8_t>& out) {
+    out.clear();
+    const uint32_t protoCount = uint32_t(cooked.protoGeometry.size());
+    const uint32_t tileCount = uint32_t(cooked.tiles.size());
+    const uint32_t pathLen = uint32_t(cooked.instancerPath.size());
+    if (protoCount != cooked.protoGeometry.size() || tileCount != cooked.tiles.size() ||
+        pathLen != cooked.instancerPath.size())
+        return false;
+    size_t body = 5 * sizeof(uint32_t) +  // magic,ver,protoCount,tileCount,pathLen
+                  sizeof(float) +         // tileSize
+                  2 * sizeof(glm::vec3) + // boundsMin/Max
+                  sizeof(BakedProtoGeometry) * protoCount + pathLen;
+    for (const BakedPlacementTile& t : cooked.tiles) {
+        body += 3 * sizeof(int32_t) + 2 * sizeof(glm::vec3); // key + tile bounds
+        body += sizeof(uint32_t) + sizeof(uint32_t) * t.localProtos.size();
+        body += sizeof(uint32_t) + sizeof(RenderInstance) * t.instances.size();
+    }
+    out.resize(body);
+    size_t off = 0;
+    auto put = [&](const void* p, size_t n) {
+        if (off + n > out.size())
+            return false;
+        std::memcpy(out.data() + off, p, n);
+        off += n;
+        return true;
+    };
+    uint32_t u;
+    u = kBakedPlacementCookedMagic;
+    if (!put(&u, 4))
+        return false;
+    u = kBakedPlacementCookedVersion;
+    if (!put(&u, 4))
+        return false;
+    u = protoCount;
+    if (!put(&u, 4))
+        return false;
+    u = tileCount;
+    if (!put(&u, 4))
+        return false;
+    u = pathLen;
+    if (!put(&u, 4))
+        return false;
+    if (!put(&cooked.tileSize, 4))
+        return false;
+    if (!put(&cooked.boundsMin, sizeof(glm::vec3)))
+        return false;
+    if (!put(&cooked.boundsMax, sizeof(glm::vec3)))
+        return false;
+    if (protoCount && !put(cooked.protoGeometry.data(), sizeof(BakedProtoGeometry) * protoCount))
+        return false;
+    for (const BakedPlacementTile& t : cooked.tiles) {
+        const int32_t kx = t.key.x, ky = t.key.y, kz = t.key.z;
+        if (!put(&kx, 4) || !put(&ky, 4) || !put(&kz, 4))
+            return false;
+        if (!put(&t.boundsMin, sizeof(glm::vec3)) || !put(&t.boundsMax, sizeof(glm::vec3)))
+            return false;
+        u = uint32_t(t.localProtos.size());
+        if (!put(&u, 4))
+            return false;
+        if (u && !put(t.localProtos.data(), sizeof(uint32_t) * u))
+            return false;
+        u = uint32_t(t.instances.size());
+        if (!put(&u, 4))
+            return false;
+        if (u && !put(t.instances.data(), sizeof(RenderInstance) * u))
+            return false;
+    }
+    if (pathLen && !put(cooked.instancerPath.data(), pathLen))
+        return false;
+    return off == out.size();
+}
+
+[[nodiscard]] inline bool DeserializeBakedPlacementCooked(const uint8_t* data,
+                                                          size_t size,
+                                                          BakedPlacementCooked& out) {
+    out.clear();
+    size_t off = 0;
+    auto get = [&](void* p, size_t n) {
+        if (off + n > size)
+            return false;
+        std::memcpy(p, data + off, n);
+        off += n;
+        return true;
+    };
+    uint32_t magic = 0, version = 0, protoCount = 0, tileCount = 0, pathLen = 0;
+    if (!get(&magic, 4) || magic != kBakedPlacementCookedMagic)
+        return false;
+    if (!get(&version, 4) || version != kBakedPlacementCookedVersion)
+        return false;
+    if (!get(&protoCount, 4))
+        return false;
+    if (!get(&tileCount, 4))
+        return false;
+    if (!get(&pathLen, 4))
+        return false;
+    if (!get(&out.tileSize, 4))
+        return false;
+    if (!get(&out.boundsMin, sizeof(glm::vec3)))
+        return false;
+    if (!get(&out.boundsMax, sizeof(glm::vec3)))
+        return false;
+    if (protoCount) {
+        out.protoGeometry.resize(protoCount);
+        if (!get(out.protoGeometry.data(), sizeof(BakedProtoGeometry) * protoCount))
+            return false;
+    }
+    out.tiles.resize(tileCount);
+    for (BakedPlacementTile& t : out.tiles) {
+        int32_t kx = 0, ky = 0, kz = 0;
+        if (!get(&kx, 4) || !get(&ky, 4) || !get(&kz, 4))
+            return false;
+        t.key = TileID{kx, ky, kz};
+        if (!get(&t.boundsMin, sizeof(glm::vec3)) || !get(&t.boundsMax, sizeof(glm::vec3)))
+            return false;
+        uint32_t n = 0;
+        if (!get(&n, 4))
+            return false;
+        if (n) {
+            t.localProtos.resize(n);
+            if (!get(t.localProtos.data(), sizeof(uint32_t) * n))
+                return false;
+        }
+        if (!get(&n, 4))
+            return false;
+        if (n) {
+            t.instances.resize(n);
+            if (!get(t.instances.data(), sizeof(RenderInstance) * n))
+                return false;
+        }
+    }
+    if (pathLen) {
+        out.instancerPath.resize(pathLen);
+        if (!get(out.instancerPath.data(), pathLen))
+            return false;
+    }
+    return off == size;
 }
 
 // ---------------------------------------------------------------------------
@@ -546,10 +751,14 @@ inline void BakedPlacementRuntime::SelectTiles(const glm::vec4* interests,
 
 // COMPAT (the namespace/RHI boundary audit): smvk::placement aliases.
 namespace smvk::placement {
+using ::tour::placement::BakedPlacementCooked;
 using ::tour::placement::BakedPlacementRuntime;
 using ::tour::placement::BakedPlacementTile;
 using ::tour::placement::BakedProtoGeometry;
 using ::tour::placement::BakedSurfaceRef;
 using ::tour::placement::BucketBakedPlacement;
+using ::tour::placement::CookBakedPlacement;
+using ::tour::placement::DeserializeBakedPlacementCooked;
 using ::tour::placement::ResolveBakedPrototypes;
+using ::tour::placement::SerializeBakedPlacementCooked;
 } // namespace smvk::placement
