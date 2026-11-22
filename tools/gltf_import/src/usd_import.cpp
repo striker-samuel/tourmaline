@@ -1008,6 +1008,15 @@ const tour::placement::BakedPlacementAsset* LastImportedBakedPlacement() {
     return g_bakedPlacement.empty() ? nullptr : &g_bakedPlacement;
 }
 
+// The native derivation's mutator: resolves each render prototype's meshId
+// from the tinygltf mesh index to the engine's WorldPageStaticMeshHandle pool
+// index (the identity the cook/runtime use). The importer records the tinygltf
+// index (the only identity available pre-decode); DeriveNativeAssets rewrites
+// it once the cluster's URI -> handle map exists.
+tour::placement::BakedPlacementAsset* MutableLastImportedBakedPlacement() {
+    return &g_bakedPlacement;
+}
+
 bool LoadUsdFileAsModel(tinygltf::Model& model,
                         const std::filesystem::path& path,
                         std::vector<std::string>& deps) {

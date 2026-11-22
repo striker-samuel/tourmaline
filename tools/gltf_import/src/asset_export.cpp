@@ -225,6 +225,31 @@ bool ReadFileBytes(const std::filesystem::path& path, std::vector<uint8_t>& out,
     return true;
 }
 
+// Parses a mesh URI fragment "mesh.<N>/prim.<M>" -> (N, M). Returns false when
+// the fragment is not that exact shape (a cluster-local fallback URI, or a
+// pre-URI asset). The tinygltf mesh index N + primitive index M are the
+// SOURCE identity the baked placement's render prototypes record pre-decode.
+bool ParseMeshPrimFragment(const std::string& frag, uint32_t& mesh, uint32_t& prim) {
+    if (frag.rfind("mesh.", 0) != 0)
+        return false;
+    const size_t slash = frag.find("/prim.");
+    if (slash == std::string::npos)
+        return false;
+    const std::string m = frag.substr(5, slash - 5);
+    const std::string p = frag.substr(slash + 6);
+    char* end = nullptr;
+    const long mv = std::strtol(m.c_str(), &end, 10);
+    if (!end || *end != '\0' || mv < 0)
+        return false;
+    end = nullptr;
+    const long pv = std::strtol(p.c_str(), &end, 10);
+    if (!end || *end != '\0' || pv < 0)
+        return false;
+    mesh = uint32_t(mv);
+    prim = uint32_t(pv);
+    return true;
+}
+
 // File-name-safe asset label (lower/upper/digits/_/-; the rest -> '_').
 std::string SanitizeLabel(std::string s) {
     for (char& c : s)
@@ -1793,6 +1818,29 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
                 mesh.instances.push_back(inst);
                 ++stats.instances;
             }
+            // Resolve the baked placement's mesh identity: the USD adapter
+            // recorded the tinygltf mesh index (the only identity available
+            // pre-decode); the native derivation maps it to the engine's
+            // WorldPageStaticMeshHandle pool index (the identity the cook and
+            // runtime use). Keyed by (tinygltf mesh N, primitive M).
+            if (auto* baked = MutableLastImportedBakedPlacement()) {
+                std::map<std::pair<uint32_t, uint32_t>, uint32_t> poolOf;
+                for (const auto& [poolIdx, blobIdx] : blobOf) {
+                    uint32_t n = 0, m = 0;
+                    if (blobIdx < mesh.geometry.size() &&
+                        ParseMeshPrimFragment(mesh.geometry[blobIdx].uriFragment, n, m))
+                        poolOf[{n, m}] = poolIdx;
+                }
+                for (auto& rp : baked->renderPrototypes) {
+                    const auto it = poolOf.find({rp.meshId, rp.surfaceIndex});
+                    if (it != poolOf.end()) {
+                        rp.meshId = it->second; // the engine pool index
+                        rp.surfaceIndex = 0;    // the handle encodes the primitive
+                    } else {
+                        rp.meshId = 0xFFFFFFFFu; // loud: unresolved mesh
+                    }
+                }
+            }
             // Lights (the pool defs + node links).
             for (const LightRow& _row : scene.tables.lights) {
                 const NodeId node = _row.node;
@@ -2161,11 +2209,19 @@ bool ImportMeshSource(const std::filesystem::path& gltfPath,
     std::vector<std::string> extraDeps;
     if (!LoadModelFromSourceFile(model, gltfPath.string().c_str(), &extraDeps))
         return giveUp("source parse failed: " + gltfPath.generic_string());
+    smvk::source::Scene scene;
+    std::string conversionError;
+    if (!DecodeGltfSourceScene(model, scene, &conversionError))
+        return giveUp(conversionError);
+    if (!DeriveNativeAssets(
+            scene, gltfPath, gltfGuid, prevIdentity, config, outManifest, outStats, err, extraDeps))
+        return false;
     // Persist the baked placement cloud (the USD PointInstancer expansion)
-    // beside the source: the cook step consumes it to resolve the render
-    // prototypes + bucket the tiles. Non-USD sources leave it absent
-    // (LastImportedBakedPlacement returns null). Leading `::tour` — inside
-    // smvk::assets the bare `tour` is the `::tour::asset` alias (tour.h).
+    // beside the source AFTER the derivation resolved its mesh identity
+    // (tinygltf mesh index -> the engine's WorldPageStaticMeshHandle pool
+    // index). Non-USD sources leave it absent (the global is null). Leading
+    // `::tour` — inside smvk::assets the bare `tour` is the `::tour::asset`
+    // alias (tour.h).
     if (const ::tour::placement::BakedPlacementAsset* baked = LastImportedBakedPlacement()) {
         std::vector<uint8_t> blob;
         if (!::tour::placement::SerializeBakedPlacement(*baked, blob))
@@ -2181,12 +2237,7 @@ bool ImportMeshSource(const std::filesystem::path& gltfPath,
                      gltfPath.stem().string().c_str());
         std::fflush(stderr);
     }
-    smvk::source::Scene scene;
-    std::string conversionError;
-    if (!DecodeGltfSourceScene(model, scene, &conversionError))
-        return giveUp(conversionError);
-    return DeriveNativeAssets(
-        scene, gltfPath, gltfGuid, prevIdentity, config, outManifest, outStats, err, extraDeps);
+    return true;
 }
 
 std::string SourceAssetGuid(const std::filesystem::path& gltfPath) {

@@ -430,6 +430,7 @@ namespace tour::placement {
 struct BakedPlacementAsset;
 }
 const tour::placement::BakedPlacementAsset* LastImportedBakedPlacement();
+tour::placement::BakedPlacementAsset* MutableLastImportedBakedPlacement();
 
 // Source adapter boundary: tinygltf types never reach native asset derivation.
 bool DecodeGltfSourceScene(const tinygltf::Model& input,

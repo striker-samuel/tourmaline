@@ -83,10 +83,12 @@ struct BakedSurfaceRef {
 
 // Resolves the asset's render prototypes to GPU geometry via a mesh-registry
 // callback: resolve(meshId, surfaceIndex, out) fills the indexed range + bounds
-// for one (mesh, surface); returning false for an out-of-range mesh/surface
-// refuses the WHOLE asset (never a silent mis-reference). The output is keyed
-// by the asset's GLOBAL renderPrototypeId, so the tile-local palettes built by
-// BucketBakedPlacement resolve through it directly.
+// for one render prototype. meshId is the ENGINE's WorldPageStaticMeshHandle
+// pool index (resolved at import by DeriveNativeAssets), surfaceIndex is 0 (the
+// handle already encodes the primitive). Returning false for an out-of-range
+// mesh refuses the WHOLE asset (never a silent mis-reference). The output is
+// keyed by the asset's GLOBAL renderPrototypeId, so the tile-local palettes
+// built by BucketBakedPlacement resolve through it directly.
 [[nodiscard]] inline bool ResolveBakedPrototypes(
     const BakedPlacementAsset& asset,
     const std::function<bool(uint32_t meshId, uint32_t surfaceIndex, BakedSurfaceRef& out)>&

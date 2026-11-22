@@ -40,12 +40,14 @@ namespace tour::placement {
 // A leaf mesh with several primitives expands to several render prototypes.
 // ---------------------------------------------------------------------------
 struct BakedRenderPrototype {
-    // The leaf mesh. During import this is the tinygltf mesh index; the native
-    // derivation resolves it to a WorldPage static-mesh handle and, at cook,
-    // to a world mesh index (World::meshLocations) + physical indexed range.
+    // The leaf mesh, as the ENGINE's WorldPageStaticMeshHandle pool index —
+    // NOT the tinygltf mesh index. The native derivation (DeriveNativeAssets)
+    // resolves the importer's tinygltf index to this pool index; the cook then
+    // resolves it to a world mesh index (World::meshLocations) + physical
+    // indexed range.
     uint32_t meshId = 0;
     uint32_t materialId = 0;   // world material (resolved cook-side)
-    uint32_t surfaceIndex = 0; // authored primitive within the leaf mesh
+    uint32_t surfaceIndex = 0; // 0 after resolution — the handle encodes the primitive
     uint32_t flags = 0;        // reserved (e.g. future doubleSided/masked hints)
 };
 static_assert(sizeof(BakedRenderPrototype) == 16, "keep the packed layout");
