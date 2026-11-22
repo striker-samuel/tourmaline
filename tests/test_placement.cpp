@@ -13,6 +13,8 @@
 #include <limits>
 #include <vector>
 
+#include <Engine/Placement/baked_placement.h>
+#include <Engine/Placement/baked_placement_runtime.h>
 #include <Engine/Placement/placement_cache.h>
 #include <Engine/Placement/placement_domain.h>
 #include <Engine/Placement/placement_draw.h>
@@ -3106,6 +3108,87 @@ void TestWorldResidency() {
     }
 }
 
+void TestBakedPlacement() {
+    using namespace smvk::placement;
+    // ---- Build a small asset: 4 live points across 2 tiles + 3 prototypes,
+    // plus one NeedsGeometryBake point that the tiling must skip (not drop
+    // silently — it is counted and reported). ----
+    BakedPlacementAsset asset;
+    BakedRenderPrototype rp0, rp1, rp2;
+    rp0.meshId = 0;
+    rp1.meshId = 1;
+    rp2.meshId = 2;
+    asset.renderPrototypes = {rp0, rp1, rp2};
+    const float rotId[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    const float rotTilt[4] = {0.0f, 0.38268343f, 0.0f, 0.92387953f}; // +45° pitch
+    const auto add = [&](glm::vec3 p, const float r[4], uint32_t proto, uint32_t lo, uint32_t f) {
+        BakedPlacementPoint pt;
+        pt.position = p;
+        for (int i = 0; i < 4; ++i)
+            pt.rotation[i] = r[i];
+        pt.scale = glm::vec3(2.0f);
+        pt.renderPrototypeId = proto;
+        pt.stableId.w[0] = lo;
+        pt.flags = f;
+        asset.points.push_back(pt);
+    };
+    add({1.0f, 0.0f, 1.0f}, rotId, 0, 100, 0);   // tile (0,0) proto 0
+    add({2.0f, 0.0f, 2.0f}, rotTilt, 0, 101, 0); // tile (0,0) proto 0 (tilt preserved)
+    add({3.0f, 0.0f, 3.0f}, rotId, 1, 102, 0);   // tile (0,0) proto 1
+    add({17.0f, 0.0f, 1.0f}, rotId, 2, 103, 0);  // tile (1,0) proto 2
+    add({4.0f, 0.0f, 4.0f},
+        rotId,
+        0,
+        104,
+        tour::placement::BakedPointFlag::NeedsGeometryBake); // skipped
+
+    size_t skipped = 0;
+    std::vector<BakedPlacementTile> tiles = BucketBakedPlacement(asset, 16.0f, &skipped);
+    Check(skipped == 1, "baked.tiling.skips-needs-bake");
+    Check(tiles.size() == 2, "baked.tiling.two-tiles");
+    Check(tiles[0].key == TileID{0, 0, 0} && tiles[1].key == TileID{1, 0, 0},
+          "baked.tiling.sorted-keys");
+
+    // Tile (0,0): 3 instances, local palette {0,1}; tile (1,0): 1 instance, {2}.
+    const BakedPlacementTile& t0 = tiles[0];
+    const BakedPlacementTile& t1 = tiles[1];
+    Check(t0.instances.size() == 3 && t1.instances.size() == 1, "baked.tiling.instance-counts");
+    Check(t0.localProtos.size() == 2 && t0.localProtos[0] == 0 && t0.localProtos[1] == 1,
+          "baked.tiling.local-palette-t0");
+    Check(t1.localProtos.size() == 1 && t1.localProtos[0] == 2, "baked.tiling.local-palette-t1");
+
+    // The remap: tile (0,0) instances reference LOCAL indices 0/0/1 (not 0/0/1
+    // coincidentally — the third instance's global proto 1 remapped to local 1).
+    Check(t0.instances[0].prototypeId == 0 && t0.instances[1].prototypeId == 0 &&
+              t0.instances[2].prototypeId == 1,
+          "baked.tiling.remap-local-indices");
+    Check(t1.instances[0].prototypeId == 0, "baked.tiling.remap-t1");
+
+    // Transform fidelity: position + the full quaternion (the terrain-aligned
+    // tilt survives — the whole point of the full-quaternion instance) + the
+    // uniform scale + the authored stableLow lane.
+    Check(t0.instances[0].position == glm::vec3(1, 0, 1) &&
+              t0.instances[0].scale == glm::vec3(2.0f) && t0.instances[0].stableLow == 100,
+          "baked.tiling.instance-fidelity");
+    Check(std::abs(t0.instances[1].rotation.y - rotTilt[1]) < 1e-6f &&
+              std::abs(t0.instances[1].rotation.w - rotTilt[3]) < 1e-6f,
+          "baked.tiling.quaternion-tilt-preserved");
+
+    // Serialization round-trip (Phase 1) — exact byte-for-byte point fidelity.
+    std::vector<uint8_t> blob;
+    Check(SerializeBakedPlacement(asset, blob), "baked.serialize");
+    BakedPlacementAsset back;
+    Check(DeserializeBakedPlacement(blob.data(), blob.size(), back), "baked.deserialize");
+    Check(back.renderPrototypes.size() == 3 && back.points.size() == 5, "baked.roundtrip-counts");
+    Check(std::memcmp(back.points.data(),
+                      asset.points.data(),
+                      sizeof(BakedPlacementPoint) * asset.points.size()) == 0 &&
+              std::memcmp(back.renderPrototypes.data(),
+                          asset.renderPrototypes.data(),
+                          sizeof(BakedRenderPrototype) * 3) == 0,
+          "baked.roundtrip-exact");
+}
+
 int main() {
     TestPaintedPointCloud();
     TestStableDeterminism();
@@ -3149,6 +3232,7 @@ int main() {
     TestTerrainRaycast();
     TestWorldBridge();
     TestWorldResidency();
+    TestBakedPlacement();
     std::cout << (g_failures == 0 ? "ALL PASS " : "FAILURES ") << g_checks << " checks\n";
     return g_failures == 0 ? 0 : 1;
 }

@@ -49,6 +49,7 @@
 #include <volk.h>
 
 #include <Engine/App/cluster.h>
+#include <Engine/Placement/baked_placement_runtime.h>
 #include <Engine/Placement/placement_domain.h>
 #include <Engine/Placement/placement_draw.h>
 #include <Engine/Placement/placement_eval.h>
@@ -2869,6 +2870,120 @@ int main() {
         PlacementIndirectCmd cmdOut;
         ok = rm.DownloadDataFromBuffer(bv.indirect, &cmdOut, kPlacementIndirectStride);
         Check(ok && cmdOut.instanceCount == 3 && cmdOut.indexCount == 300, "gpu.smoke-indirect");
+    }
+
+    // =====================================================================
+    // Baked placement runtime: bucketed authored points + TILE-LOCAL proto
+    // palettes drive the PR03 chain per tile (the Phase-3 feed for the
+    // PointInstancer cloud — no procedural scatter, no constraint).
+    // =====================================================================
+    std::fprintf(stderr, "[place-gpu] stage: baked placement runtime\n");
+    {
+        // Two GLOBAL render prototypes; points in two tiles, each referencing
+        // a DIFFERENT subset so the per-tile palettes differ (the whole point
+        // of the tile-local palette).
+        BakedPlacementAsset asset;
+        BakedRenderPrototype rp0, rp1;
+        rp0.meshId = 0;
+        rp1.meshId = 1;
+        asset.renderPrototypes = {rp0, rp1};
+        const auto add = [&](glm::vec3 p, uint32_t proto, uint32_t lo) {
+            BakedPlacementPoint pt;
+            pt.position = p;
+            pt.rotation[0] = pt.rotation[1] = pt.rotation[2] = 0.0f;
+            pt.rotation[3] = 1.0f;
+            pt.scale = glm::vec3(1.0f);
+            pt.renderPrototypeId = proto;
+            pt.stableId.w[0] = lo;
+            pt.flags = 0;
+            asset.points.push_back(pt);
+        };
+        add({0, 0, 0}, 0, 1);  // tile (0,0) proto 0
+        add({1, 0, 0}, 0, 2);  // tile (0,0) proto 0
+        add({2, 0, 0}, 1, 3);  // tile (0,0) proto 1
+        add({20, 0, 0}, 1, 4); // tile (1,0) proto 1 (tileSize 16)
+
+        std::vector<BakedPlacementTile> tiles = BucketBakedPlacement(asset, 16.0f);
+        Check(tiles.size() == 2, "gpu.baked-tiles");
+
+        // Resolved geometry: proto 0 -> 300 idx @ firstIndex 0; proto 1 ->
+        // 300 idx @ firstIndex 64 (distinct index ranges to prove the local
+        // palette resolves the RIGHT global proto's range per tile).
+        std::vector<BakedProtoGeometry> geo(2);
+        geo[0].boundsMin = glm::vec3(-1, -1, -1);
+        geo[0].boundsMax = glm::vec3(1, 1, 1);
+        geo[0].indexCount = 300;
+        geo[0].firstIndex = 0;
+        geo[1].boundsMin = glm::vec3(-1, -1, -1);
+        geo[1].boundsMax = glm::vec3(1, 1, 1);
+        geo[1].indexCount = 300;
+        geo[1].firstIndex = 64;
+
+        BakedPlacementRuntime brt;
+        brt.tiles = &tiles;
+        brt.protoGeometry = &geo;
+        brt.tileSize = 16.0f;
+        brt.slotBudget = 2;
+        brt.viewBudget = 1;
+        brt.maxInstancesPerTile = 64;
+        Check(brt.Create(rm, rg) && brt.Valid(), "gpu.baked-create");
+
+        const glm::vec4 interest[1] = {glm::vec4(-8.0f, -8.0f, 32.0f, 32.0f)};
+        host.RunFrame([&](smvk::RenderGraph& g) {
+            brt.BeginFrame(rm, g, interest, 1);
+            brt.RecordCullChain(rm,
+                                g,
+                                0,
+                                viewSlabL,
+                                rm.GetBufferDeviceAddress(viewSlab),
+                                0,
+                                glm::vec3(0, 5, 0),
+                                kPlacementCullFrustum);
+        });
+        rm.FlushUploads();
+        rm.WaitForUploads();
+
+        int32_t slotT0 = -1, slotT1 = -1;
+        for (size_t s = 0; s < brt.active.size(); ++s) {
+            if (!brt.active[s].published)
+                continue;
+            if (brt.active[s].key == TileID{0, 0, 0})
+                slotT0 = int32_t(s);
+            if (brt.active[s].key == TileID{1, 0, 0})
+                slotT1 = int32_t(s);
+        }
+        Check(slotT0 >= 0 && slotT1 >= 0, "gpu.baked-two-published");
+        Check(brt.TileProtoCount(slotT0) == 2 && brt.TileProtoCount(slotT1) == 1,
+              "gpu.baked-local-proto-counts");
+
+        if (slotT0 >= 0) {
+            const PlacementVisibleSet* vs = brt.VisSet(slotT0);
+            Check(vs != nullptr, "gpu.baked-visset-t0");
+            PlacementBinsGpu binsOut;
+            ok = rm.DownloadDataFromBuffer(vs->bins, &binsOut, sizeof(binsOut));
+            Check(ok && binsOut.counts[0] == 2 && binsOut.counts[1] == 1 && binsOut.total == 3,
+                  "gpu.baked-t0-bins");
+            PlacementIndirectCmd cmds[2];
+            ok = rm.DownloadDataFromBuffer(vs->indirect, cmds, kPlacementIndirectStride * 2);
+            Check(ok && cmds[0].instanceCount == 2 && cmds[0].indexCount == 300 &&
+                      cmds[0].firstIndex == 0 && cmds[1].instanceCount == 1 &&
+                      cmds[1].indexCount == 300 && cmds[1].firstIndex == 64,
+                  "gpu.baked-t0-indirect");
+        }
+        if (slotT1 >= 0) {
+            const PlacementVisibleSet* vs = brt.VisSet(slotT1);
+            Check(vs != nullptr, "gpu.baked-visset-t1");
+            PlacementBinsGpu binsOut;
+            ok = rm.DownloadDataFromBuffer(vs->bins, &binsOut, sizeof(binsOut));
+            Check(ok && binsOut.counts[0] == 1 && binsOut.total == 1, "gpu.baked-t1-bins");
+            PlacementIndirectCmd cmd;
+            ok = rm.DownloadDataFromBuffer(vs->indirect, &cmd, kPlacementIndirectStride);
+            // Tile (1,0)'s LOCAL proto 0 is GLOBAL proto 1 -> firstIndex 64
+            // (the palette resolves the correct global index range per tile).
+            Check(ok && cmd.instanceCount == 1 && cmd.indexCount == 300 && cmd.firstIndex == 64,
+                  "gpu.baked-t1-indirect-local-palette");
+        }
+        brt.Destroy(rg);
     }
 
     std::printf("[place-gpu] done: %d checks, %d failures\n", g_checks, g_failures);
