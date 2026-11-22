@@ -10722,6 +10722,26 @@ void WorldRenderer::RefreshGpuScenePhysicalIndexedRanges(bool nativeOnly) {
                 (nativeOnly || multiSurface)
                     ? UINT32_MAX
                     : smvk::gfx::GfxMeshForLod(m_gfxRenderer.State(), worldMesh, lod);
+            if (gfxId >= conflicting.size()) {
+                // Native-suffix geometry: makes the task/mesh backend
+                // incompatible. Log the exact trigger (nativeOnly vs
+                // multiSurface vs a GfxMeshForLod miss returning UINT32_MAX).
+                static uint32_t s_incompatReported = 0;
+                if (s_incompatReported < 12) {
+                    ++s_incompatReported;
+                    std::fprintf(stderr,
+                                 "[GpuSceneTaskMesh] native-suffix worldMesh=%u lod=%u "
+                                 "surfaces=%u nativeOnly=%d multiSurface=%d gfxId=%u "
+                                 "gfxMeshes=%zu (-> ids incompatible)\n",
+                                 worldMesh,
+                                 lod,
+                                 surfaceCount,
+                                 nativeOnly ? 1 : 0,
+                                 multiSurface ? 1 : 0,
+                                 gfxId,
+                                 conflicting.size());
+                }
+            }
             surfaceIds.resize(surfaceCount);
             for (uint32_t s = 0; s < surfaceCount; ++s) {
                 surfaceIds[s] = tour::gpu_scene::RegisterNativeIndexedRange(
@@ -13467,30 +13487,34 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                      taskPlan.scanBlocks);
                     }
                 } else if (g_taskMeshOn) {
-                    // One-shot: NAME the reason the meshlet path sat out (the
-                    // "why indexed raster?" answer). Silent when the path is
-                    // deliberately opt-OUT (TOURMALINE_GPU_SCENE_TASK_MESH=0).
-                    static bool s_taskFallbackReported = false;
-                    if (!s_taskFallbackReported) {
-                        s_taskFallbackReported = true;
-                        const char* reason =
-                            !g_rasterMode       ? "indexed raster mode not eligible"
-                            : !g_workReady      ? "cull work/raster selection not ready"
-                            : !g_geoIds         ? "geometry ids incompatible"
-                            : !g_noProjectLit   ? "ProjectLit meshes present (no task/mesh twins)"
-                            : !g_rangesResident ? "indexed ranges not resident"
-                            : !g_meshShader     ? "mesh shaders unsupported"
-                            : !g_main           ? "task/mesh main program missing"
-                            : !g_gi             ? "task/mesh GI program missing"
-                            : !g_depth          ? "task/mesh depth program missing"
-                            : (!g_noMasked && !g_maskedTwins) ? "masked task/mesh programs missing"
-                            : !g_gbuffer                      ? "task/mesh gbuffer program missing"
-                            : !g_compute                      ? "task/mesh compute programs missing"
-                                         : "topology validation or Prepare failed (see the "
-                                           "topology diagnostic)";
-                        std::fprintf(
-                            stderr, "[GpuSceneTaskMesh] fallback to indexed raster: %s\n", reason);
-                    }
+                    // The task/mesh path is the CANONICAL geometry path and is
+                    // ENABLED (TOURMALINE_GPU_SCENE_TASK_MESH != 0). Failing any
+                    // cutover gate is now a HARD ERROR — NO silent indexed-raster
+                    // fallback: a broken import (oversubscribed group budget,
+                    // incompatible geometry ids, a missing program) must surface
+                    // LOUDLY at the exact gate instead of silently degrading.
+                    const char* reason =
+                        !g_rasterMode  ? "indexed raster mode not eligible"
+                        : !g_workReady ? "cull work/raster selection not ready"
+                        : !g_geoIds ? "geometry ids incompatible (multi-surface mesh / native-only)"
+                        : !g_noProjectLit   ? "ProjectLit meshes present (no task/mesh twins)"
+                        : !g_rangesResident ? "indexed ranges not resident"
+                        : !g_meshShader     ? "mesh shaders unsupported"
+                        : !g_main           ? "task/mesh main program missing"
+                        : !g_gi             ? "task/mesh GI program missing"
+                        : !g_depth          ? "task/mesh depth program missing"
+                        : (!g_noMasked && !g_maskedTwins) ? "masked task/mesh programs missing"
+                        : !g_gbuffer                      ? "task/mesh gbuffer program missing"
+                        : !g_compute
+                            ? "task/mesh compute programs missing"
+                            : "topology validation or Prepare failed (oversubscribed group budget)";
+                    std::fprintf(stderr,
+                                 "[GpuSceneTaskMesh] FATAL: task/mesh path enabled but cannot "
+                                 "engage: %s\n"
+                                 "  (opt out with TOURMALINE_GPU_SCENE_TASK_MESH=0)\n",
+                                 reason);
+                    std::fflush(stderr);
+                    std::abort();
                 }
                 tour::gpu_scene::SceneIndirectArgsPush indirectArgs{};
                 tour::gpu_scene::SceneIndirectVerifyPush indirectVerify{};

@@ -1327,7 +1327,14 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
     // The cook-time meshopt config (the LOD chain + meshlets derive in the
     // per-part import below; the manifest records their fingerprint).
     smvk::MeshOptConfig meshOpt{};
-    meshOpt.enabled = config.lods;
+    // The OPTIMIZE pass (weld + vertex cache + overdraw + vertex fetch) is a
+    // PURE REORDER — no triangle loss — and the runtime's mesh registration
+    // (RegisterWorldMeshes -> GetRetainedUpload) depends on it for the
+    // sub-meshlet-threshold meshes. It must ALWAYS run; only the simplify/LOD
+    // chain is gated by --lods. (Tying `enabled` to config.lods made --lods
+    // off skip the optimize, so small meshes had no retained upload and the
+    // task/mesh path fell back to "geometry ids incompatible".)
+    meshOpt.enabled = true;
     meshOpt.generateLods = config.lods;
     meshOpt.lodRatios = config.lodRatios;
     meshOpt.lodTargetError = config.lodTargetError;
