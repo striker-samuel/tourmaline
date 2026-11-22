@@ -21,6 +21,12 @@ int main() {
     CHECK(s.Poll(a,5)==UploadStatus::Submitted); // conservative latest batch
     CHECK(s.Poll(a,8)==UploadStatus::Completed);
     CHECK(s.Poll(b,8)==UploadStatus::Completed);
+    // Queue tags distinguish a transfer batch from a host-visible graphics
+    // submission, without requiring a per-upload fence.
+    const UploadTicket transfer{0, a, 0};
+    const UploadTicket host{0, a, 1};
+    CHECK(bool(transfer) && bool(host));
+    CHECK(transfer.queue != host.queue);
     const auto c=s.Issue();
     s.Failed(c);
     CHECK(s.Poll(c,UINT64_MAX)==UploadStatus::Failed);

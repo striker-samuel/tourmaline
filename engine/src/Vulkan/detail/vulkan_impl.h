@@ -560,7 +560,8 @@ struct UploadStreamer {
                       size_t size,
                       size_t dstOffset,
                       VkPipelineStageFlags2 dstStages,
-                      VkAccessFlags2 dstAccess);
+                      VkAccessFlags2 dstAccess,
+                      TimelinePoint* immediatePoint = nullptr);
     // Table-driven bulk staged copy (the load-time counterpart of
     // uploadBuffer): `content` is one packed blob, `copies` indexes into
     // it. Drives the per-shard bulk_ context (512 MB ring per shard,
@@ -682,6 +683,7 @@ struct UploadStreamer {
         VkCommandBuffer curCmd = VK_NULL_HANDLE;
         bool hasPending = false;
         UploadSequence ticketSequence{};
+        UploadSequence hostTicketSequence{};
         // Flush contract (see flush/flushAndGetTimeline): each shard has
         // ONE owner at a time. A producer (uploadBuffer/uploadImage/
         // uploadImageKtx/uploadBufferBulk) marks its shard ACTIVE for the

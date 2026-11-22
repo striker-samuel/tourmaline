@@ -6,13 +6,14 @@ shard/sequence ticket; polls use the existing transfer Submitter timeline.
 No per-upload fences, promises, heap allocations, or forced flushes.
 
 Lifecycle: Rejected (invalid input, stale buffer, oversized range (validated against logical VkBuffer size),
-unsupported host-mappable path); Recorded (copied and recorded in staging);
+null pointer); Recorded (copied and recorded in staging);
 Submitted (batch timeline published); Completed (timeline value reached);
 Failed (submission returned no valid point or the poll counter failed).
 
 **Constraints:**
 - A request must use a device-local buffer with transfer-dst usage.
-  Host-visible direct uploads intentionally remain on the legacy path.
+  Host-visible direct uploads submit their graphics barrier immediately and
+  return a graphics-timeline ticket.
 - The admission result does not certify every possible VMA failure; some
   existing streamer paths use VK_CHECK and abort on fatal allocation errors.
 - Completion means the transfer timeline signaled, not that a later

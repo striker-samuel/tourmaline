@@ -14,6 +14,8 @@ enum class UploadStatus : uint8_t {
 struct UploadTicket {
     uint32_t shard = 0;
     uint64_t sequence = 0;
+    // 0=transfer batch, 1=immediate host-visible graphics submit.
+    uint8_t queue = 0;
     [[nodiscard]] explicit operator bool() const noexcept { return sequence != 0; }
 };
 
