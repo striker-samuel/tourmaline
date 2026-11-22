@@ -256,6 +256,9 @@ bool EditorApp::EnsureBuffers(uint32_t flightCount) {
         m_context->CreateBuffer(sizeof(smvk::MaterialValues) * kMaxMaterials * flightCount,
                                 smvk::BufferType_Storage,
                                 "editor materials");
+    m_editorMaterialRows.Reset();
+    m_editorMaterialFull.fill(true);
+    m_editorMaterialWorld = nullptr;
     m_lightsBuf = m_context->CreateBuffer(
         sizeof(smvk::Light) * kMaxLights * flightCount, smvk::BufferType_Storage, "editor lights");
     m_cascadeBuf =
@@ -568,7 +571,7 @@ void EditorApp::UploadMaterials(uint32_t flight) {
         std::min<uint32_t>(uint32_t(m_world->materialLocations.size()), kMaxMaterials);
     std::vector<smvk::MaterialValues> mats(slotCount);
     for (uint32_t i = 0; i < slotCount; ++i) {
-        if (auto* mat = m_world->GetMaterial(i)) {
+        if (const auto* mat = static_cast<const smvk::World&>(*m_world).GetMaterial(i)) {
             mats[i] = mat->values;
             mats[i].textures.x = remap(mat->values.textures.x);
             mats[i].textures.y = remap(mat->values.textures.y);
@@ -577,15 +580,36 @@ void EditorApp::UploadMaterials(uint32_t flight) {
             mats[i].textures2.x = remap(mat->values.textures2.x);
         }
     }
-    if (!mats.empty())
-        m_context->UploadDataToBuffer(
-            m_materialsBuf,
-            mats.data(),
-            sizeof(smvk::MaterialValues) * mats.size(),
-            smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
-            smvk::AccessFlags::ShaderRead,
-            0,
-            size_t(flight) * sizeof(smvk::MaterialValues) * kMaxMaterials);
+    // Editor uses the same raw GPU table / stable world slots as the
+    // runtime. Its authored-material resolution remains unchanged, but
+    // the per-flight GPU publication now sends only modified rows.
+    if (m_editorMaterialWorld != m_world) {
+        m_editorMaterialRows.Reset();
+        m_editorMaterialFull.fill(true);
+        m_editorMaterialWorld = m_world;
+    }
+    if (flight >= smvk::limits::MaxFramesInFlight ||
+        !m_editorMaterialRows.Sync(std::span<const smvk::MaterialValues>(mats))) {
+        std::fprintf(stderr, "[Editor] GPU material table synchronization failed\\n");
+        return;
+    }
+    const size_t stride = sizeof(smvk::MaterialValues) * kMaxMaterials;
+    const bool ok = m_editorMaterialRows.Publish(
+        flight, m_editorMaterialFull[flight],
+        [&](size_t offset, const void* bytes, size_t count) {
+            if (offset > stride || count > stride - offset)
+                return false;
+            m_context->UploadDataToBuffer(
+                m_materialsBuf, bytes, count,
+                smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
+                smvk::AccessFlags::ShaderRead, 0, size_t(flight) * stride + offset);
+            return true;
+        });
+    if (!ok) {
+        std::fprintf(stderr, "[Editor] GPU material table publication failed\\n");
+        return;
+    }
+    m_editorMaterialFull[flight] = false;
 }
 
 // ---- editor cameras (orbit frame; perspective or orthographic) ---------

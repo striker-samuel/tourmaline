@@ -57,6 +57,7 @@
 #include <Engine/GI/triangle_bvh.h>
 #include <Engine/ImGui/imgui_overlay.h>
 #include <Engine/Renderer/ReferenceSceneRenderer.h>
+#include <Engine/Renderer/material_gpu_records.h>
 #include <Engine/Renderer/cubemap_placement.h>
 #include <Engine/Renderer/light.h>
 #include <Engine/Renderer/texture_streamer.h>
@@ -3143,6 +3144,9 @@ class EditorApp : public tour::App {
         m_frameHotBuf; // ring: frames * kMaxViewports * sizeof(FramePSHot)
     smvk::Holder<smvk::BufferHandle>
         m_materialsBuf; // ring: frames * renderer::limits::MaxMaterials
+    tour::gpu_records::Materials m_editorMaterialRows{};
+    std::array<bool, smvk::limits::MaxFramesInFlight> m_editorMaterialFull{};
+    const smvk::World* m_editorMaterialWorld = nullptr;
     smvk::Holder<smvk::BufferHandle>
         m_lightsBuf; // ring: frames * renderer::limits::MaxSimultaneousLights
     smvk::Holder<smvk::BufferHandle> m_cascadeBuf; // ring: frames * GpuDirDesc
