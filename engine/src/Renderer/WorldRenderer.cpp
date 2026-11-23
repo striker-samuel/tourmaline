@@ -13453,6 +13453,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                         // ~1..10 m but cluster radius ~0.007) points at
                                         // a units bug in the meshlet cook.
                                         float sMin = 1e30f, sMax = -1e30f;
+                                        size_t sBig = 0, sMid = 0, sSmall = 0;
                                         const auto& instRows = m_gpuSceneDatabase.instances.Rows();
                                         for (size_t i = 0; i < instRows.size(); ++i) {
                                             if (instRows[i].identity.y != 1u)
@@ -13460,12 +13461,22 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                             const float r = instRows[i].value.localSphere.w;
                                             sMin = std::min(sMin, r);
                                             sMax = std::max(sMax, r);
+                                            if (r > 0.1f)
+                                                ++sBig;
+                                            else if (r > 0.01f)
+                                                ++sMid;
+                                            else
+                                                ++sSmall;
                                         }
                                         std::fprintf(stderr,
                                                      "[TaskMeshDiag] instance localSphere "
-                                                     "radius min=%.4g max=%.4g\n",
+                                                     "radius min=%.4g max=%.4g (>0.1=%zu "
+                                                     "0.01..0.1=%zu <0.01=%zu)\n",
                                                      sMin < 1e30f ? sMin : -1.0f,
-                                                     sMax);
+                                                     sMax,
+                                                     sBig,
+                                                     sMid,
+                                                     sSmall);
                                         // Per-mesh union bounds (FinishMesh: the
                                         // union of that mesh's cluster bounds). If
                                         // these ~match the instance localSphere,
