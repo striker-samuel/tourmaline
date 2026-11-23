@@ -53,6 +53,7 @@ struct TaskMeshInputs {
     // past the exact total and would otherwise reject the whole island.
     uint64_t totalGroups = 0;
     uint32_t coneEnabled = 1;
+    uint32_t viewValid = 1; // 0 = skip the task-shader frustum rejection (diagnostic)
     uint32_t debugMode = 0; // 0 lit, 1 meshlet colors, 2 LOD colors
     uint64_t hiz = 0;       // reversed-Z MIN Hi-Z BDA (meshlet occlusion)
     uint32_t hizWidth = 0, hizHeight = 0, hizMips = 0, hizValid = 0;
@@ -338,7 +339,7 @@ class TaskMeshRuntime {
                             in.indexBase,
                             in.indexWordCapacity,
                             in.vertexCapacity,
-                            1u,
+                            in.viewValid,
                             in.coneEnabled,
                             in.workCapacity,
                             in.debugMode,

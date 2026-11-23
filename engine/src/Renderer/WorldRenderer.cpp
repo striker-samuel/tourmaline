@@ -13366,7 +13366,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                     const char* e = std::getenv("TOURMALINE_TASK_NO_HIZ");
                                     return e && std::strcmp(e, "0") != 0;
                                 }();
+                                static const bool s_taskNoFrustum = [] {
+                                    const char* e = std::getenv("TOURMALINE_TASK_NO_FRUSTUM");
+                                    return e && std::strcmp(e, "0") != 0;
+                                }();
                                 inputs.coneEnabled = (m_wireframe || s_taskNoCone) ? 0u : 1u;
+                                inputs.viewValid = s_taskNoFrustum ? 0u : 1u;
                                 // Meshlet-level Hi-Z occlusion: reuse the
                                 // visibility view's reversed-Z MIN pyramid
                                 // (the same buffer the GPU-scene raster Hi-Z
