@@ -398,7 +398,11 @@ PakWriter& PakWriter::operator=(PakWriter&&) = default;
 // The reserve slack above the flush threshold: room for one oversized blob
 // (a packed mesh blob is at most tens of MB) before the buffer is flushed.
 // The reserve is VIRTUAL (commit-on-demand), so the headroom is free.
-inline constexpr size_t kBlobSlack = 256ull * 1024ull * 1024ull;
+// Slack for ONE oversized blob over the flush threshold. A large world's
+// scene blob (the serialized hierarchy + transforms of every node — the
+// 1024-grid Bistro is ~9.1M nodes / ~1 GB) must fit whole; the old 256 MiB
+// slack was sized for small scenes and aborted the pak on big grids.
+inline constexpr size_t kBlobSlack = 1280ull * 1024ull * 1024ull;
 
 bool PakWriter::FlushBuffer(std::string* err) {
     if (!flushAlloc_)
