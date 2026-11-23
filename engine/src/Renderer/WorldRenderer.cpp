@@ -96,7 +96,8 @@ static double s_benchUpdates = 0.0, s_benchPasses = 0.0, s_benchReadbacks = 0.0,
               s_benchExecute = 0.0, s_benchUpdA = 0.0, s_benchUpdB = 0.0, s_benchStream = 0.0,
               s_benchFp = 0.0, s_benchFpGen = 0.0, s_benchFpUp = 0.0, s_benchFpDs = 0.0,
               s_benchPreMain = 0.0, s_benchPostMain = 0.0, s_benchPreA = 0.0, s_benchPreB = 0.0,
-              s_benchPreC = 0.0, s_benchDrawRecord = 0.0;
+              s_benchPreC = 0.0, s_benchDrawRecord = 0.0, s_benchPreA_Early = 0.0,
+              s_benchPreA_Raster = 0.0, s_benchPreA_Task = 0.0, s_benchPreA_Shadow = 0.0;
 
 // Descriptor defaults, pass sizing and static policy live in a separate
 // compilation fragment. Execution order and resource ownership stay here.
@@ -10168,6 +10169,15 @@ void WorldRenderer::RenderLayerInto(const ElementFrame& frame) {
                     s_benchReadbacks / n,
                     s_benchUi / n,
                     s_benchExecute / n);
+        // preA sub-split (task/mesh prep drilling): early = particles +
+        // RenderView + shader loading (cached), raster = GI/validation/raster
+        // setup, task = task/mesh inputs + PrepareTemporal + Prepare, shadow =
+        // dispatch recording + shadows.
+        std::printf("[perf] preA split early %.3f ms raster %.3f ms task %.3f ms shadow %.3f ms\n",
+                    s_benchPreA_Early / n,
+                    s_benchPreA_Raster / n,
+                    s_benchPreA_Task / n,
+                    s_benchPreA_Shadow / n);
         // GPU shadow-stage split (timestamp queries of the retired frames;
         // avg over the frames each stage ran - the two representations are
         // mutually exclusive per run, so exactly one side reports):
@@ -11395,8 +11405,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     using bench_clk = std::chrono::steady_clock;
     const bool benchPhase = m_host.BenchMeasuring();
     const auto rfT0 = bench_clk::now();
-    bench_clk::time_point rfT2, rfT3; // assigned in the exposure block below
-    bench_clk::time_point rfPA, rfPB; // preMain split: fw+/filter | cull/late
+    bench_clk::time_point rfT2, rfT3;                       // assigned in the exposure block below
+    bench_clk::time_point rfPA, rfPB;                       // preMain split: fw+/filter | cull/late
+    bench_clk::time_point rfTPreA1 = rfT0, rfTPreA2 = rfT0; // preA sub-split drill
+    bench_clk::time_point rfTPreA_T1 = rfT0;                // task/mesh inputs begin
     // Hitch logger (TOURMALINE_HITCH_LOG=<ms>): one line per frame that
     // exceeds the budget - traversal hitches vs shader-compile warm-up
     // (a hitch that also mints pipelines is compilation; a hitch with a
@@ -12645,6 +12657,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             glm::vec3(dirLight.direction[0], dirLight.direction[1], dirLight.direction[2]));
     }
     m_renderViews.Upload(*m_context, fb.frameIndex);
+    rfTPreA1 = bench_clk::now();
 
     // GPU Scene GI variants: same mesh-compatible fragment ABI as the
     // GI-free path. Sponza's convex volumes require the .gi3 permutation.
@@ -13158,79 +13171,99 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         uint32_t(std::min<uint64_t>(vertexCap64, kTaskVertexLimit));
                     const uint32_t indexCap =
                         uint32_t(std::min<uint64_t>(indexCap64, kTaskIndexWords));
-                    bool topologyValid =
-                        !gfx.meshes.empty() && !gfx.clusters.empty() &&
-                        !gfx.filterIndices.empty() && gfx.clusterIndexBase < indexCap &&
-                        gfx.filterIndices.size() <= size_t(indexCap - gfx.clusterIndexBase) &&
-                        vertexCap != 0u;
-                    uint32_t worstMeshlets = 0u;
-                    // One-time LOUD report when the opt-in task/mesh path
-                    // validates out: a stale over-limit pak (cooked before the
-                    // 64/96 settle) or a discontinuous cluster stream fails
-                    // CLOSED here, and the silent indexed fallback made that
-                    // impossible to see from the perf output alone.
+                    // Task/mesh topology validation. The O(total indices)
+                    // index-bound walk is invariant until the world topology
+                    // or the static heap capacities change, so cache it (like
+                    // ComputeTaskMeshTotalGroups) instead of rescanning every
+                    // index every frame (~12M reads for Bistro).
+                    const uint64_t topoRev =
+                        m_world ? m_world->gpuSceneTopologyRevision : ~uint64_t(0);
+                    const bool topoCached = m_taskMeshTopologyRevision == topoRev &&
+                                            m_taskMeshTopologyVertexCap == vertexCap &&
+                                            m_taskMeshTopologyIndexCap == indexCap;
+                    bool topologyValid;
+                    uint32_t worstMeshlets;
                     const char* topoFailReason = nullptr;
                     // UINT32_MAX = the global gate failed (no specific mesh/cluster);
                     // the per-mesh loop below overwrites these with a real index.
                     uint32_t topoFailMesh = UINT32_MAX, topoFailCluster = UINT32_MAX;
                     char topoFailBuf[320] = {};
-                    if (!topologyValid) {
-                        std::snprintf(topoFailBuf,
-                                      sizeof(topoFailBuf),
-                                      "empty cluster/index topology or index base over "
-                                      "capacity (meshes=%zu clusters=%zu filterIndices=%zu "
-                                      "clusterIndexBase=%u indexCap=%u vertexCap=%u)",
-                                      gfx.meshes.size(),
-                                      gfx.clusters.size(),
-                                      gfx.filterIndices.size(),
-                                      gfx.clusterIndexBase,
-                                      indexCap,
-                                      vertexCap);
-                        topoFailReason = topoFailBuf;
+                    if (topoCached) {
+                        topologyValid = m_taskMeshTopologyValid;
+                        worstMeshlets = m_taskMeshWorstMeshlets;
+                        if (!topologyValid)
+                            topoFailReason = "topology rejected (cached)";
                     } else {
-                        const auto tables =
-                            GpuSceneIndexedTables(gfx, m_gpuScenePhysicalIndexedRanges);
-                        for (uint32_t meshIndex = 0; meshIndex < gfx.meshes.size(); ++meshIndex) {
-                            const auto& mesh = gfx.meshes[meshIndex];
-                            tour::gpu_scene::IndexedGeometry checked{};
-                            if (!tour::gpu_scene::ResolveIndexedGeometry(
-                                    tables, meshIndex, checked)) {
-                                topoFailReason = "discontinuous/mis-attributed cluster stream";
-                                topoFailMesh = meshIndex;
-                                topologyValid = false;
-                                break;
-                            }
-                            worstMeshlets = std::max(worstMeshlets, mesh.clusterCount);
-                            for (uint32_t c = 0u; c < mesh.clusterCount; ++c) {
-                                const auto& cluster = gfx.clusters[mesh.clusterStart + c];
-                                const uint64_t indexEnd =
-                                    uint64_t(cluster.indexOffset) + uint64_t(cluster.triCount) * 3u;
-                                if (cluster.triCount > smvk::kMeshletMaxTriangles ||
-                                    indexEnd > gfx.filterIndices.size()) {
-                                    topoFailReason =
-                                        "cluster triCount over the mesh-shader workgroup cap "
-                                        "(stale over-limit pak? recook at 64/96)";
+                        topologyValid =
+                            !gfx.meshes.empty() && !gfx.clusters.empty() &&
+                            !gfx.filterIndices.empty() && gfx.clusterIndexBase < indexCap &&
+                            gfx.filterIndices.size() <= size_t(indexCap - gfx.clusterIndexBase) &&
+                            vertexCap != 0u;
+                        worstMeshlets = 0u;
+                        if (!topologyValid) {
+                            std::snprintf(topoFailBuf,
+                                          sizeof(topoFailBuf),
+                                          "empty cluster/index topology or index base over "
+                                          "capacity (meshes=%zu clusters=%zu filterIndices=%zu "
+                                          "clusterIndexBase=%u indexCap=%u vertexCap=%u)",
+                                          gfx.meshes.size(),
+                                          gfx.clusters.size(),
+                                          gfx.filterIndices.size(),
+                                          gfx.clusterIndexBase,
+                                          indexCap,
+                                          vertexCap);
+                            topoFailReason = topoFailBuf;
+                        } else {
+                            const auto tables =
+                                GpuSceneIndexedTables(gfx, m_gpuScenePhysicalIndexedRanges);
+                            for (uint32_t meshIndex = 0; meshIndex < gfx.meshes.size();
+                                 ++meshIndex) {
+                                const auto& mesh = gfx.meshes[meshIndex];
+                                tour::gpu_scene::IndexedGeometry checked{};
+                                if (!tour::gpu_scene::ResolveIndexedGeometry(
+                                        tables, meshIndex, checked)) {
+                                    topoFailReason = "discontinuous/mis-attributed cluster stream";
                                     topoFailMesh = meshIndex;
-                                    topoFailCluster = c;
                                     topologyValid = false;
                                     break;
                                 }
-                                for (uint64_t j = cluster.indexOffset; j < indexEnd; ++j) {
-                                    if (gfx.filterIndices[size_t(j)] >= vertexCap) {
+                                worstMeshlets = std::max(worstMeshlets, mesh.clusterCount);
+                                for (uint32_t c = 0u; c < mesh.clusterCount; ++c) {
+                                    const auto& cluster = gfx.clusters[mesh.clusterStart + c];
+                                    const uint64_t indexEnd = uint64_t(cluster.indexOffset) +
+                                                              uint64_t(cluster.triCount) * 3u;
+                                    if (cluster.triCount > smvk::kMeshletMaxTriangles ||
+                                        indexEnd > gfx.filterIndices.size()) {
                                         topoFailReason =
-                                            "cluster index over the static vertex capacity";
+                                            "cluster triCount over the mesh-shader workgroup cap "
+                                            "(stale over-limit pak? recook at 64/96)";
                                         topoFailMesh = meshIndex;
                                         topoFailCluster = c;
                                         topologyValid = false;
                                         break;
                                     }
+                                    for (uint64_t j = cluster.indexOffset; j < indexEnd; ++j) {
+                                        if (gfx.filterIndices[size_t(j)] >= vertexCap) {
+                                            topoFailReason =
+                                                "cluster index over the static vertex capacity";
+                                            topoFailMesh = meshIndex;
+                                            topoFailCluster = c;
+                                            topologyValid = false;
+                                            break;
+                                        }
+                                    }
+                                    if (!topologyValid)
+                                        break;
                                 }
                                 if (!topologyValid)
                                     break;
                             }
-                            if (!topologyValid)
-                                break;
                         }
+                        m_taskMeshTopologyRevision = topoRev;
+                        m_taskMeshTopologyVertexCap = vertexCap;
+                        m_taskMeshTopologyIndexCap = indexCap;
+                        m_taskMeshTopologyValid = topologyValid;
+                        m_taskMeshWorstMeshlets = worstMeshlets;
                     }
                     if (!topologyValid) {
                         static bool s_taskTopoFailReported = false;
@@ -13250,6 +13283,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                              topoFailReason);
                         }
                     }
+                    rfTPreA_T1 = bench_clk::now();
                     if (topologyValid) {
                         auto& viewBuffer = m_gpuSceneMeshletViewBuffers[fb.frameIndex];
                         const auto origin = glm::dvec3(m_cameraPositioner.cameraPosition_);
@@ -13692,6 +13726,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                 }
                                 taskReady = m_gpuSceneTaskMeshRuntime.Prepare(
                                     *m_context, *m_rendergraph, fb.frameIndex, inputs, taskPlan);
+                                rfTPreA2 = bench_clk::now();
                                 if (!taskReady) {
                                     // Prepare's worst-case group bound failed:
                                     // workCapacity * ceil(worstMeshlets/32) >
@@ -21782,6 +21817,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         s_benchPreMain += msd(rfTM - rfT1).count();
         s_benchPostMain += msd(rfT2 - rfTM).count();
         s_benchPreA += msd(rfPA - rfT1).count();
+        s_benchPreA_Early += msd(rfTPreA1 - rfT1).count();
+        s_benchPreA_Raster += msd(rfTPreA_T1 - rfTPreA1).count();
+        s_benchPreA_Task += msd(rfTPreA2 - rfTPreA_T1).count();
+        s_benchPreA_Shadow += msd(rfPA - rfTPreA2).count();
         s_benchPreB += msd(rfPB - rfPA).count();
         s_benchPreC += msd(rfTM - rfPB).count();
         s_benchReadbacks += msd(rfT3 - rfT2).count();

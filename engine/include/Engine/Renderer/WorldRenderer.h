@@ -2518,6 +2518,14 @@ class WorldRenderer : public IRenderer {
     // sum" note in gpu_scene_task_mesh_runtime.h.
     uint64_t m_gpuSceneTaskTotalGroups = 0;
     uint64_t m_gpuSceneTaskTotalGroupsRevision = ~uint64_t(0);
+    // Cached task/mesh topology validation (the O(total indices) index-bound
+    // walk in RenderFrame). Re-validated only when the world topology
+    // revision or the static heap capacities change - never per frame.
+    bool m_taskMeshTopologyValid = false;
+    uint32_t m_taskMeshWorstMeshlets = 0;
+    uint64_t m_taskMeshTopologyRevision = ~uint64_t(0);
+    uint32_t m_taskMeshTopologyVertexCap = 0;
+    uint32_t m_taskMeshTopologyIndexCap = 0;
     // Tight per-instance group bound (TaskMeshInputs::totalGroups): sum of
     // ceil(clusterCount/32) over every live instance, resolving each
     // instance's mesh -> resident LODs -> submeshes -> gfx cluster count.
