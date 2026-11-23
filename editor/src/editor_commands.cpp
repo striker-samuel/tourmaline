@@ -5626,6 +5626,7 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget, bool allowE
     // session's cookie/.texture pool imports, replayed by reload/cook
     // BEFORE the material records so refs resolve identically.
     doc.textureAssets = m_textureAssets;
+    doc.lightCookieBakes = m_lightCookieBakes;
     // GI-asset bindings (the scene's HARD baked-GI identification; see
     // GiAssetCmd): the session mirror rides the doc — only the bake
     // owner's stamps update it (the cook / Bake GI flows), reload
@@ -6570,6 +6571,7 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc, const std::string& sourcePat
     // save re-emits them verbatim — the orphan-command contract: a reload
     // must never erase records; restoring the file heals the next replay).
     m_textureAssets = doc.textureAssets; // session mirror (save re-emits)
+    m_lightCookieBakes = doc.lightCookieBakes;
     // Replay mode FIRST: the import loops below call the shared imports,
     // and their record pushes must stay gated (the records arrive from
     // the doc here — a second push would duplicate every entry).
