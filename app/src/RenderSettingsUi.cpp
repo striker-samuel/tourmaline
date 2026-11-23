@@ -3515,7 +3515,8 @@ void WorldRenderer::DrawAppDebugUi(const DebugUiFrame& frame) {
                              useMats = 0;
                     const size_t slotCount = m_world->materialLocations.size();
                     for (size_t i = 0; i < slotCount; ++i) {
-                        const smvk::Material* mat = static_cast<const smvk::World&>(*m_world).GetMaterial((uint32_t)i);
+                        const smvk::Material* mat =
+                            static_cast<const smvk::World&>(*m_world).GetMaterial((uint32_t)i);
                         if (!mat)
                             continue;
                         bool uses = false;

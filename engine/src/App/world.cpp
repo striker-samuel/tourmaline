@@ -2467,7 +2467,8 @@ Material* World::GetMaterial(uint32_t materialIndex) {
         return nullptr;
 
     Material* result = loc.cluster->materials.get(loc.handle);
-    if (result) MarkMaterialDirty(materialIndex);
+    if (result)
+        MarkMaterialDirty(materialIndex);
     return result;
 }
 
