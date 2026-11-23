@@ -110,7 +110,7 @@ std::vector<GltfTextureRemap> ReadTextureRemapPlugs(const std::string& resolvedS
 // the same artifact across editor sessions and cooks.
 std::string TextureConversionHash(const void* data, size_t size, bool srgb);
 
-#include <Engine/App/cluster.h>
+#include <Engine/App/world_page.h>
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/tour.h>

@@ -51,7 +51,7 @@
 // Hand-rolled runner (no test framework dependency), like the other tests.
 
 #include "Vulkan/detail/vulkan_impl.h"
-#include <Engine/App/cluster.h>
+#include <Engine/App/world_page.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/mesh.h>
 

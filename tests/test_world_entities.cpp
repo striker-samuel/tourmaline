@@ -24,7 +24,7 @@
 #endif
 
 #include <Engine/App/animator.h>
-#include <Engine/App/cluster.h>
+#include <Engine/App/world_page.h>
 #include <Engine/App/world.h>
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/touranim.h>

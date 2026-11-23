@@ -22,7 +22,7 @@
 
 #include <glm/glm.hpp>
 
-#include <Engine/App/cluster.h>       // WorldPage (static-bake-light harvest test)
+#include <Engine/App/world_page.h>       // WorldPage (static-bake-light harvest test)
 #include <Engine/App/world.h>         // World (live-world trace-scene test)
 #include <Engine/Asset/compression.h> // Lz4Compress (payload fixtures)
 #include <Engine/GI/bake.h>

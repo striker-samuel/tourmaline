@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
-#include <Engine/App/cluster.h>
+#include <Engine/App/world_page.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/static_vertex_heap.h>
 #include <Engine/Renderer/vertex_pack.h>

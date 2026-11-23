@@ -7,7 +7,7 @@
 // physics solvers, audio voices and game-private memory require their own
 // explicit providers/asset catalogs. Every float is its IEEE-754 bit pattern
 // so cross-language state hashing and NaN/negative-zero fidelity are stable.
-#include <Engine/App/cluster.h>
+#include <Engine/App/world_page.h>
 #include <Engine/App/snapshot_sequence.h>
 #include <Engine/App/world.h>
 #include <Engine/Core/Random.h>

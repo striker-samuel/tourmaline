@@ -4,7 +4,7 @@
 // owner of the tracer. The renderer consumes a fixed, detached snapshot.
 #include "editor_app.h"
 
-#include <Engine/App/cluster.h>
+#include <Engine/App/world_page.h>
 #include <Engine/GI/bake.h>
 #include <Engine/Renderer/ReferenceSceneRenderer.h>
 #include <Engine/Rendergraph/environment.h>

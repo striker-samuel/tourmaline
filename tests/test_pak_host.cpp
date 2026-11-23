@@ -47,7 +47,7 @@
 
 #include <artifact_cache/artifact_cache.h> // HashBytes (the name digests)
 
-#include <Engine/App/cluster.h>
+#include <Engine/App/world_page.h>
 #include <Engine/App/world.h>
 #include <Engine/Asset/appmanifest.h>
 #include <Engine/Asset/cluster_serializer.h>

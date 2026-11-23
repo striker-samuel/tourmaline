@@ -18,7 +18,7 @@
 #include <iterator>
 #include <sstream>
 
-#include <Engine/App/cluster.h>
+#include <Engine/App/world_page.h>
 #include <Engine/Asset/bake_asset.h>
 #include <Engine/Asset/tour.h>
 #include <Engine/GI/bake.h>
