@@ -3210,8 +3210,13 @@ void TestBakedPlacement() {
     Check(resolved && geo.size() == 3, "baked.resolve");
     Check(geo[0].firstIndex == 0 && geo[1].firstIndex == 16 && geo[2].firstIndex == 64,
           "baked.resolve-index-ranges");
-    Check(geo[0].boundsMax == glm::vec3(1.0f) && geo[0].drawDistance == 0.0f,
+    Check(geo[0].boundsMax == glm::vec3(1.0f) && geo[0].drawDistance > 0.0f,
           "baked.resolve-bounds");
+    // The pixel-error distance: bounds ±1 -> radius √3 ≈ 1.732 -> drawDistance
+    // = radius * referenceProjection / budget (a rock culls closer than a tree).
+    Check(std::abs(geo[0].drawDistance -
+                   1.7320508f * kBakedReferenceProjection / kBakedPixelBudget) < 0.5f,
+          "baked.resolve-draw-distance");
     std::vector<BakedProtoGeometry> refused;
     const bool refusedOk = ResolveBakedPrototypes(
         asset,

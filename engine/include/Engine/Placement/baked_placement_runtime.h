@@ -92,6 +92,24 @@ struct BakedSurfaceRef {
     std::string uri;
 };
 
+// Pixel-error distance culling (the "small objects don't load at a distance"
+// rule). A prototype's drawDistance is the world distance at which its
+// projected bounding-sphere radius falls to exactly kBakedPixelBudget pixels:
+//   projectedRadius = radius * projection / distance
+//   drawDistance    = radius * projection / kBakedPixelBudget
+// projection is the reference lens (1080p @ 60° vertical FOV) — a cook-time
+// constant, since the baked proto carries a fixed distance (the cull shader's
+// drawDistance lane). Sub-pixel protos never pay heap/residency cost beyond it.
+inline constexpr float kBakedPixelBudget = 1.5f;
+// reference lens: 1080 / (2 * tan(30°)) = 1080 / 1.1547005 ≈ 935.307 (60° vertical FOV).
+inline constexpr float kBakedReferenceProjection = 935.3074f;
+
+[[nodiscard]] inline float BakedDrawDistance(const glm::vec3& boundsMin,
+                                             const glm::vec3& boundsMax) {
+    const float radius = glm::length((boundsMax - boundsMin) * 0.5f);
+    return radius > 0.0f ? radius * kBakedReferenceProjection / kBakedPixelBudget : 0.0f;
+}
+
 // Resolves the asset's render prototypes to GPU geometry via a mesh-registry
 // callback: resolve(meshKey, surfaceIndex, out) fills the indexed range + bounds
 // for one render prototype. meshKey is the project's MeshKey (the .geometry
@@ -121,7 +139,7 @@ struct BakedSurfaceRef {
         BakedProtoGeometry& g = out[i];
         g.boundsMin = ref.boundsMin;
         g.boundsMax = ref.boundsMax;
-        g.drawDistance = 0.0f;
+        g.drawDistance = BakedDrawDistance(ref.boundsMin, ref.boundsMax);
         g.indexCount = ref.indexCount;
         g.firstIndex = ref.firstIndex;
         g.vertexOffset = ref.vertexOffset;
@@ -864,6 +882,7 @@ inline void BakedPlacementRuntime::SelectTiles(const glm::vec4* interests,
 
 // COMPAT (the namespace/RHI boundary audit): smvk::placement aliases.
 namespace smvk::placement {
+using ::tour::placement::BakedDrawDistance;
 using ::tour::placement::BakedPlacementCooked;
 using ::tour::placement::BakedPlacementRuntime;
 using ::tour::placement::BakedPlacementTile;
@@ -872,6 +891,8 @@ using ::tour::placement::BakedSurfaceRef;
 using ::tour::placement::BucketBakedPlacement;
 using ::tour::placement::CookBakedPlacement;
 using ::tour::placement::DeserializeBakedPlacementCooked;
+using ::tour::placement::kBakedPixelBudget;
+using ::tour::placement::kBakedReferenceProjection;
 using ::tour::placement::ResolveBakedPrototypes;
 using ::tour::placement::SerializeBakedPlacementCooked;
 } // namespace smvk::placement
