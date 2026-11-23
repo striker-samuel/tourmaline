@@ -39,6 +39,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <vector>
 
 namespace smvk {
@@ -426,10 +427,11 @@ struct MeshParticles {
     static void PushAndDispatchDrawBuild(CommandBuffer& cmd,
                                          ShaderProgram& program,
                                          const placement::PlacementDrawBuildPush& push) {
-        assert(push.bins != 0 && push.indirect != 0);
+        assert(push.bins != 0 && push.indirect != 0 && push.protoTable != 0);
+        assert(push.protoCount >= 1 && push.protoCount <= kMeshParticlesMaxBins);
         cmd.BindComputePipeline(program);
         cmd.PushConstants(0, sizeof(push), &push, ShaderStage::All);
-        cmd.Dispatch(1, 1, 1);
+        cmd.Dispatch((push.protoCount + 63u) / 64u, 1, 1);
     }
 
     // ---- addresses + the frame chain clear ------------------------------
@@ -487,29 +489,60 @@ struct MeshParticles {
                                0,
                                0);
     }
-    // Registers the prototype draw-command table ONCE per mesh table.
-    // Pointer + count (cmdCount <= kMeshParticlesMaxBins). Pure
-    // METADATA: the table rides the draw-build push (the shared
-    // placement_drawbuild kernel owns the COMPLETE command — this
-    // object's caller captures the cache into its push fill); the old
-    // GPU upload seeded bytes the same-frame kernel rewrote (the
-    // stranded-upload-write class, see todo.txt) and is gone.
-    bool SeedIndirect(ResourceManager& /*ctx*/,
+    // Registers the prototype draw-command table ONCE per mesh table: builds
+    // the per-proto rows (index ranges from the seeds; bounds/distance stay
+    // zero — the mesh-particle cull uses its own path) and uploads them as a
+    // read-only BDA buffer the shared placement draw-build kernel reads.
+    bool SeedIndirect(ResourceManager& ctx,
+                      RenderGraph& rg,
                       const placement::PlacementIndirectCmd* seeds,
                       uint32_t cmdCount) {
         assert(Valid());
         if (!seeds || cmdCount == 0 || cmdCount > kMeshParticlesMaxBins)
             return false;
-        for (uint32_t i = 0; i < cmdCount; ++i)
-            protoSeeds[i] = seeds[i];
-        protoSeedCount = cmdCount;
-        return true;
+        // Idempotence: the per-frame call is a no-op unless the mesh table
+        // (seeds) changed — the buffer is freed + re-created only on change.
+        if (!protoTableBuffer.empty() && protoTableCount == cmdCount &&
+            protoSeedCache.size() == cmdCount &&
+            std::memcmp(protoSeedCache.data(),
+                        seeds,
+                        cmdCount * sizeof(placement::PlacementIndirectCmd)) == 0)
+            return true;
+        std::vector<placement::PlacementProtoRow> rows(cmdCount);
+        for (uint32_t i = 0; i < cmdCount; ++i) {
+            rows[i].bounds = glm::vec4(0.0f, 0.0f, 0.0f, 0.5f);
+            rows[i].drawDistance = 0.0f;
+            rows[i].indexCount = seeds[i].indexCount;
+            rows[i].firstIndex = seeds[i].firstIndex;
+            rows[i].vertexOffset = seeds[i].vertexOffset;
+        }
+        if (!protoTableLogical.empty())
+            rg.FreeBuffer(protoTableLogical);
+        protoTableBuffer = ctx.CreateBuffer(cmdCount * sizeof(placement::PlacementProtoRow),
+                                            BufferType_Storage,
+                                            "mesh particle proto table");
+        if (protoTableBuffer.empty())
+            return false;
+        ctx.UploadDataToBuffer(protoTableBuffer,
+                               rows.data(),
+                               cmdCount * sizeof(placement::PlacementProtoRow),
+                               PipelineStageBit_Compute,
+                               AccessFlags::ShaderRead,
+                               0,
+                               0);
+        protoTableLogical = rg.AddExternalBuffer(protoTableBuffer, "mesh particle proto table");
+        protoTableCount = cmdCount;
+        protoSeedCache.assign(seeds, seeds + cmdCount);
+        return !protoTableLogical.empty();
     }
-    // The cached table (SeedIndirect): the caller's push fill reads this
-    // (RecordCullChain's placement twin documents the capture
-    // discipline — by value, at recording time).
-    placement::PlacementIndirectCmd protoSeeds[kMeshParticlesMaxBins] = {};
-    uint32_t protoSeedCount = 0;
+    // The prototype table (index ranges; bounds/distance stay zero — the
+    // mesh-particle cull uses its own path), a read-only BDA buffer uploaded
+    // by SeedIndirect once per mesh table. The shared placement draw-build
+    // kernel reads it, so its push carries this BDA.
+    Holder<BufferHandle> protoTableBuffer;
+    LogicalBufferHandle protoTableLogical{};
+    uint32_t protoTableCount = 0;
+    std::vector<placement::PlacementIndirectCmd> protoSeedCache;
 };
 
 // ---- lifecycle (out-of-line bodies; header-only repo convention) --------
@@ -677,6 +710,12 @@ inline void MeshParticles::Destroy(RenderGraph& rg) {
     binsBuffer = {};
     visibleBuffer = {};
     indirectBuffer = {};
+    if (!protoTableLogical.empty())
+        rg.FreeBuffer(protoTableLogical);
+    protoTableLogical = {};
+    protoTableBuffer = {};
+    protoTableCount = 0;
+    protoSeedCache.clear();
     // (the paren value-init forms: the GCC 13 brace-temporary ICE)
     emitProgram = ShaderProgram();
     simProgram = ShaderProgram();

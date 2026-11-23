@@ -75,6 +75,15 @@ struct Args {
     // convex volume (position/classification/spherical-mean + pre-fit
     // sample mean). Empty = off.
     std::string diagProbes;
+    // Debug-only probe-classification sidecar (the W_dilated view): a path
+    // to receive an R8 3-way classification volume (0 traced / 1 dilated /
+    // 2 unfilled) per baked convex volume, with a header carrying the
+    // lattice geometry + the source .givolume hash. Empty = off.
+    std::string classVolume;
+    // Surface-side-aware dilation (prototype): the validity dilation's
+    // donor-luminance power (0 = the classic uniform fill; >0 = the
+    // brightest same-side donor dominates).
+    float dilationBrightness = 0.0f;
     // Weave transmission for MASK (cutout cloth) materials: the cloth
     // keeps its lit albedo AND passes light tinted per texel (the GI
     // field behind the banners sees the tinted pools; the tint stays

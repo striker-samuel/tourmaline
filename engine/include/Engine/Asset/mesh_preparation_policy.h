@@ -58,6 +58,13 @@ inline bool EligibleForSpatialDerivatives(const glm::vec3& aabbMin,
 // (below lodMinTriangles) would not already drop. Skipping both for such
 // meshes is a pure cook-time win with no runtime difference (a chair leg
 // does not need four LOD levels).
+//
+// A sub-threshold mesh gets NO meshlet, so at load it registers a native-
+// suffix geometry id; the MIXED task/mesh path draws those via indexed
+// raster while meshleted meshes stay on the mesh-shader path (see
+// gpu_scene_raster_geometry.h RegisterNativeIndexedRange and the
+// raster draw-build's meshletBoundary skip), so the floor no longer has to
+// be 1 to keep the task/mesh path engageable.
 inline constexpr size_t kGpuDrivenMeshMinTriangles = 64;
 
 inline bool EligibleForGpuDrivenMesh(size_t triangleCount) {

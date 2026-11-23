@@ -14,6 +14,7 @@
 #include <gltf_import/asset_export.h>
 #include <gltf_import/gltf.h>
 #include <gltf_import/source_scene.h>
+#include <gltf_import/usd_adapter.h>
 #include <ktx.h>
 
 #include <algorithm>
@@ -948,6 +949,11 @@ bool (*UsdFileAsModel)(tinygltf::Model&,
                        const std::filesystem::path&,
                        std::vector<std::string>&) = nullptr;
 
+// The baked-placement accessors (the USD PointInstancer expansion), same
+// indirection: null in the runtime/cookers, set by usd_import's registrar.
+const tour::placement::BakedPlacementAsset* (*LastImportedBakedPlacement)() = nullptr;
+tour::placement::BakedPlacementAsset* (*MutableLastImportedBakedPlacement)() = nullptr;
+
 bool LoadModelFromSourceFile(tinygltf::Model& model,
                              const char* filename,
                              std::vector<std::string>* extraDeps) {
@@ -965,12 +971,22 @@ bool LoadModelFromSourceFile(tinygltf::Model& model,
     }
 
     if (ext == ".usd" || ext == ".usda" || ext == ".usdc" || ext == ".usdz") {
-        if (UsdFileAsModel) {
-            std::vector<std::string> sink;
-            return UsdFileAsModel(model, path, extraDeps ? *extraDeps : sink);
+        // Lazy-load the optional USD adapter DLL on first .usd import. Until
+        // then the process has not touched the OpenUSD runtime, so glTF/OBJ
+        // imports never require the USD SDK on PATH.
+        if (!UsdFileAsModel) {
+            gltf_import::UsdAdapterApi api;
+            std::string err;
+            if (!gltf_import::LoadUsdAdapter(&api, &err)) {
+                std::cerr << "USD import disabled: " << err << std::endl;
+                return false;
+            }
+            UsdFileAsModel = api.loadUsdFileAsModel;
+            LastImportedBakedPlacement = api.lastBakedPlacement;
+            MutableLastImportedBakedPlacement = api.mutableBakedPlacement;
         }
-        std::cerr << "USD import disabled; configure -DTOURMALINE_WITH_USD=ON" << std::endl;
-        return false;
+        std::vector<std::string> sink;
+        return UsdFileAsModel(model, path, extraDeps ? *extraDeps : sink);
     }
 
     tinygltf::TinyGLTF loader;
@@ -2240,11 +2256,21 @@ void SourceSceneImporter::uploadPreparedMeshes() {
         for (size_t p = 0; p < prims.size(); ++p) {
             DerivedMesh& d = prims[p];
             std::string baseUri;
+            // The mesh URI fragment keys on the SOURCE mesh's stableKey
+            // ("mesh.<gltf mesh index>"), NOT the part-local array index `m`.
+            // Partitioned families (P1) renumber meshes per part, so the
+            // array index diverges from the glTF index across parts — a
+            // "mesh.<partLocal>" fragment is ambiguous (part 0 and part 1
+            // both mint "mesh.0/prim.0") and can never be joined back to the
+            // authored (mesh, prim) identity (the baked placement resolver
+            // keys on it). The stableKey survives the partition verbatim, so
+            // it is the stable global identity.
+            const std::string meshFrag = sourceScene_.meshes[m].stableKey.empty()
+                                             ? ("mesh." + std::to_string(m))
+                                             : sourceScene_.meshes[m].stableKey;
             if (!modelUriBase.empty())
                 baseUri =
-                    smvk::MakeSubUri(modelUriBase,
-                                     "mesh." + std::to_string(m) + "/prim." + std::to_string(p))
-                        .Str();
+                    smvk::MakeSubUri(modelUriBase, meshFrag + "/prim." + std::to_string(p)).Str();
             slots.push_back(Slot{int(m), int(p), -1, baseUri, d.lod, {}, d.haveMeshlets});
             Slot& baseSlot = slots.back();
             baseSlot.lod.candidateCount = uint32_t(1 + d.lodChain.size());
@@ -2586,7 +2612,10 @@ void SourceSceneImporter::importNodeRecursive(int gltfNodeIndex,
     const int groupNode = addNode(cluster.scene, parentSceneNode, level);
     gltfNodeMap_[size_t(gltfNodeIndex)] = groupNode;
 
-    setNodeName(cluster.scene, groupNode, sourceNode.name.empty() ? "Node" : sourceNode.name);
+    setNodeName(cluster.scene,
+                groupNode,
+                sourceNode.name.empty() ? "Node" : sourceNode.name,
+                /*dedupe=*/false);
 
     // RAW local (as authored). The TOP node of each imported chain
     // (importUnder) additionally carries the coordFix basis on the
@@ -2663,7 +2692,8 @@ void SourceSceneImporter::importNodeRecursive(int gltfNodeIndex,
             setNodeName(cluster.scene,
                         primNode,
                         (sourceNode.name.empty() ? "Node" : sourceNode.name) +
-                            std::string("Shape") + std::to_string(primIndex));
+                            std::string("Shape") + std::to_string(primIndex),
+                        /*dedupe=*/false);
             cluster.scene.localTransform[primNode] = glm::mat4(1.0f);
             cluster.scene.globalTransform[primNode] = glm::mat4(1.0f);
             const smvk::WorldPageStaticMeshHandle primMesh =
@@ -3432,12 +3462,6 @@ size_t ApplySceneReferences(smvk::WorldPage& cluster,
     size_t geometryCacheHits = 0;
     size_t geometryCacheMisses = 0;
     bool preallocatedFlatScene = false;
-    // The MAIN cluster's live static-mesh count. A multi-reference scene (the
-    // island combines many districts) spills each UNSplit reference into its
-    // OWN bounded cluster once the main cluster nears the per-cluster mesh
-    // bound (Pool::kMaxSize) — never overflow. Rebuilt from numObjects() so it
-    // tracks the actual pool after the earlier references land.
-    uint32_t mainPageMeshCount = cluster.staticMeshes.numObjects();
     // HOST-AWARE path utils: vfs::BaseDir/FileName are VFS-RELATIVE
     // utilities — vfs::Normalize REJECTS drive-letter absolutes (C:/...)
     // by design, so calling them on a resolved HOST path returns EMPTY
@@ -4078,20 +4102,16 @@ size_t ApplySceneReferences(smvk::WorldPage& cluster,
                 // shipped meshleted=0.
                 const std::string meshBaseUri =
                     std::filesystem::path(modelSource).is_relative() ? modelSource : resolved;
-                // SPILL BUDGET: the reference's mesh-record count (base blobs +
-                // LOD siblings) against the main cluster's remaining pool
-                // budget. A multi-reference scene (the island combines many
-                // districts) spills an UNSplit reference into its OWN bounded
-                // cluster once the main cluster nears Pool::kMaxSize — never
-                // overflow. Reused (instanced) references add no meshes and
-                // never spill.
-                size_t refMeshRecords = meshAsset.geometry.size();
-                for (const auto& chain : meshAsset.lodChains)
-                    refMeshRecords += chain.size();
+                // SPILL BUDGET: every NON-ROOT unsplit reference becomes its
+                // OWN bounded cluster (a separate streaming page) instead of
+                // merging into the main cluster. The island's districts and
+                // terrain sections are distinct streaming units — the old
+                // "spill only when the main cluster nears Pool::kMaxSize"
+                // rule merged the first few sections into the ROOT page, so
+                // they loaded/unloaded with map_ruins as one blob. Reused
+                // (instanced) references add no meshes and never spill.
                 const bool reuse = builtMeshCache.find(resolved) != builtMeshCache.end();
-                const bool spillToOwnPage = outPartPages && !reuse &&
-                                            (size_t(mainPageMeshCount) + refMeshRecords >
-                                             size_t(cluster.staticMeshes.capacity()));
+                const bool spillToOwnPage = outPartPages && !reuse && !isRoot;
                 if (spillToOwnPage) {
                     // Build this UNSplit reference into its OWN bounded cluster
                     // and register it beside the main cluster (the authoring
@@ -4141,7 +4161,6 @@ size_t ApplySceneReferences(smvk::WorldPage& cluster,
                         builtFromMesh = true;
                         createdReferenceNodes += built;
                     }
-                    mainPageMeshCount = cluster.staticMeshes.numObjects();
                 }
             } else if (partitioned) {
                 // PARTITIONED-FAMILY build (P1): each part imports into its OWN

@@ -1229,7 +1229,90 @@ void WriteProbeDiag(const std::string& path,
         wr(smArr, 12);
     }
 }
+
+// ---------------------------------------------------------------------------
+// Debug-only probe-classification sidecar (the W_dilated view —
+// docs/gi_volume_roof_lattice.md). The classification is derived from the
+// bake's PROVENANCE (validTraced = the post-trace set, valid = the
+// post-dilation set) BEFORE the dilation's mutation is discarded — the
+// final valid[] mask alone cannot tell traced apart from dilated, so the
+// 3-way class is recorded explicitly. The header carries the lattice
+// geometry + a FNV-1a64 of the exact .givolume bytes so the renderer can
+// reject a stale/misaligned mask instead of trusting it.
+// ---------------------------------------------------------------------------
+constexpr uint32_t kClassVolumeMagic = 0x47434c53u; // 'GCLS'
+constexpr uint32_t kClassVolumeVersion = 1u;
+
+void WriteClassVolume(const std::string& path,
+                      const GiVolume& vol,
+                      const std::vector<char>& valid,
+                      const std::vector<char>& validTraced,
+                      uint64_t sourceHash) {
+    std::ofstream f(path, std::ios::binary | std::ios::trunc);
+    if (!f) {
+        std::fprintf(stderr, "[GiBaker] class-volume: cannot write %s\n", path.c_str());
+        return;
+    }
+    auto wr = [&](const void* p, size_t n) {
+        f.write(reinterpret_cast<const char*>(p), std::streamsize(n));
+    };
+    const uint32_t magic = kClassVolumeMagic, version = kClassVolumeVersion;
+    const uint32_t dims[3] = {vol.dims[0], vol.dims[1], vol.dims[2]};
+    const float gridMin[3] = {vol.gridMin.x, vol.gridMin.y, vol.gridMin.z};
+    const float spacing = vol.spacing;
+    wr(&magic, 4);
+    wr(&version, 4);
+    wr(dims, 12);
+    wr(gridMin, 12);
+    wr(&spacing, 4);
+    wr(&sourceHash, 8);
+    const uint64_t n = vol.VoxelCount();
+    for (uint64_t v = 0; v < n; ++v) {
+        const uint8_t cls = validTraced[size_t(v)] ? 0u : (valid[size_t(v)] ? 1u : 2u);
+        wr(&cls, 1);
+    }
+    if (!f)
+        std::fprintf(stderr, "[GiBaker] class-volume: write failed %s\n", path.c_str());
+}
 } // namespace
+
+bool ReadClassVolume(const std::string& path, GiVolumeClassFile& out, std::string& err) {
+    std::ifstream f(path, std::ios::binary);
+    if (!f) {
+        err = "class-volume: cannot open " + path;
+        return false;
+    }
+    f.seekg(0, std::ios::end);
+    const std::streamoff size = f.tellg();
+    f.seekg(0, std::ios::beg);
+    constexpr size_t kHeaderBytes = 44; // magic+version+dims+gridMin+spacing+hash
+    if (size < std::streamoff(kHeaderBytes)) {
+        err = "class-volume: too small";
+        return false;
+    }
+    std::vector<uint8_t> buf(static_cast<size_t>(size));
+    f.read(reinterpret_cast<char*>(buf.data()), size);
+    auto rd = [&](size_t off, void* p, size_t n) { std::memcpy(p, buf.data() + off, n); };
+    uint32_t magic = 0, version = 0;
+    rd(0, &magic, 4);
+    rd(4, &version, 4);
+    if (magic != kClassVolumeMagic || version != kClassVolumeVersion) {
+        err = "class-volume: bad magic/version (re-bake with --class-volume)";
+        return false;
+    }
+    out = GiVolumeClassFile{};
+    rd(8, out.dims, 12);
+    rd(20, out.gridMin, 12);
+    rd(32, &out.spacing, 4);
+    rd(36, &out.sourceHash, 8);
+    const uint64_t n = uint64_t(out.dims[0]) * out.dims[1] * out.dims[2];
+    if (n == 0 || uint64_t(size) != kHeaderBytes + n) {
+        err = "class-volume: body size mismatch";
+        return false;
+    }
+    out.cls.assign(buf.begin() + kHeaderBytes, buf.end());
+    return true;
+}
 
 // Bakes the volume's dense grid (see the header for the layout-selection
 // contract: seed > search-by-gates > legacy fixed).
@@ -1551,10 +1634,15 @@ bool BakeGiVolume(const GiTraceScene& scene,
 
     // ---- Diagnostic probe dump: snapshot the POST-TRACE state and save the
     // ORIGINAL validity mask (before the dilation mutates it) so the later
-    // snapshots can classify traced vs dilated vs unfilled. ----
+    // snapshots can classify traced vs dilated vs unfilled. The mask must
+    // be persisted for ANY consumer of the 3-way classification — the
+    // .gidg dumps AND the --class-volume sidecar — not just --diag-probes
+    // (a missing validTraced here made WriteClassVolume read an empty
+    // vector out of bounds). ----
     std::vector<char> validTraced;
-    if (!cfg.diagProbeDir.empty()) {
+    if (!cfg.diagProbeDir.empty() || !cfg.diagClassVolume.empty())
         validTraced = valid;
+    if (!cfg.diagProbeDir.empty()) {
         WriteProbeDiag(
             cfg.diagProbeDir + "/probes_posttrace.gidg", 0u, outVolume, valid, valid, sampleMean);
     }
@@ -1641,7 +1729,7 @@ bool BakeGiVolume(const GiTraceScene& scene,
                                 if (valid[size_t(v)])
                                     continue;
                                 glm::vec3 acc[kSgLobeCount] = {};
-                                int cnt = 0;
+                                float wSum = 0.0f;
                                 for (int k = 0; k < 6; ++k) {
                                     const int jx = int(ix) + kDx[k];
                                     const int jy = int(iy) + kDy[k];
@@ -1655,13 +1743,29 @@ bool BakeGiVolume(const GiTraceScene& scene,
                                         continue;
                                     if (!sameSide(u, v, k))
                                         continue; // the source cannot see the target: across a wall
+                                    // Surface-side-aware donor weight
+                                    // (dilationBrightnessPower): the donor's
+                                    // mean luminance raised to the power — the
+                                    // brightest (exterior/sky-side) donor
+                                    // dominates the fill instead of the uniform
+                                    // mean. 0 = the classic uniform fill (the
+                                    // weight is 1 for every donor).
+                                    float donorW = 1.0f;
+                                    if (cfg.dilationBrightnessPower > 0.0f) {
+                                        glm::vec3 s(0.0f);
+                                        for (uint32_t i = 0; i < kSgLobeCount; ++i)
+                                            s += outVolume.coeffs[size_t(u) * kSgLobeCount + i];
+                                        donorW = std::pow(std::max(float(Luminance(s)), 1e-6f),
+                                                          cfg.dilationBrightnessPower);
+                                    }
                                     for (uint32_t i = 0; i < kSgLobeCount; ++i)
-                                        acc[i] += outVolume.coeffs[size_t(u) * kSgLobeCount + i];
-                                    ++cnt;
+                                        acc[i] +=
+                                            outVolume.coeffs[size_t(u) * kSgLobeCount + i] * donorW;
+                                    wSum += donorW;
                                 }
-                                if (cnt > 0) {
+                                if (wSum > 0.0f) {
                                     for (uint32_t i = 0; i < kSgLobeCount; ++i)
-                                        fill[size_t(v) * kSgLobeCount + i] = acc[i] / float(cnt);
+                                        fill[size_t(v) * kSgLobeCount + i] = acc[i] / wSum;
                                     fillMask[size_t(v)] = 1;
                                     localAnyFill = true;
                                 }
@@ -1841,6 +1945,17 @@ bool BakeGiVolume(const GiTraceScene& scene,
                     }
                 }
     }
+
+    // Debug-only probe-classification sidecar (the W_dilated view): the
+    // renderer's GI_DEBUG mode 7 samples an R8 volume built from this
+    // 3-way provenance to measure the dilated-probe coverage. The sidecar
+    // is written with a PLACEHOLDER sourceHash (0): the CALLER (gi_baker)
+    // patches the real FNV-1a64 of the .givolume bytes it writes next, so
+    // this code never re-serializes the volume (the extra ~750 MB peak
+    // would OOM the already-heavy bake).
+    if (!cfg.diagClassVolume.empty())
+        WriteClassVolume(cfg.diagClassVolume, outVolume, valid, validTraced, /*sourceHash=*/0);
+
     const auto t1 = std::chrono::steady_clock::now();
     stats.seconds = std::chrono::duration<double>(t1 - t0).count();
     {

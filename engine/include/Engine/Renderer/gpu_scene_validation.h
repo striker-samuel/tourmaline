@@ -634,6 +634,32 @@ class CandidateValidator {
         return true;
     }
 
+    // Fused-path entry (#372): the CPU coarse selector is bypassed and the
+    // per-instance fused verdict stream (gpu_scene_fused_cull -> expand) is
+    // the source. This sizes the flight's verdict buffer to the DENSE instance
+    // count so the existing compaction/work/raster prep consumes it unchanged.
+    // The caller dispatches fused-expand to fill the verdict buffer before the
+    // compact stage, then calls PrepareCompaction/PrepareWorkExpansion/etc.
+    // exactly as the CPU path does. No validation readback (the fused chain is
+    // validated separately); the CPU path stays the fallback.
+    [[nodiscard]] bool PrepareFusedVerdicts(smvk::ResourceManager& ctx,
+                                            uint32_t flight,
+                                            uint32_t instanceCount) {
+        if (flight >= Flights || instanceCount == 0u || instanceCount > MaxPassedInstanceCandidates)
+            return false;
+        auto& f = flight_[flight];
+        if (f.pending)
+            return false;
+        f.prepared = false;
+        f.validate = false;
+        f.candidateCount = instanceCount;
+        const size_t outBytes = size_t(instanceCount) * sizeof(InstanceCullVerdict);
+        if (!Ensure(ctx, f.verdicts, f.verdictSize, outBytes, "scene candidate verdicts"))
+            return false;
+        f.prepared = true;
+        return true;
+    }
+
     // Allocate scratch and produce BDA push blocks for the three-pass
     // compaction. No resources survive a flight reuse without its fence.
     [[nodiscard]] bool PrepareCompaction(smvk::ResourceManager& ctx,
@@ -1186,6 +1212,23 @@ class CandidateValidator {
     }
     [[nodiscard]] uint64_t IndirectMismatches() const {
         return indirectMismatches_;
+    }
+
+    // Fused-path validation readback (test/debug): the work-record count the
+    // fused -> expand -> compact -> work chain produced. Call only after the
+    // flight's fence. UINT32_MAX on any failure (never a false zero).
+    [[nodiscard]] uint32_t ReadbackWorkCount(smvk::ResourceManager& ctx, uint32_t flight) {
+        if (flight >= Flights)
+            return UINT32_MAX;
+        auto& f = flight_[flight];
+        if (!f.workPrepared || f.workCandidates == 0 || f.workOffsets.empty())
+            return UINT32_MAX;
+        uint32_t count = 0;
+        if (!ctx.DownloadDataFromBuffer(
+                f.workOffsets, &count, sizeof(count), size_t(f.workCandidates) * sizeof(uint32_t)))
+            return UINT32_MAX;
+        f.workPrepared = false;
+        return count;
     }
 
   private:

@@ -69,13 +69,14 @@ int main() {
     {
         constexpr uint32_t plain = 0u;
         constexpr uint32_t masked = InstanceFlagMasked;
-        constexpr uint32_t faded = WithCloseupDitherRasterFlags(plain, true);
+        constexpr uint32_t faded = MakeInstanceFlags(plain, kDitherCloseupFlags);
         static_assert((faded & InstanceFlagMasked) != 0u);
         static_assert((faded & InstanceFlagDitherCloseup) != 0u);
-        CHECK(WithCloseupDitherRasterFlags(plain, false) == plain);
-        CHECK(WithCloseupDitherRasterFlags(masked, false) == masked);
-        CHECK(WithCloseupDitherRasterFlags(masked, true) == (masked | InstanceFlagDitherCloseup));
-        CHECK(WithCloseupDitherRasterFlags(InstanceFlagDoubleSided, true) ==
+        CHECK(MakeInstanceFlags(plain, 0u) == plain);
+        CHECK(MakeInstanceFlags(masked, 0u) == masked);
+        CHECK(MakeInstanceFlags(masked, kDitherCloseupFlags) ==
+              (masked | InstanceFlagDitherCloseup));
+        CHECK(MakeInstanceFlags(InstanceFlagDoubleSided, kDitherCloseupFlags) ==
               (InstanceFlagDoubleSided | faded));
     }
     // Page sizing is a pure CPU contract: no Vulkan device required.

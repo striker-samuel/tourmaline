@@ -309,6 +309,44 @@ float SgGiVolumeDebugRedistribution(GPU_PTR(FrameUniforms) frame, uint vol, floa
     return 0.5 * dSum;
 }
 
+// Dilated-probe COVERAGE diagnostic (docs/gi_volume_roof_lattice.md):
+// W_dilated = (Σ t_i * I_dilated,i) / (Σ t_i), the interpolation-weighted
+// fraction of irradiance contributed by DILATED probes. Uses the SAME
+// eight-corner ORDINARY trilinear weights as the raw-SG view (mode 5) and
+// NO visibility rejection (Σ t_i = 1), so it measures the bake-stage
+// population's share of the raw interpolated field directly. Reads the
+// debug R8 classification volume (giVolumeClassSlots; 0 = traced,
+// ~0.5 = dilated, 1 = unfilled). UINT32_MAX slot = no classification
+// volume loaded -> 0.0.
+float SgGiVolumeDebugDilatedCoverage(GPU_PTR(FrameUniforms) frame, uint vol, float3 pos)
+{
+    const uint classSlot = frame.Get().giVolumeClassSlots[vol];
+    if (classSlot == 0xffffffffu)
+        return 0.0;
+    const GiVolumeGpu v = frame.Get().giVolumes.Get().volumes[vol];
+    const float3 uvw = saturate(pos * v.uvwScale.xyz + v.uvwBias.xyz);
+    const float3 dims = float3(v.uvwScale.w, v.uvwBias.w, v.aabbMax.w);
+    if (any(dims < 2.0))
+        return 0.0;
+    const float3 rel = uvw * dims;
+    const int3 b = clamp(int3(floor(rel - 0.5)), 0, int3(dims) - 2);
+    const float3 f = saturate(rel - 0.5 - float3(b));
+    float wDilated = 0.0;
+    [unroll]
+    for (uint c = 0; c < 8; ++c)
+    {
+        const int3 cc = b + int3((c & 1u) != 0u ? 1 : 0,
+            (c & 2u) != 0u ? 1 : 0, (c & 4u) != 0u ? 1 : 0);
+        // R8_UNorm reads 0 (traced), ~127/255 (dilated), 255/255 (unfilled).
+        const float cls = volumeTextures[classSlot].Load(int4(cc, 0)).r;
+        const float isDilated = (cls >= 0.25 && cls < 0.75) ? 1.0 : 0.0;
+        const float3 t3 = float3((c & 1u) != 0u ? f.x : 1.0 - f.x,
+            (c & 2u) != 0u ? f.y : 1.0 - f.y, (c & 4u) != 0u ? f.z : 1.0 - f.z);
+        wDilated += isDilated * (t3.x * t3.y * t3.z);
+    }
+    return wDilated; // Σ t_i = 1 over the 8 corners
+}
+
 // Samples one volume's dense grid at world pos. Two paths:
 //  - FAST (the common cell): the bake's per-voxel clean flag
 //    (visB.b, point-fetched at the cell's base corner) proves every

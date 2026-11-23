@@ -30,10 +30,11 @@ void mainCS(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
         return;
 
     const PlacementRenderInstance inst = pc.instances.Get().items[slot];
-    const uint proto = min(inst.prototypeId, PLACEMENT_MAX_PROTOS - 1);
+    const uint proto = min(inst.prototypeId, pc.protoCount - 1);
+    const PlacementProtoRow row = pc.protoTable.Get().rows[proto];
 
     bool visible = PlacementSphereVisible(pc.renderViews, pc.renderViewIndex,
-        pc.cullFlags, pc.protoBounds[proto], pc.protoDist[proto], pc.camPos,
+        pc.cullFlags, row.bounds, row.drawDistance, pc.camPos,
         inst.position, inst.scale);
     if (visible && (pc.cullFlags & PLACEMENT_CULL_ALIVE) != 0
         && pc.alive.Get().v[slot].y == 0)

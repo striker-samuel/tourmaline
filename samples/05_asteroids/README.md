@@ -4,7 +4,7 @@ A playable arcade Asteroids sample for Tourmaline, using the existing **Sponza 3
 
 The game uses two **original CC0 pixel-art PNG atlases** plus authored **SpriteSet metadata** for the ship, asteroid animation clips, projectiles, effects and custom 5×7 glyph font. The `.spriteset` files are parsed by the first-class `Engine/Asset/spriteset.h` API (merged in [PR #55](https://github.com/striker-samuel/tourmaline/pull/55)); the game demonstrates grid expansion, named animation sampling and normalized UV regions. The PNGs remain host-owned textures. Source images and the reusable atlas-cell mapping are in [assets/](assets/README.md). The shader `shaders/asteroids_gameui.frag.hlsl` is a project-local HLSL example providing **2/4/8-texel GPU sprite pixelation**, plus switchable CRT scanlines and vignette on the translucent playfield. Its optional effect payload travels through the unused word of the GameUI instance ABI. It is compiled into `content/shaders/asteroids_gameui.frag.hlsl.spv` and selected using `GameUiRenderer::SetFragmentShaderPath` inside the native `WorldRenderer::SetExtraGameUi` callback. The game also opts into nearest-neighbor sampling for the pixel-art rectangles. Font glyphs are textured, one instance each — no runtime font dependency.
 
-Sponza data is **not** included in this sample. The rolling `demo_content` release provides `sponza_10.tapp` and its content-addressed pak. See [Sponza credits and licensing](../../SPONZA-CREDITS.md) before distributing those assets.
+Sponza data is **not** included in this sample. The rolling `demo_content` release provides `sponza_10.tapp` and its content-addressed pak. See [Sponza credits and licensing](../../THIRD_PARTY_NOTICES.md) before distributing those assets.
 
 ## Build and run
 

@@ -535,9 +535,9 @@ class WorldSynchronizer {
                 // authored material is opaque. The FS applies the distance
                 // factor every frame, so no per-camera CPU publication is
                 // required for the fade band.
-                record.flags = WithCloseupDitherRasterFlags(
-                    static_cast<uint32_t>(item.flags),
-                    tour::transformhierarchy::IsDitherCloseupNode(world.scene, int(item.node)));
+                record.flags = static_cast<uint32_t>(item.flags);
+                if (tour::transformhierarchy::IsDitherCloseupNode(world.scene, int(item.node)))
+                    record.flags |= kDitherCloseupFlags;
                 // Per-instance pipeline classification, independent of
                 // mesh sharing. Keep legacy admission until both raster
                 // and depth PSO bins are wired end-to-end.

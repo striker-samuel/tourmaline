@@ -78,10 +78,7 @@ glm::vec2 TerrainTileOrigin(const TerrainGroupData& g, uint32_t tx, uint32_t tz)
     return glm::vec2(float(x0) * g.heights.spacing.x, float(z0) * g.heights.spacing.y);
 }
 
-bool BuildTerrainTileUpload(const TerrainGroupData& g,
-                            uint32_t tx,
-                            uint32_t tz,
-                            MeshData& out) {
+bool BuildTerrainTileUpload(const TerrainGroupData& g, uint32_t tx, uint32_t tz, MeshData& out) {
     out = MeshData{};
     const HeightfieldData& hf = g.heights;
     const uint32_t res = hf.width;
@@ -455,8 +452,13 @@ bool HarvestWorldHeightfield(const smvk::terrain::TerrainHField& field,
             const uint32_t pxx = uint32_t(ix) % meta.hRes;
             const auto& tile = field.tiles[size_t(tz) * size_t(n) + size_t(tx)];
             const size_t o = (size_t(py) * size_t(meta.hRes) + size_t(pxx)) * 4;
+            // Use the field's OWN meta mapping (baseY/range), never the
+            // terrain_pack.h constants (kTerrainBaseY/kTerrainRange) — those
+            // are a stale canonical default that diverges from a cooked
+            // island (e.g. -43.889/292.24 vs -40/420), which floated placed
+            // instances tens of meters above the real surface.
             out.heights[(size_t(iz - iz0)) * w + size_t(ix - ix0)] =
-                smvk::terrain::HeightToWorld(smvk::terrain::DecodeH01(tile[o], tile[o + 1]));
+                meta.baseY + smvk::terrain::DecodeH01(tile[o], tile[o + 1]) * meta.range;
         }
     }
     return out.valid();

@@ -23,8 +23,9 @@
 
 #include <Engine/App/world.h>
 #include <Engine/Asset/pak.h>
-#include <Engine/Memory/pool.h>                   // shard-lease API + kNumPoolShards
-#include <Engine/RHI/resource_manager.h>          // ResourceManager::FlushUploads (complete type)
+#include <Engine/Memory/pool.h>                 // shard-lease API + kNumPoolShards
+#include <Engine/RHI/resource_manager.h>        // ResourceManager::FlushUploads (complete type)
+#include <Engine/Renderer/static_vertex_heap.h> // the global vertex arena (heap-capacity admission)
 #include <Engine/WorldPartition/WorldPartition.h> // IWorldStreamProvider (scene provider seam)
 
 #include <glm/glm.hpp>
@@ -127,6 +128,14 @@ class ScenePageStreamer : public engine::worldpartition::IWorldStreamProvider {
             viewDir_ = viewDir;
         bool changed = false;
 
+        // A debug-triggered restream: abort every in-flight/queued deserialize
+        // and unload every non-entry page, then let the load pass below
+        // re-enqueue the pages around the current camera position.
+        if (resetRequested_) {
+            resetRequested_ = false;
+            changed |= ResetStreaming();
+        }
+
         // Unload far pages FIRST (incremental retire; never the pinned
         // entry). Doing this before the load pass keeps the dense page slots
         // stable for the newly-appended pages below.
@@ -153,6 +162,23 @@ class ScenePageStreamer : public engine::worldpartition::IWorldStreamProvider {
         // skipped page stays unloaded and streams in when a far page evicts.
         uint32_t enqueuedThisTick = 0;
         for (uint32_t i = 0; i < manifest_.sceneCount; ++i) {
+            // Heap-capacity admission: stop admitting once the static vertex
+            // arena is nearly full. The eviction pass above freed any far
+            // pages this tick; if the arena is still near capacity, retry
+            // loading on a later tick (after the camera moves and more far
+            // pages evict) rather than exhausting the arena and failing a
+            // whole page deserialize.
+            if (HeapNearlyFull()) {
+                if (!heapGateLogged_) {
+                    std::cerr << "[PageStreamer] static vertex heap near capacity (used "
+                              << smvk::staticVertexFmtHeap.m_staticVertexBlock.Used()
+                              << " + in-flight ~" << InFlightVertexEstimate() << " / budget "
+                              << GeometryBudget()
+                              << " verts); holding page admission until far pages evict\n";
+                    heapGateLogged_ = true;
+                }
+                break;
+            }
             if (loaded_[i] || dispatched_[i] || i == entryScene_ || !WithinRadius(i, cameraPos))
                 continue;
             if (maxLoadedMeshes_ != 0 &&
@@ -188,6 +214,12 @@ class ScenePageStreamer : public engine::worldpartition::IWorldStreamProvider {
     void SetMaxLoadedMeshes(uint32_t n) {
         maxLoadedMeshes_ = n;
     }
+    // Resident-geometry budget in VERTICES (0 = auto, 85% of the arena). The
+    // host derives this from its configurable geometry memory limit; a value
+    // below the arena capacity reserves headroom for the async carve burst.
+    void SetMaxLoadedVertices(uint64_t verts) {
+        maxLoadedVertices_ = verts;
+    }
     // Fed each frame by the renderer (the view matrix is built in the
     // frame-uniform pass, one frame after the provider's CommitFrame runs);
     // the facing bias tolerates the one-frame lag.
@@ -200,6 +232,34 @@ class ScenePageStreamer : public engine::worldpartition::IWorldStreamProvider {
             if (p)
                 ++n;
         return n;
+    }
+
+    // ---- debug inspection (the WorldMap "Scene tiles" layer + reset) ----
+    // Per-district tile state: the world manifest's scene AABBs + the
+    // streamer's live residency (loaded) and in-flight (dispatched) flags.
+    uint32_t SceneCount() const {
+        return manifest_.sceneCount;
+    }
+    void SceneAabb(uint32_t i, glm::vec3& mn, glm::vec3& mx) const {
+        manifest_.Aabb(i, mn, mx);
+    }
+    bool SceneLoaded(uint32_t i) const {
+        return i < loaded_.size() && loaded_[i] != nullptr;
+    }
+    bool SceneDispatched(uint32_t i) const {
+        return i < dispatched_.size() && dispatched_[i];
+    }
+    uint32_t EntryScene() const {
+        return entryScene_;
+    }
+    // Queues a full restream for the NEXT Tick (the frame's streaming update
+    // section — safe, not mid-frame): aborts every in-flight/queued district
+    // deserialize, unloads every non-entry page, and lets the same tick's
+    // load pass re-enqueue the pages around the current camera position. The
+    // entry scene stays pinned.
+    void RequestReset() {
+        resetRequested_ = true;
+        std::fprintf(stderr, "[PageStreamer] reset requested (loaded=%zu)\n", LoadedCount());
     }
 
     // ---- IWorldStreamProvider (Scene layer) ----
@@ -247,9 +307,11 @@ class ScenePageStreamer : public engine::worldpartition::IWorldStreamProvider {
     struct PageRequest {
         uint32_t sceneIndex = 0;
         StreamingPriority priority = StreamingPriority::Background;
+        uint64_t generation = 0; // the streamer generation it was enqueued under
     };
     struct PageResult {
         uint32_t sceneIndex = 0;
+        uint64_t generation = 0;         // enqueue generation; stale results are discarded
         std::unique_ptr<WorldPage> page; // null = deserialize failed
     };
     struct Bin {
@@ -269,12 +331,46 @@ class ScenePageStreamer : public engine::worldpartition::IWorldStreamProvider {
         return (sceneIndex * 0x9E3779B1u) % binCount;
     }
 
+    // Aborts all in-flight/queued district deserialization and unloads every
+    // non-entry page, returning true when anything was unloaded. Runs on the
+    // render thread inside Tick (the frame's streaming update section).
+    // Generation-tagged: the running bin thread's CURRENT deserialize is left
+    // to finish (it owns a shard lease + staging); its result carries the old
+    // generation and is discarded by FoldCompleted without re-touching
+    // dispatched_ (already cleared here, or re-dispatched by a newer enqueue).
+    bool ResetStreaming() {
+        ++generation_;
+        for (auto& binPtr : bins_) {
+            std::lock_guard<std::mutex> lock(binPtr->mutex);
+            binPtr->pending.clear();
+            binPtr->done.clear();
+        }
+        bool changed = false;
+        for (uint32_t i = 0; i < manifest_.sceneCount; ++i) {
+            dispatched_[i] = false;
+            if (i == entryScene_ || !loaded_[i])
+                continue;
+            try {
+                world_.UnmergePage(*loaded_[i]);
+            } catch (const std::exception& e) {
+                std::cerr << "[PageStreamer] reset unload page " << i << " failed: " << e.what()
+                          << "\n";
+            }
+            loaded_[i] = nullptr;
+            changed = true;
+        }
+        heapGateLogged_ = false;
+        std::cerr << "[PageStreamer] reset: aborted in-flight, unloaded non-entry pages,"
+                  << " restreaming around camera\n";
+        return changed;
+    }
+
     bool Enqueue(uint32_t sceneIndex, StreamingPriority priority) {
         Bin& bin = *bins_[HashBin(sceneIndex, uint32_t(bins_.size()))];
         std::unique_lock<std::mutex> lock(bin.mutex);
         if (bin.pending.size() >= smvk::mem::config::kStreamMaxPendingPerBin)
             return false; // fixed-size backpressure: retry next tick
-        bin.pending.push_back(PageRequest{sceneIndex, priority});
+        bin.pending.push_back(PageRequest{sceneIndex, priority, generation_});
         dispatched_[sceneIndex] = true;
         lock.unlock();
         bin.cvRequest.notify_one();
@@ -310,6 +406,12 @@ class ScenePageStreamer : public engine::worldpartition::IWorldStreamProvider {
                 results.swap(bin.done);
             }
             for (PageResult& r : results) {
+                // Stale result: a ResetStreaming aborted this page mid-flight and
+                // bumped the generation. Its dispatched_ flag was already cleared
+                // (or re-dispatched by a NEWER enqueue of the same scene), so we
+                // must not touch it — only discard the (now-superseded) payload.
+                if (r.generation != generation_)
+                    continue;
                 dispatched_[r.sceneIndex] = false;
                 if (!r.page)
                     continue; // deserialize failed (logged in DeserializeCluster)
@@ -382,7 +484,7 @@ class ScenePageStreamer : public engine::worldpartition::IWorldStreamProvider {
 
             {
                 std::lock_guard<std::mutex> lock(bin->mutex);
-                bin->done.push_back(PageResult{req.sceneIndex, std::move(page)});
+                bin->done.push_back(PageResult{req.sceneIndex, req.generation, std::move(page)});
             }
         }
     }
@@ -421,6 +523,62 @@ class ScenePageStreamer : public engine::worldpartition::IWorldStreamProvider {
         return StreamingPriority::Normal;
     }
 
+    // Heap-capacity admission: the static VERTEX heap (not the mesh count) is
+    // the binding budget for dense partitioned worlds. The island's ~162k valid
+    // meshes fit under kMaxMeshes but their ~210M vertices overflow the arena,
+    // so admission must ALSO gate on the arena's live usage.
+    //
+    // The resident-geometry budget is CONFIGURABLE (SetMaxLoadedVertices, fed
+    // from the host's geometry memory limit); it defaults to 85% of the arena
+    // so there is always carve-burst headroom. The gate also reserves the
+    // estimated cost of the pages still queued/being deserialized: their carves
+    // race ahead of the render-thread gate, so gating on Used() alone would
+    // let the async burst overflow the arena before the next tick reacts.
+    uint64_t GeometryBudget() const {
+        const uint64_t cap = smvk::staticVertexFmtHeap.m_staticVertexBlock.Capacity();
+        if (maxLoadedVertices_ != 0)
+            return std::min(maxLoadedVertices_, cap);
+        return (cap * 85u) / 100u;
+    }
+
+    // The static index monoblock budget (BYTES), 85% of the arena like the
+    // vertex budget — the admission gate bounds BOTH heaps.
+    uint64_t IndexBudget() const {
+        const uint64_t cap = smvk::staticVertexFmtHeap.m_staticIndexBlock.Capacity();
+        return (cap * 85u) / 100u;
+    }
+
+    // EXACT in-flight vertex estimate: the manifest carries each scene's
+    // aggregate vertex count, so the async carve burst is summed directly
+    // (the old per-mesh-average extrapolation under-counted the terrain pages
+    // and oversubscribed the static heaps).
+    uint64_t InFlightVertexEstimate() const {
+        uint64_t verts = 0;
+        for (uint32_t i = 0; i < manifest_.sceneCount; ++i)
+            if (dispatched_[i])
+                verts += manifest_.VertexCount(i);
+        return verts;
+    }
+
+    // EXACT in-flight index estimate (BYTES), same source.
+    uint64_t InFlightIndexEstimate() const {
+        uint64_t bytes = 0;
+        for (uint32_t i = 0; i < manifest_.sceneCount; ++i)
+            if (dispatched_[i])
+                bytes += manifest_.IndexBytes(i);
+        return bytes;
+    }
+
+    bool HeapNearlyFull() const {
+        const uint64_t vCap = smvk::staticVertexFmtHeap.m_staticVertexBlock.Capacity();
+        const uint64_t vUsed = smvk::staticVertexFmtHeap.m_staticVertexBlock.Used();
+        const bool vertexFull = vCap != 0 && vUsed + InFlightVertexEstimate() >= GeometryBudget();
+        const uint64_t iCap = smvk::staticVertexFmtHeap.m_staticIndexBlock.Capacity();
+        const uint64_t iUsed = smvk::staticVertexFmtHeap.m_staticIndexBlock.Used();
+        const bool indexFull = iCap != 0 && iUsed + InFlightIndexEstimate() >= IndexBudget();
+        return vertexFull || indexFull;
+    }
+
     World& world_;
     std::shared_ptr<const smvk::PakBackend> backend_;
     smvk::ResourceManager& ctx_;
@@ -437,11 +595,22 @@ class ScenePageStreamer : public engine::worldpartition::IWorldStreamProvider {
     glm::vec3 pendingCameraPos_{0.0f};
     float pendingRadius_ = 0.0f;
     bool hasInterest_ = false;
+    // Monotonic enqueue generation. ResetStreaming bumps it; stale async
+    // results (older generation) are discarded by FoldCompleted so an
+    // aborted page can never fold after its unload/restream.
+    uint64_t generation_ = 0;
+    // Debug restream latch: set by RequestReset (the WorldMap button),
+    // consumed at the top of the next Tick (the streaming update section).
+    bool resetRequested_ = false;
     // Resident-mesh budget (0 = unbounded): the load pass stops admitting
     // pages once the merged world's mesh count would exceed this. The host
     // sets it to the GPU-scene admission ceiling (kMaxMeshes) so streaming
     // never oversubscribes the GPU-driven path.
     uint32_t maxLoadedMeshes_ = 0;
+    // Resident-geometry budget in VERTICES (0 = auto, 85% of the arena).
+    uint64_t maxLoadedVertices_ = 0;
+    // One-shot diagnostic for the heap-capacity gate (see Tick's admission).
+    bool heapGateLogged_ = false;
     std::vector<std::unique_ptr<Bin>> bins_; // heap-owned (Bin is non-movable)
 };
 
