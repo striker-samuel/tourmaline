@@ -142,6 +142,15 @@ The fastest way to see Tourmaline render a scene is to **build the `App` viewer 
 
 The repository's `install_dependencies.ps1` and `install_dependencies.sh` fetch the pinned dependencies into `external/`, but **do not install KTX-Software or the Windows Vulkan SDK**. On Windows, prefer prebuilt Embree: the vendored source has triggered MSVC internal compiler errors. Full platform details are also documented in [CI](.github/workflows/ci.yml) and [AGENTS.md](AGENTS.md).
 
+**Optional — OpenUSD source import.** Importing `.usd` / `.usda` / `.usdc` /
+`.usdz` sources through `Import.exe` (or `Project.exe`'s import stage)
+requires an OpenUSD install exposing the `pxr` CMake package. It defaults
+**OFF**: a normal build (glTF/OBJ import, cooking, running the demo) does
+not need it. When enabled, `Import.exe` delay-loads the OpenUSD runtime, so
+non-USD imports never require the USD DLLs on `PATH` — only an actual `.usd`
+import does. See [docs/openusd_import.md](docs/openusd_import.md) for the
+Windows/Linux setup.
+
 Because those trees live outside Git, a `git pull` that bumps a pin does **not** update them. The configure step therefore compares every fetched tree against the pin the dependency script declares and stops with the exact re-fetch command when they disagree (see `cmake/DependencyStamps.cmake`), instead of failing later inside engine code.
 
 ### Windows — build, install demo content, run

@@ -14,6 +14,7 @@
 #include <gltf_import/asset_export.h>
 #include <gltf_import/gltf.h>
 #include <gltf_import/source_scene.h>
+#include <gltf_import/usd_adapter.h>
 #include <ktx.h>
 
 #include <algorithm>
@@ -970,12 +971,22 @@ bool LoadModelFromSourceFile(tinygltf::Model& model,
     }
 
     if (ext == ".usd" || ext == ".usda" || ext == ".usdc" || ext == ".usdz") {
-        if (UsdFileAsModel) {
-            std::vector<std::string> sink;
-            return UsdFileAsModel(model, path, extraDeps ? *extraDeps : sink);
+        // Lazy-load the optional USD adapter DLL on first .usd import. Until
+        // then the process has not touched the OpenUSD runtime, so glTF/OBJ
+        // imports never require the USD SDK on PATH.
+        if (!UsdFileAsModel) {
+            gltf_import::UsdAdapterApi api;
+            std::string err;
+            if (!gltf_import::LoadUsdAdapter(&api, &err)) {
+                std::cerr << "USD import disabled: " << err << std::endl;
+                return false;
+            }
+            UsdFileAsModel = api.loadUsdFileAsModel;
+            LastImportedBakedPlacement = api.lastBakedPlacement;
+            MutableLastImportedBakedPlacement = api.mutableBakedPlacement;
         }
-        std::cerr << "USD import disabled; configure -DTOURMALINE_WITH_USD=ON" << std::endl;
-        return false;
+        std::vector<std::string> sink;
+        return UsdFileAsModel(model, path, extraDeps ? *extraDeps : sink);
     }
 
     tinygltf::TinyGLTF loader;

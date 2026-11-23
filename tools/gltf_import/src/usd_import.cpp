@@ -10,6 +10,7 @@
 // Silent loss of a prim is worse than a failed content build.
 
 #include <gltf_import/gltf.h>
+#include <gltf_import/usd_adapter.h>
 
 #include <pxr/base/gf/matrix4d.h>
 #include <pxr/base/gf/rotation.h>
@@ -1166,15 +1167,26 @@ bool LoadUsdFileAsModel(tinygltf::Model& model,
 }
 
 namespace {
-// Register the adapter with LoadModelFromSourceFile's dispatch pointer. This
-// static initializer runs only when the usd_import library is linked (the
-// Import tool + USD tests), so the runtime and cookers never load USD.
-struct UsdAdapterRegistrar {
-    UsdAdapterRegistrar() {
-        UsdFileAsModel = &LoadUsdFileAsModel;
-        LastImportedBakedPlacement = &BakedPlacementImpl;
-        MutableLastImportedBakedPlacement = &MutableBakedPlacementImpl;
-    }
-};
-const UsdAdapterRegistrar g_usdAdapterRegistrar;
+// Portable DLL export for the C-ABI entry point. Windows names the export
+// with __declspec(dllexport); Linux relies on the SHARED library's default
+// symbol visibility.
+#if defined(_WIN32)
+#define TOURMALINE_USD_EXPORT extern "C" __declspec(dllexport)
+#else
+#define TOURMALINE_USD_EXPORT extern "C" __attribute__((visibility("default")))
+#endif
+
+// The C-ABI adapter entry point, exported by the usd_import SHARED library.
+// The Import tool loads this DLL lazily (only for .usd sources) and reads the
+// function pointers through this export; the static registrar is gone, so the
+// OpenUSD runtime is never pulled into a process that does not import USD.
+TOURMALINE_USD_EXPORT int TourmalineUsdGetApi(gltf_import::UsdAdapterApi* out,
+                                              std::uint32_t structSize) {
+    if (!out || structSize != sizeof(gltf_import::UsdAdapterApi))
+        return 0;
+    out->loadUsdFileAsModel = &LoadUsdFileAsModel;
+    out->lastBakedPlacement = &BakedPlacementImpl;
+    out->mutableBakedPlacement = &MutableBakedPlacementImpl;
+    return 1;
+}
 } // namespace

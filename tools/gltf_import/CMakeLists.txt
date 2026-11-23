@@ -16,6 +16,10 @@ add_library(gltf_import STATIC
     src/material_pack.cpp
     src/asset_export.cpp
     src/tour_world.cpp
+    # The optional USD adapter loader (LoadLibrary/dlopen of usd_import).
+    # Compiled ALWAYS: it is a no-op until a .usd source is dispatched, so a
+    # build without the USD SDK never pulls the OpenUSD runtime.
+    src/usd_adapter_loader.cpp
 )
 
 target_include_directories(gltf_import
@@ -59,18 +63,22 @@ target_compile_definitions(gltf_import PRIVATE ENGINE_VULKAN)
 option(TOURMALINE_WITH_USD "Enable native OpenUSD source importing" OFF)
 if(TOURMALINE_WITH_USD)
     find_package(pxr CONFIG REQUIRED)
-    # The USD adapter is a SEPARATE object library so the runtime and the
-    # cookers (which link gltf_import) stay USD-agnostic: only the Import tool
-    # and the USD tests link usd_import, so only they pull the USD runtime
-    # DLLs. OBJECT (not STATIC) so the registrar object is always fully linked
-    # — a static library's static initializer would be dead-code-eliminated
-    # because nothing references it, and the .usd dispatch pointer would stay
-    # null.
-    add_library(usd_import OBJECT src/usd_import.cpp)
+    # The USD adapter is a SEPARATE SHARED library so the Import tool and the
+    # runtime stay USD-agnostic: Import.exe loads usd_import.dll lazily (only
+    # when a .usd source is dispatched), so only a process that actually
+    # imports USD pulls the OpenUSD runtime DLLs. The exported entry point is
+    # TourmalineUsdGetApi (see usd_import.cpp), read via
+    # gltf_import::LoadUsdAdapter.
+    add_library(usd_import SHARED src/usd_import.cpp)
+    # Live at the build root next to Import.exe so LoadLibrary("usd_import.dll")
+    # resolves from the executable's own directory.
+    set_target_properties(usd_import PROPERTIES
+        RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    )
     if(TARGET usdGeom AND TARGET usdShade AND TARGET usd)
-        target_link_libraries(usd_import PUBLIC gltf_import usdGeom usdShade usd)
+        target_link_libraries(usd_import PRIVATE gltf_import usdGeom usdShade usd)
     elseif(TARGET pxr::usdGeom AND TARGET pxr::usdShade AND TARGET pxr::usd)
-        target_link_libraries(usd_import PUBLIC gltf_import pxr::usdGeom pxr::usdShade pxr::usd)
+        target_link_libraries(usd_import PRIVATE gltf_import pxr::usdGeom pxr::usdShade pxr::usd)
     else()
         message(FATAL_ERROR "OpenUSD CMake package lacks supported usd/usdGeom/usdShade targets")
     endif()
@@ -81,6 +89,6 @@ if(TOURMALINE_WITH_USD)
     # implicit-link pragma then emits `tbb_debug.lib` (not shipped). Force the
     # release TBB configuration + disable implicit linkage to match the
     # prebuilt, whatever the consumer's own build type.
-    target_compile_definitions(usd_import PUBLIC TBB_USE_DEBUG=0 TBB_USE_ASSERT=0
+    target_compile_definitions(usd_import PRIVATE TBB_USE_DEBUG=0 TBB_USE_ASSERT=0
                                               __TBB_NO_IMPLICIT_LINKAGE=1)
 endif()
