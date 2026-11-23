@@ -257,6 +257,96 @@ float SgGiVolumeDebugWeightSum(GPU_PTR(FrameUniforms) frame, uint vol, float3 po
     return saturate(wSum);
 }
 
+// Relative weight-redistribution diagnostic (docs/gi_volume_perf_investigation.md):
+// D = 1/2 sum |q_i - t_i| where q_i = (t_i v_i)/sum_j(t_j v_j) is the
+// visibility-normalized contribution and t_i the ordinary trilinear weight.
+// Unlike wSum, this measures how much the visibility filter CHANGES the
+// contributing probe mixture even when the total weight is ~1 (two probes
+// whose relative weights flip from 0.5/0.5 to 0.9/0.1 leave wSum ~1 but
+// move D far from 0). 0 = the filter is a no-op; 1 = full redistribution.
+// No vis data / a clean cell = 0 (the fast path runs, no filter at all).
+float SgGiVolumeDebugRedistribution(GPU_PTR(FrameUniforms) frame, uint vol, float3 pos)
+{
+    const uint visSlotA = frame.Get().giVolumeVisLayers[vol * 2u];
+    const uint visSlotB = frame.Get().giVolumeVisLayers[vol * 2u + 1u];
+    if (visSlotA == 0xffffffffu || visSlotB == 0xffffffffu)
+        return 0.0;
+
+    const GiVolumeGpu v = frame.Get().giVolumes.Get().volumes[vol];
+    const float3 dims = float3(v.uvwScale.w, v.uvwBias.w, v.aabbMax.w);
+    if (any(dims < 2.0))
+        return 0.0;
+    const float3 uvw = saturate(pos * v.uvwScale.xyz + v.uvwBias.xyz);
+    const float3 rel = uvw * dims;
+    const int3 b = clamp(int3(floor(rel - 0.5)), 0, int3(dims) - 2);
+    if (volumeTextures[visSlotB].Load(int4(b, 0)).z >= 0.5)
+        return 0.0; // clean cell: the fast path, no filter
+
+    const float3 f = saturate(rel - 0.5 - float3(b));
+    float t[8];
+    float wv[8];
+    float wSum = 0.0;
+    [unroll]
+    for (uint c = 0; c < 8; ++c)
+    {
+        const int3 cc = b + int3((c & 1u) != 0u ? 1 : 0,
+            (c & 2u) != 0u ? 1 : 0, (c & 4u) != 0u ? 1 : 0);
+        const float3 dRel = rel - (float3(cc) + 0.5);
+        const float4 visA = volumeTextures[visSlotA].Load(int4(cc, 0));
+        const float4 visB = volumeTextures[visSlotB].Load(int4(cc, 0));
+        wv[c] = SgGiVolumeVisFactor(dRel, visA, visB);
+        const float3 t3 = float3((c & 1u) != 0u ? f.x : 1.0 - f.x,
+            (c & 2u) != 0u ? f.y : 1.0 - f.y, (c & 4u) != 0u ? f.z : 1.0 - f.z);
+        t[c] = t3.x * t3.y * t3.z;
+        wSum += wv[c] * t[c];
+    }
+    if (wSum <= 1e-4)
+        return 0.0;
+    float dSum = 0.0;
+    [unroll]
+    for (uint c = 0; c < 8; ++c)
+        dSum += abs(wv[c] * t[c] / wSum - t[c]);
+    return 0.5 * dSum;
+}
+
+// Dilated-probe COVERAGE diagnostic (docs/gi_volume_roof_lattice.md):
+// W_dilated = (Σ t_i * I_dilated,i) / (Σ t_i), the interpolation-weighted
+// fraction of irradiance contributed by DILATED probes. Uses the SAME
+// eight-corner ORDINARY trilinear weights as the raw-SG view (mode 5) and
+// NO visibility rejection (Σ t_i = 1), so it measures the bake-stage
+// population's share of the raw interpolated field directly. Reads the
+// debug R8 classification volume (giVolumeClassSlots; 0 = traced,
+// ~0.5 = dilated, 1 = unfilled). UINT32_MAX slot = no classification
+// volume loaded -> 0.0.
+float SgGiVolumeDebugDilatedCoverage(GPU_PTR(FrameUniforms) frame, uint vol, float3 pos)
+{
+    const uint classSlot = frame.Get().giVolumeClassSlots[vol];
+    if (classSlot == 0xffffffffu)
+        return 0.0;
+    const GiVolumeGpu v = frame.Get().giVolumes.Get().volumes[vol];
+    const float3 uvw = saturate(pos * v.uvwScale.xyz + v.uvwBias.xyz);
+    const float3 dims = float3(v.uvwScale.w, v.uvwBias.w, v.aabbMax.w);
+    if (any(dims < 2.0))
+        return 0.0;
+    const float3 rel = uvw * dims;
+    const int3 b = clamp(int3(floor(rel - 0.5)), 0, int3(dims) - 2);
+    const float3 f = saturate(rel - 0.5 - float3(b));
+    float wDilated = 0.0;
+    [unroll]
+    for (uint c = 0; c < 8; ++c)
+    {
+        const int3 cc = b + int3((c & 1u) != 0u ? 1 : 0,
+            (c & 2u) != 0u ? 1 : 0, (c & 4u) != 0u ? 1 : 0);
+        // R8_UNorm reads 0 (traced), ~127/255 (dilated), 255/255 (unfilled).
+        const float cls = volumeTextures[classSlot].Load(int4(cc, 0)).r;
+        const float isDilated = (cls >= 0.25 && cls < 0.75) ? 1.0 : 0.0;
+        const float3 t3 = float3((c & 1u) != 0u ? f.x : 1.0 - f.x,
+            (c & 2u) != 0u ? f.y : 1.0 - f.y, (c & 4u) != 0u ? f.z : 1.0 - f.z);
+        wDilated += isDilated * (t3.x * t3.y * t3.z);
+    }
+    return wDilated; // Σ t_i = 1 over the 8 corners
+}
+
 // Samples one volume's dense grid at world pos. Two paths:
 //  - FAST (the common cell): the bake's per-voxel clean flag
 //    (visB.b, point-fetched at the cell's base corner) proves every
@@ -433,6 +523,37 @@ void SgGiVolumeSample(GPU_PTR(FrameUniforms) frame, uint vol, float3 pos,
     // stream + the shared 27-half unpack.
     if (v.planeCountBase.z == 1u)
     {
+        [unroll]
+        for (uint l = 0; l < SG_GI_LOBES; ++l)
+            amps[l] = volumeTextures[frame.Get().giVolumeLayerTable[vol * 10u + l]]
+                .Sample(samplers[2], uvw).rgb;
+        return;
+    }
+    float4 layers[SG_GI_VOLUME_LAYERS];
+    [unroll]
+    for (uint t = 0; t < SG_GI_VOLUME_LAYERS; ++t)
+    {
+        layers[t] = volumeTextures[frame.Get().giVolumeLayerTable[vol * 10u + t]]
+            .Sample(samplers[2], uvw);
+    }
+    SgRegularUnpack(layers, amps);
+}
+
+// Raw baked-SG sample (docs/gi_volume_perf_investigation.md diagnostic):
+// the plain hardware trilinear read of the 9 SG lobe amplitudes with NO
+// visibility weighting and NO clean-flag gate — exactly SgGiVolumeSample's
+// fast path, but reached unconditionally. The A/B pair for mode 5: if this
+// still shows the roof lattice, the pattern is baked/dilated into the
+// coefficients; if it is smooth, runtime visibility rejection (or its
+// weight redistribution) is responsible.
+void SgGiVolumeSampleRaw(GPU_PTR(FrameUniforms) frame, uint vol, float3 pos,
+    out float3 amps[SG_GI_LOBES])
+{
+    const GiVolumeGpu v = frame.Get().giVolumes.Get().volumes[vol];
+    const float3 uvw = saturate(pos * v.uvwScale.xyz + v.uvwBias.xyz);
+    if (v.planeCountBase.z == 1u)
+    {
+        // GV6H: 9 BC6H per-lobe fetches — the RGB IS the amp (no unpack).
         [unroll]
         for (uint l = 0; l < SG_GI_LOBES; ++l)
             amps[l] = volumeTextures[frame.Get().giVolumeLayerTable[vol * 10u + l]]

@@ -963,6 +963,13 @@ int RunPakApp(PakAppConfig cfg) {
             renderer.SetAutoExposurePinned(false);
             renderer.SetAutoExposureEnabled(false);
             std::cout << "bench: auto-exposure off (fixed manual exposure)\n";
+            // A one-shot capture queued on the LAST measured frame
+            // (TOURMALINE_CAPTURE=<10+frames>) has no following onUpdate to
+            // download its pixels; flush it here, after the summary, so the
+            // PNG encode + WaitForDeviceIdle cost never lands in a measured
+            // frame. FinishSnapshotSequence is a no-op without a snapshot
+            // sequence (returns ""), so this only drains the pending capture.
+            app.SetRunFinalizer([&renderer]() { return renderer.FinishSnapshotSequence(); });
         }
         if (cfg.cli.benchMoveSpeed > 0.0f) {
             // Constant-velocity flight needs --bench to be meaningful (the

@@ -398,7 +398,11 @@ PakWriter& PakWriter::operator=(PakWriter&&) = default;
 // The reserve slack above the flush threshold: room for one oversized blob
 // (a packed mesh blob is at most tens of MB) before the buffer is flushed.
 // The reserve is VIRTUAL (commit-on-demand), so the headroom is free.
-inline constexpr size_t kBlobSlack = 256ull * 1024ull * 1024ull;
+// Slack for ONE oversized blob over the flush threshold. A large world's
+// scene blob (the serialized hierarchy + transforms of every node — the
+// 1024-grid Bistro is ~9.1M nodes / ~1 GB) must fit whole; the old 256 MiB
+// slack was sized for small scenes and aborted the pak on big grids.
+inline constexpr size_t kBlobSlack = 1280ull * 1024ull * 1024ull;
 
 bool PakWriter::FlushBuffer(std::string* err) {
     if (!flushAlloc_)
@@ -1630,7 +1634,7 @@ bool ParseAssetIdsBlob(std::span<const uint8_t> blob,
 // ---------------------------------------------------------------------------
 
 inline constexpr uint32_t kWorldManifestMagic = 0x4E414D57u; // "WMAN" LE
-inline constexpr uint32_t kWorldManifestVersion = 1;
+inline constexpr uint32_t kWorldManifestVersion = 2;         // v2: +vertexCount/indexBytes
 
 std::vector<uint8_t> WriteWorldManifestBlob(const WorldManifestRow* rows, size_t count) {
     std::vector<uint8_t> out;
@@ -1649,6 +1653,8 @@ std::vector<uint8_t> WriteWorldManifestBlob(const WorldManifestRow* rows, size_t
         }
         AppendU32(out, r.nodes);
         AppendU32(out, r.meshes);
+        AppendU64(out, r.vertexCount);
+        AppendU64(out, r.indexBytes);
     }
     return out;
 }
@@ -1670,14 +1676,23 @@ std::optional<WorldManifestView> ReadWorldManifest(const PakReader& reader, std:
     memcpy(&version, blob.data() + 4, 4);
     memcpy(&sceneCount, blob.data() + 8, 4);
     if (magic != kWorldManifestMagic) {
-        if (err)
-            *err = "bad world manifest magic";
-        return std::nullopt;
+        // The manifest blob is present but not the world-manifest format.
+        // No compatibility reads — a mismatched magic means a foreign/corrupt
+        // pak, which must break loudly, never fall back to a no-streaming world.
+        std::fprintf(stderr,
+                     "[WorldManifest] FATAL: bad magic (got %08x, want %08x)\n",
+                     magic,
+                     kWorldManifestMagic);
+        std::abort();
     }
     if (version != kWorldManifestVersion) {
-        if (err)
-            *err = "unsupported world manifest version";
-        return std::nullopt;
+        // Old-format manifest: no versioned/compatibility read — break the pak.
+        std::fprintf(stderr,
+                     "[WorldManifest] FATAL: unsupported version %u (want %u) — "
+                     "re-cook the pak\n",
+                     version,
+                     kWorldManifestVersion);
+        std::abort();
     }
     if (sceneCount > (1u << 20)) {
         if (err)

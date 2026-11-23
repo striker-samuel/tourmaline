@@ -423,6 +423,18 @@ extern bool (*UsdFileAsModel)(tinygltf::Model&,
                               const std::filesystem::path&,
                               std::vector<std::string>&);
 
+// The baked placement asset (PointInstancer vegetation) the last successful
+// .usd import produced, or null when the adapter is not linked / no instancer
+// was present. Defined only in usd_import.cpp (the USD-only library).
+namespace tour::placement {
+struct BakedPlacementAsset;
+}
+// The baked-placement accessors (the USD PointInstancer expansion), NULL when
+// the USD adapter is not linked (usd_import's static registrar sets them — the
+// same indirection as the UsdFileAsModel dispatch pointer).
+extern const tour::placement::BakedPlacementAsset* (*LastImportedBakedPlacement)();
+extern tour::placement::BakedPlacementAsset* (*MutableLastImportedBakedPlacement)();
+
 // Source adapter boundary: tinygltf types never reach native asset derivation.
 bool DecodeGltfSourceScene(const tinygltf::Model& input,
                            smvk::source::Scene& output,

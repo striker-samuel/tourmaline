@@ -13,7 +13,7 @@ template <typename Rule> void ApplyPayload(RenderInstance& in, const Rule& o) {
     if (o.position)
         in.position = *o.position;
     if (o.yaw)
-        in.yaw = *o.yaw;
+        in.rotation = QuatFromYaw(*o.yaw);
     if (o.scale)
         in.scale = *o.scale;
     if (o.prototype)

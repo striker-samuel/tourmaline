@@ -18,12 +18,15 @@ PRIVATE
 gltf_import
 engine
 )
-# The USD adapter is a separate library: link it only here (and in the USD
-# tests), so the runtime/cookers never pull OpenUSD. The define gates the
+# The USD adapter is a SEPARATE shared library (usd_import.dll): Import.exe
+# loads it lazily through gltf_import::LoadUsdAdapter only when a .usd source
+# is dispatched, so it does NOT link OpenUSD here. The define gates the
 # .usd/.usda/.usdc/.usdz source-format recognition in source_formats.h.
 if(TOURMALINE_WITH_USD)
-    target_link_libraries(Import PRIVATE usd_import)
     target_compile_definitions(Import PRIVATE TOURMALINE_WITH_USD=1)
+    # Build the adapter DLL alongside (a build-order dependency, NOT a link):
+    # Import.exe loads usd_import.dll lazily at runtime.
+    add_dependencies(Import usd_import)
 endif()
 # Live at the build root like Cook/Pak (RUNTIME_OUTPUT_DIRECTORY), where
 # the App's POST_BUILD staging already drops SDL3.dll: import.exe links

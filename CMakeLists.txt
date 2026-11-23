@@ -644,6 +644,7 @@ if(TOURMALINE_IS_TOP_LEVEL)
   add_subdirectory(tools/cubemap_baker)
   add_subdirectory(tools/cubemap_plan) # cascaded world-tile cubemap capture scoping aid (the #338 planner)
   add_subdirectory(tools/gi_decal_audit) # GI bake BVH occlusion audit (decal overlay classification)
+  add_subdirectory(tools/pak_append) # append-grow merge of one PakAssetKind from a source pak into another
   add_subdirectory(samples/01_triangle)
   add_subdirectory(samples/02_blur)
   add_subdirectory(samples/03_fuzz) # the target-recreate/deferred-destroy hard fuzzer (see its .cpp header)

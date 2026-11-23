@@ -1,7 +1,7 @@
 # Knight demo — Animated Knight (Intel)
 
 The **Animated Knight** demo (CC BY 4.0, see
-[`../../KNIGHT-CREDITS.md`](../../KNIGHT-CREDITS.md)) — a fully rigged,
+[`../../THIRD_PARTY_NOTICES.md`](../../THIRD_PARTY_NOTICES.md)) — a fully rigged,
 skinned character with a walk-clip animation, rendered through the GPU
 scene's task/mesh skinned path. Unlike the static Bistro/Sponza demos, this
 one exercises the **skinned mesh** lane (1 skin, 85 joints) plus the
@@ -25,7 +25,7 @@ one exercises the **skinned mesh** lane (1 skin, 85 joints) plus the
 - `ground.bin` (120 B) — the ground-plane buffer.
 
 Both come from the original **Animated Knight** source in Intel's GPU
-Research Samples Library (see `KNIGHT-CREDITS.md`). Place them beside
+Research Samples Library (see `THIRD_PARTY_NOTICES.md`). Place them beside
 `knight.gltf` under `content/models/knight/` to build.
 
 > The buffer is deliberately not committed: the faithful Maya → glTF

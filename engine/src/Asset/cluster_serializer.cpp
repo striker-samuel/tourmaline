@@ -904,6 +904,7 @@ bool SerializeClusters(const std::vector<const WorldPage*>& clusters,
                     PutU32(blob, v);
                 PutU32(blob, static_cast<uint32_t>(cooked.triangles.size()));
                 blob.insert(blob.end(), cooked.triangles.begin(), cooked.triangles.end());
+                PutU32(blob, cooked.maxLocalVertex);
                 if (stats && !cooked.meshlets.empty()) {
                     stats->meshesWithMeshlets++;
                     stats->meshletCount += static_cast<uint32_t>(cooked.meshlets.size());
@@ -1952,6 +1953,22 @@ bool SerializeClusters(const std::vector<const WorldPage*>& clusters,
             ms.aabbMax = sceneBounds.mx;
             ms.nodes = nodeCount;
             ms.meshes = static_cast<uint32_t>(scene.tables.meshes.size());
+            // Streaming-budget geometry (v2): the scene's aggregate vertex/
+            // index footprint, so the page streamer's admission gate bounds the
+            // static monoblocks exactly (the old per-mesh-average estimate
+            // under-counted the terrain pages and oversubscribed the heaps).
+            uint64_t vertexCount = 0, indexBytes = 0;
+            for (const MeshRow& row : scene.tables.meshes) {
+                const auto h = cluster.staticMeshes.getHandle(row.mesh);
+                if (!h.valid())
+                    continue;
+                if (const StaticMesh* m = cluster.staticMeshes.get(h)) {
+                    vertexCount += m->geometry.vertexCount;
+                    indexBytes += uint64_t(m->geometry.indexCount) * 4u;
+                }
+            }
+            ms.vertexCount = vertexCount;
+            ms.indexBytes = indexBytes;
             worldManifest.push_back(ms);
         }
     } // per-cluster loop
@@ -3223,6 +3240,57 @@ std::unique_ptr<WorldPage> DeserializeCluster(
                     std::to_string(sceneEntries.size()) + " scene(s) in pak)");
     std::vector<uint8_t> meshReferenced =
         PeekSceneMeshPakIds(reader.Payload(*sceneEntries[sceneIndex]), meshEntries.size());
+    // A flat `source -p` mesh-asset reference lists only the LOD-0 base in the
+    // node->mesh table, so the LOD siblings are never marked referenced and
+    // their LodInfo + payload are dropped at load — RebuildLodChains then builds
+    // single-level chains and every instance draws full detail. Walk each mesh
+    // header once to recover (groupId, lodIndex) and mark a referenced base's
+    // siblings referenced too. (Meshes owned by OTHER scenes in the shared blob
+    // pool stay unreferenced: their base lodIndex is 0 but unreferenced, so this
+    // loop never promotes them.)
+    {
+        struct LodHeader {
+            uint32_t groupId = 0;
+            uint32_t lodIndex = 0;
+            bool valid = false;
+        };
+        std::vector<LodHeader> headers(meshEntries.size());
+        for (size_t mi = 0; mi < meshEntries.size(); ++mi) {
+            Cursor c{reader.Payload(*meshEntries[mi]), 0};
+            c.str(); // uri
+            const uint32_t vc = c.u32();
+            const uint32_t ic = c.u32();
+            const uint32_t sc = c.u32();
+            if (!c.ok || vc > 16 * 1024 * 1024 || ic > 64 * 1024 * 1024 || sc > 4096)
+                continue;
+            for (uint32_t s = 0; s < sc; ++s) {
+                c.u32(); // firstIndex
+                c.u32(); // indexCount
+                c.i32(); // baseVertex
+            }
+            c.vec3(); // aabbMin
+            c.vec3(); // aabbMax
+            c.f32();  // sphere
+            c.u32();  // topology
+            headers[mi].groupId = c.u32();
+            headers[mi].lodIndex = c.u32();
+            headers[mi].valid = c.ok;
+        }
+        std::unordered_map<uint32_t, std::vector<uint32_t>> siblingsOf;
+        for (size_t mi = 0; mi < meshEntries.size(); ++mi) {
+            if (!headers[mi].valid || headers[mi].lodIndex == 0u)
+                continue;
+            siblingsOf[headers[mi].groupId].push_back(uint32_t(mi));
+        }
+        for (size_t mi = 0; mi < meshEntries.size(); ++mi) {
+            if (!meshReferenced[mi] || !headers[mi].valid || headers[mi].lodIndex != 0u)
+                continue;
+            const auto it = siblingsOf.find(headers[mi].groupId);
+            if (it != siblingsOf.end())
+                for (uint32_t sj : it->second)
+                    meshReferenced[sj] = 1u;
+        }
+    }
     struct MeshMeta {
         std::string uri;
         // The owning TOC entry's file-absolute offset (Stage 6: the
@@ -3262,8 +3330,13 @@ std::unique_ptr<WorldPage> DeserializeCluster(
         const uint32_t vertexCount = c.u32();
         const uint32_t indexCount = c.u32();
         const uint32_t surfaceCount = c.u32();
-        if (!c.ok || vertexCount == 0 || vertexCount > 16 * 1024 * 1024 ||
-            indexCount > 64 * 1024 * 1024 || surfaceCount > 4096)
+        // A zero-vertex mesh is a DEGENERATE (empty) primitive, not a
+        // corrupt header: the importer removed every face. It is passed
+        // through to UploadStaticGeometry, which produces an empty mesh
+        // (a valid handle that draws nothing) instead of failing the
+        // whole cluster load. Only the truly insane extents stay fatal.
+        if (!c.ok || vertexCount > 16 * 1024 * 1024 || indexCount > 64 * 1024 * 1024 ||
+            surfaceCount > 4096)
             return fail("truncated/insane mesh header: " + e->path);
         MeshData upload;
         upload.surfaces.reserve(surfaceCount);
@@ -3391,6 +3464,9 @@ std::unique_ptr<WorldPage> DeserializeCluster(
                 return fail("corrupt meshlet trailer: " + e->path);
             cooked.triangles.assign(c.img.data() + c.off, c.img.data() + c.off + triBytes);
             c.off += triBytes;
+            cooked.maxLocalVertex = c.u32();
+            if (!c.ok)
+                return fail("corrupt meshlet trailer: " + e->path);
             // Cross-check windows against the payload sizes.
             for (const Meshlet& ml : cooked.meshlets) {
                 if ((size_t)ml.vertexOffset + ml.vertexCount > cooked.vertices.size() ||
@@ -3479,7 +3555,13 @@ std::unique_ptr<WorldPage> DeserializeCluster(
                     " source(s), " + std::to_string(totalVerts) + " total verts, heap cap " +
                     std::to_string(smvk::staticVertexFmtHeap.m_staticVertexBlock.Capacity()) +
                     "): " + meshMetas.front().uri;
-                return fail(detail);
+                // The static monoblock is oversubscribed. This is a hard OOM:
+                // never a silent fallback (a skipped page renders a partial
+                // world) — abort loudly so the budget/cook is sized correctly.
+                std::fprintf(
+                    stderr, "[Cluster] FATAL: static heap oversubscribed: %s\n", detail.c_str());
+                std::fflush(stderr);
+                std::abort();
             }
         }
         size_t up = 0; // cursor into handles (upload order == pak order)

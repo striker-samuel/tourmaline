@@ -532,6 +532,11 @@ meshoptimizerConfigVersion.cmake
 # / WYSIWYG dumps (capture frame must land inside --bench). The tracked
 # exports/lut_neutral.png stays tracked — gitignore never untracks it.
 # Redirect bench/cook *.log output to out/logs/ (out/ is ignored wholesale).
+# Historic benchmark-run archives (tools/perf_regression.py `run`): one
+# datestamped folder per run holding candidate.json, summary.json, per-cell
+# results/ logs and screenshots/. Local-only by design - the tracked
+# baseline is benchmarks/results/baseline.json.
+/out/historic-runs/
 /pipeline_cache.bin
 pipeline_cache*.bin
 /exports/screenshot_*.png

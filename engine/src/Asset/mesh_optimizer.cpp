@@ -382,15 +382,54 @@ bool BuildLodChainForUpload(const MeshData& lod0,
                             bool preserveCoverage,
                             const uint32_t* lmVertexChart) {
     out.clear();
-    const size_t vcount = lod0.vertices.size();
-    const size_t icount = lod0.indices.size();
+    size_t vcount = lod0.vertices.size();
+    size_t icount = lod0.indices.size();
     if (vcount == 0 || icount < 3 || (icount % 3) != 0)
         return false;
     if (!config.generateLods || config.lodRatios.empty())
         return true; // valid input, no candidates requested
 
+    // USD-imported geometry is frequently a FULL SOUP: the importer keeps
+    // per-face normals/UVs, so vcount == 3*tris and the full-vertex weld
+    // (meshopt_generateVertexRemap) merges nothing. meshopt_simplify then has
+    // no shared interior edges to collapse and returns the input unchanged —
+    // the reason imported USD scenes cook with zero LOD siblings. Weld by
+    // POSITION for the simplify only (the sibling re-derives normals/tangents
+    // below, so the per-face normal split is intentionally not preserved).
+    MeshData welded;
+    const MeshData* src = &lod0;
+    if (vcount == icount && !preserveCoverage && !lmVertexChart) {
+        std::vector<unsigned int> posRemap(vcount);
+        std::vector<glm::vec3> posOnly(vcount);
+        for (size_t i = 0; i < vcount; ++i)
+            posOnly[i] = lod0.vertices[i].pos;
+        const size_t wv = meshopt_generateVertexRemap(posRemap.data(),
+                                                      src->indices.data(),
+                                                      icount,
+                                                      posOnly.data(),
+                                                      vcount,
+                                                      sizeof(glm::vec3));
+        if (wv > 0u && wv < vcount) {
+            welded.vertices.resize(wv);
+            meshopt_remapVertexBuffer(welded.vertices.data(),
+                                      src->vertices.data(),
+                                      vcount,
+                                      sizeof(MeshVertex),
+                                      posRemap.data());
+            welded.indices.resize(icount);
+            meshopt_remapIndexBuffer(
+                welded.indices.data(), src->indices.data(), icount, posRemap.data());
+            welded.surfaces = src->surfaces;
+            welded.aabbMin = src->aabbMin;
+            welded.aabbMax = src->aabbMax;
+            src = &welded;
+            vcount = welded.vertices.size();
+            icount = welded.indices.size();
+        }
+    }
+
     static_assert(offsetof(MeshVertex, pos) == 0, "pos must be first for meshopt");
-    const float* positions = &lod0.vertices[0].pos.x;
+    const float* positions = &src->vertices[0].pos.x;
     const float localScale = meshopt_simplifyScale(positions, vcount, sizeof(MeshVertex));
     if (!(localScale > 0.0f) || !std::isfinite(localScale))
         return true; // degenerate extents: nothing sensible to simplify
@@ -409,8 +448,8 @@ bool BuildLodChainForUpload(const MeshData& lod0,
     if (preserveCoverage) {
         cutoutAttrs.resize(vcount * 2);
         for (size_t i = 0; i < vcount; ++i) {
-            cutoutAttrs[i * 2 + 0] = lod0.vertices[i].texCoord.x;
-            cutoutAttrs[i * 2 + 1] = lod0.vertices[i].texCoord.y;
+            cutoutAttrs[i * 2 + 0] = src->vertices[i].texCoord.x;
+            cutoutAttrs[i * 2 + 1] = src->vertices[i].texCoord.y;
         }
         cutoutAttrPtr = cutoutAttrs.data();
     }
@@ -428,8 +467,8 @@ bool BuildLodChainForUpload(const MeshData& lod0,
         uvAttrs.resize(vcount * 2);
         bool finite = true;
         for (size_t i = 0; i < vcount; ++i) {
-            const float u = lod0.vertices[i].texCoord.x;
-            const float v = lod0.vertices[i].texCoord.y;
+            const float u = src->vertices[i].texCoord.x;
+            const float v = src->vertices[i].texCoord.y;
             if (!std::isfinite(u) || !std::isfinite(v)) {
                 finite = false;
                 break;
@@ -460,8 +499,8 @@ bool BuildLodChainForUpload(const MeshData& lod0,
         for (size_t i = 0; i < vcount; ++i) {
             const uint32_t chart = lmVertexChart[i];
             lmAttrs[i * 3 + 0] = chart == 0xFFFFFFFFu ? 0.0f : float(chart) + 1.0f;
-            lmAttrs[i * 3 + 1] = lod0.vertices[i].texCoord2.x;
-            lmAttrs[i * 3 + 2] = lod0.vertices[i].texCoord2.y;
+            lmAttrs[i * 3 + 1] = src->vertices[i].texCoord2.x;
+            lmAttrs[i * 3 + 2] = src->vertices[i].texCoord2.y;
         }
         if (config.lodSeamLock == LodSeamLock::Hard) {
             // Lock every member of a position run whose charts disagree
@@ -472,7 +511,7 @@ bool BuildLodChainForUpload(const MeshData& lod0,
             std::vector<uint32_t> byPos(vcount);
             for (uint32_t i = 0; i < vcount; ++i)
                 byPos[i] = i;
-            const MeshVertex* verts = lod0.vertices.data();
+            const MeshVertex* verts = src->vertices.data();
             std::sort(byPos.begin(), byPos.end(), [verts](uint32_t a, uint32_t b) {
                 return std::memcmp(&verts[a].pos, &verts[b].pos, 12) < 0;
             });
@@ -522,7 +561,7 @@ bool BuildLodChainForUpload(const MeshData& lod0,
         if (preserveCoverage) {
             const unsigned options = config.lodSimplifyOptions | meshopt_SimplifyLockBorder;
             resultCount = meshopt_simplifyWithAttributes(dest.data(),
-                                                         lod0.indices.data(),
+                                                         src->indices.data(),
                                                          icount,
                                                          positions,
                                                          vcount,
@@ -541,7 +580,7 @@ bool BuildLodChainForUpload(const MeshData& lod0,
             // additionally vertex-locks seam pairs; see block above).
             static const float kLmAttrWeights[3] = {1.0f, 0.1f, 0.1f};
             resultCount = meshopt_simplifyWithAttributes(dest.data(),
-                                                         lod0.indices.data(),
+                                                         src->indices.data(),
                                                          icount,
                                                          positions,
                                                          vcount,
@@ -562,7 +601,7 @@ bool BuildLodChainForUpload(const MeshData& lod0,
             // units, converted to local units below like every path.
             static const float kUvAttrWeights[2] = {0.5f, 0.5f};
             resultCount = meshopt_simplifyWithAttributes(dest.data(),
-                                                         lod0.indices.data(),
+                                                         src->indices.data(),
                                                          icount,
                                                          positions,
                                                          vcount,
@@ -578,7 +617,7 @@ bool BuildLodChainForUpload(const MeshData& lod0,
                                                          &relativeError);
         } else {
             resultCount = meshopt_simplify(dest.data(),
-                                           lod0.indices.data(),
+                                           src->indices.data(),
                                            icount,
                                            positions,
                                            vcount,
@@ -605,7 +644,7 @@ bool BuildLodChainForUpload(const MeshData& lod0,
             std::vector<unsigned int> probe(dest.size());
             float probeErr = 0.0f;
             const size_t probeCount = meshopt_simplify(probe.data(),
-                                                       lod0.indices.data(),
+                                                       src->indices.data(),
                                                        icount,
                                                        positions,
                                                        vcount,
@@ -654,7 +693,7 @@ bool BuildLodChainForUpload(const MeshData& lod0,
                                          vcount);
         std::vector<MeshVertex> verts(vcount);
         meshopt_remapVertexBuffer(
-            verts.data(), lod0.vertices.data(), vcount, sizeof(MeshVertex), remap.data());
+            verts.data(), src->vertices.data(), vcount, sizeof(MeshVertex), remap.data());
         std::vector<uint32_t> remapped(resultCount);
         meshopt_remapIndexBuffer(reinterpret_cast<unsigned int*>(remapped.data()),
                                  reinterpret_cast<const unsigned int*>(indices.data()),
@@ -668,7 +707,7 @@ bool BuildLodChainForUpload(const MeshData& lod0,
         CookedLod kept;
         kept.upload.vertices = std::move(verts);
         kept.upload.indices = std::move(remapped);
-        kept.upload.surfaces = lod0.surfaces; // single-surface layout preserved
+        kept.upload.surfaces = src->surfaces; // single-surface layout preserved
         // The simplifier only tracks positions: surviving vertices still
         // carry LOD0's normals/tangents, which no longer match the decimated
         // topology and shade black where they interpolate backwards. Re-derive
@@ -690,8 +729,8 @@ bool BuildLodChainForUpload(const MeshData& lod0,
             kept.upload.aabbMin = mn;
             kept.upload.aabbMax = mx;
         } else {
-            kept.upload.aabbMin = lod0.aabbMin;
-            kept.upload.aabbMax = lod0.aabbMax;
+            kept.upload.aabbMin = src->aabbMin;
+            kept.upload.aabbMax = src->aabbMax;
         }
         out.push_back(std::move(kept));
         lastKeptIndices = resultCount;

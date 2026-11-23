@@ -77,31 +77,165 @@ a hand-written integration, or are an unpinnable snapshot:
 
 ## Separately distributed demo content (not under the Tourmaline engine license)
 
-- **Sponza demo (`sponza_10.tapp` / `sponza_10-*.pak` and associated screenshots):**
-  Derived from [Khronos's Sponza glTF](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/Sponza),
-  itself based on Crytek's model by Frank Meinl (from Marko Dabrovic's
-  original), with upstream work documented for Morgan McGuire and Alexandre
-  Pestana. The Tourmaline maintainer converted the textures to KTX and the
-  project cooked/packaged them for its demo. See the detailed
-  [Sponza credits and rights notice](SPONZA-CREDITS.md).
-- **Upstream terms:** The [per-model LICENSE.md](https://github.com/KhronosGroup/glTF-Sample-Assets/blob/main/Models/Sponza/LICENSE.md)
-  designates the **CRYENGINE Limited License Agreement** for model assets;
-  CC BY 4.0 applies to metadata/documentation, **not** those assets.
-  [Khronos issue #172](https://github.com/KhronosGroup/glTF-Sample-Assets/issues/172)
-  questions redistribution of this Crytek-derived Sponza outside
-  CRYENGINE. Attribution and KTX conversion do not establish permission
-  to publish the pak; redistribution rights require separate verification.
-  This notice is not a grant of rights in third-party assets.
-- **Bistro demo (recipe + source scaffolding under `releases/bistro/`, and associated screenshots):**
-  The [Amazon Lumberyard Bistro](https://developer.nvidia.com/orca/amazon-lumberyard-bistro)
-  exterior scene (Amazon Lumberyard, 2017), released through NVIDIA's
-  Open Research Content Archive (ORCA) under
-  [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The Tourmaline
-  maintainer converted the source textures to KTX; the ~1.4 GB cooked pak
-  and ~700 MB of source textures are too large to distribute, so the demo
-  ships as a recreate-from-source package. See the detailed
-  [Bistro credits notice](BISTRO-CREDITS.md) and
-  [`releases/bistro/README.md`](releases/bistro/README.md).
+The three demo assets below are derived from third-party content and
+distributed separately (the rolling `demo-content` release). Their full
+attribution and licensing notices follow. These notices concern the derived
+demonstration content only; they do **not** change the license of the
+Tourmaline engine or grant new rights in the source models.
+
+### Sponza demo
+
+This notice concerns **Sponza-derived demonstration content**, including the
+`sponza_10.tapp` / `sponza_10-*.pak` files published under Tourmaline's
+[rolling `demo-content` release](https://github.com/striker-samuel/tourmaline/releases/tag/demo-content),
+and the Sponza screenshots in the Tourmaline README. It does **not** change
+the license of the Tourmaline engine or grant any new rights in the model.
+
+#### Original asset and contributors
+
+The Tourmaline maintainer identifies the starting point as the Sponza glTF
+model in [Khronos glTF Sample Assets](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/Sponza),
+subsequently modified and processed for the Tourmaline demo.
+
+The [Khronos Sponza documentation](https://github.com/KhronosGroup/glTF-Sample-Assets/blob/main/Models/Sponza/README.md)
+records the following source history and credits:
+
+- **Marko Dabrovic** — original Sponza model (2002).
+- **Frank Meinl / Crytek** — the revised Sponza Atrium model (2010).
+  The [Khronos model metadata](https://github.com/KhronosGroup/glTF-Sample-Assets/blob/main/Models/Sponza/metadata.json)
+  identifies **Crytek** as the copyright owner (© 2016).
+- **Morgan McGuire** — modifications to Crytek's OBJ export (2011),
+  as recorded in the upstream texture archive's copyright notes.
+- **Alexandre Pestana** — Sponza PBR texture work used by the Khronos
+  version; see the [source notes](https://github.com/KhronosGroup/glTF-Sample-Assets/blob/main/Models/Sponza/README.md).
+- **Khronos glTF Sample Assets contributors** — the published glTF
+  adaptation and documented texture/material processing. The upstream
+  model metadata does not identify an individual glTF adapter, so no
+  individual authorship is asserted here.
+
+#### Tourmaline-specific work
+
+- **Samuel Martin (Tourmaline maintainer)** — performed the conversion
+  of source textures to KTX for this demo, per the maintainer's account.
+- **Tourmaline project** — scene adjustments and conversion/cooking into
+  the engine's packaged `.tapp` / `.pak` demonstration format.
+
+These processing and packaging credits **do not replace** the rights or
+attribution attached to the original geometry and textures.
+
+#### License status — important
+
+The Khronos model's [per-model LICENSE.md](https://github.com/KhronosGroup/glTF-Sample-Assets/blob/main/Models/Sponza/LICENSE.md)
+identifies the **CRYENGINE Limited License Agreement** for model-associated
+text, images and binary files. Its **CC BY 4.0** designation covers the
+license and other *metadocumentation*, **not** the model or textures as a whole.
+The upstream [license reference](https://github.com/KhronosGroup/glTF-Sample-Assets/blob/main/LICENSES/LicenseRef-CRYENGINE-Agreement.txt)
+points to [Crytek's terms](https://www.cryengine.com/ce-terms).
+
+An [open Khronos issue (#172)](https://github.com/KhronosGroup/glTF-Sample-Assets/issues/172)
+raises a specific concern about whether that Crytek-derived asset may
+be redistributed outside CRYENGINE. This is a **reported, unresolved
+licensing concern**, not a legal ruling. The attribution here is **not**
+a claim that redistribution of Tourmaline's cooked Sponza pak is
+authorized, and packaging the data or converting textures to KTX
+does not change the upstream rights.
+
+Before any new publication of the demo, verify the exact source
+files, any independent texture licenses, and permission to
+redistribute the resulting content. If needed, replace it with
+a source whose license explicitly covers the intended use.
+
+This is a provenance and credits record, **not legal advice**.
+
+### Bistro demo
+
+This notice concerns **Bistro-derived demonstration content**, including the
+`bistro_static.tapp` / `bistro_static-*.pak` files published under Tourmaline's
+[rolling `demo-content` release](https://github.com/striker-samuel/tourmaline/releases/tag/demo-content),
+and any Bistro screenshots in the Tourmaline README. It does **not** change
+the license of the Tourmaline engine or grant any new rights in the model.
+
+#### Original asset and contributors
+
+The scene is the **Amazon Lumberyard Bistro** (exterior), released as part of
+NVIDIA's [Open Research Content Archive (ORCA)](https://developer.nvidia.com/orca/amazon-lumberyard-bistro):
+
+- **Title** — Amazon Lumberyard Bistro, Open Research Content Archive (ORCA).
+- **Author / copyright** — Amazon Lumberyard.
+- **Year** — 2017.
+- **Origin** — revealed at the 2017 Game Developers Conference as an
+  Amazon Lumberyard engine feature demo; subsequently released to the
+  research community through ORCA.
+
+#### License
+
+The Bistro scene is provided under the
+[Creative Commons Attribution 4.0 International (CC BY 4.0)](https://creativecommons.org/licenses/by/4.0/)
+license. Redistribution is permitted provided the attribution above is
+retained.
+
+#### Tourmaline-specific work
+
+- **Samuel Martin (Tourmaline maintainer)** — converted the source textures
+  to KTX and imported the scene as glTF for the Tourmaline pipeline.
+- **Tourmaline project** — scene conversion and cooking into the engine's
+  packaged `.tapp` / `.pak` demonstration format (the static-root +
+  LOD + meshlet cook).
+
+These processing and packaging credits **do not replace** the attribution
+attached to the original geometry and textures, which remains with Amazon
+Lumberyard under CC BY 4.0.
+
+This is a provenance and credits record, **not legal advice**.
+
+### Animated Knight demo
+
+This notice concerns the **Animated Knight** demonstration content, including
+the `knight*.pak` files published under Tourmaline's rolling `demo-content`
+release and any Knight screenshots in the Tourmaline README. It does **not**
+change the license of the Tourmaline engine or grant any new rights in the
+model.
+
+#### Original asset
+
+The model is the **Animated Knight**, one of the professionally created
+assets in Intel's **GPU Research Samples Library** (a fully rigged character
+with example animations; source shipped as Autodesk Maya, Alembic (ABC), FBX
+and USD):
+
+- **Title** — Animated Knight, Intel GPU Research Samples Library.
+- **Author / copyright** — Intel Corporation.
+- **Origin** — <https://www.intel.com/content/www/us/en/developer/topic-technology/graphics-processing-research/samples.html>
+- **Citation** — if used in a publication, cite the Intel Sample Library:
+
+  ```bibtex
+  @misc{intel-samples,
+    Author = {Intel Corporation},
+    Year = {2022},
+    Note = {https://www.intel.com/content/www/us/en/developer/topic-technology/graphics-processing-research/samples.html},
+    Title = {Intel Sample Library}
+  }
+  ```
+
+#### License
+
+Downloads from the Intel GPU Research Samples Library are made available
+under the **Creative Commons Attribution 4.0 International (CC BY 4.0)**
+license. Redistribution is permitted provided the attribution above is
+retained.
+
+#### Tourmaline-specific work
+
+- **Samuel Martin (Tourmaline maintainer)** — converted the source to glTF
+  (Blender glTF I/O v4.5) for the Tourmaline pipeline and re-bound the
+  deform-joint constraints to the evaluated pose.
+- **Tourmaline project** — import, meshlet cook (`--meshlet-split-factor
+  2.0`) and packaging into the engine's `.pak` demonstration format.
+
+These processing and packaging credits **do not replace** the attribution
+attached to the original rig, which remains with Intel under CC BY 4.0.
+
+This is a provenance and credits record, **not legal advice**.
 
 ## Not vendored, but required at build time
 

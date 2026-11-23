@@ -1533,6 +1533,13 @@ set_target_properties(GpuSceneCandidatesTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME gpu_scene_candidates_tests COMMAND GpuSceneCandidatesTests)
 
+# CPU-only P1 flat multi-view leaf classifier parity (no GPU dispatch).
+add_executable(GpuSceneLeafClassifyTests test_gpu_scene_leaf_classify.cpp)
+target_link_libraries(GpuSceneLeafClassifyTests PRIVATE engine)
+set_target_properties(GpuSceneLeafClassifyTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME gpu_scene_leaf_classify_tests COMMAND GpuSceneLeafClassifyTests)
+
 # Opt-in GPU scene instance-culling view + reference verdict parity.
 add_executable(GpuSceneValidationTests test_gpu_scene_validation.cpp)
 target_link_libraries(GpuSceneValidationTests PRIVATE engine)
@@ -1704,6 +1711,7 @@ add_test(NAME source_scene_tests COMMAND SourceSceneTests)
 add_executable(SmvkRawTableTests test_smvk_raw_table.cpp)
 target_include_directories(SmvkRawTableTests PRIVATE
     ${CMAKE_SOURCE_DIR}/engine/include
+    ${CMAKE_SOURCE_DIR}/core/include
     ${CMAKE_SOURCE_DIR}/external/glm)
 add_test(NAME smvk_raw_table_tests COMMAND SmvkRawTableTests)
 
@@ -1711,5 +1719,23 @@ add_test(NAME smvk_raw_table_tests COMMAND SmvkRawTableTests)
 add_executable(SmvkDescriptorTableTests test_smvk_descriptor_table.cpp)
 target_include_directories(SmvkDescriptorTableTests PRIVATE
     ${CMAKE_SOURCE_DIR}/engine/include
+    ${CMAKE_SOURCE_DIR}/core/include
     ${CMAKE_SOURCE_DIR}/external/glm)
 add_test(NAME smvk_descriptor_table_tests COMMAND SmvkDescriptorTableTests)
+
+# Device-free contract for proposed interchangeable world geometry backends.
+add_executable(GeometryBackendContractTests test_geometry_backend_contract.cpp)
+target_include_directories(GeometryBackendContractTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/include)
+set_target_properties(GeometryBackendContractTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME geometry_backend_contract_tests COMMAND GeometryBackendContractTests)
+
+
+# Backend registry + concrete backend construction (links the engine for the
+# backend impl TUs; CPU-only — no Vulkan device at runtime).
+add_executable(GeometryBackendTests test_geometry_backend.cpp)
+target_link_libraries(GeometryBackendTests PRIVATE engine)
+set_target_properties(GeometryBackendTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME geometry_backend_tests COMMAND GeometryBackendTests)

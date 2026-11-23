@@ -192,7 +192,7 @@ struct RunConfig {
     std::optional<OnOffPin> normalFixDebug;
     // probePremix: 1|on|0|off GPU probe pre-mix (unset = default wins)
     std::optional<OnOffPin> probePremix;
-    int giDebug = -1;      // 0..4 (4 = visibility weight sum)
+    int giDebug = -1; // 0..7 (5 = raw SG, 6 = redistribution D, 7 = dilated coverage W_dilated)
     int giDebugLevel = -1; // 0..7
     bool giPoints = false;
     bool giOcclude = false;

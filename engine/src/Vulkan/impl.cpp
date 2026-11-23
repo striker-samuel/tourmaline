@@ -131,6 +131,11 @@ static bool g_deviceFaultSupported = false;
 // mesh-shader gfx filter path (DrawMeshTasks); the compute+indexed CPU
 // fallback stays otherwise.
 static bool g_meshShaderSupported = false;
+// VK_EXT_mesh_shader device limits (VkPhysicalDeviceMeshShaderPropertiesEXT),
+// captured at device creation. The task-dispatch X/Y grid is sized from
+// maxTaskWorkGroupCount; the old hardcoded 1024x1024 silently zeroed the
+// dispatch (y > maxY) on scenes exceeding 1M task groups.
+static smvk::MeshShaderLimits g_meshShaderLimits{};
 static bool g_rayQueriesSupported = false;
 static bool g_opacityMicromapsSupported = false;
 // The ACTIVE physical device's name (captured at the device pick from
@@ -2727,6 +2732,25 @@ bool smvk::VulkanCore::Init() {
                     deviceMeshFeatures.taskShader = VK_TRUE;
                     deviceMeshFeatures.meshShader = VK_TRUE;
                 }
+            }
+            if (meshExtPresent && !meshKilled) {
+                VkPhysicalDeviceMeshShaderPropertiesEXT meshProps{
+                    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MESH_SHADER_PROPERTIES_EXT, nullptr};
+                VkPhysicalDeviceProperties2 props2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2,
+                                                   &meshProps};
+                vkGetPhysicalDeviceProperties2(physicalDevice_, &props2);
+                g_meshShaderLimits.maxTaskWorkGroupCount[0] = meshProps.maxTaskWorkGroupCount[0];
+                g_meshShaderLimits.maxTaskWorkGroupCount[1] = meshProps.maxTaskWorkGroupCount[1];
+                g_meshShaderLimits.maxTaskWorkGroupCount[2] = meshProps.maxTaskWorkGroupCount[2];
+                g_meshShaderLimits.maxTaskWorkGroupTotalCount =
+                    meshProps.maxTaskWorkGroupTotalCount;
+                std::fprintf(stderr,
+                             "[Vulkan] mesh shader limits: taskWorkGroupCount=(%u,%u,%u) "
+                             "taskWorkGroupTotal=%u\n",
+                             g_meshShaderLimits.maxTaskWorkGroupCount[0],
+                             g_meshShaderLimits.maxTaskWorkGroupCount[1],
+                             g_meshShaderLimits.maxTaskWorkGroupCount[2],
+                             g_meshShaderLimits.maxTaskWorkGroupTotalCount);
             }
             if (meshExtPresent && meshKilled)
                 printf("[Vulkan] VK_EXT_mesh_shader disabled (TOURMALINE_MESH=0)\n");
@@ -15466,6 +15490,9 @@ bool smvk::SupportsMultiDrawIndirect() {
 }
 bool smvk::SupportsMeshShaders() {
     return g_meshShaderSupported;
+}
+const smvk::MeshShaderLimits& smvk::GetMeshShaderLimits() {
+    return g_meshShaderLimits;
 }
 const char* smvk::ActiveDeviceName() {
     return g_activeDeviceName;

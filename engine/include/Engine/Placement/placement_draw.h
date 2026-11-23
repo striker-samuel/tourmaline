@@ -111,14 +111,19 @@ struct TileDrawSet {
     std::vector<ProtoRun> runs;
 };
 
-// Model matrix convention shared with the VS (T * RotY * S, column-major).
-// CPU-side uses: exact range/LOD math, debug views, transient draws.
-inline glm::mat4 ComposeInstanceMatrix(const glm::vec3& pos, float yaw, const glm::vec3& scale) {
-    const float c = std::cos(yaw), s = std::sin(yaw);
+// Model matrix convention shared with the VS (T * R(quat) * S, column-major).
+// CPU-side uses: exact range/LOD math, debug views, transient draws. The GPU
+// VS applies the row-vector form of the quaternion, so the CPU composes the
+// CONJUGATE to land in the same column-major orientation.
+inline glm::mat4 ComposeInstanceMatrix(const glm::vec3& pos,
+                                       const glm::vec4& rotation,
+                                       const glm::vec3& scale) {
+    const glm::quat q(rotation.w, -rotation.x, -rotation.y, -rotation.z);
+    const glm::mat3 R = glm::mat3_cast(q);
     const float sx = scale.x; // uniform by construction
-    return glm::mat4(glm::vec4(c * sx, 0.0f, -s * sx, 0.0f),
-                     glm::vec4(0.0f, scale.y, 0.0f, 0.0f),
-                     glm::vec4(s * sx, 0.0f, c * sx, 0.0f),
+    return glm::mat4(glm::vec4(R[0] * sx, 0.0f),
+                     glm::vec4(R[1] * sx, 0.0f),
+                     glm::vec4(R[2] * sx, 0.0f),
                      glm::vec4(pos, 1.0f));
 }
 
