@@ -19,7 +19,7 @@
 #include <Engine/Asset/lut_handle.h>
 #include <Engine/Asset/mesh_handle.h>
 #include <Engine/Asset/mesh_optimizer.h>
-#include <Engine/Placement/baked_placement.h>
+#include <Engine/Placement/baked_placement_runtime.h>
 #include <Engine/Rendergraph/terrain_hfield.h>
 #include <Engine/Scene/entity_handle.h> // smvk::AudioSourceHandle (typed)
 #include <Engine/Scene/region_registry.h>
@@ -154,15 +154,20 @@ struct World {
     }
 
     // Prespecified baked placement instancers (the authored PointInstancer
-    // clouds). The world loader registers each .geometry family that carried
-    // one; the renderer auto-loads the cooked cloud and drives its PR03
-    // chain — no per-app runtime wiring.
-    void AddBakedPlacementRef(tour::placement::BakedPlacementRef ref) {
-        bakedPlacementRefs.push_back(std::move(ref));
-    }
+    // clouds). The world loader calls LoadBakedPlacement once per .geometry
+    // family that carried one; the renderer auto-loads the cooked cloud and
+    // drives its PR03 chain — no per-app runtime wiring.
+    bool LoadBakedPlacement(const asset::PakReader& reader,
+                            const std::string& familyPath,
+                            float interestRadius = 64.0f,
+                            uint32_t slotBudget = 32);
     [[nodiscard]] const std::vector<tour::placement::BakedPlacementRef>& BakedPlacementRefs()
         const noexcept {
         return bakedPlacementRefs;
+    }
+    [[nodiscard]] const std::vector<tour::placement::BakedPlacementCooked>&
+    BakedPlacementCookedData() const noexcept {
+        return bakedPlacementCooked;
     }
 
     // The World owns nodes. The project catalog names assets; LoadMesh
@@ -552,6 +557,9 @@ struct World {
     // Prespecified baked placement instancers (the authored PointInstancer
     // clouds) registered by the world loader; the renderer auto-loads them.
     std::vector<tour::placement::BakedPlacementRef> bakedPlacementRefs;
+    // The loaded cooked clouds, parallel to bakedPlacementRefs (the renderer's
+    // runtimes borrow these — they must outlive the renderer).
+    std::vector<tour::placement::BakedPlacementCooked> bakedPlacementCooked;
     // The fallback material for renderable surfaces that carry no material
     // row (Caldera strips materials). A world index into materialLocations,
     // resolved once by ResolveAndFixup_pages from the cooked

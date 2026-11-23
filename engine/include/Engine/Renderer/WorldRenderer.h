@@ -2429,9 +2429,14 @@ class WorldRenderer : public IRenderer {
     // Baked placement (the authored PointInstancer cloud): a static, host-
     // owned runtime fed the pre-bucketed tiles + resolved proto geometry.
     // No terrain deps / regeneration — the renderer only uploads resident
-    // tiles and drives the per-tile PR03 chain + draw loop.
-    tour::placement::BakedPlacementRuntime* m_bakedPlacementRuntime = nullptr;
-    float m_bakedPlacementRadius = 64.0f;
+    // tiles and drives the per-tile PR03 chain + draw loop. A vector: one
+    // runtime per prespecified baked placement cloud (each .geometry family
+    // that carried a PointInstancer).
+    struct BakedPlacementInstance {
+        std::unique_ptr<tour::placement::BakedPlacementRuntime> runtime;
+        float interestRadius = 64.0f;
+    };
+    std::vector<BakedPlacementInstance> m_bakedPlacementInstances;
     bool m_bakedPlacementReady = false;
     tour::gpu_scene::RenderDatabase m_gpuSceneDatabase;
     tour::gpu_scene::WorldSynchronizer m_gpuSceneSync;
@@ -2898,15 +2903,20 @@ class WorldRenderer : public IRenderer {
         m_gpuPlacementRadius = interestRadius > 0.0f ? interestRadius : 64.0f;
     }
     // Optional baked-placement draw feed (the authored PointInstancer cloud).
-    // Host owns the runtime (its bucketed tiles + resolved BakedProtoGeometry)
-    // for the full attachment lifetime; the renderer creates its GPU resources
-    // lazily and records the per-tile cull chain + draw. The source meshes must
-    // already live in the static vertex heap (resolved to indexed ranges).
-    void SetBakedPlacementRuntime(tour::placement::BakedPlacementRuntime* runtime,
+    // The renderer takes ownership of the runtime (its bucketed tiles + resolved
+    // BakedProtoGeometry) and records the per-tile cull chain + draw. The source
+    // meshes must already live in the static vertex heap (resolved ranges).
+    void SetBakedPlacementRuntime(std::unique_ptr<tour::placement::BakedPlacementRuntime> runtime,
                                   float interestRadius = 64.0f) {
-        m_bakedPlacementRuntime = runtime;
-        m_bakedPlacementRadius = interestRadius > 0.0f ? interestRadius : 64.0f;
+        if (!runtime)
+            return;
+        m_bakedPlacementInstances.push_back(BakedPlacementInstance{
+            std::move(runtime), interestRadius > 0.0f ? interestRadius : 64.0f});
     }
+    // Auto-loads every prespecified baked placement cloud the WORLD declares
+    // (World::LoadBakedPlacement, populated by the world loader). Creates a
+    // runtime per cloud + wires it — no per-app placement code.
+    void LoadBakedPlacementsFromWorld();
     // The host calls this after changing the world's height/mask data;
     // every interested placement tile will then regenerate.
     void InvalidateGpuPlacementTerrain() {

@@ -24,6 +24,7 @@
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/pak.h>
+#include <Engine/Placement/baked_placement_pak.h>
 #include <Engine/Renderer/geometry_streamer.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Renderer/renderview.h>
@@ -87,6 +88,22 @@ WorldPage& World::LoadPageFromPak(ResourceManager& ctx,
     if (!LoadTerrainFromPak(reader, terrErr))
         std::cerr << "[World] terrain harvest skipped: " << terrErr << "\n";
     return ref;
+}
+
+bool World::LoadBakedPlacement(const PakReader& reader,
+                               const std::string& familyPath,
+                               float interestRadius,
+                               uint32_t slotBudget) {
+    tour::placement::BakedPlacementCooked cooked;
+    if (!tour::placement::LoadBakedPlacementFromPak(reader, familyPath, cooked))
+        return false; // the family carried no PointInstancer
+    tour::placement::BakedPlacementRef ref;
+    ref.familyPath = familyPath;
+    ref.interestRadius = interestRadius;
+    ref.slotBudget = slotBudget;
+    bakedPlacementRefs.push_back(std::move(ref));
+    bakedPlacementCooked.push_back(std::move(cooked));
+    return true;
 }
 
 bool World::LoadTerrainFromPak(const PakReader& reader, std::string& err) {

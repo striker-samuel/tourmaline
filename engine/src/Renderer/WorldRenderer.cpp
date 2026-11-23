@@ -2413,6 +2413,10 @@ bool WorldRenderer::onAttach() {
                      "nothing to render (see the errors above)\n";
         return false;
     }
+    // Auto-load the prespecified baked placement instancers the world loader
+    // registered (World::LoadBakedPlacement) — one runtime per cloud, no
+    // per-app placement wiring.
+    LoadBakedPlacementsFromWorld();
     std::cerr << "[Scene] world resolved: nodes=" << m_world->scene.hierarchy.size()
               << " meshes=" << m_world->meshLocations.size()
               << " materials=" << m_world->materialLocations.size() << std::endl;
@@ -3070,6 +3074,21 @@ bool WorldRenderer::onAttach() {
     return true;
 };
 
+void WorldRenderer::LoadBakedPlacementsFromWorld() {
+    if (!m_world)
+        return;
+    const auto& refs = m_world->BakedPlacementRefs();
+    const auto& cooked = m_world->BakedPlacementCookedData();
+    m_bakedPlacementInstances.clear();
+    for (size_t i = 0; i < refs.size() && i < cooked.size(); ++i) {
+        auto rt = std::make_unique<tour::placement::BakedPlacementRuntime>();
+        if (!rt->Configure(cooked[i], refs[i].slotBudget))
+            continue;
+        m_bakedPlacementInstances.push_back(
+            BakedPlacementInstance{std::move(rt), refs[i].interestRadius});
+    }
+}
+
 void WorldRenderer::onDetach() {
     // Providers borrow members of this renderer. Drop their registration
     // and GPU callback before resources are torn down; onAttach can then
@@ -3088,8 +3107,10 @@ void WorldRenderer::onDetach() {
     m_host.WaitForDeviceIdle();
     if (m_gpuPlacementRuntime && m_gpuPlacementRuntime->Valid())
         m_gpuPlacementRuntime->Destroy(*m_rendergraph);
-    if (m_bakedPlacementRuntime && m_bakedPlacementRuntime->Valid())
-        m_bakedPlacementRuntime->Destroy(*m_rendergraph);
+    for (auto& inst : m_bakedPlacementInstances)
+        if (inst.runtime && inst.runtime->Valid())
+            inst.runtime->Destroy(*m_rendergraph);
+    m_bakedPlacementInstances.clear();
     if (m_gpuPlacementDraw) {
         m_gpuPlacementDraw->Destroy();
         delete m_gpuPlacementDraw;
@@ -14607,39 +14628,42 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // share this frame's recording; the uploads land at this frame's flush and
     // the cull reads them through the graph's buffer hints).
     m_bakedPlacementReady = false;
-    if (m_bakedPlacementRuntime && mainRenderView != smvk::RenderViewSet::kInvalidIndex) {
-        tour::placement::BakedPlacementRuntime* brt = m_bakedPlacementRuntime;
+    if (!m_bakedPlacementInstances.empty() &&
+        mainRenderView != smvk::RenderViewSet::kInvalidIndex) {
         // The baked path shares the placement instanced VS/FS (the draw program
         // is created on demand here too, so a baked-only host needs no
         // procedural runtime).
         if (!m_gpuPlacementDraw)
             m_gpuPlacementDraw = new tour::placement::PlacementDrawPrograms();
         if (m_gpuPlacementDraw->Ensure(*m_context)) {
-            if (!brt->Valid()) {
-                if (brt->viewBudget < m_swapchain->framesInFlight())
-                    brt->viewBudget = m_swapchain->framesInFlight();
-                brt->Create(*m_context, *m_rendergraph);
-            }
-            if (brt->Valid()) {
-                const glm::vec3 cam = m_cameraPositioner.cameraPosition_;
-                const float r = m_bakedPlacementRadius;
+            const glm::vec3 cam = m_cameraPositioner.cameraPosition_;
+            for (auto& inst : m_bakedPlacementInstances) {
+                tour::placement::BakedPlacementRuntime* brt = inst.runtime.get();
+                if (!brt->Valid()) {
+                    if (brt->viewBudget < m_swapchain->framesInFlight())
+                        brt->viewBudget = m_swapchain->framesInFlight();
+                    brt->Create(*m_context, *m_rendergraph);
+                }
+                if (!brt->Valid())
+                    continue;
+                const float r = inst.interestRadius;
                 const glm::vec4 rect(cam.x - r, cam.z - r, cam.x + r, cam.z + r);
                 brt->BeginFrame(*m_context, *m_rendergraph, &rect, 1);
                 if (m_gpuPlacementViewLogical.empty())
                     m_gpuPlacementViewLogical = m_rendergraph->AddExternalBuffer(
                         m_renderViews.Buffer(), "BakedPlacementRenderViews");
-                if (!m_gpuPlacementViewLogical.empty()) {
-                    brt->RecordCullChain(*m_context,
-                                         *m_rendergraph,
-                                         fb.frameIndex,
-                                         m_gpuPlacementViewLogical,
-                                         renderViewsAddress,
-                                         mainRenderView,
-                                         cam,
-                                         tour::placement::kPlacementCullFrustum |
-                                             tour::placement::kPlacementCullDistance);
-                    m_bakedPlacementReady = true;
-                }
+                if (m_gpuPlacementViewLogical.empty())
+                    continue;
+                brt->RecordCullChain(*m_context,
+                                     *m_rendergraph,
+                                     fb.frameIndex,
+                                     m_gpuPlacementViewLogical,
+                                     renderViewsAddress,
+                                     mainRenderView,
+                                     cam,
+                                     tour::placement::kPlacementCullFrustum |
+                                         tour::placement::kPlacementCullDistance);
+                m_bakedPlacementReady = true;
             }
         }
     }
@@ -17370,7 +17394,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             mainPass.AddBufferHint(vs->indirectL, indirectRead);
         }
     }
-    if (m_bakedPlacementReady && m_bakedPlacementRuntime) {
+    if (m_bakedPlacementReady) {
         smvk::BufferSyncRequest vertRead{};
         vertRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
         vertRead.barrierMasks.stageMask = smvk::PipelineStageBit_Vertex;
@@ -17378,14 +17402,16 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         indirectRead.barrierMasks.accessMask = smvk::AccessFlags::IndirectCommandRead;
         indirectRead.barrierMasks.stageMask = smvk::PipelineStageBit_DrawIndirect;
         mainPass.AddBufferHint(m_gpuPlacementViewLogical, vertRead);
-        const auto& brt = *m_bakedPlacementRuntime;
-        for (size_t s = 0; s < brt.active.size(); ++s) {
-            const auto* vs = brt.VisSet(int32_t(s), fb.frameIndex);
-            if (!vs)
-                continue;
-            mainPass.AddBufferHint(brt.pass.instanceLogicals[s], vertRead);
-            mainPass.AddBufferHint(vs->visibleL, vertRead);
-            mainPass.AddBufferHint(vs->indirectL, indirectRead);
+        for (auto& inst : m_bakedPlacementInstances) {
+            const auto& brt = *inst.runtime;
+            for (size_t s = 0; s < brt.active.size(); ++s) {
+                const auto* vs = brt.VisSet(int32_t(s), fb.frameIndex);
+                if (!vs)
+                    continue;
+                mainPass.AddBufferHint(brt.pass.instanceLogicals[s], vertRead);
+                mainPass.AddBufferHint(vs->visibleL, vertRead);
+                mainPass.AddBufferHint(vs->indirectL, indirectRead);
+            }
         }
     }
     if (m_meshParticlesReady) {
@@ -17798,9 +17824,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 
         // Baked placement (the authored PointInstancer cloud): the same VS/FS
         // + static heap as the procedural path, but per-tile LOCAL proto counts
-        // (the tile's palette, not the global prototype count).
-        if (m_bakedPlacementReady && m_bakedPlacementRuntime && m_gpuPlacementDraw) {
-            auto& brt = *m_bakedPlacementRuntime;
+        // (the tile's palette, not the global prototype count). One draw set
+        // per prespecified cloud.
+        if (m_bakedPlacementReady && m_gpuPlacementDraw) {
             cmd.BindStaticVertexFmt();
             cmd.BindRenderPipeline(m_gpuPlacementDraw->program,
                                    ::tour::vertex_layouts::Static,
@@ -17810,29 +17836,32 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                    msaaSettings,
                                    smvk::RasterSettings{.cullMode = smvk::CullMode::None});
             cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &pc, smvk::ShaderStage::All);
-            for (size_t s = 0; s < brt.active.size(); ++s) {
-                const auto* vs = brt.VisSet(int32_t(s), placementFlight);
-                if (!vs)
-                    continue;
-                const uint32_t protoCount = brt.TileProtoCount(int32_t(s));
-                if (protoCount == 0)
-                    continue;
-                const tour::placement::PlacementVsPush tail{
-                    vs->VisibleAddress(*m_context),
-                    brt.pass.TileInstancesAddress(*m_context, uint32_t(s)),
-                    renderViewsAddress,
-                    mainRenderView,
-                    0u};
-                cmd.PushConstants(tour::placement::kPlacementVsPushOffset,
-                                  sizeof(tail),
-                                  &tail,
-                                  smvk::ShaderStage::All);
-                for (uint32_t proto = 0; proto < protoCount; ++proto)
-                    cmd.DrawIndexedIndirect(vs->IndirectBuffer(),
-                                            uint64_t(proto) *
-                                                tour::placement::kPlacementIndirectStride,
-                                            1,
-                                            tour::placement::kPlacementIndirectStride);
+            for (auto& inst : m_bakedPlacementInstances) {
+                auto& brt = *inst.runtime;
+                for (size_t s = 0; s < brt.active.size(); ++s) {
+                    const auto* vs = brt.VisSet(int32_t(s), placementFlight);
+                    if (!vs)
+                        continue;
+                    const uint32_t protoCount = brt.TileProtoCount(int32_t(s));
+                    if (protoCount == 0)
+                        continue;
+                    const tour::placement::PlacementVsPush tail{
+                        vs->VisibleAddress(*m_context),
+                        brt.pass.TileInstancesAddress(*m_context, uint32_t(s)),
+                        renderViewsAddress,
+                        mainRenderView,
+                        0u};
+                    cmd.PushConstants(tour::placement::kPlacementVsPushOffset,
+                                      sizeof(tail),
+                                      &tail,
+                                      smvk::ShaderStage::All);
+                    for (uint32_t proto = 0; proto < protoCount; ++proto)
+                        cmd.DrawIndexedIndirect(vs->IndirectBuffer(),
+                                                uint64_t(proto) *
+                                                    tour::placement::kPlacementIndirectStride,
+                                                1,
+                                                tour::placement::kPlacementIndirectStride);
+                }
             }
         }
 
