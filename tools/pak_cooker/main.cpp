@@ -2365,25 +2365,49 @@ int Run(const PakArgs& c) {
             }
         }
     }
-    // Baked placement sidecars (<stem>.baked_placement_cooked beside each
-    // .geometry): the cooked PointInstancer cloud. Read + embed as
-    // BakedPlacement-kind blobs at the sidecar path; the host derives the
-    // sidecar path from the .geometry family path.
+    // Baked placement sidecars (<familyStem>.baked_placement_cooked beside each
+    // .geometry family): the cooked PointInstancer cloud. Read + embed as
+    // BakedPlacement-kind blobs at the FAMILY sidecar path (one per family, not
+    // per partition part — split families carry one sidecar referencing surfaces
+    // across all parts). Both the positional artifact list AND the tour's source
+    // references contribute families (a tour cook has an empty artifact list).
     std::vector<std::pair<std::string, std::vector<uint8_t>>> bakedPlacementBlobs;
-    for (const std::string& inVfs : args.inVfsList) {
-        std::string artPath = smvk::NormalizeAssetUri(inVfs).Str();
+    std::set<std::string> bakedFamilies; // dedupe family sidecar paths
+    auto embedFamily = [&](const std::string& geometryPath) {
+        std::string artPath = smvk::NormalizeAssetUri(geometryPath).Str();
         if (artPath.empty())
-            artPath = inVfs;
+            artPath = geometryPath;
         std::string stem = smvk::vfs::FileName(artPath);
         if (const size_t mdot = stem.rfind(".geometry"); mdot != std::string::npos)
             stem = stem.substr(0, mdot);
+        // Family stem: strip a trailing "_partN" (partitioned families) — the
+        // sidecar is named after the LOGICAL family, not the part artifact.
+        if (const size_t up = stem.rfind("_part"); up != std::string::npos) {
+            const std::string tail = stem.substr(up + 5);
+            bool allDigits = !tail.empty();
+            for (char c : tail)
+                allDigits = allDigits && (c >= '0' && c <= '9');
+            if (allDigits)
+                stem = stem.substr(0, up);
+        }
         const std::string sidecarVfs =
             smvk::vfs::Join(smvk::vfs::BaseDir(artPath), stem + ".baked_placement_cooked");
+        if (!bakedFamilies.insert(sidecarVfs).second)
+            return;
         std::vector<uint8_t> bytes = ReadLooseBakeFile(args.contentDir, sidecarVfs);
         if (bytes.empty())
-            continue; // no baked placement cooked for this artifact
+            return; // no baked placement cooked for this family
         bakedPlacementBlobs.emplace_back(sidecarVfs, std::move(bytes));
         tool::out() << "Baked placement embedded: " << sidecarVfs << "\n";
+    };
+    for (const std::string& inVfs : args.inVfsList)
+        embedFamily(inVfs);
+    if (haveTour) {
+        for (const auto& ref : tour.references) {
+            if (!ref.asset || ref.root)
+                continue;
+            embedFamily(ref.source);
+        }
     }
     // ---------------------------------------------------------------------------
     // COOKED STATIC FLAGS (the authored/preserved static pipeline): a

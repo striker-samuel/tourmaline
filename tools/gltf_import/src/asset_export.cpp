@@ -1591,6 +1591,14 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
     std::unique_ptr<smvk::WorldPage> cluster;
     std::vector<int> gltfNodeMap;
 
+    // Baked placement mesh-identity resolution collects the per-part
+    // (gltf mesh index, primitive index) -> part-local .geometry blob index
+    // map + blob count, then resolves GLOBAL flat surface indices across all
+    // parts at the end (split families: one sidecar, N part blobs — the flat
+    // surface index is the blob index in the CONCATENATED family geometry).
+    std::vector<std::map<std::pair<uint32_t, uint32_t>, uint32_t>> bakedPartSurfaceOf;
+    std::vector<uint32_t> bakedPartBlobCount;
+
     // 4) The .geometry: import + serialize. Oversized scenes PARTITION (P1):
     // each part imports into its own bounded cluster and serializes into
     // <stem>_partN.geometry. Materials + manifest identity are shared (derived
@@ -1818,32 +1826,27 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
                 mesh.instances.push_back(inst);
                 ++stats.instances;
             }
-            // Resolve the baked placement's mesh identity: the USD adapter
-            // recorded the tinygltf mesh index + primitive index in
+            // Collect the baked placement's per-part mesh identity: the USD
+            // adapter recorded the tinygltf mesh index + primitive index in
             // (meshKey, surfaceIndex) as temporaries. The native derivation
-            // rewrites surfaceIndex to the FLAT SURFACE (the .geometry blob
-            // index — the PointInstancer's surfaces are flat, non-hierarchical)
-            // and clears meshKey (0 = the asset's project MeshKey, resolved
-            // later by the project pipeline, which owns the catalog).
+            // resolves surfaceIndex to a GLOBAL FLAT SURFACE (the .geometry
+            // blob index across the whole family — the PointInstancer's
+            // surfaces are flat, non-hierarchical) at the END of the derive,
+            // once every part's blob count is known (split families: the flat
+            // surface index is the blob index in the CONCATENATED family
+            // geometry). The URI fragment's "mesh.N" now carries the glTF mesh
+            // index (the stableKey), so the key joins to the temporaries
+            // directly.
             if (MutableLastImportedBakedPlacement) {
-                if (auto* baked = MutableLastImportedBakedPlacement()) {
-                    std::map<std::pair<uint32_t, uint32_t>, uint32_t> surfaceOf;
-                    for (const auto& [poolIdx, blobIdx] : blobOf) {
-                        uint32_t n = 0, m = 0;
-                        if (blobIdx < mesh.geometry.size() &&
-                            ParseMeshPrimFragment(mesh.geometry[blobIdx].uriFragment, n, m))
-                            surfaceOf[{n, m}] = blobIdx;
-                    }
-                    for (auto& rp : baked->renderPrototypes) {
-                        const auto it = surfaceOf.find({uint32_t(rp.meshKey), rp.surfaceIndex});
-                        if (it != surfaceOf.end()) {
-                            rp.surfaceIndex = it->second; // the flat surface (blob index)
-                            rp.meshKey = 0; // asset -> project MeshKey (project pipeline)
-                        } else {
-                            rp.surfaceIndex = 0xFFFFFFFFu; // loud: unresolved surface
-                        }
-                    }
+                std::map<std::pair<uint32_t, uint32_t>, uint32_t> surfaceOf;
+                for (const auto& [poolIdx, blobIdx] : blobOf) {
+                    uint32_t n = 0, m = 0;
+                    if (blobIdx < mesh.geometry.size() &&
+                        ParseMeshPrimFragment(mesh.geometry[blobIdx].uriFragment, n, m))
+                        surfaceOf[{n, m}] = blobIdx;
                 }
+                bakedPartSurfaceOf.push_back(std::move(surfaceOf));
+                bakedPartBlobCount.push_back(uint32_t(mesh.geometry.size()));
             }
             // Lights (the pool defs + node links).
             for (const LightRow& _row : scene.tables.lights) {
@@ -1903,6 +1906,39 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
         std::filesystem::remove(dir / (stem + ".geometry"), staleEc);
         staleEc.clear();
         std::filesystem::remove(dir / (stem + ".mesh"), staleEc);
+    }
+
+    // Baked placement mesh identity: resolve GLOBAL flat surface indices
+    // across all parts. The per-part pass above only COLLECTED the
+    // (gltf mesh index, primitive index) -> part-local blob index maps, so the
+    // temporaries (meshKey = gltf mesh index, surfaceIndex = primitive index)
+    // are still intact here. The GLOBAL surface index is the blob index in the
+    // CONCATENATED family geometry: part 0's blobs are [0, N0), part 1's are
+    // [N0, N0+N1), ... — the cook resolves it back to (part, local blob) via
+    // the same cumulative walk.
+    if (MutableLastImportedBakedPlacement) {
+        if (auto* baked = MutableLastImportedBakedPlacement()) {
+            std::vector<uint32_t> partOffset(bakedPartBlobCount.size(), 0);
+            uint32_t acc = 0;
+            for (size_t pi = 0; pi < bakedPartBlobCount.size(); ++pi) {
+                partOffset[pi] = acc;
+                acc += bakedPartBlobCount[pi];
+            }
+            for (auto& rp : baked->renderPrototypes) {
+                const std::pair<uint32_t, uint32_t> key{uint32_t(rp.meshKey), rp.surfaceIndex};
+                bool resolved = false;
+                for (size_t pi = 0; pi < bakedPartSurfaceOf.size() && !resolved; ++pi) {
+                    const auto it = bakedPartSurfaceOf[pi].find(key);
+                    if (it != bakedPartSurfaceOf[pi].end()) {
+                        rp.surfaceIndex = partOffset[pi] + it->second; // GLOBAL flat surface
+                        rp.meshKey = 0; // asset -> project MeshKey (project pipeline)
+                        resolved = true;
+                    }
+                }
+                if (!resolved)
+                    rp.surfaceIndex = 0xFFFFFFFFu; // loud: unresolved surface
+            }
+        }
     }
 
     // 5) Animation assets (the .tourAnim format; tracks retargeted onto

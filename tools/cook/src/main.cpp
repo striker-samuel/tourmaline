@@ -507,6 +507,53 @@ std::vector<uint8_t> ReadLooseBakeFile(const std::string& contentDir, const std:
                                 std::istreambuf_iterator<char>());
 }
 
+// Resolves the baked placement's render prototypes against a FAMILY of part
+// clusters (one sidecar per .geometry family; split families carry one part
+// cluster per <stem>_partN.geometry). surfaceIndex is a GLOBAL flat surface
+// index across the parts (part 0's blobs first, then part 1's, ...) — the
+// resolve walks the parts' cumulative geometry counts to find the owning part,
+// then joins the part's mesh URI fragment ("mesh.N/prim.M") against that
+// part's base URI. Returns false for an out-of-range mesh/surface (refuses the
+// whole asset — never a partial cook).
+bool CookBakedPlacementForParts(const ::tour::placement::BakedPlacementAsset& baked,
+                                const smvk::assets::MeshAsset* const* partAssets,
+                                const smvk::WorldPage* const* partClusters,
+                                const std::string* partBaseUris,
+                                size_t partCount,
+                                float tileSize,
+                                ::tour::placement::BakedPlacementCooked& out,
+                                size_t* skipped = nullptr) {
+    auto resolve =
+        [&](uint64_t /*meshKey*/, uint32_t surfaceIndex, ::tour::placement::BakedSurfaceRef& ref) {
+            uint32_t local = surfaceIndex;
+            for (size_t pi = 0; pi < partCount; ++pi) {
+                const smvk::assets::MeshAsset& meshAsset = *partAssets[pi];
+                const uint32_t cnt = uint32_t(meshAsset.geometry.size());
+                if (local < cnt) {
+                    if (local >= meshAsset.geometry.size())
+                        return false;
+                    const std::string frag = meshAsset.geometry[local].uriFragment;
+                    const std::string fullUri = partBaseUris[pi] + "#" + frag;
+                    const auto h = partClusters[pi]->FindMeshByUri(smvk::StringViewT(fullUri));
+                    if (!h)
+                        return false;
+                    const smvk::StaticMesh* sm = partClusters[pi]->staticMeshes.get(*h);
+                    if (!sm || sm->geometry.surfaces.empty())
+                        return false;
+                    ref.indexCount = sm->geometry.surfaces[0].indexCount;
+                    ref.firstIndex = sm->geometry.surfaces[0].firstIndex;
+                    ref.vertexOffset = sm->geometry.surfaces[0].baseVertex;
+                    ref.boundsMin = sm->geometry.aabbMin;
+                    ref.boundsMax = sm->geometry.aabbMax;
+                    return true;
+                }
+                local -= cnt;
+            }
+            return false;
+        };
+    return ::tour::placement::CookBakedPlacement(baked, tileSize, resolve, out, skipped);
+}
+
 // Resolves the baked placement's render prototypes against the rebuilt cluster
 // and cooks them (resolve + bucket) into the runtime's cooked form.
 // surfaceIndex (the .geometry blob index) -> the cluster's StaticMesh surface
@@ -520,26 +567,10 @@ bool CookBakedPlacementForCluster(const ::tour::placement::BakedPlacementAsset& 
                                   float tileSize,
                                   ::tour::placement::BakedPlacementCooked& out,
                                   size_t* skipped = nullptr) {
-    auto resolve =
-        [&](uint64_t /*meshKey*/, uint32_t surfaceIndex, ::tour::placement::BakedSurfaceRef& ref) {
-            if (surfaceIndex >= meshAsset.geometry.size())
-                return false;
-            const std::string frag = meshAsset.geometry[surfaceIndex].uriFragment;
-            const std::string fullUri = meshBaseUri + "#" + frag;
-            const auto h = cluster.FindMeshByUri(smvk::StringViewT(fullUri));
-            if (!h)
-                return false;
-            const smvk::StaticMesh* sm = cluster.staticMeshes.get(*h);
-            if (!sm || sm->geometry.surfaces.empty())
-                return false;
-            ref.indexCount = sm->geometry.surfaces[0].indexCount;
-            ref.firstIndex = sm->geometry.surfaces[0].firstIndex;
-            ref.vertexOffset = sm->geometry.surfaces[0].baseVertex;
-            ref.boundsMin = sm->geometry.aabbMin;
-            ref.boundsMax = sm->geometry.aabbMax;
-            return true;
-        };
-    return ::tour::placement::CookBakedPlacement(baked, tileSize, resolve, out, skipped);
+    const smvk::assets::MeshAsset* assets[1] = {&meshAsset};
+    const smvk::WorldPage* clusters[1] = {&cluster};
+    const std::string uris[1] = {meshBaseUri};
+    return CookBakedPlacementForParts(baked, assets, clusters, uris, 1, tileSize, out, skipped);
 }
 
 // Bake-file name stems (see the GI bake-file discovery in main): the pak
@@ -4669,6 +4700,133 @@ int Run(const CookArgs& c) {
                 sceneNames.push_back(pi < partNames.size() ? partNames[pi]
                                                            : ("scene_part" + std::to_string(pi)));
                 scenePages.push_back(std::move(partPages[pi]));
+            }
+        }
+        // Baked placement (the authored PointInstancer clouds) in TOUR mode:
+        // each `source` verb names a .geometry family part; the sidecar
+        // (<familyStem>.baked_placement) is ONE per family, resolved against
+        // the family's part clusters (split families: one cluster per part,
+        // one sidecar referencing surfaces across all of them). The cooked
+        // form lands beside the sidecar as <familyStem>.baked_placement_cooked
+        // (the pak embeds it as a BakedPlacement blob).
+        {
+            // scene name -> scenePages index (index 0 = the "scene" main cluster).
+            std::unordered_map<std::string, size_t> pageByName;
+            for (size_t i = 0; i < sceneNames.size(); ++i)
+                pageByName[sceneNames[i]] = i;
+            struct FamilyParts {
+                std::string familyStem;
+                std::string sidecarVfs;
+                std::vector<std::string> partNames;   // tour ref name (scene name)
+                std::vector<std::string> partSources; // VFS .geometry path (mesh base URI)
+            };
+            std::map<std::string, FamilyParts> families;
+            for (const auto& ref : tour.references) {
+                if (!ref.asset || ref.root)
+                    continue; // the root + non-asset references carry no PointInstancer
+                const std::string src = ref.source;
+                const std::string dir = smvk::vfs::BaseDir(src);
+                std::string stem = smvk::vfs::FileName(src);
+                const size_t dot = stem.rfind(".geometry");
+                if (dot != std::string::npos)
+                    stem = stem.substr(0, dot);
+                std::string fam = stem;
+                const size_t up = fam.rfind("_part");
+                if (up != std::string::npos) {
+                    const std::string tail = fam.substr(up + 5);
+                    bool allDigits = !tail.empty();
+                    for (char c : tail)
+                        allDigits = allDigits && (c >= '0' && c <= '9');
+                    if (allDigits)
+                        fam = fam.substr(0, up);
+                }
+                FamilyParts& fp = families[fam];
+                fp.familyStem = fam;
+                fp.sidecarVfs = smvk::vfs::Join(dir, fam + ".baked_placement");
+                fp.partNames.push_back(ref.name);
+                fp.partSources.push_back(src);
+            }
+            for (auto& [fam, fp] : families) {
+                auto sidecarBytes = vfs.TryRead(fp.sidecarVfs);
+                if (!sidecarBytes || sidecarBytes->empty())
+                    continue; // this family carried no PointInstancer
+                ::tour::placement::BakedPlacementAsset baked;
+                if (!::tour::placement::DeserializeBakedPlacement(
+                        sidecarBytes->data(), sidecarBytes->size(), baked)) {
+                    tool::err() << "Baked placement sidecar parse failed: '" << fp.sidecarVfs
+                                << "'\n";
+                    continue;
+                }
+                std::vector<smvk::assets::MeshAsset> partAssets(fp.partSources.size());
+                std::vector<const smvk::assets::MeshAsset*> assetPtrs;
+                std::vector<const smvk::WorldPage*> clusters;
+                std::vector<std::string> baseUris;
+                bool allResolved = true;
+                for (size_t pi = 0; pi < fp.partSources.size(); ++pi) {
+                    auto bytes = vfs.TryRead(fp.partSources[pi]);
+                    if (!bytes || bytes->empty()) {
+                        tool::err() << "Baked placement cook: part geometry missing '"
+                                    << fp.partSources[pi] << "'\n";
+                        allResolved = false;
+                        break;
+                    }
+                    std::string aerr;
+                    if (!smvk::assets::LoadMeshAssetBytes(
+                            bytes->data(), bytes->size(), partAssets[pi], aerr)) {
+                        tool::err() << "Baked placement cook: part geometry parse failed '"
+                                    << fp.partSources[pi] << "': " << aerr << "\n";
+                        allResolved = false;
+                        break;
+                    }
+                    auto it = pageByName.find(fp.partNames[pi]);
+                    if (it == pageByName.end()) {
+                        tool::err() << "Baked placement cook: no scene page for '"
+                                    << fp.partNames[pi] << "'\n";
+                        allResolved = false;
+                        break;
+                    }
+                    assetPtrs.push_back(&partAssets[pi]);
+                    clusters.push_back(scenePages[it->second].get());
+                    baseUris.push_back(fp.partSources[pi]);
+                }
+                if (!allResolved)
+                    continue;
+                ::tour::placement::BakedPlacementCooked cooked;
+                size_t skipped = 0;
+                if (!CookBakedPlacementForParts(baked,
+                                                assetPtrs.data(),
+                                                clusters.data(),
+                                                baseUris.data(),
+                                                assetPtrs.size(),
+                                                64.0f,
+                                                cooked,
+                                                &skipped)) {
+                    tool::err() << "Baked placement cook failed for family '" << fam
+                                << "' (unresolved mesh/surface)\n";
+                    continue;
+                }
+                std::vector<uint8_t> cookedBlob;
+                if (!::tour::placement::SerializeBakedPlacementCooked(cooked, cookedBlob)) {
+                    tool::err() << "Baked placement cooked serialize failed\n";
+                    continue;
+                }
+                const std::filesystem::path cookedHost = std::filesystem::path(args.contentDir) /
+                                                         smvk::vfs::BaseDir(fp.sidecarVfs) /
+                                                         (fam + ".baked_placement_cooked");
+                std::error_code ec;
+                std::filesystem::create_directories(cookedHost.parent_path(), ec);
+                std::ofstream out(cookedHost, std::ios::binary | std::ios::trunc);
+                if (!out) {
+                    tool::err() << "Baked placement cooked write failed: '"
+                                << cookedHost.generic_string() << "'\n";
+                    continue;
+                }
+                out.write(reinterpret_cast<const char*>(cookedBlob.data()),
+                          std::streamsize(cookedBlob.size()));
+                out.close();
+                tool::out() << "Baked placement: " << baked.points.size() << " points, "
+                            << cooked.tiles.size() << " tiles (skipped " << skipped
+                            << " needs-bake) -> " << cookedHost.generic_string() << "\n";
             }
         }
     } else {

@@ -2245,11 +2245,21 @@ void SourceSceneImporter::uploadPreparedMeshes() {
         for (size_t p = 0; p < prims.size(); ++p) {
             DerivedMesh& d = prims[p];
             std::string baseUri;
+            // The mesh URI fragment keys on the SOURCE mesh's stableKey
+            // ("mesh.<gltf mesh index>"), NOT the part-local array index `m`.
+            // Partitioned families (P1) renumber meshes per part, so the
+            // array index diverges from the glTF index across parts — a
+            // "mesh.<partLocal>" fragment is ambiguous (part 0 and part 1
+            // both mint "mesh.0/prim.0") and can never be joined back to the
+            // authored (mesh, prim) identity (the baked placement resolver
+            // keys on it). The stableKey survives the partition verbatim, so
+            // it is the stable global identity.
+            const std::string meshFrag = sourceScene_.meshes[m].stableKey.empty()
+                                             ? ("mesh." + std::to_string(m))
+                                             : sourceScene_.meshes[m].stableKey;
             if (!modelUriBase.empty())
                 baseUri =
-                    smvk::MakeSubUri(modelUriBase,
-                                     "mesh." + std::to_string(m) + "/prim." + std::to_string(p))
-                        .Str();
+                    smvk::MakeSubUri(modelUriBase, meshFrag + "/prim." + std::to_string(p)).Str();
             slots.push_back(Slot{int(m), int(p), -1, baseUri, d.lod, {}, d.haveMeshlets});
             Slot& baseSlot = slots.back();
             baseSlot.lod.candidateCount = uint32_t(1 + d.lodChain.size());
