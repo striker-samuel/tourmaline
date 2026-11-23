@@ -3,6 +3,7 @@
 #pragma once
 // Flight-safe GPU Scene task/mesh resources. No GPU readback and no
 // 1024-meshlet-per-submesh gate; bounded by the actual 1M task group limit.
+#include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/gpu_scene_task_mesh_abi.h>
 #include <Engine/Renderer/gpu_scene_validation.h>
 #include <Engine/Rendergraph/rendergraph.h>
@@ -390,7 +391,25 @@ class TaskMeshRuntime {
                         in.workCapacity,
                         groupCapacity,
                         in.meshCount};
-        next.indirect = {offsets, indirect, in.workCapacity, groupCapacity, TaskGridX, 1024u};
+        // Task-dispatch X/Y grid, sized from the device's mesh-shader limits
+        // (VkPhysicalDeviceMeshShaderPropertiesEXT) instead of a hardcoded
+        // 1024x1024. The old fixed grid capped the total at 1,048,576 task
+        // groups; scenes past that (the Bistro 1024 grid at ~2.8M groups)
+        // overflowed y > maxY in the indirect fill, which zeroed the dispatch
+        // and drew nothing while smaller scenes (Sponza) drew correctly.
+        const smvk::MeshShaderLimits& meshLimits = smvk::GetMeshShaderLimits();
+        const uint32_t taskGridX = meshLimits.maxTaskWorkGroupCount[0] != 0u
+                                       ? meshLimits.maxTaskWorkGroupCount[0]
+                                       : TaskGridX;
+        uint32_t taskMaxY = meshLimits.maxTaskWorkGroupCount[1] != 0u
+                                ? meshLimits.maxTaskWorkGroupCount[1]
+                                : TaskGridX;
+        if (meshLimits.maxTaskWorkGroupTotalCount != 0u) {
+            const uint32_t maxYByTotal = meshLimits.maxTaskWorkGroupTotalCount / taskGridX;
+            if (maxYByTotal != 0u && maxYByTotal < taskMaxY)
+                taskMaxY = maxYByTotal;
+        }
+        next.indirect = {offsets, indirect, in.workCapacity, groupCapacity, taskGridX, taskMaxY};
         // vertexOptFlags (was reservedTemporal): bit 0 = rigid-transform
         // normalize elision, toggled by TOURMALINE_FAST_VERTEX for the A/B
         // measurement of the mesh-stage vertex cost.
@@ -399,7 +418,7 @@ class TaskMeshRuntime {
             return (e && std::atoi(e) != 0) ? 1u : 0u;
         }();
         next.graphics = {
-            params, 0u, groupCapacity, 0u, TaskGridX, 0u, s_vertexOptFlags, 0u, 0u, 0u};
+            params, 0u, groupCapacity, 0u, taskGridX, 0u, s_vertexOptFlags, 0u, 0u, 0u};
         next.workCapacity = in.workCapacity;
         next.taskGroupCapacity = groupCapacity;
         next.scanBlocks = blocks;

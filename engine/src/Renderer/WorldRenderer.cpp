@@ -13378,6 +13378,66 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                                                      : 0u));
                                     }
                                 }
+                                {
+                                    // One-shot meshlet-data state: are the cooked
+                                    // meshlet streams present and non-degenerate? A
+                                    // zero triCount/vertexCount cluster or an empty
+                                    // meshlet buffer drops every mesh shader
+                                    // (SetMeshOutputCounts(0,0)) while indexed raster
+                                    // keeps drawing from the native indexed ranges.
+                                    static bool s_taskMeshDataDiag = false;
+                                    if (!s_taskMeshDataDiag) {
+                                        s_taskMeshDataDiag = true;
+                                        size_t zeroTri = 0, zeroVert = 0, zeroMesh = 0;
+                                        for (const auto& c : gfx.clusters) {
+                                            if (c.triCount == 0u)
+                                                ++zeroTri;
+                                            if (c.vertexCount == 0u)
+                                                ++zeroVert;
+                                        }
+                                        for (const auto& m : gfx.meshes)
+                                            if (m.clusterCount == 0u)
+                                                ++zeroMesh;
+                                        const auto clusterStr = [&](size_t i) {
+                                            static char buf[96];
+                                            if (i >= gfx.clusters.size())
+                                                return std::string("-");
+                                            const auto& c = gfx.clusters[i];
+                                            std::snprintf(buf,
+                                                          sizeof(buf),
+                                                          "tri=%u vert=%u vOff=%u tOff=%u",
+                                                          c.triCount,
+                                                          c.vertexCount,
+                                                          c.vertexOffset,
+                                                          c.triangleOffset);
+                                            return std::string(buf);
+                                        };
+                                        std::fprintf(stderr,
+                                                     "[TaskMeshDiag] meshes=%zu clusters=%zu "
+                                                     "clusterBuf=%d meshletVBuf=%d meshletTBuf=%d "
+                                                     "meshletVWords=%zu meshletTWords=%zu "
+                                                     "zeroTri=%zu zeroVert=%zu zeroMesh=%zu\n",
+                                                     gfx.meshes.size(),
+                                                     gfx.clusters.size(),
+                                                     gfx.clusterBuffer.empty() ? 0 : 1,
+                                                     gfx.meshletVertexBuffer.empty() ? 0 : 1,
+                                                     gfx.meshletTriangleBuffer.empty() ? 0 : 1,
+                                                     gfx.meshletVertices.size(),
+                                                     gfx.meshletTriangles.size(),
+                                                     zeroTri,
+                                                     zeroVert,
+                                                     zeroMesh);
+                                        std::fprintf(stderr,
+                                                     "[TaskMeshDiag] c[0]=%s c[100]=%s "
+                                                     "c[last]=%s\n",
+                                                     clusterStr(0).c_str(),
+                                                     clusterStr(100).c_str(),
+                                                     clusterStr(gfx.clusters.empty()
+                                                                    ? 0u
+                                                                    : gfx.clusters.size() - 1u)
+                                                         .c_str());
+                                    }
+                                }
                                 // Diagnostic isolation toggles for the task
                                 // shader's per-meshlet visibility tests (one-shot
                                 // static latches, documented diagnostic knobs):
