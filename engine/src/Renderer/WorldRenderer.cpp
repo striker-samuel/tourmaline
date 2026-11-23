@@ -13228,6 +13228,19 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                     break;
                                 }
                                 worstMeshlets = std::max(worstMeshlets, mesh.clusterCount);
+                                // Capacity check at the MESH level: the max
+                                // referenced vertex id was computed at
+                                // registration (FinishMesh), so this is O(1)
+                                // instead of re-scanning every index every
+                                // frame.
+                                if (meshIndex < gfx.meshMaxVertexIndex.size() &&
+                                    gfx.meshMaxVertexIndex[meshIndex] >= vertexCap) {
+                                    topoFailReason =
+                                        "cluster index over the static vertex capacity";
+                                    topoFailMesh = meshIndex;
+                                    topologyValid = false;
+                                    break;
+                                }
                                 for (uint32_t c = 0u; c < mesh.clusterCount; ++c) {
                                     const auto& cluster = gfx.clusters[mesh.clusterStart + c];
                                     const uint64_t indexEnd = uint64_t(cluster.indexOffset) +
@@ -13241,16 +13254,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                         topoFailCluster = c;
                                         topologyValid = false;
                                         break;
-                                    }
-                                    for (uint64_t j = cluster.indexOffset; j < indexEnd; ++j) {
-                                        if (gfx.filterIndices[size_t(j)] >= vertexCap) {
-                                            topoFailReason =
-                                                "cluster index over the static vertex capacity";
-                                            topoFailMesh = meshIndex;
-                                            topoFailCluster = c;
-                                            topologyValid = false;
-                                            break;
-                                        }
                                     }
                                     if (!topologyValid)
                                         break;

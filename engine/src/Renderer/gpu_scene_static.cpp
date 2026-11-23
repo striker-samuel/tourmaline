@@ -174,20 +174,28 @@ static uint32_t FinishMesh(StaticGeometry& s, uint32_t clusterStart) {
         const Cluster& first = s.clusters[clusterStart];
         const Cluster& last = s.clusters.back();
         const uint64_t end = uint64_t(last.indexOffset) + uint64_t(last.triCount) * 3u;
-        if (end <= std::numeric_limits<uint32_t>::max() &&
-            end > first.indexOffset && end <= s.filterIndices.size()) {
+        if (end <= std::numeric_limits<uint32_t>::max() && end > first.indexOffset &&
+            end <= s.filterIndices.size()) {
             range.firstIndex = first.indexOffset;
             range.indexCount = uint32_t(end - first.indexOffset);
         }
     }
     s.indexedRanges.push_back(range);
+    // Max vertex id referenced by this mesh's index stream. Walked here, at
+    // registration (once), so the renderer's per-frame capacity check is a
+    // single compare per mesh rather than an O(indices) scan.
+    uint32_t maxVertexIndex = 0u;
+    if (range.indexCount != 0u) {
+        const uint32_t* idx = s.filterIndices.data() + range.firstIndex;
+        for (uint32_t i = 0; i < range.indexCount; ++i)
+            maxVertexIndex = std::max(maxVertexIndex, idx[i]);
+    }
+    s.meshMaxVertexIndex.push_back(maxVertexIndex);
     s.meshes.push_back(entry);
     return (uint32_t)s.meshes.size() - 1;
 }
 
-uint32_t RegisterMeshFromUpload(StaticGeometry& s,
-                                const MeshData& upload,
-                                uint32_t baseVertex) {
+uint32_t RegisterMeshFromUpload(StaticGeometry& s, const MeshData& upload, uint32_t baseVertex) {
     if (upload.vertices.empty() || upload.indices.empty() || (upload.indices.size() % 3) != 0)
         return UINT32_MAX;
     if (s.meshes.size() >= kMaxMeshes)
@@ -321,6 +329,7 @@ void ResetStaticRegistrations(StaticGeometry& s) {
     s.meshletTriangles.clear();
     s.clusters.clear();
     s.meshes.clear();
+    s.meshMaxVertexIndex.clear();
     s.meshBounds.clear();
     s.indexedRanges.clear();
     s.indexedRangesResident = false;
@@ -503,8 +512,7 @@ void RegisterWorldMeshes(StaticGeometry& s, const tour::World& world) {
             gfxMesh = RegisterMeshFromCooked(s, *mesh->meshlets, baseVertex);
             if (gfxMesh != UINT32_MAX)
                 ++fromCooked;
-        } else if (const smvk::MeshData* retained =
-                       loc.cluster->GetRetainedUpload(loc.handle)) {
+        } else if (const smvk::MeshData* retained = loc.cluster->GetRetainedUpload(loc.handle)) {
             gfxMesh = RegisterMeshFromUpload(s, *retained, baseVertex);
             if (gfxMesh != UINT32_MAX)
                 ++fromUpload;
