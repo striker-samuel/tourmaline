@@ -13171,119 +13171,42 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         uint32_t(std::min<uint64_t>(vertexCap64, kTaskVertexLimit));
                     const uint32_t indexCap =
                         uint32_t(std::min<uint64_t>(indexCap64, kTaskIndexWords));
-                    // Task/mesh topology validation. The O(total indices)
-                    // index-bound walk is invariant until the world topology
-                    // or the static heap capacities change, so cache it (like
-                    // ComputeTaskMeshTotalGroups) instead of rescanning every
-                    // index every frame (~12M reads for Bistro).
-                    const uint64_t topoRev =
-                        m_world ? m_world->gpuSceneTopologyRevision : ~uint64_t(0);
-                    const bool topoCached = m_taskMeshTopologyRevision == topoRev &&
-                                            m_taskMeshTopologyVertexCap == vertexCap &&
-                                            m_taskMeshTopologyIndexCap == indexCap;
-                    bool topologyValid;
-                    uint32_t worstMeshlets;
+                    // No topology classification here. Registration
+                    // (RegisterMeshFromCooked) already validated every meshlet
+                    // fail-closed (structure, 64/96 limits, windows, local ids),
+                    // and FinishMesh built contiguous index ranges. The only
+                    // render-time check left is the static-heap capacity, which
+                    // can change as the heap grows (streaming), and is O(1) per
+                    // mesh via the registration-computed max vertex id.
+                    bool topologyValid =
+                        !gfx.meshes.empty() && !gfx.clusters.empty() &&
+                        !gfx.filterIndices.empty() && gfx.clusterIndexBase < indexCap &&
+                        gfx.filterIndices.size() <= size_t(indexCap - gfx.clusterIndexBase) &&
+                        vertexCap != 0u;
+                    uint32_t worstMeshlets = 0u;
                     const char* topoFailReason = nullptr;
-                    // UINT32_MAX = the global gate failed (no specific mesh/cluster);
-                    // the per-mesh loop below overwrites these with a real index.
-                    uint32_t topoFailMesh = UINT32_MAX, topoFailCluster = UINT32_MAX;
-                    char topoFailBuf[320] = {};
-                    if (topoCached) {
-                        topologyValid = m_taskMeshTopologyValid;
-                        worstMeshlets = m_taskMeshWorstMeshlets;
-                        if (!topologyValid)
-                            topoFailReason = "topology rejected (cached)";
-                    } else {
-                        topologyValid =
-                            !gfx.meshes.empty() && !gfx.clusters.empty() &&
-                            !gfx.filterIndices.empty() && gfx.clusterIndexBase < indexCap &&
-                            gfx.filterIndices.size() <= size_t(indexCap - gfx.clusterIndexBase) &&
-                            vertexCap != 0u;
-                        worstMeshlets = 0u;
-                        if (!topologyValid) {
-                            std::snprintf(topoFailBuf,
-                                          sizeof(topoFailBuf),
-                                          "empty cluster/index topology or index base over "
-                                          "capacity (meshes=%zu clusters=%zu filterIndices=%zu "
-                                          "clusterIndexBase=%u indexCap=%u vertexCap=%u)",
-                                          gfx.meshes.size(),
-                                          gfx.clusters.size(),
-                                          gfx.filterIndices.size(),
-                                          gfx.clusterIndexBase,
-                                          indexCap,
-                                          vertexCap);
-                            topoFailReason = topoFailBuf;
-                        } else {
-                            const auto tables =
-                                GpuSceneIndexedTables(gfx, m_gpuScenePhysicalIndexedRanges);
-                            for (uint32_t meshIndex = 0; meshIndex < gfx.meshes.size();
-                                 ++meshIndex) {
-                                const auto& mesh = gfx.meshes[meshIndex];
-                                tour::gpu_scene::IndexedGeometry checked{};
-                                if (!tour::gpu_scene::ResolveIndexedGeometry(
-                                        tables, meshIndex, checked)) {
-                                    topoFailReason = "discontinuous/mis-attributed cluster stream";
-                                    topoFailMesh = meshIndex;
-                                    topologyValid = false;
-                                    break;
-                                }
-                                worstMeshlets = std::max(worstMeshlets, mesh.clusterCount);
-                                // Capacity check at the MESH level: the max
-                                // referenced vertex id was computed at
-                                // registration (FinishMesh), so this is O(1)
-                                // instead of re-scanning every index every
-                                // frame.
-                                if (meshIndex < gfx.meshMaxVertexIndex.size() &&
-                                    gfx.meshMaxVertexIndex[meshIndex] >= vertexCap) {
-                                    topoFailReason =
-                                        "cluster index over the static vertex capacity";
-                                    topoFailMesh = meshIndex;
-                                    topologyValid = false;
-                                    break;
-                                }
-                                for (uint32_t c = 0u; c < mesh.clusterCount; ++c) {
-                                    const auto& cluster = gfx.clusters[mesh.clusterStart + c];
-                                    const uint64_t indexEnd = uint64_t(cluster.indexOffset) +
-                                                              uint64_t(cluster.triCount) * 3u;
-                                    if (cluster.triCount > smvk::kMeshletMaxTriangles ||
-                                        indexEnd > gfx.filterIndices.size()) {
-                                        topoFailReason =
-                                            "cluster triCount over the mesh-shader workgroup cap "
-                                            "(stale over-limit pak? recook at 64/96)";
-                                        topoFailMesh = meshIndex;
-                                        topoFailCluster = c;
-                                        topologyValid = false;
-                                        break;
-                                    }
-                                    if (!topologyValid)
-                                        break;
-                                }
-                                if (!topologyValid)
-                                    break;
+                    if (topologyValid) {
+                        for (uint32_t meshIndex = 0; meshIndex < gfx.meshes.size(); ++meshIndex) {
+                            worstMeshlets =
+                                std::max(worstMeshlets, gfx.meshes[meshIndex].clusterCount);
+                            if (meshIndex < gfx.meshMaxVertexIndex.size() &&
+                                gfx.meshMaxVertexIndex[meshIndex] >= vertexCap) {
+                                topologyValid = false;
+                                topoFailReason = "cluster index over the static vertex capacity";
+                                break;
                             }
                         }
-                        m_taskMeshTopologyRevision = topoRev;
-                        m_taskMeshTopologyVertexCap = vertexCap;
-                        m_taskMeshTopologyIndexCap = indexCap;
-                        m_taskMeshTopologyValid = topologyValid;
-                        m_taskMeshWorstMeshlets = worstMeshlets;
+                    } else {
+                        topoFailReason = "empty cluster/index topology or index base over capacity";
                     }
                     if (!topologyValid) {
                         static bool s_taskTopoFailReported = false;
                         if (!s_taskTopoFailReported) {
                             s_taskTopoFailReported = true;
-                            if (topoFailMesh != UINT32_MAX)
-                                std::fprintf(stderr,
-                                             "[GpuSceneTaskMesh] topology rejected (indexed "
-                                             "fallback): %s (mesh=%u cluster=%u)\n",
-                                             topoFailReason,
-                                             topoFailMesh,
-                                             topoFailCluster);
-                            else
-                                std::fprintf(stderr,
-                                             "[GpuSceneTaskMesh] topology rejected (indexed "
-                                             "fallback): %s\n",
-                                             topoFailReason);
+                            std::fprintf(stderr,
+                                         "[GpuSceneTaskMesh] topology rejected (indexed "
+                                         "fallback): %s\n",
+                                         topoFailReason);
                         }
                     }
                     rfTPreA_T1 = bench_clk::now();

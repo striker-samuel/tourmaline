@@ -278,29 +278,34 @@ uint32_t RegisterMeshFromCooked(StaticGeometry& s,
                                 uint32_t baseVertex) {
     if (cooked.empty() || s.meshes.size() >= kMaxMeshes)
         return UINT32_MAX;
+    // Whole-mesh meshlet validation (fail-closed). A mesh is meshlet-ready
+    // only when EVERY meshlet is structurally valid and within the
+    // mesh-shader workgroup limits; any violation rejects the whole mesh to
+    // the direct (indexed) path, never a partial meshlet draw. The renderer
+    // consumes this registration as a trusted, validated result - no
+    // per-frame re-walk of clusters or indices.
+    for (const Meshlet& m : cooked.meshlets) {
+        if (m.triangleCount == 0 || m.triangleCount > kMeshletMaxTriangles || m.vertexCount == 0 ||
+            m.vertexCount > kMeshletMaxVertices)
+            return UINT32_MAX;
+        if (m.vertexOffset + m.vertexCount > (uint32_t)cooked.vertices.size())
+            return UINT32_MAX;
+        if (m.triangleOffset + m.triangleCount * 3 > (uint32_t)cooked.triangles.size())
+            return UINT32_MAX;
+        const uint8_t* localTris = cooked.triangles.data() + m.triangleOffset;
+        for (uint32_t i = 0; i < m.triangleCount * 3; ++i)
+            if (localTris[i] >= m.vertexCount)
+                return UINT32_MAX;
+    }
     const uint32_t clusterStart = (uint32_t)s.clusters.size();
     const uint32_t meshIndex = (uint32_t)s.meshes.size();
     for (const Meshlet& m : cooked.meshlets) {
-        if (m.triangleCount == 0 || m.triangleCount > kMaxClusterTris || m.vertexCount == 0)
-            continue;
-        if (m.vertexOffset + m.vertexCount > (uint32_t)cooked.vertices.size())
-            continue;
-        if (m.triangleOffset + m.triangleCount * 3 > (uint32_t)cooked.triangles.size())
-            continue;
         const uint32_t* window = cooked.vertices.data() + m.vertexOffset;
         const uint8_t* localTris = cooked.triangles.data() + m.triangleOffset;
         std::vector<uint32_t> globalIds;
         globalIds.reserve(m.triangleCount * 3);
-        bool valid = true;
-        for (uint32_t i = 0; i < m.triangleCount * 3; ++i) {
-            if (localTris[i] >= m.vertexCount) {
-                valid = false;
-                break;
-            }
+        for (uint32_t i = 0; i < m.triangleCount * 3; ++i)
             globalIds.push_back(baseVertex + window[localTris[i]]);
-        }
-        if (!valid)
-            continue;
         std::vector<uint32_t> liftedWindow;
         liftedWindow.reserve(m.vertexCount);
         for (uint32_t v = 0; v < m.vertexCount; ++v)
