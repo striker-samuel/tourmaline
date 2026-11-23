@@ -2076,6 +2076,8 @@ class EditorApp : public tour::App {
     // and light cookies resolve like the authoring session. Reset with
     // the session.
     std::vector<smvk::tour::TextureAssetCmd> m_textureAssets;
+    // Persist fixture-cookie bake recipes even before/after an actual bake.
+    std::vector<smvk::tour::LightCookieBake> m_lightCookieBakes;
     // GI-asset bindings (the session mirror, see smvk::tour::GiAssetCmd):
     // the scene's HARD baked-GI identification — the world field + one
     // record per authored GI volume. Loaded from the tour on replay
