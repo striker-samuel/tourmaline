@@ -3236,6 +3236,7 @@ void TestBakedPlacement() {
             out.vertexOffset = 0;
             out.boundsMin = glm::vec3(-1.0f);
             out.boundsMax = glm::vec3(1.0f);
+            out.uri = "mesh." + std::to_string(meshKey) + "/prim." + std::to_string(surfaceIndex);
             return meshKey < 2u;
         },
         cooked,
@@ -3243,6 +3244,8 @@ void TestBakedPlacement() {
     Check(cookedOk && cooked.protoGeometry.size() == 3 && cooked.tiles.size() == 2 &&
               cooked.tileSize == 16.0f && cookedSkipped == 1,
           "baked.cook");
+    Check(cooked.protoUris.size() == 3 && cooked.protoUris[1] == "mesh.0/prim.1",
+          "baked.cook-proto-uris");
     Check(cooked.boundsMin == glm::vec3(1.0f, 0.0f, 1.0f) &&
               cooked.boundsMax == glm::vec3(17.0f, 0.0f, 3.0f),
           "baked.cook-cloud-bounds");
@@ -3254,6 +3257,7 @@ void TestBakedPlacement() {
     Check(cookedBack.tileSize == 16.0f && cookedBack.protoGeometry.size() == 3 &&
               cookedBack.tiles.size() == 2 && cookedBack.instancerPath == cooked.instancerPath,
           "baked.cooked-roundtrip-shape");
+    Check(cookedBack.protoUris == cooked.protoUris, "baked.cooked-roundtrip-uris");
     bool cookedExact = std::memcmp(cookedBack.protoGeometry.data(),
                                    cooked.protoGeometry.data(),
                                    sizeof(BakedProtoGeometry) * 3) == 0 &&

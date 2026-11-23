@@ -3084,6 +3084,34 @@ void WorldRenderer::LoadBakedPlacementsFromWorld() {
         auto rt = std::make_unique<tour::placement::BakedPlacementRuntime>();
         if (!rt->Configure(cooked[i], refs[i].slotBudget))
             continue;
+        // Re-resolve each prototype's mesh URI against the WORLD's current mesh
+        // registry (the cook's firstIndex/vertexOffset are absolute offsets into
+        // the cook's cluster heap, which do not survive the multi-scene streamed
+        // world fold). The hook runs at tile activation; it returns false when a
+        // source mesh is not resident yet (the tile defers to a later frame).
+        tour::World* world = m_world;
+        rt->resolveSurface = [world](const std::string& uri,
+                                     tour::placement::BakedSurfaceRef& ref) {
+            if (uri.empty())
+                return false;
+            for (const tour::World::MeshLocation& loc : world->meshLocations) {
+                if (!loc.cluster)
+                    continue;
+                const smvk::StringViewT meshUri = loc.cluster->GetMeshUri(loc.handle);
+                if (meshUri.empty() || meshUri != uri)
+                    continue;
+                const smvk::StaticMesh* sm = loc.cluster->staticMeshes.get(loc.handle);
+                if (!sm || sm->geometry.surfaces.empty())
+                    return false;
+                ref.indexCount = sm->geometry.surfaces[0].indexCount;
+                ref.firstIndex = sm->geometry.surfaces[0].firstIndex;
+                ref.vertexOffset = sm->geometry.surfaces[0].baseVertex;
+                ref.boundsMin = sm->geometry.aabbMin;
+                ref.boundsMax = sm->geometry.aabbMax;
+                return true;
+            }
+            return false;
+        };
         m_bakedPlacementInstances.push_back(
             BakedPlacementInstance{std::move(rt), refs[i].interestRadius});
     }

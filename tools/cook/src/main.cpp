@@ -545,6 +545,7 @@ bool CookBakedPlacementForParts(const ::tour::placement::BakedPlacementAsset& ba
                     ref.vertexOffset = sm->geometry.surfaces[0].baseVertex;
                     ref.boundsMin = sm->geometry.aabbMin;
                     ref.boundsMax = sm->geometry.aabbMax;
+                    ref.uri = fullUri; // stable identity for the runtime re-resolve
                     return true;
                 }
                 local -= cnt;

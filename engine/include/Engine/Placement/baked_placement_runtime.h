@@ -42,6 +42,11 @@
 
 namespace tour::placement {
 
+// Shared empty URI for the "no identity recorded" fallback in the re-resolution
+// path (the runtime borrows the cooked protoUris, which may be shorter than
+// protoGeometry for legacy blobs).
+inline const std::string kEmptyBakedUri;
+
 // ---------------------------------------------------------------------------
 // A bucketed tile: the world-XZ tile key + the tile's LOCAL prototype palette
 // (the subset of global render prototypes it references) + the remapped
@@ -79,6 +84,12 @@ struct BakedSurfaceRef {
     int32_t vertexOffset = 0;
     glm::vec3 boundsMin{0.0f};
     glm::vec3 boundsMax{0.0f};
+    // The mesh's asset URI (base#fragment) — the STABLE identity the runtime
+    // re-resolves against the world mesh registry. The cook's firstIndex/
+    // vertexOffset are absolute offsets into the COOK's cluster heap; the
+    // runtime's world heap lays meshes out differently (multi-scene + streamed),
+    // so the runtime must re-resolve by URI after the source meshes are resident.
+    std::string uri;
 };
 
 // Resolves the asset's render prototypes to GPU geometry via a mesh-registry
@@ -94,9 +105,14 @@ struct BakedSurfaceRef {
     const BakedPlacementAsset& asset,
     const std::function<bool(uint64_t meshKey, uint32_t surfaceIndex, BakedSurfaceRef& out)>&
         resolve,
-    std::vector<BakedProtoGeometry>& out) {
+    std::vector<BakedProtoGeometry>& out,
+    std::vector<std::string>* outUris = nullptr) {
     out.clear();
     out.resize(asset.renderPrototypes.size());
+    if (outUris) {
+        outUris->clear();
+        outUris->resize(asset.renderPrototypes.size());
+    }
     for (size_t i = 0; i < asset.renderPrototypes.size(); ++i) {
         const BakedRenderPrototype& rp = asset.renderPrototypes[i];
         BakedSurfaceRef ref;
@@ -109,6 +125,8 @@ struct BakedSurfaceRef {
         g.indexCount = ref.indexCount;
         g.firstIndex = ref.firstIndex;
         g.vertexOffset = ref.vertexOffset;
+        if (outUris)
+            (*outUris)[i] = std::move(ref.uri);
     }
     return true;
 }
@@ -186,7 +204,12 @@ struct BakedSurfaceRef {
 // ---------------------------------------------------------------------------
 struct BakedPlacementCooked {
     std::vector<BakedProtoGeometry> protoGeometry; // by GLOBAL renderPrototypeId
-    std::vector<BakedPlacementTile> tiles;         // bucketed, sorted by key
+    // The mesh URI (base#fragment) per prototype, parallel to protoGeometry.
+    // The runtime re-resolves firstIndex/vertexOffset against the world mesh
+    // registry (the cook's absolute heap offsets do not survive the cook ->
+    // runtime transition for a multi-scene, streamed world).
+    std::vector<std::string> protoUris;
+    std::vector<BakedPlacementTile> tiles; // bucketed, sorted by key
     float tileSize = 0.0f;
     glm::vec3 boundsMin{0.0f};
     glm::vec3 boundsMax{0.0f};
@@ -194,6 +217,7 @@ struct BakedPlacementCooked {
 
     void clear() {
         protoGeometry.clear();
+        protoUris.clear();
         tiles.clear();
         tileSize = 0.0f;
         boundsMin = boundsMax = glm::vec3(0.0f);
@@ -219,7 +243,7 @@ struct BakedPlacementCooked {
     out.clear();
     if (tileSize <= 0.0f)
         tileSize = asset.tileSize > 0.0f ? asset.tileSize : 64.0f;
-    if (!ResolveBakedPrototypes(asset, resolve, out.protoGeometry))
+    if (!ResolveBakedPrototypes(asset, resolve, out.protoGeometry, &out.protoUris))
         return false;
     out.tiles = BucketBakedPlacement(asset, tileSize, skippedNeedsBake);
     out.tileSize = tileSize;
@@ -241,7 +265,9 @@ struct BakedPlacementCooked {
 // index ranges, tile palettes and quaternion instances survive exactly.
 // ---------------------------------------------------------------------------
 inline constexpr uint32_t kBakedPlacementCookedMagic = 0x424B434B; // 'BKCK'
-inline constexpr uint32_t kBakedPlacementCookedVersion = 1;
+// v2: adds protoUris (the per-prototype mesh URI for runtime re-resolution of
+// the heap offsets).
+inline constexpr uint32_t kBakedPlacementCookedVersion = 2;
 
 [[nodiscard]] inline bool SerializeBakedPlacementCooked(const BakedPlacementCooked& cooked,
                                                         std::vector<uint8_t>& out) {
@@ -250,12 +276,14 @@ inline constexpr uint32_t kBakedPlacementCookedVersion = 1;
     const uint32_t tileCount = uint32_t(cooked.tiles.size());
     const uint32_t pathLen = uint32_t(cooked.instancerPath.size());
     if (protoCount != cooked.protoGeometry.size() || tileCount != cooked.tiles.size() ||
-        pathLen != cooked.instancerPath.size())
+        pathLen != cooked.instancerPath.size() || protoCount != cooked.protoUris.size())
         return false;
     size_t body = 5 * sizeof(uint32_t) +  // magic,ver,protoCount,tileCount,pathLen
                   sizeof(float) +         // tileSize
                   2 * sizeof(glm::vec3) + // boundsMin/Max
                   sizeof(BakedProtoGeometry) * protoCount + pathLen;
+    for (const std::string& uri : cooked.protoUris)
+        body += sizeof(uint32_t) + uri.size();
     for (const BakedPlacementTile& t : cooked.tiles) {
         body += 3 * sizeof(int32_t) + 2 * sizeof(glm::vec3); // key + tile bounds
         body += sizeof(uint32_t) + sizeof(uint32_t) * t.localProtos.size();
@@ -294,6 +322,13 @@ inline constexpr uint32_t kBakedPlacementCookedVersion = 1;
         return false;
     if (protoCount && !put(cooked.protoGeometry.data(), sizeof(BakedProtoGeometry) * protoCount))
         return false;
+    for (const std::string& uri : cooked.protoUris) {
+        const uint32_t uriLen = uint32_t(uri.size());
+        if (uriLen != uri.size() || !put(&uriLen, 4))
+            return false;
+        if (uriLen && !put(uri.data(), uriLen))
+            return false;
+    }
     for (const BakedPlacementTile& t : cooked.tiles) {
         const int32_t kx = t.key.x, ky = t.key.y, kz = t.key.z;
         if (!put(&kx, 4) || !put(&ky, 4) || !put(&kz, 4))
@@ -350,6 +385,17 @@ inline constexpr uint32_t kBakedPlacementCookedVersion = 1;
         if (!get(out.protoGeometry.data(), sizeof(BakedProtoGeometry) * protoCount))
             return false;
     }
+    out.protoUris.resize(protoCount);
+    for (std::string& uri : out.protoUris) {
+        uint32_t uriLen = 0;
+        if (!get(&uriLen, 4))
+            return false;
+        if (uriLen) {
+            uri.resize(uriLen);
+            if (!get(uri.data(), uriLen))
+                return false;
+        }
+    }
     out.tiles.resize(tileCount);
     for (BakedPlacementTile& t : out.tiles) {
         int32_t kx = 0, ky = 0, kz = 0;
@@ -391,10 +437,21 @@ class BakedPlacementRuntime {
     // ---- inputs (caller-owned, must outlive the runtime) ----
     const std::vector<BakedPlacementTile>* tiles = nullptr;         // sorted by key
     const std::vector<BakedProtoGeometry>* protoGeometry = nullptr; // by GLOBAL renderPrototypeId
+    const std::vector<std::string>* protoUris = nullptr;            // mesh URI per prototype
     float tileSize = 64.0f;
     uint32_t slotBudget = 8; // concurrent resident GPU tiles
     uint32_t viewBudget = 1; // per-view visible sets per tile
     uint32_t maxInstancesPerTile = 65536;
+
+    // Re-resolution hook: the renderer resolves a mesh URI to the CURRENT
+    // world-heap surface (firstIndex/vertexOffset/indexCount + bounds) at tile
+    // activation. Returns false when the source mesh is not resident yet (the
+    // tile defers to a later frame). Empty = fall back to the cook's ranges
+    // (the non-streamed single-cluster case). The cook's firstIndex/vertexOffset
+    // are absolute offsets into the COOK's cluster heap, which do not match the
+    // runtime's multi-scene streamed heap — the hook is what makes a streamed
+    // world correct.
+    std::function<bool(const std::string& uri, BakedSurfaceRef& out)> resolveSurface;
 
     // ---- the owned stack ----
     PlacementPass pass;                   // per-slot instance + count buffers
@@ -442,6 +499,7 @@ class BakedPlacementRuntime {
             return false;
         tiles = &cooked.tiles;
         protoGeometry = &cooked.protoGeometry;
+        protoUris = &cooked.protoUris;
         tileSize = cooked.tileSize;
         this->slotBudget = slotBudget;
         this->viewBudget = viewBudget;
@@ -680,18 +738,40 @@ class BakedPlacementRuntime {
                                smvk::AccessFlags::ShaderRead,
                                0,
                                0);
-        // Build + upload the tile's LOCAL proto table.
+        // Build + upload the tile's LOCAL proto table. Re-resolve each proto's
+        // mesh URI against the current world heap (the cook's firstIndex/
+        // vertexOffset are COOK-cluster-absolute and stale for a streamed
+        // world); defer the whole tile when a source mesh is not resident yet.
         const uint32_t protoCount = uint32_t(tile.localProtos.size());
         std::vector<PlacementProtoRow> rows(protoCount);
         for (uint32_t i = 0; i < protoCount; ++i) {
-            const BakedProtoGeometry& g = (*protoGeometry)[tile.localProtos[i]];
-            const glm::vec3 center = (g.boundsMin + g.boundsMax) * 0.5f;
-            const glm::vec3 halfDiag = (g.boundsMax - g.boundsMin) * 0.5f;
+            const uint32_t globalProto = tile.localProtos[i];
+            const BakedProtoGeometry& g = (*protoGeometry)[globalProto];
+            uint32_t indexCount = g.indexCount;
+            uint32_t firstIndex = g.firstIndex;
+            int32_t vertexOffset = g.vertexOffset;
+            glm::vec3 bmin = g.boundsMin;
+            glm::vec3 bmax = g.boundsMax;
+            if (resolveSurface) {
+                const std::string& uri = (protoUris && globalProto < protoUris->size())
+                                             ? (*protoUris)[globalProto]
+                                             : kEmptyBakedUri;
+                BakedSurfaceRef ref;
+                if (!resolveSurface(uri, ref))
+                    return; // source mesh not resident — defer (retry next frame)
+                indexCount = ref.indexCount;
+                firstIndex = ref.firstIndex;
+                vertexOffset = ref.vertexOffset;
+                bmin = ref.boundsMin;
+                bmax = ref.boundsMax;
+            }
+            const glm::vec3 center = (bmin + bmax) * 0.5f;
+            const glm::vec3 halfDiag = (bmax - bmin) * 0.5f;
             rows[i].bounds = glm::vec4(center, glm::length(halfDiag));
             rows[i].drawDistance = g.drawDistance;
-            rows[i].indexCount = g.indexCount;
-            rows[i].firstIndex = g.firstIndex;
-            rows[i].vertexOffset = g.vertexOffset;
+            rows[i].indexCount = indexCount;
+            rows[i].firstIndex = firstIndex;
+            rows[i].vertexOffset = vertexOffset;
         }
         active[slot].protoTableBuffer = ctx.CreateBuffer(protoCount * sizeof(PlacementProtoRow),
                                                          smvk::BufferType_Storage,
