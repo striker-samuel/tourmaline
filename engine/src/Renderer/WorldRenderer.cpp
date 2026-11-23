@@ -13353,6 +13353,31 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                                      int(m_debugMeshletMode));
                                     }
                                 }
+                                {
+                                    // One-shot dispatch diagnostic: the CPU-side
+                                    // candidate/reserved counts, the total group
+                                    // bound, and the swapchain primitive count —
+                                    // separates "dispatch draws nothing" from
+                                    // "draws but depth/color drops it".
+                                    static bool s_taskMeshDiag = false;
+                                    if (!s_taskMeshDiag) {
+                                        s_taskMeshDiag = true;
+                                        std::fprintf(
+                                            stderr,
+                                            "[TaskMeshDiag] candidateCount=%u reserved=%u "
+                                            "totalGroups=%llu clusters=%u instances=%u "
+                                            "prims=%llu\n",
+                                            rasterPush.candidateCount,
+                                            rasterPush.reserved,
+                                            (unsigned long long)inputs.totalGroups,
+                                            inputs.clusterCount,
+                                            inputs.instanceCount,
+                                            (unsigned long long)(m_swapchain
+                                                                     ? m_swapchain
+                                                                           ->GetPrimitiveCount(0u)
+                                                                     : 0u));
+                                    }
+                                }
                                 // Diagnostic isolation toggles for the task
                                 // shader's per-meshlet visibility tests (one-shot
                                 // static latches, documented diagnostic knobs):
