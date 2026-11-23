@@ -541,6 +541,25 @@ set_target_properties(TourTests PROPERTIES
 
 add_test(NAME tour_tests COMMAND TourTests)
 
+# Fixture light-cookie baking (Embree ray-sampled spot cookie -> .texture
+# asset -> cluster pool -> cookie-uri resolution). Links gltf_import for the
+# shared smvk::assets texture library the bake writes through.
+project(LightCookieTests)
+
+add_executable(LightCookieTests test_light_cookie.cpp)
+
+target_link_libraries(LightCookieTests
+    PRIVATE
+        engine
+        gltf_import
+)
+
+set_target_properties(LightCookieTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+)
+
+add_test(NAME light_cookie_tests COMMAND LightCookieTests)
+
 # Asset-browser ops (editor-only TU, ImGui-free: delete planning rules).
 project(AssetOpsTests)
 
@@ -1312,6 +1331,7 @@ tourmaline_stage_sdl3(CubemapTests)
 tourmaline_stage_sdl3(ParticlesTests)
 tourmaline_stage_sdl3(MotionBlurTests)
 tourmaline_stage_sdl3(TourTests)
+tourmaline_stage_sdl3(LightCookieTests)
 tourmaline_stage_sdl3(AudioGraphTests)
 tourmaline_stage_sdl3(SourceImportTests)
 tourmaline_stage_sdl3(KnightAnimTests)
