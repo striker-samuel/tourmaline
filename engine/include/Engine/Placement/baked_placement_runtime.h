@@ -482,6 +482,10 @@ class BakedPlacementRuntime {
 
     bool created = false;
     uint64_t tick = 0;
+    // URIs logged as not-yet-resident (once each) — a diagnostic for the
+    // re-resolution path (an entry that never resolves indicates a URI mismatch
+    // between the cook and the runtime mesh registry).
+    std::set<std::string> deferredUris;
 
     [[nodiscard]] bool Valid() const {
         return created && pass.Valid();
@@ -757,8 +761,16 @@ class BakedPlacementRuntime {
                                              ? (*protoUris)[globalProto]
                                              : kEmptyBakedUri;
                 BakedSurfaceRef ref;
-                if (!resolveSurface(uri, ref))
+                if (!resolveSurface(uri, ref)) {
+                    if (deferredUris.insert(uri).second)
+                        std::fprintf(
+                            stderr,
+                            "[BakedPlacement] defer tile {%d,%d}: mesh '%s' not resident\n",
+                            tile.key.x,
+                            tile.key.z,
+                            uri.c_str());
                     return; // source mesh not resident — defer (retry next frame)
+                }
                 indexCount = ref.indexCount;
                 firstIndex = ref.firstIndex;
                 vertexOffset = ref.vertexOffset;
