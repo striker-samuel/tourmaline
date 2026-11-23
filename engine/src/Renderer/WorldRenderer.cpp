@@ -13389,44 +13389,55 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                     if (!s_taskMeshDataDiag) {
                                         s_taskMeshDataDiag = true;
                                         size_t zeroTri = 0, zeroVert = 0, zeroMesh = 0;
+                                        size_t zeroRad = 0;
+                                        float rMin = 1e30f, rMax = -1e30f;
                                         for (const auto& c : gfx.clusters) {
                                             if (c.triCount == 0u)
                                                 ++zeroTri;
                                             if (c.vertexCount == 0u)
                                                 ++zeroVert;
+                                            if (c.boundRadius <= 0.0f)
+                                                ++zeroRad;
+                                            rMin = std::min(rMin, c.boundRadius);
+                                            rMax = std::max(rMax, c.boundRadius);
                                         }
                                         for (const auto& m : gfx.meshes)
                                             if (m.clusterCount == 0u)
                                                 ++zeroMesh;
                                         const auto clusterStr = [&](size_t i) {
-                                            static char buf[96];
+                                            static char buf[160];
                                             if (i >= gfx.clusters.size())
                                                 return std::string("-");
                                             const auto& c = gfx.clusters[i];
                                             std::snprintf(buf,
                                                           sizeof(buf),
-                                                          "tri=%u vert=%u vOff=%u tOff=%u",
+                                                          "tri=%u vert=%u rad=%.3f cut=%.3f "
+                                                          "center=(%.1f,%.1f,%.1f)",
                                                           c.triCount,
                                                           c.vertexCount,
-                                                          c.vertexOffset,
-                                                          c.triangleOffset);
+                                                          c.boundRadius,
+                                                          c.coneCutoff,
+                                                          c.boundCenter.x,
+                                                          c.boundCenter.y,
+                                                          c.boundCenter.z);
                                             return std::string(buf);
                                         };
                                         std::fprintf(stderr,
                                                      "[TaskMeshDiag] meshes=%zu clusters=%zu "
                                                      "clusterBuf=%d meshletVBuf=%d meshletTBuf=%d "
-                                                     "meshletVWords=%zu meshletTWords=%zu "
-                                                     "zeroTri=%zu zeroVert=%zu zeroMesh=%zu\n",
+                                                     "zeroTri=%zu zeroVert=%zu zeroMesh=%zu "
+                                                     "zeroRad=%zu radMin=%.6g radMax=%.6g\n",
                                                      gfx.meshes.size(),
                                                      gfx.clusters.size(),
                                                      gfx.clusterBuffer.empty() ? 0 : 1,
                                                      gfx.meshletVertexBuffer.empty() ? 0 : 1,
                                                      gfx.meshletTriangleBuffer.empty() ? 0 : 1,
-                                                     gfx.meshletVertices.size(),
-                                                     gfx.meshletTriangles.size(),
                                                      zeroTri,
                                                      zeroVert,
-                                                     zeroMesh);
+                                                     zeroMesh,
+                                                     zeroRad,
+                                                     rMin,
+                                                     rMax);
                                         std::fprintf(stderr,
                                                      "[TaskMeshDiag] c[0]=%s c[100]=%s "
                                                      "c[last]=%s\n",
