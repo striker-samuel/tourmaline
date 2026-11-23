@@ -115,6 +115,19 @@ def resolve_exe(raw):
     return path
 
 
+def scenario_frames(catalog, scenario_id):
+    """The measured frame budget for a scenario (warmup is a fixed 10)."""
+    try:
+        data = json.loads(Path(catalog).read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError):
+        return 120
+    for item in data.get("scenarios", []):
+        if item.get("id") == scenario_id:
+            frames = item.get("frames", 120)
+            return frames if isinstance(frames, int) and frames > 0 else 120
+    return 120
+
+
 def cell_key(setup, scenario):
     return f"{setup}|{scenario}"
 
@@ -181,7 +194,13 @@ def run_cell(perf_harness, matrix, setup, scenario, args, cell_dir, shot_dest):
     for k, v in sorted(setup.get("env", {}).items()):
         cmd += ["--env", k + "=" + v]
     if args.capture:
-        cmd += ["--env", f"TOURMALINE_CAPTURE={args.capture_frame}"]
+        # Capture on the LAST measured frame (warmup 10 + scenario frames):
+        # the composite draw lands in that frame (negligible), and the ~300 ms
+        # PNG export is drained at app shutdown (RunFinalizer), so neither the
+        # capture nor the export leaks into the measured window.
+        frame = (args.capture_frame if args.capture_frame is not None
+                 else 10 + scenario_frames(args.catalog, scenario))
+        cmd += ["--env", f"TOURMALINE_CAPTURE={frame}"]
     cmd += ["--repeat", str(args.repeat)]
     started = time.time()
     try:
@@ -412,11 +431,11 @@ def main(argv=None):
                            help="execute the matrix and archive it under --runs-dir")
     run_p.add_argument("--capture", action="store_true",
                        help="capture one scene screenshot per cell (TOURMALINE_CAPTURE)")
-    run_p.add_argument("--capture-frame", type=int, default=8,
-                       help="1-based app frame for the one-shot capture. Default 8 lands "
-                            "inside the App's 10 warmup frames so the ~300 ms PNG export "
-                            "(which runs in the next frame's onUpdate = the 'game' section) "
-                            "is NOT charged to the measured window.")
+    run_p.add_argument("--capture-frame", type=int, default=None,
+                       help="explicit 1-based app frame for the capture. Default: the "
+                            "last measured frame (warmup 10 + scenario frames), so the "
+                            "PNG export drains at shutdown and never lands in a measured "
+                            "frame.")
     run_p.add_argument("--no-compare", action="store_true",
                        help="skip the post-run diff against the baseline")
 
