@@ -656,6 +656,13 @@ bool BuildMeshletsForUpload(const MeshData& upload,
     // after the accumulation above, so derive it from the final values).
     for (const Meshlet& m : cooked.meshlets)
         stats.maxRadius = std::max(stats.maxRadius, m.boundRadius);
+    // Max local vertex id referenced (upload-local). Stored so the loader /
+    // registration derive the heap-global max id in O(1) without re-walking
+    // the expanded index stream.
+    uint32_t maxLocal = 0u;
+    for (uint32_t v : cooked.vertices)
+        maxLocal = std::max(maxLocal, v);
+    cooked.maxLocalVertex = maxLocal;
 
     *out = std::move(cooked);
     if (outStats)

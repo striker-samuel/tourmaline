@@ -99,6 +99,11 @@ struct StaticGeometry {
     std::vector<uint32_t> meshletTriangles; // 3 packed u8 local ids per uint
     std::vector<Cluster> clusters;
     std::vector<Mesh> meshes;
+    // Per-gfx-mesh max vertex id referenced by the meshlet index stream (into
+    // the global static vertex heap). Computed at REGISTRATION time (the
+    // indices are already walked to build filterIndices), so the renderer's
+    // capacity check is O(meshes) instead of re-scanning every index.
+    std::vector<uint32_t> meshMaxVertexIndex;
     std::vector<IndexedRange> indexedRanges; // one range per mesh registration
     bool indexedRangesResident = false;      // false across reset or failed upload
     std::vector<glm::vec4> meshBounds;       // per-mesh union bound (center.xyz, radius)

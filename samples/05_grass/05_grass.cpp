@@ -123,7 +123,7 @@ class GrassApp final : public smvk::App {
             .module = m_groundVsModule, .entryPoint = "mainVS", .stage = smvk::ShaderStage::Vertex};
         m_groundProgram.shaders[1] = m_draw.program.shaders[1];
         m_groundProgram.shaderCount = 2;
-        if (!m_runtime->SeedIndirect(*m_context, 0, &m_seed, 1))
+        if (!m_runtime->SeedIndirect(*m_context, *m_rendergraph, 0, &m_seed, 1))
             return false;
         const uint32_t count = kSlotCount * m_layer.config.candidatesPerTile;
         std::fprintf(stderr,

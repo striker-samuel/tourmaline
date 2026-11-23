@@ -15,7 +15,7 @@
 #include "gpu_platform.hlsli"
 
 // Must match C++ kPlacementMaxProtos.
-#define PLACEMENT_MAX_PROTOS 8
+#define PLACEMENT_MAX_PROTOS 1024
 
 // Cull flag bits (PlacementCullPush.cullFlags + the VS debug tail).
 #define PLACEMENT_CULL_FRUSTUM  1
@@ -29,16 +29,16 @@ struct PlacementMaskBuffer {
     uint w[PLACEMENT_MAX_TILE_INSTANCES / PLACEMENT_MASK_BITS];
 };
 
-// Must match C++ PlacementBinsGpu (128 bytes = 32 words). DXC cannot
-// emit atomics on STRUCT-ARRAY members through vk::BufferPointer (ICE:
-// "Trying to generate a type that we cannot generate"), so the HLSL
-// side is a FLAT word view with named word offsets — layout-identical
-// to the C++ struct (counts, offsets, appendNext, total, pad[7]).
-#define PLACEMENT_BINS_WORDS 32
-#define PLACEMENT_BINS_COUNT_BASE 0   // counts[8]
-#define PLACEMENT_BINS_OFFSET_BASE 8  // offsets[8]
-#define PLACEMENT_BINS_APPEND_BASE 16 // appendNext[8]
-#define PLACEMENT_BINS_TOTAL 24       // total (+ pad[7])
+// Must match C++ PlacementBinsGpu. DXC cannot emit atomics on
+// STRUCT-ARRAY members through vk::BufferPointer (ICE: "Trying to
+// generate a type that we cannot generate"), so the HLSL side is a FLAT
+// word view with named word offsets — layout-identical to the C++ struct
+// (counts, offsets, appendNext, total, pad[7]).
+#define PLACEMENT_BINS_WORDS (3 * PLACEMENT_MAX_PROTOS + 8)
+#define PLACEMENT_BINS_COUNT_BASE 0                     // counts[]
+#define PLACEMENT_BINS_OFFSET_BASE PLACEMENT_MAX_PROTOS // offsets[]
+#define PLACEMENT_BINS_APPEND_BASE (2 * PLACEMENT_MAX_PROTOS) // appendNext[]
+#define PLACEMENT_BINS_TOTAL (3 * PLACEMENT_MAX_PROTOS) // total (+ pad[7])
 struct PlacementBinsBuffer { uint v[PLACEMENT_BINS_WORDS]; };
 
 // The per-(slot, view) visible-index list: source instance slots,
@@ -60,7 +60,19 @@ struct PlacementIndirectCmd
 };
 struct PlacementIndirectBuffer { PlacementIndirectCmd c[PLACEMENT_MAX_PROTOS]; };
 
-// Must match C++ PlacementCullPush (232 bytes, dx-layout).
+// Must match C++ PlacementProtoRow (32 bytes): the cull's conservative
+// sphere + species distance and the drawbuild's mesh addressing.
+struct PlacementProtoRow
+{
+    float4 bounds;      // 0  center.xyz, radius.w
+    float drawDistance; // 16 (0 = unlimited)
+    uint indexCount;    // 20
+    uint firstIndex;    // 24
+    int vertexOffset;   // 28
+};
+struct PlacementProtoTableBuffer { PlacementProtoRow rows[PLACEMENT_MAX_PROTOS]; };
+
+// Must match C++ PlacementCullPush (96 bytes, dx-layout).
 struct PlacementCullPush
 {
     GPU_PTR_READ(PlacementInstanceBuffer) instances; // 0
@@ -69,15 +81,15 @@ struct PlacementCullPush
     GPU_PTR_WRITE(PlacementBinsBuffer) bins;          // 24 (flat word view)
     GPU_PTR_READ(PlacementFlag2Buffer) alive;       // 32 (0 = skip)
     GPU_PTR_READ(RenderViewBuffer) renderViews;      // 40
-    uint renderViewIndex;  // 48
-    uint cullFlags;         // 52
-    uint protoCount;        // 56
-    uint padD;              // 60 (was liveCount — the kernels self-bound
+    GPU_PTR_READ(PlacementProtoTableBuffer) protoTable; // 48
+    uint renderViewIndex;  // 56
+    uint cullFlags;         // 60
+    uint protoCount;        // 64
+    uint padD;              // 68 (was liveCount — the kernels self-bound
                             //      from the count buffer: min(count, capacity))
-    float4 protoBounds[PLACEMENT_MAX_PROTOS]; // 64..192 center.xyz, radius.w
-    float protoDist[PLACEMENT_MAX_PROTOS];    // 192..224 max draw dist (0 = off)
-    float3 camPos;          // 224 species-distance origin (per-view CPU data)
-    float maxInstanceScale; // 236 radius scaling bound (config.maxScale)
+    uint2 padE;             // 72 (align camPos to 16 in the dx-layout)
+    float3 camPos;          // 80 species-distance origin (per-view CPU data)
+    float maxInstanceScale; // 92 radius scaling bound (config.maxScale)
 };
 
 // ---------------------------------------------------------------------------
@@ -87,7 +99,7 @@ struct PlacementCullPush
 // factor. Masked grass is treated conservatively (the sphere is the
 // bound; alpha-tested cutout stays inside it). camPos comes from the
 // push (per-view CPU data — no matrix-column extraction guesswork).
-// NOTE: takes the pieces, NOT the 240B push struct by value — DXC ICEs
+// NOTE: takes the pieces, NOT the push struct by value — DXC ICEs
 // ("Trying to generate a type that we cannot generate") on big push
 // structs with BufferPointer members as value parameters.
 // ---------------------------------------------------------------------------

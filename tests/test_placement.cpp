@@ -13,6 +13,9 @@
 #include <limits>
 #include <vector>
 
+#include <Engine/Placement/baked_placement.h>
+#include <Engine/Placement/baked_placement_pak.h>
+#include <Engine/Placement/baked_placement_runtime.h>
 #include <Engine/Placement/placement_cache.h>
 #include <Engine/Placement/placement_domain.h>
 #include <Engine/Placement/placement_draw.h>
@@ -194,12 +197,14 @@ void TestPointsSoA() {
 }
 
 void TestRenderInstanceAbi() {
-    Check(sizeof(smvk::placement::RenderInstance) == 40, "place.abi.instance-40B");
-    Check(offsetof(smvk::placement::RenderInstance, yaw) == 12, "place.abi.yaw-offset");
-    Check(offsetof(smvk::placement::RenderInstance, scale) == 16, "place.abi.scale-offset");
-    Check(offsetof(smvk::placement::RenderInstance, prototypeId) == 28, "place.abi.proto-offset");
-    Check(offsetof(smvk::placement::RenderInstance, stableLow) == 32, "place.abi.stable-offset");
-    Check(offsetof(smvk::placement::RenderInstance, customB) == 36, "place.abi.custom-offset");
+    Check(sizeof(smvk::placement::RenderInstance) == 56, "place.abi.instance-56B");
+    Check(offsetof(smvk::placement::RenderInstance, position) == 0, "place.abi.pos-offset");
+    Check(offsetof(smvk::placement::RenderInstance, padRotAlign) == 12, "place.abi.pad-offset");
+    Check(offsetof(smvk::placement::RenderInstance, rotation) == 16, "place.abi.rotation-offset");
+    Check(offsetof(smvk::placement::RenderInstance, scale) == 32, "place.abi.scale-offset");
+    Check(offsetof(smvk::placement::RenderInstance, prototypeId) == 44, "place.abi.proto-offset");
+    Check(offsetof(smvk::placement::RenderInstance, stableLow) == 48, "place.abi.stable-offset");
+    Check(offsetof(smvk::placement::RenderInstance, customB) == 52, "place.abi.custom-offset");
     // PlacementRef is params-only: no per-instance data
     smvk::placement::PlacementRef ref;
     Check(ref.densityScale == 1.0f && ref.tileSize == 64.0f, "place.ref.defaults");
@@ -965,7 +970,7 @@ void TestOverrideAllAttrs() {
     std::vector<RenderInstance> inst(1);
     std::vector<StableID> ids;
     inst[0].position = glm::vec3(1, 2, 3);
-    inst[0].yaw = 0.25f;
+    inst[0].rotation = QuatFromYaw(0.25f);
     inst[0].scale = glm::vec3(1);
     inst[0].prototypeId = 0;
     inst[0].customB = 7;
@@ -983,7 +988,7 @@ void TestOverrideAllAttrs() {
     layer.apply(inst, ids);
     Check(inst.size() == 1, "place.override-all.kept");
     Check(inst[0].position == glm::vec3(9, 8, 7), "place.override-all.position");
-    Check(inst[0].yaw == 1.5f, "place.override-all.yaw");
+    Check(inst[0].rotation == QuatFromYaw(1.5f), "place.override-all.yaw");
     Check(inst[0].scale == glm::vec3(2, 3, 4), "place.override-all.scale");
     Check(inst[0].prototypeId == 11, "place.override-all.proto");
     Check(inst[0].customB == 99, "place.override-all.customB");
@@ -1069,7 +1074,8 @@ void TestOverrideNodeFilter() {
         g.yaw = 0.5f;
         layer.addNodeRule(g);
         layer.apply(inst, ids);
-        Check(inst[0].yaw == 0.5f && inst[2].yaw == 0.5f, "place.override-node.global-legacy");
+        Check(inst[0].rotation == QuatFromYaw(0.5f) && inst[2].rotation == QuatFromYaw(0.5f),
+              "place.override-node.global-legacy");
     }
     // Bulk delete clears the scope; exact delete still works.
     {
@@ -1442,7 +1448,7 @@ void TestKernelAlgorithmParity() {
         uint32_t proto = lb.prototypes.select(rv).value_or(0);
         RenderInstance in;
         in.position = s.p;
-        in.yaw = YawFromId(id);
+        in.rotation = QuatFromYaw(YawFromId(id));
         float sc = UniformScaleFromId(id, 0.7f, 1.3f);
         in.scale = glm::vec3(sc);
         in.prototypeId = proto;
@@ -1453,8 +1459,8 @@ void TestKernelAlgorithmParity() {
     bool same = oracle.size() == mirror.size();
     if (same) {
         for (size_t i = 0; i < oracle.size(); ++i) {
-            if (oracle[i].position != mirror[i].position || oracle[i].yaw != mirror[i].yaw ||
-                oracle[i].scale != mirror[i].scale ||
+            if (oracle[i].position != mirror[i].position ||
+                oracle[i].rotation != mirror[i].rotation || oracle[i].scale != mirror[i].scale ||
                 oracle[i].prototypeId != mirror[i].prototypeId ||
                 oracle[i].stableLow != mirror[i].stableLow ||
                 oracle[i].customB != mirror[i].customB) {
@@ -1633,7 +1639,7 @@ void TestMeshKernelParity() {
             continue;
         RenderInstance in;
         in.position = s.p;
-        in.yaw = YawFromId(id);
+        in.rotation = QuatFromYaw(YawFromId(id));
         float sc = UniformScaleFromId(id, 0.9f, 1.1f);
         in.scale = glm::vec3(sc);
         in.prototypeId = 0;
@@ -1644,7 +1650,8 @@ void TestMeshKernelParity() {
     bool same = oracle.size() == mirror.size();
     if (same) {
         for (size_t i = 0; i < oracle.size(); ++i)
-            if (oracle[i].position != mirror[i].position || oracle[i].yaw != mirror[i].yaw ||
+            if (oracle[i].position != mirror[i].position ||
+                oracle[i].rotation != mirror[i].rotation ||
                 oracle[i].stableLow != mirror[i].stableLow ||
                 oracle[i].customB != mirror[i].customB) {
                 same = false;
@@ -1692,7 +1699,7 @@ void TestHfKernelParity() {
             continue;
         RenderInstance in;
         in.position = s.p;
-        in.yaw = YawFromId(id);
+        in.rotation = QuatFromYaw(YawFromId(id));
         float sc = UniformScaleFromId(id, 0.8f, 1.2f);
         in.scale = glm::vec3(sc);
         in.prototypeId = 0;
@@ -1703,7 +1710,8 @@ void TestHfKernelParity() {
     bool same = oracle.size() == mirror.size();
     if (same) {
         for (size_t i = 0; i < oracle.size(); ++i)
-            if (oracle[i].position != mirror[i].position || oracle[i].yaw != mirror[i].yaw ||
+            if (oracle[i].position != mirror[i].position ||
+                oracle[i].rotation != mirror[i].rotation ||
                 oracle[i].stableLow != mirror[i].stableLow) {
                 same = false;
                 break;
@@ -1968,24 +1976,27 @@ void TestDrawFeed() {
     Check(offsetof(PlacementVsPush, cullFlags) == 28, "place.draw.flags-offset");
     Check(kPlacementVsPushOffset == 192, "place.draw.tail-offset");
     // PR03 chain ABI: the bins slab, the indirect command, the cull push.
-    Check(sizeof(PlacementBinsGpu) == 128, "place.draw.bins-128B");
+    // The bins slab is sized to kPlacementMaxProtos (1024) — the runtime
+    // prototype count, not the fixed 8 — so the per-tile bin capacity is
+    // 3*1024 words + the total + pad.
+    Check(sizeof(PlacementBinsGpu) == (3u * kPlacementMaxProtos + 8u) * sizeof(uint32_t),
+          "place.draw.bins-sized-to-max-protos");
+    Check(sizeof(PlacementProtoRow) == 32, "place.draw.proto-row-32B");
     Check(sizeof(PlacementIndirectCmd) == 20 && kPlacementIndirectStride == 20,
           "place.draw.indirect-20B");
-    Check(sizeof(PlacementCullPush) == 240, "place.draw.cull-push-240B");
-    Check(offsetof(PlacementCullPush, protoBounds) == 64 &&
-              offsetof(PlacementCullPush, protoDist) == 192 &&
-              offsetof(PlacementCullPush, camPos) == 224,
+    Check(sizeof(PlacementCullPush) == 96, "place.draw.cull-push-96B");
+    Check(offsetof(PlacementCullPush, protoTable) == 48 &&
+              offsetof(PlacementCullPush, camPos) == 80,
           "place.draw.cull-push-tail");
     Check(sizeof(PlacementScatterVisPush) == 48, "place.draw.scatter-vis-48B");
-    // The push-carried prototype table (PR1: draw-build owns the
-    // COMPLETE command - the immutable halves ride the push).
-    Check(sizeof(PlacementDrawBuildPush) == 128, "place.draw.build-push-128B");
-    Check(offsetof(PlacementDrawBuildPush, indexCount) == 32 &&
-              offsetof(PlacementDrawBuildPush, firstIndex) == 64 &&
-              offsetof(PlacementDrawBuildPush, vertexOffset) == 96,
-          "place.draw.build-push-table-offsets");
-    // FillCullPush: the cooked-mesh bounds -> conservative spheres, the
-    // species distances, the layer's scale bound.
+    // The prototype table (PR2: bounds/distance + index ranges moved off the
+    // 256-byte push onto a BDA buffer, so the draw-build push is a 32-byte
+    // header carrying the table's BDA).
+    Check(sizeof(PlacementDrawBuildPush) == 32, "place.draw.build-push-32B");
+    Check(offsetof(PlacementDrawBuildPush, protoTable) == 16, "place.draw.build-push-table-offset");
+    // FillCullPush: the per-proto metadata now rides a BDA table, so the
+    // push carries its address + count (the cooked-mesh bounds -> spheres
+    // move to SeedIndirect's table build).
     {
         PlacementSystem::LayerBinding lb;
         lb.config.maxScale = 2.5f;
@@ -2012,32 +2023,28 @@ void TestDrawFeed() {
                      0x55,
                      0x66,
                      2,
+                     0x77,
+                     3,
                      glm::vec3(7, 8, 9),
                      kPlacementCullFrustum | kPlacementCullAlive,
                      cp);
         Check(cp.instances == 0x11 && cp.count == 0x22 && cp.mask == 0x33 && cp.bins == 0x44 &&
                   cp.alive == 0x55 && cp.renderViews == 0x66,
               "place.draw.cull-fill-bdas");
-        Check(cp.protoCount == 3 && cp.renderViewIndex == 2 &&
+        Check(cp.protoTable == 0x77 && cp.protoCount == 3 && cp.renderViewIndex == 2 &&
                   cp.cullFlags == (kPlacementCullFrustum | kPlacementCullAlive),
               "place.draw.cull-fill-flags");
-        Check(cp.protoBounds[0] == glm::vec4(0, 1, 0, glm::length(glm::vec3(1, 1, 1))),
-              "place.draw.cull-fill-sphere0");
-        Check(cp.protoBounds[1] == glm::vec4(0, 0, 0, glm::length(glm::vec3(0.5f))),
-              "place.draw.cull-fill-sphere1");
-        Check(cp.protoDist[0] == 40.0f && cp.protoDist[1] == 0.0f && cp.protoDist[2] == 120.0f,
-              "place.draw.cull-fill-distances");
         Check(cp.camPos == glm::vec3(7, 8, 9) && cp.maxInstanceScale == 2.5f,
               "place.draw.cull-fill-view");
     }
     // Matrix convention: yaw=0 -> identity rotation + translation.
-    glm::mat4 m0 = ComposeInstanceMatrix(glm::vec3(1, 2, 3), 0.0f, glm::vec3(2));
+    glm::mat4 m0 = ComposeInstanceMatrix(glm::vec3(1, 2, 3), QuatFromYaw(0.0f), glm::vec3(2));
     Check(m0[3] == glm::vec4(1, 2, 3, 1), "place.draw.matrix-translation");
     Check(std::abs(m0[0].x - 2.0f) < 1e-6f && std::abs(m0[1].y - 2.0f) < 1e-6f,
           "place.draw.matrix-scale");
     Check(std::abs(m0[0].z) < 1e-6f && std::abs(m0[2].x) < 1e-6f, "place.draw.matrix-yaw0");
     // yaw=pi/2 rotates +X to -Z (right-handed RotY, matches the VS).
-    glm::mat4 m1 = ComposeInstanceMatrix(glm::vec3(0), 1.5707963f, glm::vec3(1));
+    glm::mat4 m1 = ComposeInstanceMatrix(glm::vec3(0), QuatFromYaw(1.5707963f), glm::vec3(1));
     Check(std::abs(m1[0].x) < 1e-5f && std::abs(m1[0].z + 1.0f) < 1e-5f, "place.draw.matrix-yaw90");
     // Round-trip through the VS formula implicitly: column-major layout.
     Check(m1[3] == glm::vec4(0, 0, 0, 1), "place.draw.matrix-origin");
@@ -3102,6 +3109,191 @@ void TestWorldResidency() {
     }
 }
 
+void TestBakedPlacement() {
+    using namespace smvk::placement;
+    // ---- Build a small asset: 4 live points across 2 tiles + 3 prototypes,
+    // plus one NeedsGeometryBake point that the tiling must skip (not drop
+    // silently — it is counted and reported). ----
+    BakedPlacementAsset asset;
+    BakedRenderPrototype rp0, rp1, rp2;
+    rp0.meshKey = 0; // asset 0
+    rp0.surfaceIndex = 0;
+    rp1.meshKey = 0; // asset 0, a different surface
+    rp1.surfaceIndex = 1;
+    rp2.meshKey = 1; // a different asset
+    rp2.surfaceIndex = 0;
+    asset.renderPrototypes = {rp0, rp1, rp2};
+    const float rotId[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    const float rotTilt[4] = {0.0f, 0.38268343f, 0.0f, 0.92387953f}; // +45° pitch
+    const auto add = [&](glm::vec3 p, const float r[4], uint32_t proto, uint32_t lo, uint32_t f) {
+        BakedPlacementPoint pt;
+        pt.position = p;
+        for (int i = 0; i < 4; ++i)
+            pt.rotation[i] = r[i];
+        pt.scale = glm::vec3(2.0f);
+        pt.renderPrototypeId = proto;
+        pt.stableId.w[0] = lo;
+        pt.flags = f;
+        asset.points.push_back(pt);
+    };
+    add({1.0f, 0.0f, 1.0f}, rotId, 0, 100, 0);   // tile (0,0) proto 0
+    add({2.0f, 0.0f, 2.0f}, rotTilt, 0, 101, 0); // tile (0,0) proto 0 (tilt preserved)
+    add({3.0f, 0.0f, 3.0f}, rotId, 1, 102, 0);   // tile (0,0) proto 1
+    add({17.0f, 0.0f, 1.0f}, rotId, 2, 103, 0);  // tile (1,0) proto 2
+    add({4.0f, 0.0f, 4.0f},
+        rotId,
+        0,
+        104,
+        tour::placement::BakedPointFlag::NeedsGeometryBake); // skipped
+
+    size_t skipped = 0;
+    std::vector<BakedPlacementTile> tiles = BucketBakedPlacement(asset, 16.0f, &skipped);
+    Check(skipped == 1, "baked.tiling.skips-needs-bake");
+    Check(tiles.size() == 2, "baked.tiling.two-tiles");
+    Check(tiles[0].key == TileID{0, 0, 0} && tiles[1].key == TileID{1, 0, 0},
+          "baked.tiling.sorted-keys");
+
+    // Tile (0,0): 3 instances, local palette {0,1}; tile (1,0): 1 instance, {2}.
+    const BakedPlacementTile& t0 = tiles[0];
+    const BakedPlacementTile& t1 = tiles[1];
+    Check(t0.instances.size() == 3 && t1.instances.size() == 1, "baked.tiling.instance-counts");
+    Check(t0.localProtos.size() == 2 && t0.localProtos[0] == 0 && t0.localProtos[1] == 1,
+          "baked.tiling.local-palette-t0");
+    Check(t1.localProtos.size() == 1 && t1.localProtos[0] == 2, "baked.tiling.local-palette-t1");
+
+    // The remap: tile (0,0) instances reference LOCAL indices 0/0/1 (not 0/0/1
+    // coincidentally — the third instance's global proto 1 remapped to local 1).
+    Check(t0.instances[0].prototypeId == 0 && t0.instances[1].prototypeId == 0 &&
+              t0.instances[2].prototypeId == 1,
+          "baked.tiling.remap-local-indices");
+    Check(t1.instances[0].prototypeId == 0, "baked.tiling.remap-t1");
+
+    // Transform fidelity: position + the full quaternion (the terrain-aligned
+    // tilt survives — the whole point of the full-quaternion instance) + the
+    // uniform scale + the authored stableLow lane.
+    Check(t0.instances[0].position == glm::vec3(1, 0, 1) &&
+              t0.instances[0].scale == glm::vec3(2.0f) && t0.instances[0].stableLow == 100,
+          "baked.tiling.instance-fidelity");
+    Check(std::abs(t0.instances[1].rotation.y - rotTilt[1]) < 1e-6f &&
+              std::abs(t0.instances[1].rotation.w - rotTilt[3]) < 1e-6f,
+          "baked.tiling.quaternion-tilt-preserved");
+
+    // Serialization round-trip (Phase 1) — exact byte-for-byte point fidelity.
+    std::vector<uint8_t> blob;
+    Check(SerializeBakedPlacement(asset, blob), "baked.serialize");
+    BakedPlacementAsset back;
+    Check(DeserializeBakedPlacement(blob.data(), blob.size(), back), "baked.deserialize");
+    Check(back.renderPrototypes.size() == 3 && back.points.size() == 5, "baked.roundtrip-counts");
+    Check(std::memcmp(back.points.data(),
+                      asset.points.data(),
+                      sizeof(BakedPlacementPoint) * asset.points.size()) == 0 &&
+              std::memcmp(back.renderPrototypes.data(),
+                          asset.renderPrototypes.data(),
+                          sizeof(BakedRenderPrototype) * 3) == 0,
+          "baked.roundtrip-exact");
+
+    // ResolveBakedPrototypes: the cook/load mesh-registry bridge — map each
+    // (meshKey, surfaceIndex) to its indexed range + bounds, keyed by the global
+    // renderPrototypeId. An out-of-range asset/surface refuses the WHOLE asset.
+    std::vector<BakedProtoGeometry> geo;
+    const bool resolved = ResolveBakedPrototypes(
+        asset,
+        [](uint64_t meshKey, uint32_t surfaceIndex, BakedSurfaceRef& out) {
+            out.indexCount = 300;
+            out.firstIndex = uint32_t(meshKey) * 64u + surfaceIndex * 16u;
+            out.vertexOffset = 0;
+            out.boundsMin = glm::vec3(-1.0f);
+            out.boundsMax = glm::vec3(1.0f);
+            return meshKey < 2u;
+        },
+        geo);
+    Check(resolved && geo.size() == 3, "baked.resolve");
+    Check(geo[0].firstIndex == 0 && geo[1].firstIndex == 16 && geo[2].firstIndex == 64,
+          "baked.resolve-index-ranges");
+    Check(geo[0].boundsMax == glm::vec3(1.0f) && geo[0].drawDistance > 0.0f,
+          "baked.resolve-bounds");
+    // The pixel-error distance: bounds ±1 -> radius √3 ≈ 1.732 -> drawDistance
+    // = radius * referenceProjection / budget (a rock culls closer than a tree).
+    Check(std::abs(geo[0].drawDistance -
+                   1.7320508f * kBakedReferenceProjection / kBakedPixelBudget) < 0.5f,
+          "baked.resolve-draw-distance");
+    std::vector<BakedProtoGeometry> refused;
+    const bool refusedOk = ResolveBakedPrototypes(
+        asset,
+        [](uint64_t meshKey, uint32_t, BakedSurfaceRef& out) {
+            out.indexCount = 300;
+            out.firstIndex = uint32_t(meshKey);
+            return meshKey != 1u; // proto 2's asset is out of range
+        },
+        refused);
+    Check(!refusedOk, "baked.resolve-refuses-out-of-range");
+
+    // Cook + cooked round-trip: resolve the prototypes + bucket the points into
+    // the pak-able cooked form, then serialize/deserialize losslessly.
+    BakedPlacementCooked cooked;
+    size_t cookedSkipped = 0;
+    const bool cookedOk = CookBakedPlacement(
+        asset,
+        16.0f,
+        [](uint64_t meshKey, uint32_t surfaceIndex, BakedSurfaceRef& out) {
+            out.indexCount = 300;
+            out.firstIndex = uint32_t(meshKey) * 64u + surfaceIndex * 16u;
+            out.vertexOffset = 0;
+            out.boundsMin = glm::vec3(-1.0f);
+            out.boundsMax = glm::vec3(1.0f);
+            out.uri = "mesh." + std::to_string(meshKey) + "/prim." + std::to_string(surfaceIndex);
+            return meshKey < 2u;
+        },
+        cooked,
+        &cookedSkipped);
+    Check(cookedOk && cooked.protoGeometry.size() == 3 && cooked.tiles.size() == 2 &&
+              cooked.tileSize == 16.0f && cookedSkipped == 1,
+          "baked.cook");
+    Check(cooked.protoUris.size() == 3 && cooked.protoUris[1] == "mesh.0/prim.1",
+          "baked.cook-proto-uris");
+    Check(cooked.boundsMin == glm::vec3(1.0f, 0.0f, 1.0f) &&
+              cooked.boundsMax == glm::vec3(17.0f, 0.0f, 3.0f),
+          "baked.cook-cloud-bounds");
+    std::vector<uint8_t> cookedBlob;
+    Check(SerializeBakedPlacementCooked(cooked, cookedBlob), "baked.cooked-serialize");
+    BakedPlacementCooked cookedBack;
+    Check(DeserializeBakedPlacementCooked(cookedBlob.data(), cookedBlob.size(), cookedBack),
+          "baked.cooked-deserialize");
+    Check(cookedBack.tileSize == 16.0f && cookedBack.protoGeometry.size() == 3 &&
+              cookedBack.tiles.size() == 2 && cookedBack.instancerPath == cooked.instancerPath,
+          "baked.cooked-roundtrip-shape");
+    Check(cookedBack.protoUris == cooked.protoUris, "baked.cooked-roundtrip-uris");
+    bool cookedExact = std::memcmp(cookedBack.protoGeometry.data(),
+                                   cooked.protoGeometry.data(),
+                                   sizeof(BakedProtoGeometry) * 3) == 0 &&
+                       cookedBack.tiles.size() == cooked.tiles.size();
+    for (size_t i = 0; cookedExact && i < cooked.tiles.size(); ++i) {
+        const BakedPlacementTile& a = cooked.tiles[i];
+        const BakedPlacementTile& b = cookedBack.tiles[i];
+        cookedExact = a.key == b.key && a.boundsMin == b.boundsMin && a.boundsMax == b.boundsMax &&
+                      a.localProtos == b.localProtos && a.instances.size() == b.instances.size() &&
+                      std::memcmp(a.instances.data(),
+                                  b.instances.data(),
+                                  sizeof(RenderInstance) * a.instances.size()) == 0;
+    }
+    Check(cookedExact, "baked.cooked-roundtrip-exact");
+
+    // Configure wires a cooked form into a runtime (the host load path).
+    BakedPlacementRuntime brt;
+    Check(brt.Configure(cookedBack, 8, 2), "baked.configure");
+    Check(brt.tiles == &cookedBack.tiles && brt.protoGeometry == &cookedBack.protoGeometry &&
+              brt.tileSize == 16.0f && brt.slotBudget == 8 && brt.viewBudget == 2,
+          "baked.configure-wires");
+    Check(!brt.Configure(BakedPlacementCooked{}, 8, 1), "baked.configure-empty-refuses");
+
+    // The world-level declaration (the "prespecified instancer"): default
+    // residency knobs + the .geometry -> sidecar path derivation.
+    BakedPlacementRef ref;
+    Check(ref.interestRadius == 64.0f && ref.slotBudget == 32, "baked.ref-defaults");
+    Check(BakedPlacementSidecarPath("models/st_b.geometry") == "models/st_b.baked_placement_cooked",
+          "baked.ref-sidecar-path");
+}
+
 int main() {
     TestPaintedPointCloud();
     TestStableDeterminism();
@@ -3145,6 +3337,7 @@ int main() {
     TestTerrainRaycast();
     TestWorldBridge();
     TestWorldResidency();
+    TestBakedPlacement();
     std::cout << (g_failures == 0 ? "ALL PASS " : "FAILURES ") << g_checks << " checks\n";
     return g_failures == 0 ? 0 : 1;
 }

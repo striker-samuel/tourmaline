@@ -2365,6 +2365,50 @@ int Run(const PakArgs& c) {
             }
         }
     }
+    // Baked placement sidecars (<familyStem>.baked_placement_cooked beside each
+    // .geometry family): the cooked PointInstancer cloud. Read + embed as
+    // BakedPlacement-kind blobs at the FAMILY sidecar path (one per family, not
+    // per partition part — split families carry one sidecar referencing surfaces
+    // across all parts). Both the positional artifact list AND the tour's source
+    // references contribute families (a tour cook has an empty artifact list).
+    std::vector<std::pair<std::string, std::vector<uint8_t>>> bakedPlacementBlobs;
+    std::set<std::string> bakedFamilies; // dedupe family sidecar paths
+    auto embedFamily = [&](const std::string& geometryPath) {
+        std::string artPath = smvk::NormalizeAssetUri(geometryPath).Str();
+        if (artPath.empty())
+            artPath = geometryPath;
+        std::string stem = smvk::vfs::FileName(artPath);
+        if (const size_t mdot = stem.rfind(".geometry"); mdot != std::string::npos)
+            stem = stem.substr(0, mdot);
+        // Family stem: strip a trailing "_partN" (partitioned families) — the
+        // sidecar is named after the LOGICAL family, not the part artifact.
+        if (const size_t up = stem.rfind("_part"); up != std::string::npos) {
+            const std::string tail = stem.substr(up + 5);
+            bool allDigits = !tail.empty();
+            for (char c : tail)
+                allDigits = allDigits && (c >= '0' && c <= '9');
+            if (allDigits)
+                stem = stem.substr(0, up);
+        }
+        const std::string sidecarVfs =
+            smvk::vfs::Join(smvk::vfs::BaseDir(artPath), stem + ".baked_placement_cooked");
+        if (!bakedFamilies.insert(sidecarVfs).second)
+            return;
+        std::vector<uint8_t> bytes = ReadLooseBakeFile(args.contentDir, sidecarVfs);
+        if (bytes.empty())
+            return; // no baked placement cooked for this family
+        bakedPlacementBlobs.emplace_back(sidecarVfs, std::move(bytes));
+        tool::out() << "Baked placement embedded: " << sidecarVfs << "\n";
+    };
+    for (const std::string& inVfs : args.inVfsList)
+        embedFamily(inVfs);
+    if (haveTour) {
+        for (const auto& ref : tour.references) {
+            if (!ref.asset || ref.root)
+                continue;
+            embedFamily(ref.source);
+        }
+    }
     // ---------------------------------------------------------------------------
     // COOKED STATIC FLAGS (the authored/preserved static pipeline): a
     // cluster with NO skeleton and NO recorded anim refs never animates —
@@ -3030,6 +3074,17 @@ int Run(const PakArgs& c) {
             return 1;
         }
         tool::out() << "Embedded anim clip " << vfsPath << " (" << size << " B text)\n";
+    }
+    // Baked placement cooked blobs: the PointInstancer cloud's resolved
+    // physical ranges + bounds + bucketed tiles, as their own kind (read via
+    // PakReader::Find by path — not VFS, not a content-id asset).
+    for (auto& [vfsPath, bytes] : bakedPlacementBlobs) {
+        const size_t size = bytes.size();
+        if (!writer.AddBlob(smvk::PakAssetKind::BakedPlacement, vfsPath, std::move(bytes))) {
+            tool::err() << "Baked placement AddBlob failed: " << vfsPath << std::endl;
+            return 1;
+        }
+        tool::out() << "Embedded baked placement " << vfsPath << " (" << size << " B)\n";
     }
     // ---- SHADER blobs (the engine-shaders.pak mode) ---------------------
     // (See PackShaderTree/PackShaderList — the shared validated embeds,

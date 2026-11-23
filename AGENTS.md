@@ -205,63 +205,6 @@ are still required for actual re-simulation.
   Pinned by audiograph_tests + `audiograph.*` in
   project_pipeline_tests + the sample + project_e2e_tests.
 
-- **THE SCHROEDER REVERB** (`engine/src/Audio/schroeder_reverb.
-  {h,cpp}` — the ONE custom miniaudio `ma_node`): four damped
-  feedback combs + two all-pass diffusers per channel, stereo
-  decorrelated, MIX mode (the authored-graph `reverb` node —
-  `AudioNodeType::Reverb = 11`, params wet/rt60/damping appended,
-  wet 0 = an EXACT bypass) and WET-ONLY mode (the environmental
-  send). Continuous processing drains tails through input silence;
-  coefficients (RT60 feedback, damping, wet) smooth INSIDE the
-  callback; delay lengths fixed for the node's lifetime; bounded
-  rt60 0.15..8 s at every gate.
-
-- **AUDIO ROOMS — the environmental reverb volumes** (docs/
-  audio_graph.md): `SceneAudioRoom` (a node-local payload:
-  priority/fades/wet/rt60/damping/transition; INDEPENDENT of GI — a
-  node may carry BOTH a GiVolumeRow and an AudioRoomRow, or a
-  room only) + the shared OBB utility `Engine/Scene/
-  spatial_volume.h` (the GI placement convention: center =
-  translation, half-extents = HALF the column lengths; parity with
-  the GI planes pinned by tests). The `.tour` lane: `createNode -at
-  audioRoom`, `attachAudioRoom`/`removeAudioRoom` (`-ref k -owner
-  givolume` targets a created GI volume — one placement, two
-  associations), `setAudioRoomAttr` (properties + the givolume-lane
-  position/rotation/size shape channels);
-  `kCreateAudioRoomRefBase = 0x01000000`. The EDITOR lane is full
-  (Create menu, the inspector's Enable button + field drags, teal
-  box gizmos + pick, undo/redo, duplicate/delete capture, the
-  family-ref drop guards). The COOKED lane: the scene blob's v20
-  audio-room section (appended after v19 — the sanctioned break).
-  The RUNTIME lane: the ENVIRONMENTAL WORLD-SFX BUS (worldSfxGroup →
-  splitter → {dry → endpoint, wet-only Schroeder → wetGain →
-  endpoint}); `Play(..., AudioRoute)` routes spatial scene emitters
-  through it (default Direct — the compat contract; a failed bus
-  build degrades to direct, logged, never fatal); AudioRuntime
-  evaluates the listener's ordered-coverage blend over the durable
-  cluster rows each frame (descending audio priority, the outdoor
-  baseline for the leftover coverage) and pushes ONE
-  change-detected `SetEnvironmentReverb` — all smoothing is
-  mixer-thread-side. MVP: listener-side reverb ONLY — no occlusion,
-  portals or per-room IRs.
-
-- **THE PER-VOICE CURSOR RULE** (the shared-buffer trap,
-  docs/audio_graph.md): a clip's decoded bytes are wrapped by
-  PER-VOICE `ma_audio_buffer_ref` cursors — NEVER a shared
-  `ma_audio_buffer` (one buffer = one cursor: the first voice to
-  play a clip exhausts it and every later voice reads silence;
-  simultaneous voices race the position). Pinned by
-  `ag.bus.raw-cursor-trap`/`-fix` + the `ag.bus.*-rings`
-  regression pins.
-
-- **Sound assets are a first-class kind**: `PakAssetKind::Sound` (raw
-  .wav at the VFS path), 0x4xxx content ids (scenes 0x1xxx / textures
-  0x2xxx / meshes 0x3xxx / sounds 0x4xxx / audiographs 0x7xxx), and
-  the cooked scene's v18 audio section stores NUMERIC sound ids (the
-  pak cooker's `--sound-id` map; a non-empty map with an unresolved
-  referenced path FAILS the cook). The kinds gate on the SHARED
-  catalog kind bytes.
-
 - **THE PAK CONTAINER IS SMP8** (the paged break — docs/pak_vnext.md is
   the format reference): per-entry `contentCrc` verified LAZILY at
   `Payload()` fetch (a corrupt page throws AT the page, neighbors stay
@@ -290,17 +233,6 @@ are still required for actual re-simulation.
   direct-addressed mesh upload needs a contiguous base) — documented in
   pak_vnext.md.
 
-- **THE COMPILED STATIC PLANS** (`engine/Asset/asset_plan.h` —
-  docs/pak_vnext.md): the shipping hot path loads meshes with NO runtime
-  name search, path normalization, or TOC walk — and FAILS CLOSED on
-  layout mismatch. `smvk::MeshPlanRef` (pak mount index + family base
-  pak slot + .geometry identity); the PRIVATE generated
-  `project_plans.h` (never the game-facing project.h); the LAYOUT HASH
-  (ONE shared engine fold, CONTENT EXCLUDED — a payload-only redeploy
-  needs no recompile); the gate (`AttachCompiledPlans`; count or fold
-  mismatch = LOUD abort, never a dynamic fallback); the plan load lane
-  (`LoadMeshByPlan` — slot validated through the O(1)
-  `PakReader::FindBySlot` index).
 
 - **GEOMETRY STAGE 6 — THE PAGER LOD PROMOTE** (docs/pak_vnext.md):
   `Cluster::PromoteDeferredMeshLodFromPage` promotes deferred siblings
@@ -488,14 +420,15 @@ propose splitting them again.
 | GPU scene | `engine/App/world.h+cluster.h`, `engine/Scene/scene.h` | `ResolveAndFixup_pages` rebuilds `drawItems/flagLists/lodChains` |
 | Tour | `engine/Asset/tour.h+.cpp`, `editor/src/editor_commands.cpp` | `CmdToTour`/`TourToCmd`/`ApplyTourToCluster`/`ReplayTourDoc`; `TestTourFuzz` |
 | Memory | `engine/Memory/memory.h+linear_vector.h` | `FrameVector` = FrameScratch (reset/frame); `UploadInFlightVector` = monotonic (never reset while live); `ProcessVector` = process (ThreadPool ring) |
-| GPU-driven filter | `engine/Renderer/gfx_types.h`, `GfxRenderer.h` | filtered main view ALWAYS ON (no runtime off; the direct leg stays as the unfilterable/LOD-far fallback); `m_useGfxMesh` stays setup-time; `MeshDrawEligible` truth table in contract tests |
+| GPU-driven filter | RETIRED (see `docs/gfx_retirement.md`) — recovered as the `ComputeFilter` geometry backend; the `gfxfilter*`/`gfxbatchcull*`/`gfxdrawcull*` shaders are back in `engine/shaders/`, lightmap-pull surface dropped |
+| Geometry backend | `engine/Renderer/GeometryBackend.h`, `GeometryBackendTypes.h`, `GeometryBackendRegistry.h`, `GpuSceneIndexedBackend.*`, `CpuIndirectBackend.*`, `ComputeFilterBackend.*` | `IGeometryBackend` = `IGeometryWorkGenerator::Generate` (cull → survivor stream) + `IGeometryRenderer::Record*` (draws), upcast-reachable halves; per-instance overrides live on `Instance.refs.w` bits 16..18 (`InstanceFlagForcedDirect/ForceLod0/Highlight` + `MakeInstanceFlags`); registry maps the 4 kinds (`CpuIndirect`/`GpuSceneIndexed`/`GpuSceneTaskMesh`/`ComputeFilter`) |
 | Goldens | `tools/golden_capture.py`, `tools/golden_hashes.txt` | `--update` records, a mismatch fails the run — LOCAL/dev-GPU tooling (per-GPU baselines; CI never runs it) |
 
-Data flow per frame: `DrawFrame` fills `AppFrameContext` → `GfxRenderer`
-(seed/HZB/filter) → `ForwardPlus` (prepass+cull) → shadow atlases
-(CSM/spot/EVSM/deferred) → `Main` (mesh leg first, indexed skips
-eligible ranges: exactly-once) → motion/DoF/SSR/volumetric/exposure/
-bloom/tonemap/AA/UI → swapchain.
+Data flow per frame: `DrawFrame` fills `AppFrameContext` → GPU-scene cull
+(fused leaf classify → work select → parallel scan → raster build, then
+task/mesh or indexed raster over the survivors) → `ForwardPlus`
+(prepass+cull) → shadow atlases (CSM/spot/EVSM/deferred) → `Main` →
+motion/DoF/SSR/volumetric/exposure/bloom/tonemap/AA/UI → swapchain.
 
 ## The generated project.h (content as code)
 
@@ -815,9 +748,9 @@ docs/shader_library_design.md is the design record.
   destroyed/slot-reused instances fall back to the base default). The
   entity mirror loop runs BEFORE the flags/drawItems build (pinned by
   `matinst.entity-items-in-drawitems`).
-- Tests: `gfx.userdata.*` (test_gfxfilter.cpp), `matinst.*`
-  (test_world_entities.cpp), the stride/tail/padEnd pins
-  (test_rendergraph_contract.cpp).
+- Tests: `matinst.*` (test_world_entities.cpp), the stride/tail/padEnd pins
+  (test_rendergraph_contract.cpp) — the retired `gfx.userdata.*` suite
+  left with `test_gfxfilter.cpp`.
 
 ### The ProjectLit family (Phase B landed)
 
@@ -869,8 +802,7 @@ base; this is the family layer.
   slot) pulses the damage + wetness bits through `SetMaterialUserData`
   on the scene's first opaque material. Headless A/B:
   `TOURMALINE_EXTRA_ELEMENT_BENCH=1 TOURMALINE_CAPTURE=12 --bench 16`.
-- Tests: `family.*` (test_world_entities.cpp) + `gfx.family-*`
-  (test_gfxfilter.cpp).
+- Tests: `family.*` (test_world_entities.cpp).
 
 ## Running
 

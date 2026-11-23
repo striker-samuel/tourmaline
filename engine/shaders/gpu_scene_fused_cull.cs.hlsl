@@ -30,6 +30,9 @@ struct GpuSceneMembers {
 struct GpuSceneInstances {
     GpuSceneInstanceRow rows[GPU_SCENE_MAX_ROW_SLOTS];
 };
+struct GpuSceneMeshes {
+    GpuSceneMeshRow rows[GPU_SCENE_MAX_ROW_SLOTS];
+};
 struct GpuSceneOwnerGenerations {
     uint generations[GPU_SCENE_MAX_ROW_SLOTS];
 };
@@ -65,7 +68,8 @@ struct GpuSceneFusedCullPush {
     GPU_PTR_READ(GpuSceneOwnerGenerations) ownerGenerations;
     GPU_PTR_READ(GpuSceneFusedViews) views;
     GPU_PTR_WRITE(GpuFusedVerdicts) verdicts;
-    uint4 counts; // x activeLeafCount, y viewCount, z/w reserved
+    GPU_PTR_READ(GpuSceneMeshes) meshes;
+    uint4 counts; // x activeLeafCount, y viewCount, z meshCount, w reserved
 };
 GPU_PUSH(GpuSceneFusedCullPush, pcS);
 
@@ -127,13 +131,28 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
         const GpuSceneInstance inst = row.value;
         const bool castsShadow = (inst.refs.w & (1u << 5)) != 0u;
 
-        // Fold the leaf's active views through the per-instance test.
+        // Fail open on incomplete mesh bounds: the CPU ReferenceInstanceVisible
+        // and the per-view cull both treat an unknown/incomplete bound as
+        // visible, never culled. Mirror that here so a streamed mesh with a
+        // missing LOD bound is never dropped.
+        const uint meshCount = pcS.counts.z;
+        bool boundsComplete = false;
+        if (inst.refs.x < meshCount) {
+            const GpuSceneMeshRow mesh = pcS.meshes.Get().rows[inst.refs.x];
+            boundsComplete = mesh.identity.y == 1u && mesh.identity.x == inst.refs.y &&
+                             (mesh.value.flags & 1u) != 0u; // MeshFlagCompleteBounds
+        }
         uint viewMask = 0u;
-        for (uint v = 0u; v < viewCount; ++v) {
-            if ((leafViewMask & (1u << v)) == 0u)
-                continue;
-            if (InstanceInView(inst, pcS.views.Get().views[v]))
-                viewMask |= (1u << v);
+        if (boundsComplete) {
+            // Fold the leaf's active views through the per-instance test.
+            for (uint v = 0u; v < viewCount; ++v) {
+                if ((leafViewMask & (1u << v)) == 0u)
+                    continue;
+                if (InstanceInView(inst, pcS.views.Get().views[v]))
+                    viewMask |= (1u << v);
+            }
+        } else {
+            viewMask = leafViewMask; // incomplete bounds: fail open
         }
         if (viewMask == 0u)
             continue;

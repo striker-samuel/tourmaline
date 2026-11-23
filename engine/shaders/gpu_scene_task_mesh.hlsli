@@ -11,17 +11,17 @@
 #define GS_MESH_THREADS 32u
 #define GS_MESH_MAX_TRIS 96u
 #define GS_MESH_MAX_VERTS 64u
-#define GS_MAX_TASK_GROUPS 2097152u
+#define GS_MAX_TASK_GROUPS 16777216u
 #define GS_MAX_WORK 1048576u
 #define GS_MAX_INSTANCES 4194304u
 #define GS_MAX_CLUSTERS 4194304u
 #define GS_MAX_GEO 524288u
 #define GS_MAX_VERTICES 44739242u
-// The static index monoblock is 512 MiB (mem::config::Runtime().staticIndexHeap,
-// default) = 2^27 uint32 index words. The old 65536*128*3 (25M) cap rejected
-// large scenes (bistro's cluster index range is ~26.6M words) even though the
-// heap holds them; size the HLSL bound to the actual heap.
-#define GS_MAX_INDEX_WORDS (512u * 1024u * 1024u / 4u)
+// The static index monoblock is 2048 MiB (mem::config::Runtime().staticIndexHeap,
+// default; raised from 512 MiB) = 2^29 uint32 index words. The old 512 MiB cap
+// rejected large scenes (the caldera island's cluster index range is ~136M
+// words) even though the heap holds them; size the HLSL bound to the actual heap.
+#define GS_MAX_INDEX_WORDS (2048u * 1024u * 1024u / 4u)
 
 struct GsTaskGroup {
     uint workSlot;
@@ -71,6 +71,19 @@ struct GsTemporalHistory {
     GsTemporalEntry entries[GS_TEMPORAL_HASH_LIMIT];
 };
 
+// Previous-frame instance transform (the batched motion mesh shader's
+// history). Indexed by PERSISTENT instance slot; generation matches the
+// instance row's identity.x at snapshot time so a recycled slot never
+// ghosts motion. Layout mirrors C++ GpuScenePrevTransform (96 B).
+struct GsPrevTransform {
+    DoubleFloat3 worldPosition;
+    float4 basisX;
+    float4 basisY;
+    float4 basisZ;
+    uint4 generation; // x = instance generation at snapshot, yzw pad
+};
+struct GsPrevTransforms { GsPrevTransform rows[GS_MAX_INSTANCES]; };
+
 // This struct is a GPU-addressable parameter buffer, NOT push constants.
 // Both shader stages receive a short push containing its BDA, group slice
 // and raster class. Do not change its member order without an ABI check.
@@ -111,6 +124,13 @@ struct GsTaskMeshParams {
     GPU_PTR(GsTemporalHistory) historyCurrent;
     uint historyCapacity;
     uint historyValid;
+    // Motion tail (appended for the batched motion mesh shader): the previous
+    // camera-relative view + previous instance transforms, generation-
+    // validated. prevSlots bounds the prev read against a shrunken snapshot.
+    GPU_PTR_READ(GsRasterView) prevView;
+    GPU_PTR_READ(GsPrevTransforms) prevTransforms;
+    uint prevValid; // 1 = previous history is usable
+    uint prevSlots; // previous snapshot's instance count
 };
 struct GsTaskMeshPush {
     // Preserve the fragment shader's 192-byte scene push constants.

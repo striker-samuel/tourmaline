@@ -52,6 +52,7 @@
 #include <Engine/Renderer/ShapeScene.h>
 #include <Engine/Renderer/cubemap.h>
 #include <Engine/Renderer/geometry_streamer.h>
+#include <Engine/Renderer/gpu_scene_fused_expand.h>
 #include <Engine/Renderer/gpu_scene_raster_geometry.h>
 #include <Engine/Renderer/gpu_scene_raster_ownership.h>
 #include <Engine/Renderer/gpu_scene_render_view_bridge.h>
@@ -59,6 +60,7 @@
 #include <Engine/Renderer/gpu_scene_task_mesh_runtime.h>
 #include <Engine/Renderer/gpu_scene_validation.h>
 #include <Engine/Renderer/gpu_scene_world.h>
+#include <Engine/Renderer/gpu_visibility_runtime.h>
 #include <Engine/Renderer/ray_tracing_debug.h>
 #include <Engine/Renderer/renderview.h>
 #include <Engine/Renderer/static_sdf_gpu.h>
@@ -118,6 +120,7 @@
 namespace tour::placement {
 struct PlacementWorldRuntime;
 struct PlacementDrawPrograms;
+class BakedPlacementRuntime;
 } // namespace tour::placement
 
 namespace engine {
@@ -1187,6 +1190,11 @@ struct FrameUniforms {
     // stacked vertically. UINT32_MAX slot = absent (SG specular crossover).
     uint32_t giVolumeSpecLayers[32] = {}; // 3220 atlas slots (4 rough layers x 8 vols)
     uint32_t giVolumeSpecDims[8] = {};    // 3348 packed cols | rows << 16
+    // Debug-only probe-classification volume (the W_dilated view,
+    // docs/gi_volume_roof_lattice.md): per-volume R8 3D texture slots in
+    // volumeTextures[] carrying the bake's 3-way provenance (0 traced /
+    // 127 dilated / 255 unfilled). UINT32_MAX = absent (mode 7 reads 0).
+    uint32_t giVolumeClassSlots[8] = {}; // 3380 8 volumes x 1 R8 class slot
 };
 // FrameUniforms layout insurance: the HLSL mirror (common.hlsli) reads
 // every field by absolute offset — any drift desyncs the GPU reads.
@@ -1252,6 +1260,8 @@ static_assert(offsetof(FrameUniforms, giVolumeSpecLayers) == 3220,
               "giVolumeSpecLayers offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, giVolumeSpecDims) == 3348,
               "giVolumeSpecDims offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, giVolumeClassSlots) == 3380,
+              "giVolumeClassSlots offset: HLSL mirror");
 // Env-zone block (the append-only tail): the per-frame EnvZoneGpu slice
 // BDA + count + reserved words, pinned like every other HLSL-mirrored
 // member. The reserved array keeps the old 208-byte block size so the
@@ -1300,12 +1310,12 @@ static_assert(offsetof(FrameUniforms, fogShadowEnabled) == 2148,
               "fogShadowEnabled offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, contactShadowIndex) == 2152,
               "contactShadowIndex offset: HLSL mirror (the old tail pad's first word)");
-static_assert(sizeof(FrameUniforms) == 3392,
+static_assert(sizeof(FrameUniforms) == 3424,
               "FrameUniforms size: HLSL mirror (the GI-blend tail grew the struct 2160 -> 2500; "
               "the §1.1 layer tables append 2500 -> 3140, the 64-bit telemetry BDA 8-aligns to "
               "3144 -> 3152, the octahedral atlas tail appends 3156 -> 3220, the compact "
-              "specular atlas appends 3220 -> 3380 (+12 pad to 16-align); every pre-blend "
-              "offset above is unchanged)");
+              "specular atlas appends 3220 -> 3380, the debug class-volume slots append "
+              "3380 -> 3412 (+12 pad to 16-align); every pre-blend offset above is unchanged)");
 
 // FramePSHot — tiny per-frame data frequently accessed by the pixel shader.
 // Mirrors HLSL FramePSHot in common.hlsli (96 bytes, 16-byte aligned).
@@ -2417,6 +2427,18 @@ class WorldRenderer : public IRenderer {
     uint64_t m_gpuPlacementTerrainRevision = 0;
     bool m_gpuPlacementReady = false;
     tour::placement::PlacementStreamProvider m_placementStreamProvider;
+    // Baked placement (the authored PointInstancer cloud): a static, host-
+    // owned runtime fed the pre-bucketed tiles + resolved proto geometry.
+    // No terrain deps / regeneration — the renderer only uploads resident
+    // tiles and drives the per-tile PR03 chain + draw loop. A vector: one
+    // runtime per prespecified baked placement cloud (each .geometry family
+    // that carried a PointInstancer).
+    struct BakedPlacementInstance {
+        std::unique_ptr<tour::placement::BakedPlacementRuntime> runtime;
+        float interestRadius = 64.0f;
+    };
+    std::vector<BakedPlacementInstance> m_bakedPlacementInstances;
+    bool m_bakedPlacementReady = false;
     tour::gpu_scene::RenderDatabase m_gpuSceneDatabase;
     tour::gpu_scene::WorldSynchronizer m_gpuSceneSync;
     tour::gpu_scene::Uploader m_gpuSceneUploader;
@@ -2450,6 +2472,17 @@ class WorldRenderer : public IRenderer {
     std::array<smvk::ShaderProgram, 4> m_gpuSceneMeshletPrograms{};
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuScenePsoScanModule{};
     smvk::ShaderProgram m_gpuScenePsoScanProgram{};
+    // P1 flat GPU multi-view leaf visibility (classify -> compact -> fused).
+    // Validation-only until the safe-overflow policy and downstream
+    // fused-verdict consumption are wired; the CPU coarse selector stays
+    // authoritative for production draws.
+    tour::gpu_scene::GpuVisibilityRuntime m_gpuVisibilityRuntime;
+    std::array<smvk::Holder<smvk::ShaderModuleHandle>, 3> m_gpuVisibilityModules{};
+    std::array<smvk::ShaderProgram, 3> m_gpuVisibilityPrograms{};
+    // P1 fused-expand bridge: per-instance fused verdicts -> dense cull
+    // verdicts, feeding the existing compact/work/raster chain (production).
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuVisibilityExpandModule{};
+    smvk::ShaderProgram m_gpuVisibilityExpandProgram{};
     // Opt-in GPU Scene task/amplification + mesh raster path.
     // CPU admission keeps the indexed renderer as an all-scene fallback:
     // no partial submesh ownership or double draws.
@@ -2480,6 +2513,17 @@ class WorldRenderer : public IRenderer {
     std::array<smvk::ShaderProgram, size_t(DebugFs::Count)> m_gpuSceneTaskDebugPrograms{};
     bool m_gpuSceneTaskMeshActive = false;
     tour::gpu_scene::TaskMeshDispatchPlan m_gpuSceneTaskMeshPlan{};
+    // Cached tight per-instance group bound (TaskMeshInputs::totalGroups):
+    // recomputed only when the world topology revision changes (streaming
+    // loads/unloads districts), never per frame. See the "tighter per-instance
+    // sum" note in gpu_scene_task_mesh_runtime.h.
+    uint64_t m_gpuSceneTaskTotalGroups = 0;
+    uint64_t m_gpuSceneTaskTotalGroupsRevision = ~uint64_t(0);
+    // Tight per-instance group bound (TaskMeshInputs::totalGroups): sum of
+    // ceil(clusterCount/32) over every live instance, resolving each
+    // instance's mesh -> resident LODs -> submeshes -> gfx cluster count.
+    // Cached by m_gpuSceneTaskTotalGroupsRevision. See ComputeTaskMeshTotalGroups.
+    uint64_t ComputeTaskMeshTotalGroups(const smvk::gfx::State& gfx) const;
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneTaskTemporalClearModule{};
     smvk::ShaderProgram m_gpuSceneTaskTemporalClearProgram{};
     tour::gpu_scene::TaskMeshTemporalFrame m_gpuSceneTaskTemporalFrame{};
@@ -2556,6 +2600,10 @@ class WorldRenderer : public IRenderer {
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneMotionVsModule{};
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneMotionFsModule{};
     smvk::ShaderProgram m_gpuSceneMotionProgram{};
+    // Batched motion via the task/mesh path (reuses the task shader + motion
+    // FS; the mesh stage emits pos + prevClip). 3 stages: task + mesh + FS.
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneMotionMeshMsModule{};
+    smvk::ShaderProgram m_gpuSceneMotionMeshProgram{};
     std::array<smvk::Holder<smvk::BufferHandle>, smvk::limits::MaxFramesInFlight>
         m_gpuScenePrevTransformBuffers{};
     std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>
@@ -2578,6 +2626,13 @@ class WorldRenderer : public IRenderer {
         m_gpuSceneVerdictLogicalBacking{};
     std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>
         m_gpuSceneVerdictLogical{};
+    // P1 flat GPU leaf visibility (validation-only): the fused verdict BDA
+    // write is registered with the rendergraph so its compute writes are
+    // represented in graph synchronization, mirroring the cull verdict target.
+    std::array<smvk::BufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuVisibilityVerdictLogicalBacking{};
+    std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuVisibilityVerdictLogical{};
     // Canonical source-key admission table (AppArena-owned records). The
     // mixed renderer will use this same mapping for complementary GPU and
     // legacy submission. Until those submission masks are connected, the
@@ -2712,6 +2767,12 @@ class WorldRenderer : public IRenderer {
     // registration.
     std::vector<std::vector<std::vector<uint32_t>>> m_gpuScenePhysicalLodIds;
     bool m_gpuSceneTaskGeometryIdsCompatible = false;
+    // True when the current physical registration emitted at least one
+    // native-suffix geometry id (a valid World LOD with no cooked meshlet
+    // registration). The task/mesh path still engages (drawing only the
+    // meshleted ids); the frame uses this to ALSO submit the indexed-raster
+    // prepass for the native-suffix subset (mixed path).
+    bool m_gpuSceneNativeSuffixPresent = false;
     const smvk::World* m_gpuScenePhysicalWorld = nullptr;
     uint64_t m_gpuScenePhysicalTopologyRevision = ~uint64_t(0);
     void RefreshGpuScenePhysicalIndexedRanges(bool nativeOnly = false);
@@ -2842,6 +2903,21 @@ class WorldRenderer : public IRenderer {
             m_gpuPlacementSeeds[i] = seeds[i];
         m_gpuPlacementRadius = interestRadius > 0.0f ? interestRadius : 64.0f;
     }
+    // Optional baked-placement draw feed (the authored PointInstancer cloud).
+    // The renderer takes ownership of the runtime (its bucketed tiles + resolved
+    // BakedProtoGeometry) and records the per-tile cull chain + draw. The source
+    // meshes must already live in the static vertex heap (resolved ranges).
+    void SetBakedPlacementRuntime(std::unique_ptr<tour::placement::BakedPlacementRuntime> runtime,
+                                  float interestRadius = 64.0f) {
+        if (!runtime)
+            return;
+        m_bakedPlacementInstances.push_back(BakedPlacementInstance{
+            std::move(runtime), interestRadius > 0.0f ? interestRadius : 64.0f});
+    }
+    // Auto-loads every prespecified baked placement cloud the WORLD declares
+    // (World::LoadBakedPlacement, populated by the world loader). Creates a
+    // runtime per cloud + wires it — no per-app placement code.
+    void LoadBakedPlacementsFromWorld();
     // The host calls this after changing the world's height/mask data;
     // every interested placement tile will then regenerate.
     void InvalidateGpuPlacementTerrain() {
@@ -2893,6 +2969,12 @@ class WorldRenderer : public IRenderer {
     // explanation blocks the old Debug tab carried (the legends live
     // where the view is, not four tabs away). NoInputs: pure annotation.
     void DrawDebugViewHint();
+    // PANIC legend (always visible, red, top): lists the conditions that
+    // would degrade or fail the render — an engaged fallback path, legacy
+    // direct instances, or a near-full/oversubscribed static heap. Empty
+    // (nothing wrong) = not drawn. Never behind a toggle: the moment a
+    // path degrades it must be readable without opening a panel.
+    void DrawPanicOverlay();
 
     // (The per-frame CONTROL block — Update()/HandleShortcuts(): keybind
     // polling, feature toggles, decal autosplat, camera-drive gating,
@@ -3854,7 +3936,7 @@ class WorldRenderer : public IRenderer {
     char m_benchmarkNotes[256] = {};
     std::string m_benchmarkExportMessage;
     void ExportBenchmarkScenario();
-    int m_debugMeshletMode = 0; // 0 = random per meshlet, 1 = cone heat
+    int m_debugMeshletMode = 0; // 0 = random per meshlet, 1 = cone heat, 2 = PSO bin
     bool m_hideTransparent =
         false; // debug: skip all transparent draws (bisect blending/overdraw out)
     // Wireframe (P): raster override on every scene-triangle bind in the
@@ -3989,20 +4071,25 @@ class WorldRenderer : public IRenderer {
     // Baked — see AmbientMode); R / F8 cycle the baked-GI debug
     // views. ----
     AmbientMode m_ambientMode = AmbientMode::All; // N cycles (production default)
-    int m_giDebug = 0;                            // R / F8: 0 off, 1 flat irradiance,
-                                                  // 2 source, 3 probe distance, 4 visibility wSum
-    int m_giDebugLevel = 0;                       // (retired with the octree level debugs —
-                                                  // feeds the frame's legacy giDebug byte,
-                                                  // always 0)
-    float m_giIntensity = 1.0f;                   // ambient scale (FrameUniforms.giIntensity)
-    bool m_giShowProbes = false;                  // probe-sphere 3D overlay (the coplanarity
-                                                  // check's successor: instanced icospheres
-                                                  // colored by each probe's baked directional
-                                                  // GI - see Rendergraph/giprobe.h)
-    float m_giProbePointMaxDist = 40.0f;          // overlay: draw probes within N m
-    int m_giProbeColorMode = 0;                   // probe-sphere color: 0 baked GI,
-                                                  // 1 visibility (blocked/near/open),
-                                                  // 2 the pre-bake lattice preview
+    // R / F8 GI debug view: 0 off, 1 flat irradiance, 2 source, 3 probe
+    // distance, 4 visibility wSum, 5 raw SG, 6 redistribution D, 7 dilated
+    // coverage (W_dilated).
+    int m_giDebug = 0;
+    // Debug-only probe-classification sidecar (TOURMALINE_GI_CLASS_VOLUME);
+    // empty = off.
+    std::string m_giClassVolume;
+    int m_giDebugLevel = 0;              // (retired with the octree level debugs —
+                                         // feeds the frame's legacy giDebug byte,
+                                         // always 0)
+    float m_giIntensity = 1.0f;          // ambient scale (FrameUniforms.giIntensity)
+    bool m_giShowProbes = false;         // probe-sphere 3D overlay (the coplanarity
+                                         // check's successor: instanced icospheres
+                                         // colored by each probe's baked directional
+                                         // GI - see Rendergraph/giprobe.h)
+    float m_giProbePointMaxDist = 40.0f; // overlay: draw probes within N m
+    int m_giProbeColorMode = 0;          // probe-sphere color: 0 baked GI,
+                                         // 1 visibility (blocked/near/open),
+                                         // 2 the pre-bake lattice preview
     // Lattice-mode scratch (mode 2): fixed cap-sized buffers, rows
     // re-uploaded every armed frame (authored volumes move/edit live).
     smvk::Holder<smvk::BufferHandle> m_giProbeDraftBuf[8]{};
@@ -4168,6 +4255,14 @@ class WorldRenderer : public IRenderer {
         smvk::Holder<smvk::TextureHandle> specLayers[4];
         uint32_t specSlots[4] = {UINT32_MAX, UINT32_MAX, UINT32_MAX, UINT32_MAX};
         uint32_t specDimsPacked = 0; // atlasCols | atlasRows << 16
+        // Debug-only probe-classification volume (GI_DEBUG mode 7,
+        // docs/gi_volume_roof_lattice.md): an R8 3D texture carrying the
+        // bake's 3-way provenance (0 traced / 127 dilated / 255 unfilled).
+        // UINT32_MAX slot = absent — the mode-7 shader reads 0 coverage.
+        // Loaded from TOURMALINE_GI_CLASS_VOLUME when it matches the
+        // rendered volume's geometry + byte hash.
+        smvk::Holder<smvk::TextureHandle> classTex;
+        uint32_t classSlot = UINT32_MAX;
         // The probe-sphere instance table (Rendergraph/giprobe.h - the
         // ImGui probe-dot overlay's 3D successor): the strided static
         // lattice subset (position + integer grid coords), built once by
@@ -5101,6 +5196,10 @@ class WorldRenderer : public IRenderer {
     // WorldPartition layer: the streaming interest (position + velocity
     // lead) and the 256 m root-cell / 64 m subcell grid under its radius.
     bool m_worldMapCells = false;
+    // Scene-layer streaming tiles (the ScenePageStreamer districts): one
+    // AABB per manifest scene, colored by residency (loaded / in-flight /
+    // available) — the district-level streaming debug.
+    bool m_worldMapSceneTiles = false;
     // Per-draw collection scratch (the WorldFields debug API, reused).
     std::vector<worldfields::WorldFieldSystem::WorldFieldDebugBrick> m_worldMapBrickScratch;
     glm::vec2 m_worldMapCenter{0.0f, 0.0f}; // world XZ, canvas center

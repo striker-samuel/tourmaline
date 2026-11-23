@@ -45,11 +45,11 @@ VSOut mainVS(VSIn IN)
         viewProj = pc.renderViews.Get().views[pc.mainRenderView]
             .m_viewProjectionMatrix;
     OUT.pos = mul(viewProj, float4(IN.position, 1.0));
-    // Baldur's Gate-style vertex-to-NaN cutout: authored alpha=0
-    // suppresses the vertex before rasterization. The fragment stage
-    // also clips interpolated alpha as a portable/fine-edge fallback.
-    if (IN.color.a < 0.5f)
-        OUT.pos = asfloat(uint4(0x7fc00000u, 0x7fc00000u, 0x7fc00000u, 0x7fc00000u));
+    // Hole masking is handled ENTIRELY by the fragment stage's
+    // interpolated-alpha clip() (terrain.frag.hlsl). A per-vertex NaN
+    // clip-coordinate cutout here would explode mixed land/water
+    // triangles at the coastline (one NaN vertex poisons the whole
+    // primitive), so it is deliberately NOT applied.
 
     OUT.normal = IN.normal.xyz;
     OUT.tangentBFlip = IN.tangentBFlip;

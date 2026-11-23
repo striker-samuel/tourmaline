@@ -9,7 +9,7 @@ import shutil
 import subprocess
 import time
 
-GPU_BUSY_PERCENT = 5.0
+GPU_BUSY_PERCENT = 15.0
 CPU_BUSY_PERCENT = 20.0
 RAM_USED_PERCENT = 90.0
 

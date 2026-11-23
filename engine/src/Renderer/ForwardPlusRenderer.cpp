@@ -776,6 +776,7 @@ bool ForwardPlusRenderer::AppendGpuSceneTaskPrepass(smvk::FrameContext& base,
                                                     bool hizOccluder,
                                                     smvk::LogicalBufferHandle historyCurrent,
                                                     smvk::LogicalBufferHandle historyPrevious) {
+    SMVK_PROFILE_CATEGORY("GpuSceneTaskMesh", Optick::Category::Rendering);
     AppFrameContext& fc = static_cast<AppFrameContext&>(base);
     if (!fp || taskDepth.shaderCount != 2 || indirect.empty() || indirectLogical.empty() ||
         groupsLogical.empty() || offsetsLogical.empty() || workLogical.empty())

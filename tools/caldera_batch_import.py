@@ -71,7 +71,7 @@ def discover_districts(caldera_root: Path) -> list[Path]:
 def import_one(import_exe: Path, env: dict[str, str], src: Path) -> dict:
     start = time.time()
     proc = subprocess.run(
-        [str(import_exe), str(src), "--force"],
+        [str(import_exe), str(src), "--force", "--lods", "off"],
         env=env, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
     elapsed = time.time() - start

@@ -28,6 +28,13 @@ struct TaskMeshGpuParams {
     uint64_t historyCurrent;   // cleared current-frame keyed survivor table
     uint32_t historyCapacity;  // power of two, <= 1048576 slots
     uint32_t historyValid;     // previous history matches scene/geometry revision
+    // Motion tail (batched motion mesh shader): the previous camera-relative
+    // view + previous instance transforms. 0 = no history (first frame /
+    // camera cut); prevSlots bounds the prev read against a shrunken snapshot.
+    uint64_t prevView = 0;
+    uint64_t prevTransforms = 0;
+    uint32_t prevValid = 0;
+    uint32_t prevSlots = 0;
 };
 struct TaskMeshGpuPush {
     uint64_t params;
@@ -53,7 +60,7 @@ struct TaskMeshIndirectCommand {
     uint32_t groupCountZ;
 };
 static_assert(sizeof(TaskMeshGpuGroup) == 16);
-static_assert(sizeof(TaskMeshGpuParams) == 208);
+static_assert(sizeof(TaskMeshGpuParams) == 232);
 static_assert(offsetof(TaskMeshGpuParams, shading) == 80);
 static_assert(offsetof(TaskMeshGpuParams, workCount) == 96);
 static_assert(offsetof(TaskMeshGpuParams, hiz) == 144);

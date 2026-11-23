@@ -108,16 +108,40 @@ uint PlacementSlopeToRock(uint weightedProto, float3 normal,
     return slopeDeg > thresholdDeg ? 1u : weightedProto;
 }
 
-// Must match C++ RenderInstance (40 bytes): pos(12) yaw(4) scale(12)
-// proto(4) stableLow(4) customB(4).
+// Must match C++ RenderInstance (56 bytes): pos(12) pad(4) rotation(16)
+// scale(12) proto(4) stableLow(4) customB(4). rotation is a full quaternion
+// (xyzw) so baked vegetation keeps its terrain-aligned tilt; the procedural
+// scatter shaders write QuatFromYaw.
 struct PlacementRenderInstance {
     float3 position;
-    float yaw;
+    float padRotAlign;
+    float4 rotation;
     float3 scale;
     uint prototypeId;
     uint stableLow;
     uint customB;
 };
+
+// Quaternion -> rotation matrix (q = xyzw). The standard form, shared with
+// the mesh-particle draw/cull (MeshParticleQuatMatrix).
+float3x3 PlacementQuatMatrix(float4 q)
+{
+    const float xx = q.x * q.x, yy = q.y * q.y, zz = q.z * q.z;
+    const float xy = q.x * q.y, xz = q.x * q.z, yz = q.y * q.z;
+    const float wx = q.w * q.x, wy = q.w * q.y, wz = q.w * q.z;
+    return float3x3(
+        float3(1.0 - 2.0 * (yy + zz), 2.0 * (xy - wz), 2.0 * (xz + wy)),
+        float3(2.0 * (xy + wz), 1.0 - 2.0 * (xx + zz), 2.0 * (yz - wx)),
+        float3(2.0 * (xz - wy), 2.0 * (yz + wx), 1.0 - 2.0 * (xx + yy)));
+}
+
+// Yaw (about +Y) -> quaternion (xyzw), the shader-side mirror of QuatFromYaw.
+float4 PlacementQuatFromYaw(float yaw)
+{
+    float s, c;
+    sincos(yaw * 0.5, s, c);
+    return float4(0.0, -s, 0.0, c);
+}
 
 // Per-tile output: instance array (fixed bound, BDA view allocates
 // nothing) + the append-counter triple (16 bytes).

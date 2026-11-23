@@ -177,6 +177,17 @@
 
 ### P2 — hardware validation and deferred quality
 
+- [ ] **Fine-grained per-triangle backface culling in the GPU-scene mesh
+  shader (proposal only; not implemented).** Per-primitive `SV_CullPrimitive`
+  (`CullPrimitiveEXT`) rejection of back-facing triangles *inside*
+  mixed-orientation meshlets — where the meshlet cone test cannot reject
+  them — by reusing the already-transformed clip-space `xyw` per workgroup.
+  Default **off** behind `TOURMALINE_GPU_SCENE_TRIANGLE_BACKFACE`; fail open
+  on near-plane / non-finite / degenerate triangles; never cull two-sided
+  raster classes. Technique reference: Arseny Kapoulkine, *Fine-grained
+  backface culling* (2023),
+  <https://zeux.io/2023/04/28/triangle-backface-culling/>. Full rollout and
+  parity/perf matrix: `docs/gpu_scene_triangle_backface_proposal.md`.
 - [ ] **Nice to have / long-term — masked layered materials.** Keep layered
   materials **opaque-only** for the current GPU-scene migration. In a future
   feature pass, consider masked (and optionally A2C) layered materials with a

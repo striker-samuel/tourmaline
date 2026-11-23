@@ -85,10 +85,13 @@ std::vector<StaticGeometryUpload> UploadStaticGeometry(
     };
     for (size_t i = 0; i < sources.size(); ++i) {
         const StaticGeometrySource& src = sources[i];
-        if (src.vertexCount == 0) {
-            failCarved(i); // degenerate entry fails the whole batch
-            return {};
-        }
+        // A zero-vertex source is a DEGENERATE empty primitive (the importer
+        // removed every face), not a heap-exhaustion failure. Skip its carve
+        // (the default-empty alloc stays in ranges[i]); the assemble phase
+        // emits an empty mesh that draws nothing. Real failures (a null
+        // arena carve) still roll the whole batch back.
+        if (src.vertexCount == 0)
+            continue;
         MeshRange& r = ranges[i];
         {
             r.alloc.vertexAllocation =
@@ -135,6 +138,13 @@ std::vector<StaticGeometryUpload> UploadStaticGeometry(
         u.mesh.geometry.indexCount = src.indexCount;
         u.mesh.geometry.aabbMin = src.aabbMin;
         u.mesh.geometry.aabbMax = src.aabbMax;
+        if (src.vertexCount == 0) {
+            // Degenerate empty mesh: no surface, no carved ranges (the
+            // arena tokens stay default-empty). The pool row is a valid
+            // handle that draws nothing.
+            u.alloc = r.alloc;
+            continue;
+        }
         Surface surface{};
         surface.firstIndex = static_cast<uint32_t>(r.indexByteOffset / sizeof(uint32_t));
         surface.indexCount = src.indexCount;
@@ -165,6 +175,8 @@ std::vector<StaticGeometryUpload> UploadStaticGeometry(
     idxCopies.reserve(sources.size());
     for (size_t i = 0; i < sources.size(); ++i) {
         const StaticGeometrySource& src = sources[i];
+        if (src.vertexCount == 0)
+            continue; // degenerate empty mesh: nothing to copy
         const MeshRange& r = ranges[i];
         posCopies.push_back(BufferBulkCopy{size_t(src.posSrc),
                                            size_t(r.vertexBase) * sizeof(PackedVertexPosition),

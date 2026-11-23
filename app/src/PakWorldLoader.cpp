@@ -392,6 +392,14 @@ tour::mem::LinearPtr<tour::World> LoadPakWorld(PakPreload pre,
                                     ? uint32_t(world->meshLocations.size())
                                     : tour::gfx::kMaxMeshes;
         streamer->SetMaxLoadedMeshes(budget);
+        // Configurable geometry memory budget (resident VERTICES). 0 = auto
+        // (85% of the static vertex arena). The vertex stride is 16 B (the
+        // shading stream is the binding constraint), so MB -> vertices / 16.
+        if (const char* gEnv = std::getenv("TOURMALINE_GEOMETRY_BUDGET_MB")) {
+            const long long mb = std::atoll(gEnv);
+            if (mb > 0)
+                streamer->SetMaxLoadedVertices(uint64_t(mb) * 1024ull * 1024ull / 16ull);
+        }
         world->SetPageStreamer(std::move(streamer));
     }
     std::cerr << "[App] entry scene loaded (" << (scenes.size() - 1)
@@ -405,6 +413,10 @@ tour::mem::LinearPtr<tour::World> LoadPakWorld(PakPreload pre,
     contentVfs.Mount(pre.backend, 10, pre.scenePak);
     session.AdoptPakBackend(pre.scenePak, pre.backend);
     PostLoadTail(*world, StemOf(pre.scenePak), session);
+    // Prespecified baked placement instancers: the authored PointInstancer
+    // clouds the cook embedded as BakedPlacement blobs. The renderer
+    // auto-loads them; no per-app placement wiring.
+    world->LoadBakedPlacements(reader);
     return world;
 }
 
@@ -584,6 +596,14 @@ tour::mem::LinearPtr<tour::World> LoadProjectWorld(std::vector<PakPreload> prelo
                                     ? uint32_t(world->meshLocations.size())
                                     : tour::gfx::kMaxMeshes;
         streamer->SetMaxLoadedMeshes(budget);
+        // Configurable geometry memory budget (resident VERTICES). 0 = auto
+        // (85% of the static vertex arena). The vertex stride is 16 B (the
+        // shading stream is the binding constraint), so MB -> vertices / 16.
+        if (const char* gEnv = std::getenv("TOURMALINE_GEOMETRY_BUDGET_MB")) {
+            const long long mb = std::atoll(gEnv);
+            if (mb > 0)
+                streamer->SetMaxLoadedVertices(uint64_t(mb) * 1024ull * 1024ull / 16ull);
+        }
         world->SetPageStreamer(std::move(streamer));
     }
     std::cerr << "[App] project entry scene loaded (" << (scenes.size() - 1)

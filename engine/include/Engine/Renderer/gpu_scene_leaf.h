@@ -5,18 +5,18 @@
 // GPUIR-style spatial leaf membership. CPU owns the leaf topology; GPU
 // receives a persistent Leaf table and contiguous generational instance refs.
 // No view-frustum test or GPU culling is performed in this phase.
-#include <Engine/Renderer/gpu_scene_upload.h>
 #include <Engine/Memory/arena.h>
+#include <Engine/Renderer/gpu_scene_upload.h>
 
 #include <algorithm>
 #include <cmath>
 #include <compare>
 #include <cstdint>
 #include <limits>
-#include <memory>
-#include <span>
 #include <map>
+#include <memory>
 #include <set>
+#include <span>
 #include <utility>
 #include <vector>
 
@@ -148,15 +148,16 @@ class LeafRegistry {
         if (leaves_.empty())
             return {};
         auto* storage = static_cast<LeafTicket*>(
-            smvk::FrameArena().Allocate(leaves_.size() * sizeof(LeafTicket),
-                                        alignof(LeafTicket)));
+            smvk::FrameArena().Allocate(leaves_.size() * sizeof(LeafTicket), alignof(LeafTicket)));
         size_t written = 0;
         for (const auto& [cell, state] : leaves_) {
             const Leaf* row = db.leaves.Get(state.leaf);
             if (!row || row->range.y == 0)
                 continue;
             std::construct_at(storage + written++,
-                              LeafTicket{cell, state.leaf, row->range.x,
+                              LeafTicket{cell,
+                                         state.leaf,
+                                         row->range.x,
                                          row->range.y,
                                          (row->range.z & LeafFlagBoundsComplete) != 0});
         }
@@ -340,5 +341,49 @@ class LeafRegistry {
     std::map<uint64_t, LeafCell> membership_;
     std::set<LeafCell> dirty_;
 };
+
+// Dense leaf view for the flat GPU classifier (#372,
+// docs/gpu_scene_visibility_hierarchy_proposal.md). The slot-indexed
+// Database.leaves table is repacked into a contiguous, ticket-ordered span so
+// the classifier addresses leaves as rows[0..count-1] (one thread per leaf)
+// instead of scanning the free-list slot space. Dense index i corresponds to
+// tickets[i]; denseToSlot[i] recovers the leaf slot for the fused pass's
+// generation validation. Each dense row carries its original generational
+// identity so stale dense references are still rejected on the GPU.
+struct DenseLeaves {
+    std::span<Row<Leaf>> rows{};       // dense, ticket order
+    std::span<uint32_t> denseToSlot{}; // dense index -> leaf slot
+    uint32_t count = 0;
+};
+
+// Frame-arena scratch (consumed before frame reset). Fails closed (empty
+// result) on a snapshot mismatch: a ticket whose leaf is missing or whose
+// generation does not match must abort, never emit a partial dense array.
+// An empty ticket set is a valid zero-leaf result, not an error.
+[[nodiscard]] inline bool BuildDenseLeaves(const RenderDatabase& db,
+                                           std::span<const LeafTicket> tickets,
+                                           DenseLeaves& out) {
+    if (tickets.empty()) {
+        out = {};
+        return true;
+    }
+    auto* rows = static_cast<Row<Leaf>*>(
+        smvk::FrameArena().Allocate(tickets.size() * sizeof(Row<Leaf>), alignof(Row<Leaf>)));
+    auto* slots = static_cast<uint32_t*>(
+        smvk::FrameArena().Allocate(tickets.size() * sizeof(uint32_t), alignof(uint32_t)));
+    for (size_t i = 0; i < tickets.size(); ++i) {
+        if (!db.leaves.Contains(tickets[i].leaf)) {
+            out = {};
+            return false;
+        }
+        const uint32_t slot = tickets[i].leaf.slot;
+        std::construct_at(rows + i, db.leaves.Rows()[slot]);
+        slots[i] = slot;
+    }
+    out.rows = std::span<Row<Leaf>>(rows, tickets.size());
+    out.denseToSlot = std::span<uint32_t>(slots, tickets.size());
+    out.count = static_cast<uint32_t>(tickets.size());
+    return true;
+}
 
 } // namespace tour::gpu_scene

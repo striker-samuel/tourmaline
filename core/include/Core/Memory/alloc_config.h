@@ -70,12 +70,14 @@ inline constexpr size_t kTransientReserve = 1 * kGiB;
 // The eternal device-local monoblocks: the position + shading vertex
 // heaps, the OPTIONAL lightmap vertex stream, and the index monoblock.
 // Allocated once in WorldRenderer::onAttach before any scene upload; the
-// pak loader carves them via VmaVirtualBlock. The two main vertex heaps +
-// indices are 1.5 GiB of the process's VRAM by default — THE largest
-// static GPU cost; the lightmap heap is deliberately small (lightmaps
-// are deprecated — the stream is usually empty).
-inline constexpr size_t kStaticVertexHeap = 512 * kMiB;
-inline constexpr size_t kStaticIndexHeap = 512 * kMiB;
+// pak loader carves them via VmaVirtualBlock. Sized for the full Caldera
+// island's resident LOD0 set (a single merged district + its terrain is
+// ~67M vertices, ~1.1 GiB of the shading stream) with headroom for the
+// camera streamer's growth. The two vertex heaps + indices are 6 GiB of
+// VRAM by default; the lightmap heap is deliberately retired to 0
+// (lightmaps are deprecated — the stream is usually empty).
+inline constexpr size_t kStaticVertexHeap = 2048 * kMiB;
+inline constexpr size_t kStaticIndexHeap = 2048 * kMiB;
 // Lightmaps are no longer rendered (loading is a no-op — the cook keeps
 // producing chart data, the runtime never carves/upload/samples it). The
 // heap is retired to 0: the immutable descriptor layout still needs a live

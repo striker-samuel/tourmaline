@@ -1005,6 +1005,13 @@ set_target_properties(WorldPartitionTests PROPERTIES
 
 add_test(NAME world_partition_tests COMMAND WorldPartitionTests)
 
+# WorldChannels: independent heightfield/biome data and world-scoped registry.
+add_executable(WorldChannelsTests test_world_channels.cpp)
+target_link_libraries(WorldChannelsTests PRIVATE engine)
+set_target_properties(WorldChannelsTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME world_channels_tests COMMAND WorldChannelsTests)
+
 # The cooked-brick asset form (milestone 4): BC4 codec error bounds, the
 # .wfb builder/reader roundtrip, sqrt-density fidelity vs a dense
 # reference, and the CookedBrickSource through the paging system.
@@ -1526,6 +1533,13 @@ set_target_properties(GpuSceneCandidatesTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME gpu_scene_candidates_tests COMMAND GpuSceneCandidatesTests)
 
+# CPU-only P1 flat multi-view leaf classifier parity (no GPU dispatch).
+add_executable(GpuSceneLeafClassifyTests test_gpu_scene_leaf_classify.cpp)
+target_link_libraries(GpuSceneLeafClassifyTests PRIVATE engine)
+set_target_properties(GpuSceneLeafClassifyTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME gpu_scene_leaf_classify_tests COMMAND GpuSceneLeafClassifyTests)
+
 # Opt-in GPU scene instance-culling view + reference verdict parity.
 add_executable(GpuSceneValidationTests test_gpu_scene_validation.cpp)
 target_link_libraries(GpuSceneValidationTests PRIVATE engine)
@@ -1719,3 +1733,20 @@ target_include_directories(SmvkIndexedRawTableTests PRIVATE
     ${CMAKE_SOURCE_DIR}/external/glm)
 target_link_libraries(SmvkIndexedRawTableTests PRIVATE engine)
 add_test(NAME smvk_indexed_raw_table_tests COMMAND SmvkIndexedRawTableTests)
+
+# Device-free contract for proposed interchangeable world geometry backends.
+add_executable(GeometryBackendContractTests test_geometry_backend_contract.cpp)
+target_include_directories(GeometryBackendContractTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/include)
+set_target_properties(GeometryBackendContractTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME geometry_backend_contract_tests COMMAND GeometryBackendContractTests)
+
+
+# Backend registry + concrete backend construction (links the engine for the
+# backend impl TUs; CPU-only — no Vulkan device at runtime).
+add_executable(GeometryBackendTests test_geometry_backend.cpp)
+target_link_libraries(GeometryBackendTests PRIVATE engine)
+set_target_properties(GeometryBackendTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME geometry_backend_tests COMMAND GeometryBackendTests)

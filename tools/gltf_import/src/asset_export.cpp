@@ -37,6 +37,7 @@
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/tour.h>
 #include <Engine/Asset/touranim.h>
+#include <Engine/Placement/baked_placement.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Utils/ktx_error_texture.h> // EnsureClusterErrorTexture mint
 #include <Engine/Utils/texture_loader.h>
@@ -221,6 +222,31 @@ bool ReadFileBytes(const std::filesystem::path& path, std::vector<uint8_t>& out,
         return false;
     }
     out.assign((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+    return true;
+}
+
+// Parses a mesh URI fragment "mesh.<N>/prim.<M>" -> (N, M). Returns false when
+// the fragment is not that exact shape (a cluster-local fallback URI, or a
+// pre-URI asset). The tinygltf mesh index N + primitive index M are the
+// SOURCE identity the baked placement's render prototypes record pre-decode.
+bool ParseMeshPrimFragment(const std::string& frag, uint32_t& mesh, uint32_t& prim) {
+    if (frag.rfind("mesh.", 0) != 0)
+        return false;
+    const size_t slash = frag.find("/prim.");
+    if (slash == std::string::npos)
+        return false;
+    const std::string m = frag.substr(5, slash - 5);
+    const std::string p = frag.substr(slash + 6);
+    char* end = nullptr;
+    const long mv = std::strtol(m.c_str(), &end, 10);
+    if (!end || *end != '\0' || mv < 0)
+        return false;
+    end = nullptr;
+    const long pv = std::strtol(p.c_str(), &end, 10);
+    if (!end || *end != '\0' || pv < 0)
+        return false;
+    mesh = uint32_t(mv);
+    prim = uint32_t(pv);
     return true;
 }
 
@@ -1327,7 +1353,14 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
     // The cook-time meshopt config (the LOD chain + meshlets derive in the
     // per-part import below; the manifest records their fingerprint).
     smvk::MeshOptConfig meshOpt{};
-    meshOpt.enabled = config.lods;
+    // The OPTIMIZE pass (weld + vertex cache + overdraw + vertex fetch) is a
+    // PURE REORDER — no triangle loss — and the runtime's mesh registration
+    // (RegisterWorldMeshes -> GetRetainedUpload) depends on it for the
+    // sub-meshlet-threshold meshes. It must ALWAYS run; only the simplify/LOD
+    // chain is gated by --lods. (Tying `enabled` to config.lods made --lods
+    // off skip the optimize, so small meshes had no retained upload and the
+    // task/mesh path fell back to "geometry ids incompatible".)
+    meshOpt.enabled = true;
     meshOpt.generateLods = config.lods;
     meshOpt.lodRatios = config.lodRatios;
     meshOpt.lodTargetError = config.lodTargetError;
@@ -1558,6 +1591,14 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
     std::unique_ptr<smvk::WorldPage> cluster;
     std::vector<int> gltfNodeMap;
 
+    // Baked placement mesh-identity resolution collects the per-part
+    // (gltf mesh index, primitive index) -> part-local .geometry blob index
+    // map + blob count, then resolves GLOBAL flat surface indices across all
+    // parts at the end (split families: one sidecar, N part blobs — the flat
+    // surface index is the blob index in the CONCATENATED family geometry).
+    std::vector<std::map<std::pair<uint32_t, uint32_t>, uint32_t>> bakedPartSurfaceOf;
+    std::vector<uint32_t> bakedPartBlobCount;
+
     // 4) The .geometry: import + serialize. Oversized scenes PARTITION (P1):
     // each part imports into its own bounded cluster and serializes into
     // <stem>_partN.geometry. Materials + manifest identity are shared (derived
@@ -1585,8 +1626,12 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
             partCluster->scene.globalTransform[size_t(root)] = glm::mat4(1.0f);
             const auto& roots = part.activeRoots.empty() ? part.roots : part.activeRoots;
             importer.preloadTextures();
+            fprintf(stderr, "[import] deriving meshes (roots=%zu)...\n", roots.size());
+            fflush(stderr);
             for (uint32_t sourceNode : roots)
                 importer.import(int(sourceNode));
+            fprintf(stderr, "[import] derive done\n");
+            fflush(stderr);
             if (importer.MeshOverflow()) {
                 fail = "static-mesh pool overflow in part '" + geometryFile +
                        "': " + std::to_string(importer.MeshOverflowCount()) +
@@ -1594,8 +1639,14 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
                 return false;
             }
             importer.BuildSkinData();
+            fprintf(stderr, "[import] skin done\n");
+            fflush(stderr);
             RebuildStaticCache(partCluster->scene);
+            fprintf(stderr, "[import] static-cache done\n");
+            fflush(stderr);
             recalculateGlobalTransforms(partCluster->scene);
+            fprintf(stderr, "[import] transforms done\n");
+            fflush(stderr);
             gltfNodeMap = importer.gltfNodeMap();
         }
 
@@ -1775,6 +1826,28 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
                 mesh.instances.push_back(inst);
                 ++stats.instances;
             }
+            // Collect the baked placement's per-part mesh identity: the USD
+            // adapter recorded the tinygltf mesh index + primitive index in
+            // (meshKey, surfaceIndex) as temporaries. The native derivation
+            // resolves surfaceIndex to a GLOBAL FLAT SURFACE (the .geometry
+            // blob index across the whole family — the PointInstancer's
+            // surfaces are flat, non-hierarchical) at the END of the derive,
+            // once every part's blob count is known (split families: the flat
+            // surface index is the blob index in the CONCATENATED family
+            // geometry). The URI fragment's "mesh.N" now carries the glTF mesh
+            // index (the stableKey), so the key joins to the temporaries
+            // directly.
+            if (MutableLastImportedBakedPlacement) {
+                std::map<std::pair<uint32_t, uint32_t>, uint32_t> surfaceOf;
+                for (const auto& [poolIdx, blobIdx] : blobOf) {
+                    uint32_t n = 0, m = 0;
+                    if (blobIdx < mesh.geometry.size() &&
+                        ParseMeshPrimFragment(mesh.geometry[blobIdx].uriFragment, n, m))
+                        surfaceOf[{n, m}] = blobIdx;
+                }
+                bakedPartSurfaceOf.push_back(std::move(surfaceOf));
+                bakedPartBlobCount.push_back(uint32_t(mesh.geometry.size()));
+            }
             // Lights (the pool defs + node links).
             for (const LightRow& _row : scene.tables.lights) {
                 const NodeId node = _row.node;
@@ -1810,6 +1883,8 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
                 }
         }
         WriteMeshAsset(dir / geometryFile, mesh, fail);
+        fprintf(stderr, "[import] wrote %s\n", geometryFile.c_str());
+        fflush(stderr);
         cluster = std::move(partCluster);
         return true;
     };
@@ -1831,6 +1906,39 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
         std::filesystem::remove(dir / (stem + ".geometry"), staleEc);
         staleEc.clear();
         std::filesystem::remove(dir / (stem + ".mesh"), staleEc);
+    }
+
+    // Baked placement mesh identity: resolve GLOBAL flat surface indices
+    // across all parts. The per-part pass above only COLLECTED the
+    // (gltf mesh index, primitive index) -> part-local blob index maps, so the
+    // temporaries (meshKey = gltf mesh index, surfaceIndex = primitive index)
+    // are still intact here. The GLOBAL surface index is the blob index in the
+    // CONCATENATED family geometry: part 0's blobs are [0, N0), part 1's are
+    // [N0, N0+N1), ... — the cook resolves it back to (part, local blob) via
+    // the same cumulative walk.
+    if (MutableLastImportedBakedPlacement) {
+        if (auto* baked = MutableLastImportedBakedPlacement()) {
+            std::vector<uint32_t> partOffset(bakedPartBlobCount.size(), 0);
+            uint32_t acc = 0;
+            for (size_t pi = 0; pi < bakedPartBlobCount.size(); ++pi) {
+                partOffset[pi] = acc;
+                acc += bakedPartBlobCount[pi];
+            }
+            for (auto& rp : baked->renderPrototypes) {
+                const std::pair<uint32_t, uint32_t> key{uint32_t(rp.meshKey), rp.surfaceIndex};
+                bool resolved = false;
+                for (size_t pi = 0; pi < bakedPartSurfaceOf.size() && !resolved; ++pi) {
+                    const auto it = bakedPartSurfaceOf[pi].find(key);
+                    if (it != bakedPartSurfaceOf[pi].end()) {
+                        rp.surfaceIndex = partOffset[pi] + it->second; // GLOBAL flat surface
+                        rp.meshKey = 0; // asset -> project MeshKey (project pipeline)
+                        resolved = true;
+                    }
+                }
+                if (!resolved)
+                    rp.surfaceIndex = 0xFFFFFFFFu; // loud: unresolved surface
+            }
+        }
     }
 
     // 5) Animation assets (the .tourAnim format; tracks retargeted onto
@@ -2145,8 +2253,35 @@ bool ImportMeshSource(const std::filesystem::path& gltfPath,
     std::string conversionError;
     if (!DecodeGltfSourceScene(model, scene, &conversionError))
         return giveUp(conversionError);
-    return DeriveNativeAssets(
-        scene, gltfPath, gltfGuid, prevIdentity, config, outManifest, outStats, err, extraDeps);
+    if (!DeriveNativeAssets(
+            scene, gltfPath, gltfGuid, prevIdentity, config, outManifest, outStats, err, extraDeps))
+        return false;
+    // Persist the baked placement cloud (the USD PointInstancer expansion)
+    // beside the .geometry (same stem) AFTER the derivation resolved its mesh
+    // identity (tinygltf mesh index -> the FLAT surface/blob index + the asset
+    // MeshKey stays 0 for the project pipeline). Non-USD sources leave it absent
+    // (the global is null). Leading `::tour` — inside smvk::assets the bare
+    // `tour` is the `::tour::asset` alias (tour.h).
+    if (LastImportedBakedPlacement) {
+        if (const ::tour::placement::BakedPlacementAsset* baked = LastImportedBakedPlacement()) {
+            std::vector<uint8_t> blob;
+            if (!::tour::placement::SerializeBakedPlacement(*baked, blob))
+                return giveUp("baked placement serialization failed");
+            const std::filesystem::path sidecar =
+                gltfPath.parent_path() / (gltfPath.stem().string() + ".baked_placement");
+            std::string werr;
+            if (!WriteFileBytes(sidecar, blob, werr))
+                return giveUp(werr);
+            std::fprintf(stderr,
+                         "[import] baked placement: %zu points, %zu render prototypes -> "
+                         "%s.baked_placement\n",
+                         baked->points.size(),
+                         baked->renderPrototypes.size(),
+                         gltfPath.stem().string().c_str());
+            std::fflush(stderr);
+        }
+    }
+    return true;
 }
 
 std::string SourceAssetGuid(const std::filesystem::path& gltfPath) {
