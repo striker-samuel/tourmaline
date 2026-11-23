@@ -87,7 +87,12 @@ the project handles incremental re-imports automatically.
    bisect can reproduce the bake.
 
 ---
-built from master `242ebe70ac885923af118ef4e6feae60e6e98c90` (the
-releases-branch drop commit `028c7a62` records the same). On a refresh:
-note the NEW master hash here and in the drop commit message so the
-bake stays reproducible against a bisect.
+built from `gpu-scene/world-partition-streaming-gpu-update` `c53b3ab6`
+(the SMP9 pak-format epoch: meshlet trailer carries `maxLocalVertex`).
+On a refresh: note the NEW hash here and in the drop commit message so
+the bake stays reproducible against a bisect.
+
+SMP9 note: the pak format bumped (SMP8 -> SMP9) to persist the
+meshlet `maxLocalVertex` at cook time. `sponza_10.tapp` +
+`sponza_10-2316986f406faa97.pak` in the `demo-content` release are
+SMP9; `knight.pak` is still SMP8 and needs a re-cook.
