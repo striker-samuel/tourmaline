@@ -4787,15 +4787,15 @@ void TestLightCookieBakeRecords() {
     }
     Check(!LoadTourFromString(
               "lightCookieBake -light \"spot\" -output \"../escape.texture\" "
-              "-occluder \"mesh\";\\n", loaded, err),
+              "-occluder \"mesh\";\n", loaded, err),
           "light cookie bake rejects path traversal");
     Check(!LoadTourFromString(
               "lightCookieBake -light \"spot\" -output \"cookie.texture\" "
-              "-occluder \"mesh\" -samples 0;\\n", loaded, err),
+              "-occluder \"mesh\" -samples 0;\n", loaded, err),
           "light cookie bake rejects zero samples");
     Check(!LoadTourFromString(
               "lightCookieBake -light \"spot\" -output \"cookie.texture\" "
-              "-occluder \"mesh\" -resolution 300;\\n", loaded, err),
+              "-occluder \"mesh\" -resolution 300;\n", loaded, err),
           "light cookie bake rejects non-power-of-two resolution");
 }
 
