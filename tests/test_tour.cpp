@@ -4756,7 +4756,51 @@ void TestShapePlacements() {
           "shape placement rejects nonfinite coordinates");
 }
 
+void TestLightCookieBakeRecords() {
+    using namespace smvk::tour;
+    Doc authored;
+    LightCookieBake bake;
+    bake.lightUuid = "spot-uuid";
+    bake.occluderUuids = {"shade-uuid", "reflector-uuid"};
+    bake.output = "content/textures/fixture_cookie.texture";
+    bake.resolution = 512;
+    bake.samples = 128;
+    bake.emitterRadius = 0.025f;
+    bake.captureDistance = 3.0f;
+    authored.lightCookieBakes.push_back(bake);
+    std::string err;
+    const std::string path = TempTour();
+    Check(SaveTour(path, authored, err), "save light cookie bake recipe");
+    Doc loaded;
+    Check(LoadTour(path, loaded, err), "load light cookie bake recipe");
+    Check(loaded.lightCookieBakes.size() == 1, "light cookie bake survives roundtrip");
+    if (loaded.lightCookieBakes.size() == 1) {
+        const auto& actual = loaded.lightCookieBakes.front();
+        Check(actual.lightUuid == bake.lightUuid &&
+                  actual.occluderUuids == bake.occluderUuids &&
+                  actual.output == bake.output &&
+                  actual.resolution == bake.resolution &&
+                  actual.samples == bake.samples &&
+                  actual.emitterRadius == bake.emitterRadius &&
+                  actual.captureDistance == bake.captureDistance,
+              "light cookie bake payload survives roundtrip");
+    }
+    Check(!LoadTourFromString(
+              "lightCookieBake -light \"spot\" -output \"../escape.texture\" "
+              "-occluder \"mesh\";\\n", loaded, err),
+          "light cookie bake rejects path traversal");
+    Check(!LoadTourFromString(
+              "lightCookieBake -light \"spot\" -output \"cookie.texture\" "
+              "-occluder \"mesh\" -samples 0;\\n", loaded, err),
+          "light cookie bake rejects zero samples");
+    Check(!LoadTourFromString(
+              "lightCookieBake -light \"spot\" -output \"cookie.texture\" "
+              "-occluder \"mesh\" -resolution 300;\\n", loaded, err),
+          "light cookie bake rejects non-power-of-two resolution");
+}
+
 int main() {
+    TestLightCookieBakeRecords();
     TestShapePlacements();
     TestPhysicsAuthoring();
     TestRequiredNodeNames();
