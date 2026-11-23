@@ -13132,7 +13132,13 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 // "why indexed raster?" answer) instead of silently skipping
                 // the meshlet path. Evaluated unconditionally (all pure reads;
                 // g_gi keeps its internal short-circuit for the variant index).
-                const bool g_taskMeshOn = s_gpuSceneTaskMesh;
+                // The task/mesh path is "on" only when the opt-in toggle is set
+                // AND the device exposes VK_EXT_mesh_shader. TOURMALINE_MESH=0
+                // (mesh-shader disavailability simulation) therefore disables the
+                // path rather than tripping the hard-error gate below — the
+                // indexed-raster fallback is the intended behavior there, not a
+                // silent degradation to abort on.
+                const bool g_taskMeshOn = s_gpuSceneTaskMesh && smvk::SupportsMeshShaders();
                 const bool g_rasterMode = gpuSceneRasterMode;
                 const bool g_workReady = workReady && rasterReady;
                 const bool g_geoIds = m_gpuSceneTaskGeometryIdsCompatible;
