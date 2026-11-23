@@ -10,6 +10,14 @@
       "exe": "out/build/x64-Release/App",
       "mode": "bench",
       "env": {}
+    },
+    {
+      "name": "release-mesh-off",
+      "exe": "out/build/x64-Release/App",
+      "mode": "bench",
+      "env": {
+        "TOURMALINE_MESH": "0"
+      }
     }
   ]
 }
