@@ -2646,8 +2646,12 @@ bool WorldRenderer::onAttach() {
                             // view instead of high in the sky.
                             const float height = std::clamp(horiz * 0.01f, 40.0f, 250.0f);
                             const glm::vec3 eye(center.x, bounds.mx.y + height, center.z);
+                            // Near-horizon gaze (gentle down-tilt, not the old
+                            // near-vertical -0.9 down-slope): the flat world's
+                            // horizon carries the far grid cells, so a mostly
+                            // horizontal view frames the scene the bench wants.
                             const glm::vec3 fwd = glm::normalize(
-                                glm::vec3(0.35f, -0.9f, -0.26f)); // gentle down-slope toward -Z
+                                glm::vec3(0.0f, -0.06f, -1.0f)); // horizon, slight down toward -Z
                             m_cameraPositioner.lookAt(eye, eye + fwd, glm::vec3(0.0f, 1.0f, 0.0f));
                             m_sceneFarClip = std::clamp(horiz * 2.0f, 500.0f, 60000.0f);
                             std::cerr << "[Scene] camera framed: open-world eye=(" << eye.x << ","

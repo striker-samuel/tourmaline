@@ -2182,6 +2182,56 @@ void WorldRenderer::DrawDebugViewHint() {
     ImGui::PopStyleVar();
 }
 
+void WorldRenderer::DrawPanicOverlay() {
+    // Collect the render-degradation conditions. Anything here means the
+    // canonical GPU path degraded or is about to fail — show it loudly and
+    // unconditionally (no Ctrl+T, no panel).
+    std::vector<std::string> panic;
+    if (!m_gpuSceneTaskMeshActive) {
+        if (m_gpuSceneRasterDrawActive)
+            panic.emplace_back("FALLBACK: indexed raster (task/mesh not engaged)");
+        else
+            panic.emplace_back("FALLBACK: direct legacy (no GPU scene)");
+    }
+    if (m_gpuSceneRasterLegacyCount > 0)
+        panic.emplace_back("LEGACY: " + std::to_string(m_gpuSceneRasterLegacyCount) +
+                           " direct instance(s)");
+    // Oversubscription: the static vertex/index monoblocks near capacity.
+    {
+        const auto& h = smvk::staticVertexFmtHeap;
+        const uint64_t vCap = h.m_staticVertexBlock.Capacity();
+        const uint64_t vUsed = h.m_staticVertexBlock.Used();
+        const uint64_t iCap = h.m_staticIndexBlock.Capacity();
+        const uint64_t iUsed = h.m_staticIndexBlock.Used();
+        if ((vCap != 0 && vUsed >= vCap * 90u / 100u) || (iCap != 0 && iUsed >= iCap * 90u / 100u))
+            panic.emplace_back("OVERSUBSCRIBED: static heap near capacity");
+    }
+    if (panic.empty())
+        return; // nothing wrong — no legend
+    const ImVec2 disp = ImGui::GetIO().DisplaySize;
+    ImGui::SetNextWindowPos(ImVec2(disp.x * 0.5f, 44.0f), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
+    ImGui::SetNextWindowBgAlpha(0.72f);
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f);
+    if (!ImGui::Begin("##tourmaline_panic",
+                      nullptr,
+                      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
+                          ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                          ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_AlwaysAutoResize)) {
+        ImGui::End();
+        ImGui::PopStyleVar();
+        return;
+    }
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.22f, 0.22f, 1.0f));
+    ImGui::TextUnformatted("RENDER PANIC");
+    ImGui::PopStyleColor();
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.48f, 0.42f, 1.0f));
+    for (const std::string& p : panic)
+        ImGui::TextUnformatted(p.c_str());
+    ImGui::PopStyleColor();
+    ImGui::End();
+    ImGui::PopStyleVar();
+}
+
 void WorldRenderer::DrawHudOverlay() {
     if (!m_showHud)
         return;
@@ -3163,6 +3213,10 @@ void WorldRenderer::DrawAppDebugUi(const DebugUiFrame& frame) {
     // Debug-view hint (top-center, auto): the active view's name +
     // its color coding while a debug visualization is on.
     DrawDebugViewHint();
+
+    // Panic legend (always visible, red, top): fallback/oversubscription/
+    // render-failure conditions — drawn last so it sits above the stats.
+    DrawPanicOverlay();
 
     // Frame-time histogram (View-menu / programmatic toggle): SEPARATE UI
     // from the debug panel - a full-width bottom strip (see
