@@ -1952,6 +1952,22 @@ bool SerializeClusters(const std::vector<const WorldPage*>& clusters,
             ms.aabbMax = sceneBounds.mx;
             ms.nodes = nodeCount;
             ms.meshes = static_cast<uint32_t>(scene.tables.meshes.size());
+            // Streaming-budget geometry (v2): the scene's aggregate vertex/
+            // index footprint, so the page streamer's admission gate bounds the
+            // static monoblocks exactly (the old per-mesh-average estimate
+            // under-counted the terrain pages and oversubscribed the heaps).
+            uint64_t vertexCount = 0, indexBytes = 0;
+            for (const MeshRow& row : scene.tables.meshes) {
+                const auto h = cluster.staticMeshes.getHandle(row.mesh);
+                if (!h.valid())
+                    continue;
+                if (const StaticMesh* m = cluster.staticMeshes.get(h)) {
+                    vertexCount += m->geometry.vertexCount;
+                    indexBytes += uint64_t(m->geometry.indexCount) * 4u;
+                }
+            }
+            ms.vertexCount = vertexCount;
+            ms.indexBytes = indexBytes;
             worldManifest.push_back(ms);
         }
     } // per-cluster loop
@@ -3484,7 +3500,13 @@ std::unique_ptr<WorldPage> DeserializeCluster(
                     " source(s), " + std::to_string(totalVerts) + " total verts, heap cap " +
                     std::to_string(smvk::staticVertexFmtHeap.m_staticVertexBlock.Capacity()) +
                     "): " + meshMetas.front().uri;
-                return fail(detail);
+                // The static monoblock is oversubscribed. This is a hard OOM:
+                // never a silent fallback (a skipped page renders a partial
+                // world) — abort loudly so the budget/cook is sized correctly.
+                std::fprintf(
+                    stderr, "[Cluster] FATAL: static heap oversubscribed: %s\n", detail.c_str());
+                std::fflush(stderr);
+                std::abort();
             }
         }
         size_t up = 0; // cursor into handles (upload order == pak order)

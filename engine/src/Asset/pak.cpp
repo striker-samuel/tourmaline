@@ -1630,7 +1630,7 @@ bool ParseAssetIdsBlob(std::span<const uint8_t> blob,
 // ---------------------------------------------------------------------------
 
 inline constexpr uint32_t kWorldManifestMagic = 0x4E414D57u; // "WMAN" LE
-inline constexpr uint32_t kWorldManifestVersion = 1;
+inline constexpr uint32_t kWorldManifestVersion = 2;         // v2: +vertexCount/indexBytes
 
 std::vector<uint8_t> WriteWorldManifestBlob(const WorldManifestRow* rows, size_t count) {
     std::vector<uint8_t> out;
@@ -1649,6 +1649,8 @@ std::vector<uint8_t> WriteWorldManifestBlob(const WorldManifestRow* rows, size_t
         }
         AppendU32(out, r.nodes);
         AppendU32(out, r.meshes);
+        AppendU64(out, r.vertexCount);
+        AppendU64(out, r.indexBytes);
     }
     return out;
 }

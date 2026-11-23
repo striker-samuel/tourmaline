@@ -541,28 +541,42 @@ class ScenePageStreamer : public engine::worldpartition::IWorldStreamProvider {
         return (cap * 85u) / 100u;
     }
 
-    // Scale-free estimate of the async carve burst: the meshes still dispatched
-    // (queued or in a bin) times the running per-mesh vertex average observed
-    // from the arena. A floor keeps the cold-start estimate conservative.
+    // The static index monoblock budget (BYTES), 85% of the arena like the
+    // vertex budget — the admission gate bounds BOTH heaps.
+    uint64_t IndexBudget() const {
+        const uint64_t cap = smvk::staticVertexFmtHeap.m_staticIndexBlock.Capacity();
+        return (cap * 85u) / 100u;
+    }
+
+    // EXACT in-flight vertex estimate: the manifest carries each scene's
+    // aggregate vertex count, so the async carve burst is summed directly
+    // (the old per-mesh-average extrapolation under-counted the terrain pages
+    // and oversubscribed the static heaps).
     uint64_t InFlightVertexEstimate() const {
-        uint64_t meshes = 0;
+        uint64_t verts = 0;
         for (uint32_t i = 0; i < manifest_.sceneCount; ++i)
             if (dispatched_[i])
-                meshes += manifest_.Meshes(i);
-        if (meshes == 0)
-            return 0;
-        const uint64_t resident = smvk::staticVertexFmtHeap.m_staticVertexBlock.Used();
-        const uint64_t residentMeshes = std::max<uint64_t>(1, world_.meshLocations.size());
-        const uint64_t perMesh = std::max<uint64_t>(64, resident / residentMeshes);
-        return meshes * perMesh;
+                verts += manifest_.VertexCount(i);
+        return verts;
+    }
+
+    // EXACT in-flight index estimate (BYTES), same source.
+    uint64_t InFlightIndexEstimate() const {
+        uint64_t bytes = 0;
+        for (uint32_t i = 0; i < manifest_.sceneCount; ++i)
+            if (dispatched_[i])
+                bytes += manifest_.IndexBytes(i);
+        return bytes;
     }
 
     bool HeapNearlyFull() const {
-        const uint64_t cap = smvk::staticVertexFmtHeap.m_staticVertexBlock.Capacity();
-        if (cap == 0)
-            return false; // uninitialized arena: let the load fail normally
-        const uint64_t used = smvk::staticVertexFmtHeap.m_staticVertexBlock.Used();
-        return used + InFlightVertexEstimate() >= GeometryBudget();
+        const uint64_t vCap = smvk::staticVertexFmtHeap.m_staticVertexBlock.Capacity();
+        const uint64_t vUsed = smvk::staticVertexFmtHeap.m_staticVertexBlock.Used();
+        const bool vertexFull = vCap != 0 && vUsed + InFlightVertexEstimate() >= GeometryBudget();
+        const uint64_t iCap = smvk::staticVertexFmtHeap.m_staticIndexBlock.Capacity();
+        const uint64_t iUsed = smvk::staticVertexFmtHeap.m_staticIndexBlock.Used();
+        const bool indexFull = iCap != 0 && iUsed + InFlightIndexEstimate() >= IndexBudget();
+        return vertexFull || indexFull;
     }
 
     World& world_;

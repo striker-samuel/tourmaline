@@ -374,6 +374,12 @@ struct WorldManifestRow {
     glm::vec3 aabbMax{0.0f};
     uint32_t nodes = 0;
     uint32_t meshes = 0;
+    // Streaming-budget accounting (v2): the scene's aggregate geometry, so the
+    // page streamer's admission gate can bound the RESIDENT monoblock exactly
+    // (the old estimate extrapolated a per-mesh average and under-counted the
+    // terrain pages, oversubscribing the static heaps).
+    uint64_t vertexCount = 0; // packed vertices (pos + shading, one each)
+    uint64_t indexBytes = 0;  // u32 index bytes
 };
 
 // The runtime view: borrowed bytes of the "#world" blob + the scene count.
@@ -382,7 +388,7 @@ struct WorldManifestRow {
 struct WorldManifestView {
     std::span<const uint8_t> bytes;
     uint32_t sceneCount = 0;
-    static constexpr size_t kRowBytes = 40;
+    static constexpr size_t kRowBytes = 56;
 
     bool Valid() const {
         return sceneCount != 0 && bytes.size() >= 12 + size_t(sceneCount) * kRowBytes;
@@ -413,6 +419,16 @@ struct WorldManifestView {
         uint32_t m = 0;
         std::memcpy(&m, Row(i) + 36, 4);
         return m;
+    }
+    uint64_t VertexCount(uint32_t i) const {
+        uint64_t v = 0;
+        std::memcpy(&v, Row(i) + 40, 8);
+        return v;
+    }
+    uint64_t IndexBytes(uint32_t i) const {
+        uint64_t b = 0;
+        std::memcpy(&b, Row(i) + 48, 8);
+        return b;
     }
 };
 
