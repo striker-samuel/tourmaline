@@ -600,6 +600,20 @@ struct ShapePlacement {
     bool enabled = true;
 };
 
+// Recipe for baking fixture self-occlusion into a light cookie. UUIDs are
+// stable across node reorder and references; the bake resolves them against
+// the scene at execution time. The output is a project-relative .texture
+// asset bound separately via setLightAttr cookie.
+struct LightCookieBake {
+    std::string lightUuid;
+    std::vector<std::string> occluderUuids;
+    std::string output;
+    uint32_t resolution = 256;
+    uint32_t samples = 64;
+    float emitterRadius = 0.01f; // meters, controls soft penumbrae
+    float captureDistance = 2.0f; // meters, reference receiver distance
+};
+
 struct Doc {
     int version = kTourVersion;
     std::string source;      // source glTF path (DEPRECATED: geometry may
@@ -629,6 +643,8 @@ struct Doc {
     // material (or a light cookie) referencing a .texture finds its pool
     // entry exactly like the authoring session.
     std::vector<TextureAssetCmd> textureAssets;
+    // Editor-authored fixture cookie bake recipes (not baked pixel payloads).
+    std::vector<LightCookieBake> lightCookieBakes;
     // GI-asset bindings (ordered; see GiAssetCmd): the scene's baked-GI
     // identification — the world field + one record per authored convex
     // volume. Resolved onto the replayed scene by ApplyTourToCluster
