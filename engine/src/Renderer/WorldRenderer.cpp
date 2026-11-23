@@ -3087,6 +3087,9 @@ void WorldRenderer::LoadBakedPlacementsFromWorld() {
         m_bakedPlacementInstances.push_back(
             BakedPlacementInstance{std::move(rt), refs[i].interestRadius});
     }
+    if (!m_bakedPlacementInstances.empty())
+        std::cerr << "[WorldRenderer] baked placement runtimes: "
+                  << m_bakedPlacementInstances.size() << "\n";
 }
 
 void WorldRenderer::onDetach() {

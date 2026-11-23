@@ -113,6 +113,14 @@ void World::LoadBakedPlacements(const PakReader& reader) {
             continue;
         }
     }
+    if (!bakedPlacementCooked.empty()) {
+        size_t points = 0;
+        for (const auto& c : bakedPlacementCooked)
+            for (const auto& t : c.tiles)
+                points += t.instances.size();
+        std::cerr << "[World] baked placements: " << bakedPlacementCooked.size() << " cloud(s), "
+                  << points << " instances\n";
+    }
 }
 
 bool World::LoadTerrainFromPak(const PakReader& reader, std::string& err) {
