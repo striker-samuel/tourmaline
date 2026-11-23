@@ -1148,6 +1148,20 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
             f << " -name " << Quote(ta.name);
         f << ";\n";
     }
+    // Fixture cookie recipes: one record per light, occluders listed by
+    // stable node UUID. Baking regenerates the output asset; the recipe
+    // survives SaveTour/LoadTour independent of transient editor selection.
+    for (const LightCookieBake& bake : doc.lightCookieBakes) {
+        f << "lightCookieBake -light " << Quote(bake.lightUuid)
+          << " -output " << Quote(bake.output)
+          << " -resolution " << bake.resolution
+          << " -samples " << bake.samples
+          << " -radius " << bake.emitterRadius
+          << " -distance " << bake.captureDistance;
+        for (const auto& uuid : bake.occluderUuids)
+            f << " -occluder " << Quote(uuid);
+        f << ";\\n";
+    }
     // GI-asset bindings (ordered; see GiAssetCmd): the scene's baked-GI
     // identification, doc-level state like the pool imports above. The
     // bake owner upserts these at bake time; the -ref indices are the
@@ -2034,6 +2048,69 @@ bool LoadTourFromString(const std::string& text,
                 doc.textureAssets.push_back(std::move(ta));
             else
                 warn("tour:" + std::to_string(lineNo) + ": textureAsset without -path (skipped)");
+            continue;
+        }
+        if (verb == "lightCookieBake") {
+            LightCookieBake bake{};
+            bool hasLight = false, hasOutput = false;
+            for (size_t i = 1; i < toks.size(); ++i) {
+                const std::string field = toks[i];
+                if (i + 1 >= toks.size()) {
+                    err = "line " + std::to_string(lineNo) + ": lightCookieBake missing value";
+                    return false;
+                }
+                std::string value = toks[++i];
+                if (!value.empty() && value.back() == ';')
+                    value.pop_back();
+                if (field == "-light") {
+                    bake.lightUuid = value;
+                    hasLight = true;
+                } else if (field == "-output") {
+                    bake.output = value;
+                    hasOutput = true;
+                } else if (field == "-occluder") {
+                    bake.occluderUuids.push_back(value);
+                } else if (field == "-resolution" || field == "-samples") {
+                    char* end = nullptr;
+                    const auto number = std::strtoul(value.c_str(), &end, 10);
+                    if (end == value.c_str() || *end != '\\0' || number > 4096) {
+                        err = "line " + std::to_string(lineNo) + ": invalid lightCookieBake integer";
+                        return false;
+                    }
+                    if (field == "-resolution") bake.resolution = uint32_t(number);
+                    else bake.samples = uint32_t(number);
+                } else if (field == "-radius" || field == "-distance") {
+                    char* end = nullptr;
+                    const float number = std::strtof(value.c_str(), &end);
+                    if (end == value.c_str() || *end != '\\0' || !std::isfinite(number)) {
+                        err = "line " + std::to_string(lineNo) + ": invalid lightCookieBake float";
+                        return false;
+                    }
+                    if (field == "-radius") bake.emitterRadius = number;
+                    else bake.captureDistance = number;
+                } else {
+                    err = "line " + std::to_string(lineNo) + ": unknown lightCookieBake field '" + field + "'";
+                    return false;
+                }
+            }
+            if (!hasLight || !hasOutput || bake.lightUuid.empty() ||
+                bake.output.empty() || bake.output.find("..") != std::string::npos ||
+                bake.output[0] == '/' || bake.output.find('\\\\') != std::string::npos ||
+                bake.resolution < 16 || bake.resolution > 4096 ||
+                (bake.resolution & (bake.resolution - 1)) ||
+                bake.samples < 1 || bake.samples > 4096 ||
+                bake.emitterRadius < 0.0f || bake.captureDistance <= 0.0f ||
+                bake.occluderUuids.empty() || bake.occluderUuids.size() > 4096 ||
+                doc.lightCookieBakes.size() >= 4096) {
+                err = "line " + std::to_string(lineNo) + ": invalid lightCookieBake recipe";
+                return false;
+            }
+            for (const auto& existing : doc.lightCookieBakes)
+                if (existing.lightUuid == bake.lightUuid) {
+                    err = "line " + std::to_string(lineNo) + ": duplicate lightCookieBake light";
+                    return false;
+                }
+            doc.lightCookieBakes.push_back(std::move(bake));
             continue;
         }
         if (verb == "giAsset") {
