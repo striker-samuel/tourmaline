@@ -412,8 +412,11 @@ def main(argv=None):
                            help="execute the matrix and archive it under --runs-dir")
     run_p.add_argument("--capture", action="store_true",
                        help="capture one scene screenshot per cell (TOURMALINE_CAPTURE)")
-    run_p.add_argument("--capture-frame", type=int, default=30,
-                       help="1-based app frame for the one-shot capture")
+    run_p.add_argument("--capture-frame", type=int, default=8,
+                       help="1-based app frame for the one-shot capture. Default 8 lands "
+                            "inside the App's 10 warmup frames so the ~300 ms PNG export "
+                            "(which runs in the next frame's onUpdate = the 'game' section) "
+                            "is NOT charged to the measured window.")
     run_p.add_argument("--no-compare", action="store_true",
                        help="skip the post-run diff against the baseline")
 
