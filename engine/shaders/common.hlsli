@@ -1043,6 +1043,7 @@ uint decalCount;                                         // 776 0 = decals off
     // runtime keeps the SG specular crossover). ----
     uint giVolumeSpecLayers[32];                                   // 3220 atlas slots (4 roughness layers x 8 volumes)
     uint giVolumeSpecDims[8];                                      // 3348 packed cols | rows << 16
+    uint giVolumeClassSlots[8];                                    // 3380 debug R8 classification slots (GI_DEBUG mode 7)
 };
 
 // Deferred-shadow push constants + shared helpers (needs FrameUniforms

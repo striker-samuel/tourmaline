@@ -8,7 +8,7 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File tools\recreate_bistro.ps1
 #   powershell ... -Project releases\bistro -ProjectExe out\build\x64-Release\Project.exe
 #
-# See releases/bistro/README.md and BISTRO-CREDITS.md.
+# See releases/bistro/README.md and THIRD_PARTY_NOTICES.md.
 
 param(
   [string]$Project = "",

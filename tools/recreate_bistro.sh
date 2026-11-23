@@ -8,7 +8,7 @@
 #
 #   tools/recreate_bistro.sh [project-dir] [project-exe]
 #
-# See releases/bistro/README.md and BISTRO-CREDITS.md.
+# See releases/bistro/README.md and THIRD_PARTY_NOTICES.md.
 
 set -euo pipefail
 

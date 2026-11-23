@@ -22,8 +22,8 @@ struct alignas(16) FusedVerdict {
 };
 static_assert(sizeof(FusedVerdict) == 16);
 
-// HLSL: GpuSceneFusedCullPush. Six BDA pointers then the counts uint4 (packed
-// at offset 48 — see the InstanceCullGpuPush packing note).
+// HLSL: GpuSceneFusedCullPush. Seven BDA pointers then the counts uint4
+// (packed at offset 56 — see the InstanceCullGpuPush packing note).
 struct FusedCullPush {
     uint64_t queue = 0;
     uint64_t members = 0;
@@ -31,9 +31,10 @@ struct FusedCullPush {
     uint64_t ownerGenerations = 0;
     uint64_t views = 0;
     uint64_t verdicts = 0;
-    glm::uvec4 counts{0u}; // x activeLeafCount, y viewCount, z/w reserved
+    uint64_t meshes = 0;
+    glm::uvec4 counts{0u}; // x activeLeafCount, y viewCount, z meshCount, w reserved
 };
-static_assert(sizeof(FusedCullPush) == 64);
-static_assert(offsetof(FusedCullPush, counts) == 48);
+static_assert(sizeof(FusedCullPush) == 72);
+static_assert(offsetof(FusedCullPush, counts) == 56);
 
 } // namespace tour::gpu_scene

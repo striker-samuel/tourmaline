@@ -92,8 +92,10 @@ VSOut mainVS(VSIn IN)
         viewProj = pcT.renderViews.Get().views[pcT.mainRenderView]
             .m_viewProjectionMatrix;
     OUT.pos = mul(viewProj, float4(worldPos, 1.0));
-    if (IN.attributes.a < 0.5f)
-        OUT.pos = asfloat(uint4(0x7fc00000u, 0x7fc00000u, 0x7fc00000u, 0x7fc00000u));
+    // Hole masking is handled ENTIRELY by the fragment stage's
+    // interpolated-alpha clip() (terrain.frag.hlsl). A per-vertex NaN
+    // clip-coordinate cutout here would explode mixed land/water
+    // triangles at the coastline, so it is deliberately NOT applied.
 
     OUT.normal = N;
     OUT.tangentBFlip = float4(1.0f, 0.0f, 0.0f, -1.0f);

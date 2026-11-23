@@ -24,6 +24,7 @@
 #include <Engine/Asset/cluster_serializer.h>
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/pak.h>
+#include <Engine/Placement/baked_placement_pak.h>
 #include <Engine/Renderer/geometry_streamer.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Renderer/renderview.h>
@@ -87,6 +88,39 @@ WorldPage& World::LoadPageFromPak(ResourceManager& ctx,
     if (!LoadTerrainFromPak(reader, terrErr))
         std::cerr << "[World] terrain harvest skipped: " << terrErr << "\n";
     return ref;
+}
+
+void World::LoadBakedPlacements(const PakReader& reader) {
+    for (const PakTocEntry* e : reader.BlobsOfKind(PakAssetKind::BakedPlacement)) {
+        // e->path = "<stem>.baked_placement_cooked"; the .geometry family is
+        // the sibling "<stem>.geometry" (the ref's identity, for diagnostics).
+        std::string family = e->path;
+        const std::string suffix = ".baked_placement_cooked";
+        if (family.size() >= suffix.size() &&
+            family.compare(family.size() - suffix.size(), suffix.size(), suffix) == 0)
+            family = family.substr(0, family.size() - suffix.size()) + ".geometry";
+        try {
+            const auto bytes = reader.Payload(*e);
+            tour::placement::BakedPlacementCooked cooked;
+            if (!tour::placement::DeserializeBakedPlacementCooked(
+                    bytes.data(), bytes.size(), cooked))
+                continue;
+            tour::placement::BakedPlacementRef ref;
+            ref.familyPath = std::move(family);
+            bakedPlacementRefs.push_back(std::move(ref));
+            bakedPlacementCooked.push_back(std::move(cooked));
+        } catch (...) {
+            continue;
+        }
+    }
+    if (!bakedPlacementCooked.empty()) {
+        size_t points = 0;
+        for (const auto& c : bakedPlacementCooked)
+            for (const auto& t : c.tiles)
+                points += t.instances.size();
+        std::cerr << "[World] baked placements: " << bakedPlacementCooked.size() << " cloud(s), "
+                  << points << " instances\n";
+    }
 }
 
 bool World::LoadTerrainFromPak(const PakReader& reader, std::string& err) {
@@ -1087,7 +1121,12 @@ uint64_t World::InstantiateSceneHierarchy(
         for (const RenderItem& item : drawItems)
             itemFlags.push_back(item.flags);
     }
-    InvalidateLodCache();
+    // Streaming path: the direct Map adapter bypasses ResolveAndFixup_pages(),
+    // so the per-mesh LOD chains are never rebuilt for the meshes a tile just
+    // published. Rebuild them eagerly (matching the resolve tail) — the GPU
+    // work selector and the CPU LOD picker both index lodChains, and a stale
+    // empty chain leaves streamed geometry with no expandable submesh work.
+    RebuildLodChains();
     InvalidateStaticBvh();
     flagLists.clear();
     dirtyCull = true;
@@ -2428,7 +2467,8 @@ Material* World::GetMaterial(uint32_t materialIndex) {
         return nullptr;
 
     Material* result = loc.cluster->materials.get(loc.handle);
-    if (result) MarkMaterialDirty(materialIndex);
+    if (result)
+        MarkMaterialDirty(materialIndex);
     return result;
 }
 

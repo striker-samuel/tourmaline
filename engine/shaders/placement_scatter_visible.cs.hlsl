@@ -47,7 +47,7 @@ void mainCS(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
         return;
 
     const uint proto = min(pc.instances.Get().items[slot].prototypeId,
-        PLACEMENT_MAX_PROTOS - 1);
+        pc.protoCount - 1);
     uint n;
     InterlockedAdd(pc.bins.Get().v[PLACEMENT_BINS_APPEND_BASE + proto], 1u, n);
     pc.visible.Get().v[pc.bins.Get().v[PLACEMENT_BINS_OFFSET_BASE + proto] + n]

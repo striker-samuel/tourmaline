@@ -95,7 +95,7 @@ struct TileGenConfig {
 // The app layer maps these to gfx::PushDraw or direct draws per frame.
 struct TransientDraw {
     glm::vec3 position{0.0f};
-    float yaw = 0.0f;
+    glm::vec4 rotation{0.0f, 0.0f, 0.0f, 1.0f}; // quaternion (xyzw)
     glm::vec3 scale{1.0f};
     uint32_t prototypeId = 0;
     uint32_t stableLow = 0;

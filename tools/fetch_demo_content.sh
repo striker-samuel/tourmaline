@@ -89,12 +89,9 @@ cp "$tmp/sponza_10.tapp" "$tmp"/sponza_10-*.pak "$tmp/knight.pak" "$DEST"/
 
 # The GitHub release has data + checksums; stage the checked-in source
 # attribution notices next to the fetched content as well.
-credits="$script_dir/../SPONZA-CREDITS.md"
-[ -f "$credits" ] || fail "SPONZA-CREDITS.md is missing from this checkout; cannot stage demo attribution."
-cp "$credits" "$DEST/SPONZA-CREDITS.md"
-knight_credits="$script_dir/../KNIGHT-CREDITS.md"
-[ -f "$knight_credits" ] || fail "KNIGHT-CREDITS.md is missing from this checkout; cannot stage demo attribution."
-cp "$knight_credits" "$DEST/KNIGHT-CREDITS.md"
+credits="$script_dir/../THIRD_PARTY_NOTICES.md"
+[ -f "$credits" ] || fail "THIRD_PARTY_NOTICES.md is missing from this checkout; cannot stage demo attribution."
+cp "$credits" "$DEST/THIRD_PARTY_NOTICES.md"
 
 # Drop stale demo paks from earlier fetches whose content-addressed
 # names are no longer current (the .tapp only ever names the newest).
@@ -108,7 +105,7 @@ for old in "$DEST"/sponza_10-*.pak; do
 done
 
 echo ""
-echo "demo content installed into $DEST (credits: SPONZA-CREDITS.md + KNIGHT-CREDITS.md):"
+echo "demo content installed into $DEST (credits: THIRD_PARTY_NOTICES.md):"
 for f in "$tmp"/sponza_10.tapp "$tmp"/sponza_10-*.pak "$tmp/knight.pak"; do
   du -h "$f" | cut -f1 | xargs -I{} echo "  $(basename "$f")  ({})"
 done

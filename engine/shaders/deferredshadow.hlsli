@@ -238,6 +238,53 @@ float3 DsCountHeat(uint count, uint ceiling)
     return lerp(stops[i], stops[i + 1u], s - float(i));
 }
 
+// Tiny font-free decimal glyphs for the 8x8 Shadow Tile count heatmap.
+// Each bit is one pixel, packed left-to-right/top-to-bottom. The normal
+// 3x5 digits fit two across a tile; 2x5 digits fit three (0..999).
+uint DsCountGlyphBits(uint digit, bool narrow)
+{
+    switch (digit) {
+        case 0u: return narrow ? 1023u : 31599u;
+        case 1u: return narrow ? 686u : 29850u;
+        case 2u: return narrow ? 891u : 29671u;
+        case 3u: return narrow ? 955u : 31207u;
+        case 4u: return narrow ? 693u : 18925u;
+        case 5u: return narrow ? 951u : 31183u;
+        case 6u: return narrow ? 1015u : 31695u;
+        case 7u: return narrow ? 683u : 18727u;
+        case 8u: return narrow ? 1023u : 31727u;
+        case 9u: return narrow ? 959u : 31215u;
+        default: return 0u;
+    }
+}
+
+// Returns true for a lit glyph pixel. Tile-local coordinates are 0..7.
+// The count is clamped at 999; the top-right warning pixel marks overflow.
+bool DsCountGlyph(uint count, uint2 local)
+{
+    const uint shown = min(count, 999u);
+    const uint digits = shown >= 100u ? 3u : (shown >= 10u ? 2u : 1u);
+    const bool narrow = digits == 3u;
+    const uint glyphWidth = narrow ? 2u : 3u;
+    const uint textWidth = digits * glyphWidth + digits - 1u;
+    const uint x0 = (8u - textWidth) / 2u;
+    if (local.y < 1u || local.y >= 6u || local.x < x0
+        || local.x >= x0 + textWidth)
+        return false;
+    const uint relX = local.x - x0;
+    const uint stride = glyphWidth + 1u;
+    if (relX % stride == glyphWidth)
+        return false; // inter-digit spacing
+    const uint index = relX / stride;
+    uint divisor = 1u;
+    if (digits == 3u && index == 0u) divisor = 100u;
+    else if (index == 0u && digits == 2u) divisor = 10u;
+    else if (digits == 3u && index == 1u) divisor = 10u;
+    const uint digit = (shown / divisor) % 10u;
+    const uint bit = (local.y - 1u) * glyphWidth + relX % stride;
+    return ((DsCountGlyphBits(digit, narrow) >> bit) & 1u) != 0u;
+}
+
 // Final-list lookup for one light (figure 7b entries). Returns
 // 0xFFFFFFFF when absent, DS_SLOT_ALL_LIT for a fully-lit entry, else
 // the VisibilityBuffer slot ID.
@@ -290,27 +337,41 @@ float3 DsVisualize(FrameUniforms frame, DsVizParams viz,
     if (mode <= DS_VIZ_COUNT_DIFF) {
         const uint approx = frame.dsTileState.Get().states[tileIdx * 4u + 2u];
         const uint early = frame.dsTileState.Get().states[tileIdx * 4u + 3u];
+        uint count = 0u;
         float3 heat;
+        bool invalidDiff = false;
         if (mode == DS_VIZ_COUNT_APPROX) {
-            heat = DsCountHeat(approx, viz.countCeil);
+            count = approx;
         } else if (mode == DS_VIZ_COUNT_ACCURATE) {
-            heat = DsCountHeat(early, viz.countCeil);
+            count = early;
         } else if (mode == DS_VIZ_COUNT_FINAL) {
-            heat = DsCountHeat(
-                min(frame.dsTileState.Get().states[tileIdx * 4u + 1u],
-                    (uint)DS_MAX_LIGHTS_PER_TILE), viz.countCeil);
+            count = min(frame.dsTileState.Get().states[tileIdx * 4u + 1u],
+                (uint)DS_MAX_LIGHTS_PER_TILE);
         } else {
-            // Difference: approx - accurate. Any NEGATIVE value is a hard
-            // error (the accurate list is a subset of the approximated one
-            // by construction) -> flagged red, out of the heat ramp.
-            const int diff = int(approx) - int(early);
-            heat = (diff < 0)
-                ? float3(1.0f, 0.10f, 0.05f)
-                : DsCountHeat(uint(diff), viz.countCeil);
+            // Accurate is a subset of approximate; a negative difference
+            // is a culling error, not an unsigned count to visualize.
+            invalidDiff = early > approx;
+            count = invalidDiff ? (early - approx) : (approx - early);
         }
+        heat = invalidDiff ? float3(1.0f, 0.10f, 0.05f)
+                           : DsCountHeat(count, viz.countCeil);
         // Faint 64px TileGroup grid so tile/group granularity reads.
         if ((pix.x & 63u) == 0u || (pix.y & 63u) == 0u)
             heat = max(heat, float3(0.10f, 0.10f, 0.12f));
+
+        // Pixel-local decimal readout, using the same GPU tile-state count
+        // as the heatmap. Dark backing keeps the digits legible on yellow,
+        // red and bright scene colors when blended over the lit image.
+        const uint2 local = pix & 7u;
+        if (local.y >= 1u && local.y <= 6u)
+            heat *= 0.12f;
+        if (DsCountGlyph(count, local))
+            heat = float3(1.0f, 1.0f, 1.0f);
+        // Tiles exceeding the three-digit font show 999 plus a marker.
+        if (count > 999u && local.x == 7u && local.y == 0u)
+            heat = float3(1.0f, 0.0f, 1.0f);
+        if (invalidDiff && local.x == 7u && local.y == 0u)
+            heat = float3(1.0f, 0.0f, 1.0f);
         return heat;
     }
 

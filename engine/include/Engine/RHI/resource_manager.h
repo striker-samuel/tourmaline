@@ -52,6 +52,16 @@ static_assert(sizeof(RayTracingInstance) == 80);
 // otherwise. Also settable off at device level via TOURMALINE_MESH=0.
 bool SupportsMeshShaders();
 
+// VK_EXT_mesh_shader device limits, queried from
+// VkPhysicalDeviceMeshShaderPropertiesEXT at device creation (all zeros when
+// the extension is unavailable). The task/mesh dispatch X/Y grid is sized
+// from maxTaskWorkGroupCount; the total is capped by maxTaskWorkGroupTotalCount.
+struct MeshShaderLimits {
+    uint32_t maxTaskWorkGroupCount[3] = {0u, 0u, 0u};
+    uint32_t maxTaskWorkGroupTotalCount = 0u;
+};
+const MeshShaderLimits& GetMeshShaderLimits();
+
 // The ACTIVE Vulkan physical device's name (captured at the device pick
 // from the real VkPhysicalDeviceProperties — never guessed). Serves the
 // stats HUD's GPU line and any diagnostics that want to name the GPU.

@@ -583,10 +583,10 @@ void EditorApp::UploadMaterials(uint32_t flight) {
     // Editor uses the same raw GPU table / stable world slots as the
     // runtime. Its authored-material resolution remains unchanged, but
     // the per-flight GPU publication now sends only modified rows.
-    if (m_editorMaterialWorld != m_world) {
+    if (m_editorMaterialWorld != m_world.get()) {
         m_editorMaterialRows.Reset();
         m_editorMaterialFull.fill(true);
-        m_editorMaterialWorld = m_world;
+        m_editorMaterialWorld = m_world.get();
     }
     if (flight >= smvk::limits::MaxFramesInFlight ||
         !m_editorMaterialRows.Sync(std::span<const smvk::MaterialValues>(mats))) {

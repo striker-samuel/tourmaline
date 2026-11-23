@@ -49,6 +49,7 @@
 #include <volk.h>
 
 #include <Engine/App/cluster.h>
+#include <Engine/Placement/baked_placement_runtime.h>
 #include <Engine/Placement/placement_domain.h>
 #include <Engine/Placement/placement_draw.h>
 #include <Engine/Placement/placement_eval.h>
@@ -137,35 +138,44 @@ bool SortedEqual(std::vector<RenderInstance> a, std::vector<RenderInstance> b) {
             x.stableLow == y.stableLow && x.customB == y.customB && x.prototypeId == y.prototypeId;
         const bool transform =
             NearlyEqualF(x.position.x, y.position.x) && NearlyEqualF(x.position.y, y.position.y) &&
-            NearlyEqualF(x.position.z, y.position.z) && NearlyEqualF(x.yaw, y.yaw) &&
-            NearlyEqualF(x.scale.x, y.scale.x) && NearlyEqualF(x.scale.y, y.scale.y) &&
-            NearlyEqualF(x.scale.z, y.scale.z);
+            NearlyEqualF(x.position.z, y.position.z) && NearlyEqualF(x.rotation.x, y.rotation.x) &&
+            NearlyEqualF(x.rotation.y, y.rotation.y) && NearlyEqualF(x.rotation.z, y.rotation.z) &&
+            NearlyEqualF(x.rotation.w, y.rotation.w) && NearlyEqualF(x.scale.x, y.scale.x) &&
+            NearlyEqualF(x.scale.y, y.scale.y) && NearlyEqualF(x.scale.z, y.scale.z);
         if (!identity || !transform) {
-            std::fprintf(stderr,
-                         "[place-gpu] first diff at %zu/%zu: "
-                         "gpu(pos %.6f %.6f %.6f yaw %.6f scale %.3f proto %u low %08x cb %u)"
-                         " cpu(pos %.6f %.6f %.6f yaw %.6f scale %.3f proto %u low %08x cb %u)"
-                         " identity=%d transform=%d\n",
-                         i,
-                         a.size(),
-                         x.position.x,
-                         x.position.y,
-                         x.position.z,
-                         x.yaw,
-                         x.scale.x,
-                         x.prototypeId,
-                         x.stableLow,
-                         x.customB,
-                         y.position.x,
-                         y.position.y,
-                         y.position.z,
-                         y.yaw,
-                         y.scale.x,
-                         y.prototypeId,
-                         y.stableLow,
-                         y.customB,
-                         int(identity),
-                         int(transform));
+            std::fprintf(
+                stderr,
+                "[place-gpu] first diff at %zu/%zu: "
+                "gpu(pos %.6f %.6f %.6f rot %.3f %.3f %.3f %.3f scale %.3f proto %u low %08x cb %u)"
+                " cpu(pos %.6f %.6f %.6f rot %.3f %.3f %.3f %.3f scale %.3f proto %u low %08x cb "
+                "%u)"
+                " identity=%d transform=%d\n",
+                i,
+                a.size(),
+                x.position.x,
+                x.position.y,
+                x.position.z,
+                x.rotation.x,
+                x.rotation.y,
+                x.rotation.z,
+                x.rotation.w,
+                x.scale.x,
+                x.prototypeId,
+                x.stableLow,
+                x.customB,
+                y.position.x,
+                y.position.y,
+                y.position.z,
+                y.rotation.x,
+                y.rotation.y,
+                y.rotation.z,
+                y.rotation.w,
+                y.scale.x,
+                y.prototypeId,
+                y.stableLow,
+                y.customB,
+                int(identity),
+                int(transform));
             return false;
         }
     }
@@ -192,6 +202,48 @@ bool SortedSubset(const std::vector<RenderInstance>& needle,
     std::sort(nk.begin(), nk.end());
     std::sort(hk.begin(), hk.end());
     return std::includes(hk.begin(), hk.end(), nk.begin(), nk.end());
+}
+
+// Build + upload a proto table (bounds + distance from the layer, index
+// range from the seeds) for the BDA-carried pushes. The cull reads
+// bounds/distance; the draw-build reads the index range.
+struct ProtoTableUpload {
+    smvk::Holder<smvk::BufferHandle> buffer;
+    smvk::LogicalBufferHandle logical{};
+    uint32_t count = 0;
+    [[nodiscard]] uint64_t BDA(smvk::ResourceManager& rm) const {
+        return rm.GetBufferDeviceAddress(buffer);
+    }
+};
+ProtoTableUpload MakeProtoTable(smvk::ResourceManager& rm,
+                                smvk::RenderGraph& rg,
+                                const PlacementSystem::LayerBinding& layer,
+                                const PlacementIndirectCmd* seeds,
+                                uint32_t count) {
+    ProtoTableUpload t;
+    t.count = count;
+    std::vector<PlacementProtoRow> rows(count);
+    for (uint32_t i = 0; i < count; ++i) {
+        const Prototype& p = layer.prototypes.at(i);
+        const glm::vec3 c = (p.boundsMin + p.boundsMax) * 0.5f;
+        const glm::vec3 h = (p.boundsMax - p.boundsMin) * 0.5f;
+        rows[i].bounds = glm::vec4(c, glm::length(h));
+        rows[i].drawDistance = p.maxDrawDistance;
+        rows[i].indexCount = seeds[i].indexCount;
+        rows[i].firstIndex = seeds[i].firstIndex;
+        rows[i].vertexOffset = seeds[i].vertexOffset;
+    }
+    t.buffer = rm.CreateBuffer(
+        count * sizeof(PlacementProtoRow), smvk::BufferType_Storage, "test proto table");
+    rm.UploadDataToBuffer(t.buffer,
+                          rows.data(),
+                          count * sizeof(PlacementProtoRow),
+                          smvk::PipelineStageBit_Compute,
+                          smvk::AccessFlags::ShaderRead,
+                          0,
+                          0);
+    t.logical = rg.AddExternalBuffer(t.buffer, "test proto table");
+    return t;
 }
 
 GridDomain MakeGrid(glm::vec3 origin, uint32_t cells) {
@@ -1019,6 +1071,15 @@ int main() {
         Check(ok, "gpu.vis-scatter-push");
 
         PlacementCullPush cullPush;
+        // The prototype table (fake mesh geometry: proto i draws 300
+        // indices at firstIndex i*64) is a BDA buffer the kernels read.
+        PlacementIndirectCmd seeds[4] = {};
+        for (int i = 0; i < 4; ++i) {
+            seeds[i].indexCount = 300;
+            seeds[i].firstIndex = uint32_t(i) * 64;
+            seeds[i].vertexOffset = 0;
+        }
+        ProtoTableUpload table = MakeProtoTable(rm, rg, lb, seeds, 4);
         FillCullPush(lb,
                      pass2.TileInstancesAddress(rm, 0),
                      pass2.TileCountAddress(rm, 0),
@@ -1027,10 +1088,12 @@ int main() {
                      0 /* no constraint tile: skip alive */,
                      rm.GetBufferDeviceAddress(viewSlab),
                      0,
+                     table.BDA(rm),
+                     4,
                      glm::vec3(0, 5, 0),
                      kPlacementCullFrustum | kPlacementCullDistance,
                      cullPush);
-        Check(cullPush.protoCount == 4 && cullPush.protoDist[1] == 12.0f,
+        Check(cullPush.protoCount == 4 && cullPush.protoTable == table.BDA(rm),
               "gpu.vis-cull-push-filled");
         PlacementScatterVisPush scPush{};
         scPush.instances = pass2.TileInstancesAddress(rm, 0);
@@ -1042,23 +1105,8 @@ int main() {
         PlacementDrawBuildPush dbPush{};
         dbPush.bins = vis.BinsAddress(rm);
         dbPush.indirect = vis.IndirectAddress(rm);
+        dbPush.protoTable = table.BDA(rm);
         dbPush.protoCount = 4;
-        // The prototype table (fake mesh geometry: proto i draws 300
-        // indices at firstIndex i*64) rides the PUSH - draw-build owns
-        // the COMPLETE command (no seed upload anywhere; the stranded-
-        // upload-write class cannot exist in this chain anymore).
-        PlacementIndirectCmd seeds[4] = {};
-        for (int i = 0; i < 4; ++i) {
-            seeds[i].indexCount = 300;
-            seeds[i].firstIndex = uint32_t(i) * 64;
-            seeds[i].vertexOffset = 0;
-        }
-        for (uint32_t i = 0; i < kPlacementMaxProtos; ++i) {
-            const PlacementIndirectCmd& s = i < 4 ? seeds[i] : PlacementIndirectCmd{};
-            dbPush.indexCount[i] = s.indexCount;
-            dbPush.firstIndex[i] = s.firstIndex;
-            dbPush.vertexOffset[i] = s.vertexOffset;
-        }
         vis.ClearFrame(rm); // zero mask + bin atomics (the frame cadence)
 
         host.RunFrame([&](smvk::RenderGraph& g) {
@@ -1436,6 +1484,18 @@ int main() {
         Check(rt->Create(rm, rg), "gpu.rt-create");
         Check(rt->Valid(), "gpu.rt-valid");
 
+        // Seed the prototype table ONCE before the first chain record: the
+        // cull + draw-build both read its BDA (bounds/distance for cull, index
+        // ranges for draw-build) — the seed-once-at-init contract.
+        {
+            PlacementIndirectCmd seeds[2] = {};
+            seeds[0].indexCount = 300;
+            seeds[0].firstIndex = 0;
+            seeds[1].indexCount = 300;
+            seeds[1].firstIndex = 64;
+            Check(rt->SeedIndirect(rm, rg, 0, seeds, 2), "gpu.rt-seed-at-init");
+        }
+
         DependencyVersions deps;
         const glm::vec4 interest[1] = {glm::vec4(0.0f, 0.0f, 8.0f, 8.0f)};
         // Frame 1: BeginFrame (the scatter) + the cull chain — same frame,
@@ -1669,7 +1729,7 @@ int main() {
             seeds[0].firstIndex = 0;
             seeds[1].indexCount = 300;
             seeds[1].firstIndex = 64;
-            Check(rt->SeedIndirect(rm, 0, seeds, 2), "gpu.rr-seed-at-init");
+            Check(rt->SeedIndirect(rm, rg, 0, seeds, 2), "gpu.rr-seed-at-init");
         }
 
         // The frame driver: BeginFrame + the ALIVE-ONLY cull (no frustum, no
@@ -1971,24 +2031,17 @@ int main() {
             smvk::placement::PlacementDrawBuildPush dbp;
             dbp.bins = mp.BinsAddress(rm);
             dbp.indirect = mp.IndirectAddress(rm);
-            dbp.protoCount = 2;
-            // The prototype table (fake geometry: 300 idx/bin) rides the
-            // push EVERY frame - the shared drawbuild kernel owns the
-            // COMPLETE command (SeedIndirect is the metadata
-            // registration; there is no seed upload anywhere).
+            // The prototype table (fake geometry: 300 idx/bin) is a BDA
+            // buffer uploaded by SeedIndirect once per mesh table.
             smvk::placement::PlacementIndirectCmd seeds[2] = {};
             seeds[0].indexCount = 300;
             seeds[0].firstIndex = 0;
             seeds[1].indexCount = 300;
             seeds[1].firstIndex = 64;
-            for (uint32_t i = 0; i < smvk::placement::kPlacementMaxProtos; ++i) {
-                const auto& s = i < 2 ? seeds[i] : smvk::placement::PlacementIndirectCmd{};
-                dbp.indexCount[i] = s.indexCount;
-                dbp.firstIndex[i] = s.firstIndex;
-                dbp.vertexOffset[i] = s.vertexOffset;
-            }
             if (f == 0)
-                Check(mp.SeedIndirect(rm, seeds, 2), "gpu.mp-seed-indirect");
+                Check(mp.SeedIndirect(rm, rg, seeds, 2), "gpu.mp-seed-indirect");
+            dbp.protoTable = rm.GetBufferDeviceAddress(mp.protoTableBuffer);
+            dbp.protoCount = mp.protoTableCount;
             host.RunFrame([&](smvk::RenderGraph& g) {
                 smvk::RenderPass& emit = mp.AddEmitPass(g);
                 emit.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
@@ -2423,6 +2476,14 @@ int main() {
             }
         };
 
+        // Seed the prototype table BEFORE the first chain record: frame 1's
+        // cull + draw-build both read its BDA (bounds/distance + index ranges).
+        {
+            PlacementIndirectCmd seeds[3];
+            fillSeeds(seeds);
+            Check(rt->SeedIndirect(rm, rg, 0, seeds, 3), "gpu.draw-seed-indirect");
+        }
+
         // ---- frame 1: the scatter + the chain (the tile publishes). ----
         DependencyVersions deps;
         const glm::vec4 interest[1] = {glm::vec4(0.0f, 0.0f, 8.0f, 8.0f)};
@@ -2443,19 +2504,10 @@ int main() {
         // ---- frame 2: the chain re-runs (the idle tile, no re-dispatch)
         // + THE DRAW into the external target. ----
         int32_t drawSlot = -1;
-        bool seeded = false;
         const auto recordDrawFrame = [&](smvk::RenderGraph& g) {
             rt->BeginFrame(rm, g, interest, 1, deps);
-            // REGISTER THE PROTOTYPE METADATA BEFORE the chain records:
-            // draw-build's push captures the table BY VALUE at recording
-            // time, so the earliest recording must already see it. Pure
-            // metadata (no GPU write) - publishing needs no seed event.
-            if (!seeded) {
-                PlacementIndirectCmd seeds[3];
-                fillSeeds(seeds);
-                Check(rt->SeedIndirect(rm, 0, seeds, 3), "gpu.draw-seed-indirect");
-                seeded = true;
-            }
+            // The prototype table was seeded before frame 1 (the seed-once-
+            // at-init contract); the chain's cull + draw-build read its BDA.
             rt->RecordCullChain(rm,
                                 g,
                                 0,
@@ -2643,7 +2695,7 @@ int main() {
             PlacementIndirectCmd seeds2[3];
             fillSeeds(seeds2);
             seeds2[1].firstIndex = surf.firstIndex + 1;
-            Check(rt->SeedIndirect(rm, 0, seeds2, 3), "gpu.draw-table-reregistered");
+            Check(rt->SeedIndirect(rm, rg, 0, seeds2, 3), "gpu.draw-table-reregistered");
             host.RunFrame(recordDrawFrame);
             rm.FlushUploads();
             rm.WaitForUploads();
@@ -2668,6 +2720,272 @@ int main() {
             }
         }
         rt->Destroy(rg);
+    }
+
+    // =====================================================================
+    // Render smoke: bake-authored FULL-quaternion instances uploaded DIRECTLY
+    // (no procedural scatter) run the PR03 chain and round-trip the quaternion
+    // through the GPU buffers — the ABI + feed entry point for the baked
+    // placement runtime.
+    // =====================================================================
+    std::fprintf(stderr, "[place-gpu] stage: full-quaternion round-trip\n");
+    {
+        PlacementCullPrograms cullProgs;
+        ok = cullProgs.Ensure(rm);
+        Check(ok && cullProgs.Valid(), "gpu.smoke-programs");
+        PlacementPass bp;
+        PlacementPassDesc bd{};
+        bd.maxInstancesPerTile = 64;
+        bd.maxTiles = 1;
+        ok = bp.Ensure(rm, rg, bd);
+        Check(ok && bp.Valid(), "gpu.smoke-pass");
+        PlacementVisibleSet bv;
+        ok = bv.Create(rm, rg, 64);
+        Check(ok && bv.Valid(), "gpu.smoke-visset");
+
+        // Three authored instances: identity, 90deg yaw, and 90deg yaw + a
+        // 45deg tilt — a full quaternion with pitch the yaw-only path drops.
+        std::vector<RenderInstance> authored(3);
+        authored[0].position = glm::vec3(0, 0, 0);
+        authored[0].rotation = glm::vec4(0, 0, 0, 1);
+        authored[0].scale = glm::vec3(1);
+        authored[0].prototypeId = 0;
+        authored[0].stableLow = 9000;
+        authored[0].customB = 0;
+        authored[1].position = glm::vec3(2, 0, 0);
+        authored[1].rotation = QuatFromYaw(1.5707963f);
+        authored[1].scale = glm::vec3(2);
+        authored[1].prototypeId = 0;
+        authored[1].stableLow = 9001;
+        authored[1].customB = 1;
+        glm::quat qy = glm::angleAxis(1.5707963f, glm::vec3(0, 1, 0));
+        glm::quat qx = glm::angleAxis(0.7853981f, glm::vec3(1, 0, 0));
+        glm::quat q = qx * qy;
+        authored[2].position = glm::vec3(4, 0, 0);
+        authored[2].rotation = glm::vec4(q.x, q.y, q.z, q.w);
+        authored[2].scale = glm::vec3(1.5f);
+        authored[2].prototypeId = 0;
+        authored[2].stableLow = 9002;
+        authored[2].customB = 2;
+
+        // The baked runtime's feed: upload the instances + the count directly.
+        bp.ClearTile(rm, 0);
+        rm.UploadDataToBuffer(bp.instanceBuffers[0],
+                              authored.data(),
+                              sizeof(RenderInstance) * authored.size(),
+                              smvk::PipelineStageBit_Compute,
+                              smvk::AccessFlags::ShaderRead,
+                              0,
+                              0);
+        PlacementCountGpu cnt{uint32_t(authored.size()), 0, 64, 0};
+        rm.UploadDataToBuffer(bp.countBuffers[0],
+                              &cnt,
+                              sizeof(cnt),
+                              smvk::PipelineStageBit_Compute,
+                              smvk::AccessFlags::ShaderRead,
+                              0,
+                              0);
+
+        // The single-proto table (bounds + index range) for the cull + drawbuild.
+        PlacementProtoRow prows[1] = {};
+        prows[0].bounds = glm::vec4(0, 0, 0, 0.5f);
+        prows[0].indexCount = 300;
+        prows[0].firstIndex = 0;
+        prows[0].vertexOffset = 0;
+        smvk::Holder<smvk::BufferHandle> ptab =
+            rm.CreateBuffer(sizeof(prows), smvk::BufferType_Storage, "smoke proto table");
+        rm.UploadDataToBuffer(ptab,
+                              prows,
+                              sizeof(prows),
+                              smvk::PipelineStageBit_Compute,
+                              smvk::AccessFlags::ShaderRead,
+                              0,
+                              0);
+        const uint64_t ptabBDA = rm.GetBufferDeviceAddress(ptab);
+
+        PlacementCullPush cp{};
+        cp.instances = bp.TileInstancesAddress(rm, 0);
+        cp.count = bp.TileCountAddress(rm, 0);
+        cp.mask = bv.MaskAddress(rm);
+        cp.bins = bv.BinsAddress(rm);
+        cp.alive = 0;
+        cp.renderViews = rm.GetBufferDeviceAddress(viewSlab);
+        cp.renderViewIndex = 0;
+        cp.cullFlags = kPlacementCullFrustum;
+        cp.protoTable = ptabBDA;
+        cp.protoCount = 1;
+        cp.camPos = glm::vec3(0, 0, 0);
+        cp.maxInstanceScale = 2.0f;
+
+        PlacementScatterVisPush sp{};
+        sp.instances = bp.TileInstancesAddress(rm, 0);
+        sp.count = bp.TileCountAddress(rm, 0);
+        sp.mask = bv.MaskAddress(rm);
+        sp.bins = bv.BinsAddress(rm);
+        sp.visible = bv.VisibleAddress(rm);
+        sp.protoCount = 1;
+
+        PlacementDrawBuildPush dp{};
+        dp.bins = bv.BinsAddress(rm);
+        dp.indirect = bv.IndirectAddress(rm);
+        dp.protoTable = ptabBDA;
+        dp.protoCount = 1;
+
+        bv.ClearFrame(rm);
+
+        host.RunFrame([&](smvk::RenderGraph& g) {
+            smvk::RenderPass& cull = PlacementCullPrograms::AddCullPass(
+                g, bp, 0, bv, smvk::LogicalBufferHandle{}, viewSlabL);
+            cull.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
+                PlacementCullPrograms::PushAndDispatchCull(cmd, cullProgs.cullProgram, cp, 64);
+            });
+            smvk::RenderPass& pre = PlacementCullPrograms::AddPrefixPass(g, bv);
+            pre.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
+                PlacementCullPrograms::PushAndDispatchPrefix(cmd, cullProgs.prefixProgram, cp);
+            });
+            smvk::RenderPass& sc = PlacementCullPrograms::AddScatterVisPass(g, bp, 0, bv);
+            sc.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
+                PlacementCullPrograms::PushAndDispatchScatterVis(
+                    cmd, cullProgs.scatterProgram, sp, 64);
+            });
+            smvk::RenderPass& db = PlacementCullPrograms::AddDrawBuildPass(g, bv);
+            db.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
+                PlacementCullPrograms::PushAndDispatchDrawBuild(cmd, cullProgs.buildProgram, dp);
+            });
+        });
+        rm.FlushUploads();
+        rm.WaitForUploads();
+
+        // The quaternion + position + scale must survive the GPU round-trip.
+        std::vector<RenderInstance> readback(3);
+        ok = rm.DownloadDataFromBuffer(
+            bp.instanceBuffers[0], readback.data(), sizeof(RenderInstance) * 3);
+        Check(ok, "gpu.smoke-instance-readback");
+        Check(SortedEqual(authored, readback), "gpu.smoke-quaternion-roundtrip");
+
+        // All three visible -> one bin of 3, the indirect command instanceCount 3.
+        PlacementBinsGpu binsOut;
+        ok = rm.DownloadDataFromBuffer(bv.bins, &binsOut, sizeof(binsOut));
+        Check(ok && binsOut.counts[0] == 3 && binsOut.total == 3, "gpu.smoke-bins");
+        PlacementIndirectCmd cmdOut;
+        ok = rm.DownloadDataFromBuffer(bv.indirect, &cmdOut, kPlacementIndirectStride);
+        Check(ok && cmdOut.instanceCount == 3 && cmdOut.indexCount == 300, "gpu.smoke-indirect");
+    }
+
+    // =====================================================================
+    // Baked placement runtime: bucketed authored points + TILE-LOCAL proto
+    // palettes drive the PR03 chain per tile (the Phase-3 feed for the
+    // PointInstancer cloud — no procedural scatter, no constraint).
+    // =====================================================================
+    std::fprintf(stderr, "[place-gpu] stage: baked placement runtime\n");
+    {
+        // Two GLOBAL render prototypes; points in two tiles, each referencing
+        // a DIFFERENT subset so the per-tile palettes differ (the whole point
+        // of the tile-local palette).
+        BakedPlacementAsset asset;
+        BakedRenderPrototype rp0, rp1;
+        rp0.meshKey = 0;
+        rp0.surfaceIndex = 0;
+        rp1.meshKey = 1;
+        rp1.surfaceIndex = 0;
+        asset.renderPrototypes = {rp0, rp1};
+        const auto add = [&](glm::vec3 p, uint32_t proto, uint32_t lo) {
+            BakedPlacementPoint pt;
+            pt.position = p;
+            pt.rotation[0] = pt.rotation[1] = pt.rotation[2] = 0.0f;
+            pt.rotation[3] = 1.0f;
+            pt.scale = glm::vec3(1.0f);
+            pt.renderPrototypeId = proto;
+            pt.stableId.w[0] = lo;
+            pt.flags = 0;
+            asset.points.push_back(pt);
+        };
+        add({0, 0, 0}, 0, 1);  // tile (0,0) proto 0
+        add({1, 0, 0}, 0, 2);  // tile (0,0) proto 0
+        add({2, 0, 0}, 1, 3);  // tile (0,0) proto 1
+        add({20, 0, 0}, 1, 4); // tile (1,0) proto 1 (tileSize 16)
+
+        std::vector<BakedPlacementTile> tiles = BucketBakedPlacement(asset, 16.0f);
+        Check(tiles.size() == 2, "gpu.baked-tiles");
+
+        // Resolved geometry: proto 0 -> 300 idx @ firstIndex 0; proto 1 ->
+        // 300 idx @ firstIndex 64 (distinct index ranges to prove the local
+        // palette resolves the RIGHT global proto's range per tile).
+        std::vector<BakedProtoGeometry> geo(2);
+        geo[0].boundsMin = glm::vec3(-1, -1, -1);
+        geo[0].boundsMax = glm::vec3(1, 1, 1);
+        geo[0].indexCount = 300;
+        geo[0].firstIndex = 0;
+        geo[1].boundsMin = glm::vec3(-1, -1, -1);
+        geo[1].boundsMax = glm::vec3(1, 1, 1);
+        geo[1].indexCount = 300;
+        geo[1].firstIndex = 64;
+
+        BakedPlacementRuntime brt;
+        brt.tiles = &tiles;
+        brt.protoGeometry = &geo;
+        brt.tileSize = 16.0f;
+        brt.slotBudget = 2;
+        brt.viewBudget = 1;
+        brt.maxInstancesPerTile = 64;
+        Check(brt.Create(rm, rg) && brt.Valid(), "gpu.baked-create");
+
+        const glm::vec4 interest[1] = {glm::vec4(-8.0f, -8.0f, 32.0f, 32.0f)};
+        host.RunFrame([&](smvk::RenderGraph& g) {
+            brt.BeginFrame(rm, g, interest, 1);
+            brt.RecordCullChain(rm,
+                                g,
+                                0,
+                                viewSlabL,
+                                rm.GetBufferDeviceAddress(viewSlab),
+                                0,
+                                glm::vec3(0, 5, 0),
+                                kPlacementCullFrustum);
+        });
+        rm.FlushUploads();
+        rm.WaitForUploads();
+
+        int32_t slotT0 = -1, slotT1 = -1;
+        for (size_t s = 0; s < brt.active.size(); ++s) {
+            if (!brt.active[s].published)
+                continue;
+            if (brt.active[s].key == TileID{0, 0, 0})
+                slotT0 = int32_t(s);
+            if (brt.active[s].key == TileID{1, 0, 0})
+                slotT1 = int32_t(s);
+        }
+        Check(slotT0 >= 0 && slotT1 >= 0, "gpu.baked-two-published");
+        Check(brt.TileProtoCount(slotT0) == 2 && brt.TileProtoCount(slotT1) == 1,
+              "gpu.baked-local-proto-counts");
+
+        if (slotT0 >= 0) {
+            const PlacementVisibleSet* vs = brt.VisSet(slotT0);
+            Check(vs != nullptr, "gpu.baked-visset-t0");
+            PlacementBinsGpu binsOut;
+            ok = rm.DownloadDataFromBuffer(vs->bins, &binsOut, sizeof(binsOut));
+            Check(ok && binsOut.counts[0] == 2 && binsOut.counts[1] == 1 && binsOut.total == 3,
+                  "gpu.baked-t0-bins");
+            PlacementIndirectCmd cmds[2];
+            ok = rm.DownloadDataFromBuffer(vs->indirect, cmds, kPlacementIndirectStride * 2);
+            Check(ok && cmds[0].instanceCount == 2 && cmds[0].indexCount == 300 &&
+                      cmds[0].firstIndex == 0 && cmds[1].instanceCount == 1 &&
+                      cmds[1].indexCount == 300 && cmds[1].firstIndex == 64,
+                  "gpu.baked-t0-indirect");
+        }
+        if (slotT1 >= 0) {
+            const PlacementVisibleSet* vs = brt.VisSet(slotT1);
+            Check(vs != nullptr, "gpu.baked-visset-t1");
+            PlacementBinsGpu binsOut;
+            ok = rm.DownloadDataFromBuffer(vs->bins, &binsOut, sizeof(binsOut));
+            Check(ok && binsOut.counts[0] == 1 && binsOut.total == 1, "gpu.baked-t1-bins");
+            PlacementIndirectCmd cmd;
+            ok = rm.DownloadDataFromBuffer(vs->indirect, &cmd, kPlacementIndirectStride);
+            // Tile (1,0)'s LOCAL proto 0 is GLOBAL proto 1 -> firstIndex 64
+            // (the palette resolves the correct global index range per tile).
+            Check(ok && cmd.instanceCount == 1 && cmd.indexCount == 300 && cmd.firstIndex == 64,
+                  "gpu.baked-t1-indirect-local-palette");
+        }
+        brt.Destroy(rg);
     }
 
     std::printf("[place-gpu] done: %d checks, %d failures\n", g_checks, g_failures);

@@ -349,14 +349,16 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base, bool fallbackO
                     // clobbered with depthPC's tail bytes).
                     if (maskedPhase) {
                         smvk::CullMode cull = smvk::CullMode::None;
-                        if (const smvk::Material* mat = static_cast<const smvk::World&>(*world).GetMaterial(item.material))
+                        if (const smvk::Material* mat =
+                                static_cast<const smvk::World&>(*world).GetMaterial(item.material))
                             cull = mat->pipeline.raster.cullMode;
                         ensureMaskedPipeline(cull);
                     } else {
                         // Solid phase: the material raster (Cull None for
                         // double-sided — see ensureSolidPipeline's comment).
                         smvk::CullMode cull = smvk::CullMode::Back;
-                        if (const smvk::Material* mat = static_cast<const smvk::World&>(*world).GetMaterial(item.material))
+                        if (const smvk::Material* mat =
+                                static_cast<const smvk::World&>(*world).GetMaterial(item.material))
                             cull = mat->pipeline.raster.cullMode;
                         ensureSolidPipeline(cull);
                     }
@@ -776,6 +778,7 @@ bool ForwardPlusRenderer::AppendGpuSceneTaskPrepass(smvk::FrameContext& base,
                                                     bool hizOccluder,
                                                     smvk::LogicalBufferHandle historyCurrent,
                                                     smvk::LogicalBufferHandle historyPrevious) {
+    SMVK_PROFILE_CATEGORY("GpuSceneTaskMesh", Optick::Category::Rendering);
     AppFrameContext& fc = static_cast<AppFrameContext&>(base);
     if (!fp || taskDepth.shaderCount != 2 || indirect.empty() || indirectLogical.empty() ||
         groupsLogical.empty() || offsetsLogical.empty() || workLogical.empty())

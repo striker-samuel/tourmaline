@@ -114,12 +114,12 @@ def main(argv: list[str]) -> int:
     def sample_world(x: float, z: float):
         # world (Tourmaline) -> heightmap pixel, accounting for the -Y flip:
         #   hm_px = (X_t - origin_x0) / spx
-        #   hm_py = (Z_t - origin_z0) / spy  (flipped: py grows as Z_t grows
-        #          because py=0 is +Z and py=ny-1 is -Z)
+        #   hm_py = (origin_z0 - Z_t) / spy  (Z_t = -Y_usd: the heightmap's
+        #          py=0 row (USD miny) is the +Z edge, so py SHRINKS as Z grows)
         spx = spacing[0] * mpu
         spy = spacing[1] * mpu
         hx = (x - origin_x0) / spx
-        hy = (z - origin_z0) / spy
+        hy = (origin_z0 - z) / spy
         if hx < 0 or hy < 0 or hx > nx - 1 or hy > ny - 1:
             return None
         x0 = int(hx); y0 = int(hy)
@@ -130,7 +130,8 @@ def main(argv: list[str]) -> int:
         return (v00 * (1 - fx) + v10 * fx) * (1 - fy) + (v01 * (1 - fx) + v11 * fx) * fy
 
     origin_x0 = origin[0] * mpu            # USD minx -> Tourmaline min X
-    origin_z0 = -(origin[1] + (ny - 1) * spacing[1]) * mpu  # min Tourmaline Z
+    # The +Z edge of the heightmap's py=0 row (USD miny): Z_t = -Y_usd * mpu.
+    origin_z0 = -(origin[1]) * mpu
 
     # Coverage -> world sample (bilinear, 0 = water/hole, 255 = land).
     def sample_coverage(x: float, z: float):
@@ -139,7 +140,7 @@ def main(argv: list[str]) -> int:
         spx = spacing[0] * mpu
         spy = spacing[1] * mpu
         hx = (x - origin_x0) / spx
-        hy = (z - origin_z0) / spy
+        hy = (origin_z0 - z) / spy
         if hx < 0 or hy < 0 or hx > nx - 1 or hy > ny - 1:
             return 0  # outside the heightmap footprint = ocean
         x0 = int(hx); y0 = int(hy)

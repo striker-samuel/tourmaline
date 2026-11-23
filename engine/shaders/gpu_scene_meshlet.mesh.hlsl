@@ -181,6 +181,25 @@ float3 ConeHeatColor(float cutoff) {
     return float3(t, 1.0f - abs(t - 0.5f), 1.0f - t);
 }
 
+// PSO-bin color (debugMode 4): one hue per raster pipeline class, so
+// masked alpha-tested surfaces (plants/vegetation, bit 1) are instantly
+// distinguishable from opaque single-sided architecture (bit 0/1 clear).
+// rasterClass mirrors World::PsoClassFor's low 3 bits: bit0 double-sided,
+// bit1 masked, bit2 ProjectLit.
+float3 PsoBinColor(uint cls) {
+    const float3 palette[8] = {
+        float3(0.55f, 0.55f, 0.55f), // 0: opaque single-sided (architecture)
+        float3(0.00f, 0.80f, 0.80f), // 1: double-sided
+        float3(0.90f, 0.15f, 0.10f), // 2: masked (plants/vegetation)
+        float3(1.00f, 0.70f, 0.00f), // 3: double-sided + masked
+        float3(0.25f, 0.35f, 0.95f), // 4: ProjectLit opaque
+        float3(0.85f, 0.20f, 0.90f), // 5: ProjectLit double-sided
+        float3(0.20f, 0.80f, 0.20f), // 6: ProjectLit masked
+        float3(1.00f, 0.40f, 0.40f), // 7: ProjectLit double-sided + masked
+    };
+    return palette[cls & 7u];
+}
+
 #ifdef GPU_SCENE_TRIANGLE_BACKFACE
 // Per-workgroup scratch of the transformed clip-space xyw, consumed by the
 // per-primitive backface test in mainMS. File scope (groupshared is not a
@@ -243,6 +262,8 @@ void mainMS(uint3 gid : SV_GroupID,
                 dbgColor=float4(LodPaletteColor(work.detail.x) * 1000.0f, 1.0f);
             else if (p.debugMode==3u)
                 dbgColor=float4(ConeHeatColor(c.c.w) * 1000.0f, 1.0f);
+            else if (p.debugMode==4u)
+                dbgColor=float4(PsoBinColor(pc.rasterClass) * 1000.0f, 1.0f);
         }
     }
     // Indexed-meshlet output: unique local vertices (a.w count at a.z) +
