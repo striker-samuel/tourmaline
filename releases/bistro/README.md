@@ -1,7 +1,7 @@
 # Bistro demo — recreate-from-source (Windows & Linux)
 
 The **Amazon Lumberyard Bistro** exterior demo (CC BY 4.0, see
-[`../../BISTRO-CREDITS.md`](../../BISTRO-CREDITS.md)). The cooked pak is
+[`../../THIRD_PARTY_NOTICES.md`](../../THIRD_PARTY_NOTICES.md)). The cooked pak is
 ~1.4 GB and the source textures are ~700 MB, so neither is committed to
 the git tree. This directory carries the small *definition* — recipe,
 scene tour, glTF, identity ledger and the 254 derived material assets —

@@ -22,7 +22,7 @@ they are not carried here.
 ## Bistro (recreate-from-source, not a shipped pak)
 
 The Amazon Lumberyard Bistro exterior (CC BY 4.0 ORCA, see
-`BISTRO-CREDITS.md`) cooks to a **~1.4 GB** pak and its source textures
+`THIRD_PARTY_NOTICES.md`) cooks to a **~1.4 GB** pak and its source textures
 are **~700 MB**, so neither is carried here. Instead the small *definition*
 — recipe + scene + glTF + identity ledger + 254 material assets (~2 MB) —
 is committed at [`releases/bistro/`](bistro/README.md). To recreate:
@@ -41,7 +41,7 @@ See [`bistro/README.md`](bistro/README.md) for the full flow.
 ## Knight (Animated Knight, skinned + animated)
 
 The Intel **Animated Knight** (GPU Research Samples Library, CC BY 4.0, see
-`KNIGHT-CREDITS.md`) is a skinned, animated character demo — the GPU scene's
+`THIRD_PARTY_NOTICES.md`) is a skinned, animated character demo — the GPU scene's
 skinned task/mesh lane (1 skin, 85 joints) plus a walk clip (~258 tracks,
 ~12.5 s). The cooked pak is small (~5 MB), but the faithful Maya → glTF
 conversion is non-trivial, so the small *definition* — recipe + scene tour +
