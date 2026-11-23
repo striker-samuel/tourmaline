@@ -104,6 +104,11 @@ struct CookedMeshlets {
     std::vector<Meshlet> meshlets;
     std::vector<uint32_t> vertices; // global vertex ids
     std::vector<uint8_t> triangles; // 3 bytes per triangle (local ids)
+    // Max vertex id referenced by `vertices` (upload-local, before the
+    // runtime baseVertex lift). Computed at cook time so the loader /
+    // registration can derive the heap-global max id in O(1) instead of
+    // re-walking the expanded index stream.
+    uint32_t maxLocalVertex = 0;
 
     bool empty() const {
         return meshlets.empty();

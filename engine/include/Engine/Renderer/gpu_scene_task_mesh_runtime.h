@@ -3,6 +3,7 @@
 #pragma once
 // Flight-safe GPU Scene task/mesh resources. No GPU readback and no
 // 1024-meshlet-per-submesh gate; bounded by the actual 1M task group limit.
+#include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/gpu_scene_task_mesh_abi.h>
 #include <Engine/Renderer/gpu_scene_validation.h>
 #include <Engine/Rendergraph/rendergraph.h>
@@ -45,7 +46,15 @@ struct TaskMeshInputs {
     uint32_t clusterCount = 0, instanceCount = 0, indexBase = 0;
     uint32_t indexWordCapacity = 0, vertexCapacity = 0;
     uint32_t worstMeshlets = 0;
+    // Tight per-instance upper bound on the total mesh-group count (the
+    // "tighter per-instance sum" follow-up). When nonzero, Prepare sizes the
+    // groups buffer by this instead of the worst-case workCapacity *
+    // ceil(worstMeshlets/32) product — a single high-meshlet mesh (the
+    // island's 56k-cluster terrain section) inflates the worst case ~500x
+    // past the exact total and would otherwise reject the whole island.
+    uint64_t totalGroups = 0;
     uint32_t coneEnabled = 1;
+    uint32_t viewValid = 1; // 0 = skip the task-shader frustum rejection (diagnostic)
     uint32_t debugMode = 0; // 0 lit, 1 meshlet colors, 2 LOD colors
     uint64_t hiz = 0;       // reversed-Z MIN Hi-Z BDA (meshlet occlusion)
     uint32_t hizWidth = 0, hizHeight = 0, hizMips = 0, hizValid = 0;
@@ -55,6 +64,13 @@ struct TaskMeshInputs {
     uint64_t historyCurrent = 0;
     uint32_t historyCapacity = 0;
     uint32_t historyValid = 0;
+    // Motion tail (batched motion mesh shader): previous camera-relative
+    // view + previous instance transforms, generation-validated. 0 = no
+    // history (first frame / camera cut).
+    uint64_t prevView = 0;
+    uint64_t prevTransforms = 0;
+    uint32_t prevValid = 0;
+    uint32_t prevSlots = 0;
 };
 // Clear once before seed; dispatch ceil(capacity / 256) workgroups.
 struct TaskMeshHistoryClearPush {
@@ -88,7 +104,14 @@ struct TaskMeshDispatchPlan {
 class TaskMeshRuntime {
   public:
     static constexpr uint32_t Flights = smvk::limits::MaxFramesInFlight;
-    static constexpr uint32_t MaxTaskGroups = 2097152u;
+    // Worst-case task-group bound = workCapacity * ceil(worstMeshlets/32).
+    // A single instanced high-meshlet mesh (the imported terrain section,
+    // 6645 meshlets -> 208 groups/instance) inflates this far above the
+    // exact GPU total; 2M rejected the island's framed view outright and
+    // silently dropped the task/mesh leg back to indexed raster. 16M covers
+    // the full terrain set with headroom. (Tighter per-instance sum is a
+    // documented follow-up: the exact total is ~10x smaller.)
+    static constexpr uint32_t MaxTaskGroups = 16777216u;
     static constexpr uint32_t TaskGridX = 1024u;
     struct Flight {
         smvk::Holder<smvk::BufferHandle> counts, offsets, blockSums, blockBases;
@@ -214,16 +237,22 @@ class TaskMeshRuntime {
             !in.indexWordCapacity || !in.vertexCapacity || in.workCapacity > 1048576u ||
             in.sceneCandidateCount > 1048576u || in.meshCount > kMaxRasterDrawGroups ||
             in.aliasCount > kMaxRasterDrawGroups || in.geometryCount > kMaxRasterDrawGroups ||
-            in.clusterCount > 4194304u ||
-            in.instanceCount > 4194304u || in.indexWordCapacity > 512u * 1024u * 1024u / 4u ||
-            in.vertexCapacity > 44739242u)
+            in.clusterCount > 4194304u || in.instanceCount > 4194304u ||
+            in.indexWordCapacity > 2048u * 1024u * 1024u / 4u || in.vertexCapacity > 44739242u)
             return false;
         if (in.historyCapacity != 0u &&
             (in.historyCapacity > 1048576u ||
              (in.historyCapacity & (in.historyCapacity - 1u)) != 0u || in.historyCurrent == 0u))
             return false;
         const uint64_t groupsPerWork = (uint64_t(in.worstMeshlets) + 31u) / 32u;
-        const uint64_t upperBound = uint64_t(in.workCapacity) * groupsPerWork;
+        uint64_t upperBound = uint64_t(in.workCapacity) * groupsPerWork;
+        // Tight per-instance group sum: the caller's exact-ish bound is a
+        // valid upper bound too (it sums ceil(clusterCount/32) over every
+        // instance), so min() with the worst-case product stays >= the exact
+        // GPU total while shrinking the buffer ~500x on one-mesh-is-huge
+        // scenes. 0 = caller didn't compute one -> keep the worst case.
+        if (in.totalGroups != 0u && in.totalGroups < upperBound)
+            upperBound = in.totalGroups;
         if (upperBound == 0 || upperBound > MaxTaskGroups)
             return false;
         const uint32_t groupCapacity = uint32_t(upperBound);
@@ -311,7 +340,7 @@ class TaskMeshRuntime {
                             in.indexBase,
                             in.indexWordCapacity,
                             in.vertexCapacity,
-                            1u,
+                            in.viewValid,
                             in.coneEnabled,
                             in.workCapacity,
                             in.debugMode,
@@ -325,7 +354,11 @@ class TaskMeshRuntime {
                             in.historyPrevious,
                             in.historyCurrent,
                             in.historyCapacity,
-                            in.historyValid};
+                            in.historyValid,
+                            in.prevView,
+                            in.prevTransforms,
+                            in.prevValid,
+                            in.prevSlots};
         ctx.UploadDataToBuffer(
             f.params,
             &p,
@@ -358,7 +391,25 @@ class TaskMeshRuntime {
                         in.workCapacity,
                         groupCapacity,
                         in.meshCount};
-        next.indirect = {offsets, indirect, in.workCapacity, groupCapacity, TaskGridX, 1024u};
+        // Task-dispatch X/Y grid, sized from the device's mesh-shader limits
+        // (VkPhysicalDeviceMeshShaderPropertiesEXT) instead of a hardcoded
+        // 1024x1024. The old fixed grid capped the total at 1,048,576 task
+        // groups; scenes past that (the Bistro 1024 grid at ~2.8M groups)
+        // overflowed y > maxY in the indirect fill, which zeroed the dispatch
+        // and drew nothing while smaller scenes (Sponza) drew correctly.
+        const smvk::MeshShaderLimits& meshLimits = smvk::GetMeshShaderLimits();
+        const uint32_t taskGridX = meshLimits.maxTaskWorkGroupCount[0] != 0u
+                                       ? meshLimits.maxTaskWorkGroupCount[0]
+                                       : TaskGridX;
+        uint32_t taskMaxY = meshLimits.maxTaskWorkGroupCount[1] != 0u
+                                ? meshLimits.maxTaskWorkGroupCount[1]
+                                : TaskGridX;
+        if (meshLimits.maxTaskWorkGroupTotalCount != 0u) {
+            const uint32_t maxYByTotal = meshLimits.maxTaskWorkGroupTotalCount / taskGridX;
+            if (maxYByTotal != 0u && maxYByTotal < taskMaxY)
+                taskMaxY = maxYByTotal;
+        }
+        next.indirect = {offsets, indirect, in.workCapacity, groupCapacity, taskGridX, taskMaxY};
         // vertexOptFlags (was reservedTemporal): bit 0 = rigid-transform
         // normalize elision, toggled by TOURMALINE_FAST_VERTEX for the A/B
         // measurement of the mesh-stage vertex cost.
@@ -367,7 +418,7 @@ class TaskMeshRuntime {
             return (e && std::atoi(e) != 0) ? 1u : 0u;
         }();
         next.graphics = {
-            params, 0u, groupCapacity, 0u, TaskGridX, 0u, s_vertexOptFlags, 0u, 0u, 0u};
+            params, 0u, groupCapacity, 0u, taskGridX, 0u, s_vertexOptFlags, 0u, 0u, 0u};
         next.workCapacity = in.workCapacity;
         next.taskGroupCapacity = groupCapacity;
         next.scanBlocks = blocks;

@@ -56,7 +56,7 @@ Renderer inspection and debugging panels:
 
 *These captures use the Sponza demonstration scene. Its cooked content is not committed to the repository — it ships as a one-command download from the [demo-content release](https://github.com/striker-samuel/tourmaline/releases/tag/demo-content) (see [Demo content](#demo-content-sponza)).*
 
-**Sponza attribution:** The model is Crytek-derived, with upstream contributions by Frank Meinl, Marko Dabrovic, Morgan McGuire and Alexandre Pestana. See [Sponza credits and license status](SPONZA-CREDITS.md).
+**Sponza attribution:** The model is Crytek-derived, with upstream contributions by Frank Meinl, Marko Dabrovic, Morgan McGuire and Alexandre Pestana. See [Sponza credits and license status](THIRD_PARTY_NOTICES.md).
 
 The optional [asset repository](docs/asset_repository_manual.md) manages working source revisions and published representations **before** cooking. It is deliberately separate from the project catalog: `project.h` describes **cooked build content** and does not track source/product versions or client read activity.
 
@@ -141,6 +141,15 @@ The fastest way to see Tourmaline render a scene is to **build the `App` viewer 
 | Runtime | Vulkan 1.3-capable GPU and updated driver | Vulkan 1.3-capable GPU, driver and graphical desktop/session |
 
 The repository's `install_dependencies.ps1` and `install_dependencies.sh` fetch the pinned dependencies into `external/`, but **do not install KTX-Software or the Windows Vulkan SDK**. On Windows, prefer prebuilt Embree: the vendored source has triggered MSVC internal compiler errors. Full platform details are also documented in [CI](.github/workflows/ci.yml) and [AGENTS.md](AGENTS.md).
+
+**Optional — OpenUSD source import.** Importing `.usd` / `.usda` / `.usdc` /
+`.usdz` sources through `Import.exe` (or `Project.exe`'s import stage)
+requires an OpenUSD install exposing the `pxr` CMake package. It defaults
+**OFF**: a normal build (glTF/OBJ import, cooking, running the demo) does
+not need it. When enabled, `Import.exe` delay-loads the OpenUSD runtime, so
+non-USD imports never require the USD DLLs on `PATH` — only an actual `.usd`
+import does. See [docs/openusd_import.md](docs/openusd_import.md) for the
+Windows/Linux setup.
 
 Because those trees live outside Git, a `git pull` that bumps a pin does **not** update them. The configure step therefore compares every fetched tree against the pin the dependency script declares and stops with the exact re-fetch command when they disagree (see `cmake/DependencyStamps.cmake`), instead of failing later inside engine code.
 
@@ -244,7 +253,7 @@ If you already have a suitable KTX 4.4.2 installation, omit its clone/build step
 
 #### Demo content: Sponza
 
-**Source and third-party license:** The demo is derived from [Khronos's Sponza glTF](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/Sponza). The maintainer performed the KTX texture conversion. The upstream model is marked **CRYENGINE Limited License Agreement**, and its redistribution rights are under [unresolved discussion](https://github.com/KhronosGroup/glTF-Sample-Assets/issues/172). **Attribution does not establish redistribution permission**. Read [SPONZA-CREDITS.md](SPONZA-CREDITS.md) before redistributing or recooking the demo.
+**Source and third-party license:** The demo is derived from [Khronos's Sponza glTF](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/main/Models/Sponza). The maintainer performed the KTX texture conversion. The upstream model is marked **CRYENGINE Limited License Agreement**, and its redistribution rights are under [unresolved discussion](https://github.com/KhronosGroup/glTF-Sample-Assets/issues/172). **Attribution does not establish redistribution permission**. Read [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) before redistributing or recooking the demo.
 
 The [rolling `demo-content` release](https://github.com/striker-samuel/tourmaline/releases/tag/demo-content) contains `sponza_10.tapp`, its content-addressed `sponza_10-*.pak` (approximately 100 MB), and `SHA256SUMS.txt`. The pak filename changes when the demo is recooked; **do not hardcode the pak name**. Use the stable manifest path:
 

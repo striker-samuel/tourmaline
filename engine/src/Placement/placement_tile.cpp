@@ -144,7 +144,7 @@ void PlacementSystem::pushVisibleDraws(
                 continue;
             TransientDraw d;
             d.position = in.position;
-            d.yaw = in.yaw;
+            d.rotation = in.rotation;
             d.scale = in.scale;
             d.prototypeId = in.prototypeId;
             d.stableLow = in.stableLow;
@@ -440,7 +440,7 @@ std::vector<RenderInstance> EvaluateTile(const PlacementSystem::LayerBinding& la
         }
         RenderInstance in;
         in.position = s.p;
-        in.yaw = YawFromId(id);
+        in.rotation = QuatFromYaw(YawFromId(id));
         float sc = UniformScaleFromId(id, layer.config.minScale, layer.config.maxScale);
         in.scale = glm::vec3(sc);
         in.prototypeId = proto;

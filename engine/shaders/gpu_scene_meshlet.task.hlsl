@@ -162,6 +162,14 @@ void mainAS(uint3 groupId : SV_GroupID,
                     keep=p.historyCurrent.Get().overflow!=0u ||
                          MeshletHistoryContains(p.historyCurrent,p.historyCapacity,
                                                 work.identity.x,work.identity.y,clusterId);
+                    // Steady-state Hi-Z occlusion: the survivor set is temporal
+                    // (disocclusion) only, so a static camera never re-tests
+                    // occluded meshlets (far grid copies behind near occluders
+                    // stay "visible" once seeded). Re-test every survivor
+                    // against the shared HZB each frame. Fails open on
+                    // degenerate bounds / empty pyramid.
+                    if (keep && p.hizValid!=0u)
+                        keep=!MeshletOccluded(c.b,inst,p);
                 }
             } else if(keep && p.hizValid!=0u) {
                 keep=!MeshletOccluded(c.b,inst,p);

@@ -40,8 +40,10 @@ struct VSOut
 float4 mainPS(VSOut IN) : SV_Target0
 {
     // Vertex alpha carries hole coverage rather than material opacity.
-    // Keep this fallback for partially covered primitives and platforms
-    // that do not reliably reject NaN clip-space vertex positions.
+    // This is the SOLE hole-masking mechanism: interpolated alpha clips
+    // coastline triangles cleanly (the per-vertex NaN clip-coordinate
+    // cutout that used to live in the VS was removed because it exploded
+    // mixed land/water primitives).
     clip(IN.color.a - 0.5f);
     FrameUniforms frame = pcT.frameUniforms.Get();
     EnvironmentFrameData env = frame.env;

@@ -33,6 +33,26 @@ You can keep separate entries for shadow draw-call stress, alpha/overdraw, fog/v
 
 See [docs/perf_harness.md](../docs/perf_harness.md) for `bench`, `compare`, `trace` and `capture` CLI usage.
 
+## Scenario matrix regression runs
+
+`tools/perf_regression.py` runs a whole `scenarios × setups` matrix (see
+[scenario_matrix.example.json](scenario_matrix.example.json)) through the
+harness, archives every run in a git-ignored, datestamped folder, and diffs
+it against a tracked historic baseline:
+
+```powershell
+python tools/perf_regression.py run --matrix benchmarks/scenario_matrix.example.json --exe out/build/x64-Release/App.exe --capture
+python tools/perf_regression.py record   # promote the latest run to benchmarks/results/baseline.json (commit it)
+python tools/perf_regression.py compare  # re-diff the latest run against the baseline
+```
+
+Each `run` archives to `out/historic-runs/<datestamp>/` (git-ignored):
+`candidate.json` (consolidated results), `summary.json` (index + verdicts),
+`results/<setup>/<scenario>/` (per-cell `result.json` + bench logs), and
+`screenshots/<setup>__<scenario>.png` (one scene capture per cell with
+`--capture`, via the engine's one-shot `TOURMALINE_CAPTURE` pin). The
+historic baseline is the only tracked artifact; the run archives stay local.
+
 ## Forward+ light crowd and feature-toggle matrix
 
 The `bistro-fp-*` entries share the documented Bistro camera and require

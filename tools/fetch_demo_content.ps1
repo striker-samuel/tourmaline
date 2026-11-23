@@ -109,16 +109,11 @@ try {
   # Keep the repository's model provenance/license notices alongside the
   # downloaded release assets (the rolling GitHub release currently carries
   # only the paks, manifest and checksums).
-  $creditsSource = Join-Path (Split-Path $PSScriptRoot -Parent) "SPONZA-CREDITS.md"
+  $creditsSource = Join-Path (Split-Path $PSScriptRoot -Parent) "THIRD_PARTY_NOTICES.md"
   if (-not (Test-Path $creditsSource -PathType Leaf)) {
-    Fail "SPONZA-CREDITS.md is missing from this checkout; cannot stage demo attribution."
+    Fail "THIRD_PARTY_NOTICES.md is missing from this checkout; cannot stage demo attribution."
   }
-  Copy-Item -LiteralPath $creditsSource -Destination (Join-Path $Dest "SPONZA-CREDITS.md") -Force
-  $knightCreditsSource = Join-Path (Split-Path $PSScriptRoot -Parent) "KNIGHT-CREDITS.md"
-  if (-not (Test-Path $knightCreditsSource -PathType Leaf)) {
-    Fail "KNIGHT-CREDITS.md is missing from this checkout; cannot stage demo attribution."
-  }
-  Copy-Item -LiteralPath $knightCreditsSource -Destination (Join-Path $Dest "KNIGHT-CREDITS.md") -Force
+  Copy-Item -LiteralPath $creditsSource -Destination (Join-Path $Dest "THIRD_PARTY_NOTICES.md") -Force
   foreach ($stale in (Get-ChildItem $Dest -Filter "sponza_10-*.pak" -File)) {
     if ($keep -notcontains $stale.Name) {
       Write-Host "  removing stale demo pak: $($stale.Name)"
@@ -129,7 +124,7 @@ try {
   $tapp = $contentAssets | Where-Object { $_.name -like "*.tapp" } | Select-Object -First 1
   $knight = $contentAssets | Where-Object { $_.name -eq "knight.pak" } | Select-Object -First 1
   Write-Host ""
-  Write-Host "demo content installed into ${Dest} (credits: SPONZA-CREDITS.md + KNIGHT-CREDITS.md):"
+  Write-Host "demo content installed into ${Dest} (credits: THIRD_PARTY_NOTICES.md):"
   foreach ($a in $contentAssets) {
     Write-Host ("  {0}  ({1:N1} MB)" -f $a.name, ($a.size / 1MB))
   }

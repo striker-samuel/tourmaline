@@ -76,7 +76,7 @@ void mainCS(uint3 groupId : SV_GroupID, uint3 threadId : SV_GroupThreadID)
 
     PlacementRenderInstance inst;
     inst.position = p;
-    inst.yaw = yaw;
+    inst.rotation = PlacementQuatFromYaw(yaw);
     inst.scale = float3(sc, sc, sc);
     inst.prototypeId = proto;
     inst.stableLow = id.x;

@@ -27,11 +27,15 @@ def resolve_exe(raw):
     but the extension is required).
     """
     path = Path(raw)
-    if path.exists():
+    # is_file(), not exists(): on a case-insensitive Windows disk the bare
+    # "out/.../App" matches the CMake ``app/`` build *directory*, so exists()
+    # is True for a directory and the resolved path becomes the lowercased
+    # "app", which the harness rejects as "executable does not exist".
+    if path.is_file():
         return path
     if os.name == "nt":
         with_ext = path.with_name(path.name + ".exe")
-        if with_ext.exists():
+        if with_ext.is_file():
             return with_ext
     return path  # absent either way: the harness reports it loudly
 
