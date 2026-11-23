@@ -3239,6 +3239,57 @@ std::unique_ptr<WorldPage> DeserializeCluster(
                     std::to_string(sceneEntries.size()) + " scene(s) in pak)");
     std::vector<uint8_t> meshReferenced =
         PeekSceneMeshPakIds(reader.Payload(*sceneEntries[sceneIndex]), meshEntries.size());
+    // A flat `source -p` mesh-asset reference lists only the LOD-0 base in the
+    // node->mesh table, so the LOD siblings are never marked referenced and
+    // their LodInfo + payload are dropped at load — RebuildLodChains then builds
+    // single-level chains and every instance draws full detail. Walk each mesh
+    // header once to recover (groupId, lodIndex) and mark a referenced base's
+    // siblings referenced too. (Meshes owned by OTHER scenes in the shared blob
+    // pool stay unreferenced: their base lodIndex is 0 but unreferenced, so this
+    // loop never promotes them.)
+    {
+        struct LodHeader {
+            uint32_t groupId = 0;
+            uint32_t lodIndex = 0;
+            bool valid = false;
+        };
+        std::vector<LodHeader> headers(meshEntries.size());
+        for (size_t mi = 0; mi < meshEntries.size(); ++mi) {
+            Cursor c{reader.Payload(*meshEntries[mi]), 0};
+            c.str(); // uri
+            const uint32_t vc = c.u32();
+            const uint32_t ic = c.u32();
+            const uint32_t sc = c.u32();
+            if (!c.ok || vc > 16 * 1024 * 1024 || ic > 64 * 1024 * 1024 || sc > 4096)
+                continue;
+            for (uint32_t s = 0; s < sc; ++s) {
+                c.u32(); // firstIndex
+                c.u32(); // indexCount
+                c.i32(); // baseVertex
+            }
+            c.vec3(); // aabbMin
+            c.vec3(); // aabbMax
+            c.f32();  // sphere
+            c.u32();  // topology
+            headers[mi].groupId = c.u32();
+            headers[mi].lodIndex = c.u32();
+            headers[mi].valid = c.ok;
+        }
+        std::unordered_map<uint32_t, std::vector<uint32_t>> siblingsOf;
+        for (size_t mi = 0; mi < meshEntries.size(); ++mi) {
+            if (!headers[mi].valid || headers[mi].lodIndex == 0u)
+                continue;
+            siblingsOf[headers[mi].groupId].push_back(uint32_t(mi));
+        }
+        for (size_t mi = 0; mi < meshEntries.size(); ++mi) {
+            if (!meshReferenced[mi] || !headers[mi].valid || headers[mi].lodIndex != 0u)
+                continue;
+            const auto it = siblingsOf.find(headers[mi].groupId);
+            if (it != siblingsOf.end())
+                for (uint32_t sj : it->second)
+                    meshReferenced[sj] = 1u;
+        }
+    }
     struct MeshMeta {
         std::string uri;
         // The owning TOC entry's file-absolute offset (Stage 6: the

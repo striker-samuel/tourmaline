@@ -595,6 +595,14 @@ void WorldRenderer::ApplyRunConfig(const RunConfig& run) {
     if (run.terrainPinned) {
         m_passes.terrain = run.terrain;
     }
+    // Headless motion-vector override (TOURMALINE_MOTION=0): disables the
+    // motion-vector target pass — the second full-scene draw that feeds
+    // TAA / motion blur / DLSS velocity. On a large GPU-scene grid that pass
+    // is a large fixed cost, so the kill switch isolates it.
+    if (const char* mvEnv = std::getenv("TOURMALINE_MOTION")) {
+        if (std::atoi(mvEnv) == 0)
+            m_passes.motionVectors = false;
+    }
     // Heightfield shadows (terrain frag tail): 0 off | 1 receive |
     // 2 receive + raymarched distant. Unset = receive-only; steps
     // default 16 (4..64 validated at parse).
@@ -13491,6 +13499,24 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                                      "radius max=%.4g (meshBounds=%zu)\n",
                                                      bMax,
                                                      gfx.meshBounds.size());
+                                        // LOD chain distribution: "everything lod 0" means
+                                        // no coarser LOD levels were derived for most world
+                                        // meshes (single-level chains).
+                                        std::array<uint32_t, 8> lodHist{};
+                                        for (const auto& chain : m_world->lodChains) {
+                                            const uint32_t n = uint32_t(chain.levels.size());
+                                            if (n < lodHist.size())
+                                                lodHist[n]++;
+                                            else
+                                                lodHist.back()++;
+                                        }
+                                        std::fprintf(stderr,
+                                                     "[TaskMeshDiag] lodChains=%zu hist:",
+                                                     m_world->lodChains.size());
+                                        for (uint32_t i = 0; i < lodHist.size(); ++i)
+                                            if (lodHist[i])
+                                                std::fprintf(stderr, " %u->%u", i, lodHist[i]);
+                                        std::fprintf(stderr, "\n");
                                     }
                                 }
                                 // Diagnostic isolation toggles for the task
