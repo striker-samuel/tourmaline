@@ -33,7 +33,11 @@ absent rather than guarded by a per-tile branch.
    index is **not** an outliner node ID; it may change when lights move.
 5. Toggle **Overlay on lit** to compare the colored diagnostic with the
    scene, or show the debug readout alone. Adjust **Count heat ceiling**
-   to resolve useful gradients in a dense scene.
+   to resolve useful gradients in a dense scene. The count modes now also
+   draw compact decimal light-count glyphs inside each 8x8 Shadow Tile
+   (one to three digits, saturating at 999 with a magenta corner marker).
+   Overestimate shows the magnitude of the count difference and flags
+   unexpected negative differences in magenta.
 6. Set **Off** to disable instrumentation. The controls are session-only:
    no `.tour` commands or authored scene settings are modified.
 
