@@ -1160,7 +1160,7 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
           << " -distance " << bake.captureDistance;
         for (const auto& uuid : bake.occluderUuids)
             f << " -occluder " << Quote(uuid);
-        f << ";\\n";
+        f << ";\n";
     }
     // GI-asset bindings (ordered; see GiAssetCmd): the scene's baked-GI
     // identification, doc-level state like the pool imports above. The
