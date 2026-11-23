@@ -149,7 +149,7 @@ static void AppendMeshlet(StaticGeometry& s,
                   m.coneCutoff);
 }
 
-static uint32_t FinishMesh(StaticGeometry& s, uint32_t clusterStart) {
+static uint32_t FinishMesh(StaticGeometry& s, uint32_t clusterStart, uint32_t maxVertexIndex) {
     Mesh entry{};
     entry.clusterStart = clusterStart;
     entry.clusterCount = (uint32_t)s.clusters.size() - clusterStart;
@@ -181,15 +181,9 @@ static uint32_t FinishMesh(StaticGeometry& s, uint32_t clusterStart) {
         }
     }
     s.indexedRanges.push_back(range);
-    // Max vertex id referenced by this mesh's index stream. Walked here, at
-    // registration (once), so the renderer's per-frame capacity check is a
-    // single compare per mesh rather than an O(indices) scan.
-    uint32_t maxVertexIndex = 0u;
-    if (range.indexCount != 0u) {
-        const uint32_t* idx = s.filterIndices.data() + range.firstIndex;
-        for (uint32_t i = 0; i < range.indexCount; ++i)
-            maxVertexIndex = std::max(maxVertexIndex, idx[i]);
-    }
+    // Max vertex id referenced by this mesh's index stream (heap-global).
+    // Callers derive it from the source in O(1) (cooked.maxLocalVertex +
+    // baseVertex) instead of re-walking the expanded index stream here.
     s.meshMaxVertexIndex.push_back(maxVertexIndex);
     s.meshes.push_back(entry);
     return (uint32_t)s.meshes.size() - 1;
@@ -270,7 +264,16 @@ uint32_t RegisterMeshFromUpload(StaticGeometry& s, const MeshData& upload, uint3
 
     if (s.clusters.size() == clusterStart)
         return UINT32_MAX;
-    return FinishMesh(s, clusterStart);
+    // Heap-global max vertex id: O(1) for the cooked path (the import-
+    // computed maxLocalVertex), O(indices) only for the 128-tri fallback.
+    uint32_t maxLocal = 0u;
+    if (useCooked) {
+        maxLocal = cooked.maxLocalVertex;
+    } else {
+        for (uint32_t idx : upload.indices)
+            maxLocal = std::max(maxLocal, idx);
+    }
+    return FinishMesh(s, clusterStart, baseVertex + maxLocal);
 }
 
 uint32_t RegisterMeshFromCooked(StaticGeometry& s,
@@ -292,10 +295,6 @@ uint32_t RegisterMeshFromCooked(StaticGeometry& s,
             return UINT32_MAX;
         if (m.triangleOffset + m.triangleCount * 3 > (uint32_t)cooked.triangles.size())
             return UINT32_MAX;
-        const uint8_t* localTris = cooked.triangles.data() + m.triangleOffset;
-        for (uint32_t i = 0; i < m.triangleCount * 3; ++i)
-            if (localTris[i] >= m.vertexCount)
-                return UINT32_MAX;
     }
     const uint32_t clusterStart = (uint32_t)s.clusters.size();
     const uint32_t meshIndex = (uint32_t)s.meshes.size();
@@ -325,7 +324,7 @@ uint32_t RegisterMeshFromCooked(StaticGeometry& s,
     }
     if (s.clusters.size() == clusterStart)
         return UINT32_MAX;
-    return FinishMesh(s, clusterStart);
+    return FinishMesh(s, clusterStart, baseVertex + cooked.maxLocalVertex);
 }
 
 void ResetStaticRegistrations(StaticGeometry& s) {

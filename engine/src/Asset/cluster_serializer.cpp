@@ -904,6 +904,7 @@ bool SerializeClusters(const std::vector<const WorldPage*>& clusters,
                     PutU32(blob, v);
                 PutU32(blob, static_cast<uint32_t>(cooked.triangles.size()));
                 blob.insert(blob.end(), cooked.triangles.begin(), cooked.triangles.end());
+                PutU32(blob, cooked.maxLocalVertex);
                 if (stats && !cooked.meshlets.empty()) {
                     stats->meshesWithMeshlets++;
                     stats->meshletCount += static_cast<uint32_t>(cooked.meshlets.size());
@@ -3463,6 +3464,9 @@ std::unique_ptr<WorldPage> DeserializeCluster(
                 return fail("corrupt meshlet trailer: " + e->path);
             cooked.triangles.assign(c.img.data() + c.off, c.img.data() + c.off + triBytes);
             c.off += triBytes;
+            cooked.maxLocalVertex = c.u32();
+            if (!c.ok)
+                return fail("corrupt meshlet trailer: " + e->path);
             // Cross-check windows against the payload sizes.
             for (const Meshlet& ml : cooked.meshlets) {
                 if ((size_t)ml.vertexOffset + ml.vertexCount > cooked.vertices.size() ||

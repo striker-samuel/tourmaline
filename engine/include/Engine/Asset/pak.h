@@ -106,8 +106,8 @@ namespace tour::asset {
 // blobs (e.g. bakery-appended textures) keep the full-resident path.
 // A breaking change to any of this bumps the magic below (never a
 // version field); content recooks from zero.
-inline constexpr uint32_t kPakMagic = 0x38504D53;       // "SMP8" LE
-inline constexpr uint32_t kPakFooterMagic = 0x384D504B; // "KPM8" LE
+inline constexpr uint32_t kPakMagic = 0x39504D53;       // "SMP9" LE
+inline constexpr uint32_t kPakFooterMagic = 0x394D504B; // "KPM9" LE
 // The per-pak MESH PLAN blob's reserved TOC path (SMP8): the cooked
 // family -> member join (see PakMeshPlanFamily). A fixed reserved
 // path, not a cluster-local one - one plan per PAK.
