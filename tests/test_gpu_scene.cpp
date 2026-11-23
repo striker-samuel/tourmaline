@@ -4,6 +4,8 @@
 // Device-free GPU-scene database update model: stable identities,
 // coalesced dirty-row ranges, tombstones, and all-flight propagation.
 #include <Engine/Renderer/gpu_scene.h>
+#include <Engine/RHI/table.h>
+#include <type_traits>
 #include <Engine/Renderer/gpu_scene_skinning.h>
 #include <Engine/Renderer/gpu_scene_upload.h>
 
@@ -26,6 +28,12 @@
             std::fprintf(stderr, "FAIL %s:%d: %s\n", __FILE__, __LINE__, #cond);                   \
         }                                                                                          \
     } while (0)
+// The GPU-scene interface is now an alias of the reusable smvk table.
+static_assert(std::is_same_v<tour::gpu_scene::Table<tour::gpu_scene::Mesh, 3>,
+                             smvk::table::Table<tour::gpu_scene::Mesh, 3>>);
+static_assert(std::is_same_v<tour::gpu_scene::Row<tour::gpu_scene::Mesh>,
+                             smvk::table::Row<tour::gpu_scene::Mesh>>);
+
 namespace {
 int g_checks = 0;
 int g_failures = 0;
@@ -215,6 +223,226 @@ void CheckPackedSkinWork() {
     CHECK(output.rows.empty() && output.vertexCount == 0u);
 }
 
+
+ // Deterministic model-based fuzzing of the shared smvk table, independent
+ // of Vulkan. Print the seed and step on failure to reproduce in CI.
+ struct FuzzRng {
+     uint64_t state;
+     uint32_t Next() {
+         state ^= state >> 12;
+         state ^= state << 25;
+         state ^= state >> 27;
+         return uint32_t((state * UINT64_C(2685821657736338717)) >> 32);
+     }
+ };
+ 
+ struct alignas(16) FuzzPayload {
+     uint32_t stamp = 0;
+     uint32_t guard = 0;
+     uint32_t reserved[2] = {};
+ };
+ static_assert(sizeof(FuzzPayload) == 16);
+ 
+ void FuzzTable(uint64_t seed) {
+     constexpr uint32_t N = 3;
+     using T = smvk::table::Table<FuzzPayload, N>;
+     using Id = T::Id;
+     using Entry = T::Entry;
+     FuzzRng rng{seed};
+     T table;
+     struct ModelSlot {
+         uint32_t generation = 0;
+         bool alive = false;
+         uint32_t stamp = 0;
+     };
+     std::vector<ModelSlot> model;
+     std::vector<uint32_t> freeList;
+     std::vector<Id> stale;
+     std::array<std::vector<Entry>, N> gpu;
+     std::array<bool, N> initialized{};
+     std::array<uint64_t, N> writtenBytes{};
+ 
+     auto verify = [&](uint32_t step) {
+         bool ok = table.Size() == model.size();
+         uint32_t live = 0;
+         for (uint32_t i = 0; i < model.size(); ++i) {
+             const auto& m = model[i];
+             const auto& r = table.Rows()[i];
+             live += m.alive;
+             ok &= r.identity.x == m.generation;
+             ok &= r.identity.y == uint32_t(m.alive);
+             if (m.alive) {
+                 ok &= r.value.stamp == m.stamp;
+                 ok &= r.value.guard == (m.stamp ^ 0x5a5a5a5au);
+                 ok &= table.Contains(Id{i, m.generation});
+             } else {
+                 ok &= !table.Contains(Id{i, m.generation});
+             }
+         }
+         ok &= table.LiveCount() == live;
+         for (auto id : stale)
+             ok &= !table.Contains(id) && table.Get(id) == nullptr;
+         if (!ok) {
+             std::fprintf(stderr, "fuzz seed=%llu step=%u: CPU model mismatch\\n",
+                          static_cast<unsigned long long>(seed), step);
+             CHECK(ok);
+         }
+         return ok;
+     };
+ 
+     for (uint32_t step = 0; step < 12000; ++step) {
+         const uint32_t op = rng.Next() % 10;
+         if (op <= 2 && table.Size() < 256) {
+             FuzzPayload value{};
+             value.stamp = rng.Next();
+             value.guard = value.stamp ^ 0x5a5a5a5au;
+             const Id id = table.Insert(value);
+             uint32_t expectedSlot;
+             if (!freeList.empty()) {
+                 expectedSlot = freeList.back();
+                 freeList.pop_back();
+             } else {
+                 expectedSlot = uint32_t(model.size());
+                 model.push_back({1, false, 0});
+             }
+             bool ok = id.slot == expectedSlot && id.generation == model[expectedSlot].generation;
+             model[expectedSlot].alive = true;
+             model[expectedSlot].stamp = value.stamp;
+             if (!ok) {
+                 std::fprintf(stderr, "fuzz seed=%llu step=%u: insertion mismatch\\n",
+                              static_cast<unsigned long long>(seed), step);
+                 CHECK(ok);
+                 return;
+             }
+         } else if (op <= 4 && !model.empty()) {
+             const uint32_t idx = rng.Next() % uint32_t(model.size());
+             const auto& m = model[idx];
+             FuzzPayload value{};
+             value.stamp = rng.Next();
+             value.guard = value.stamp ^ 0x5a5a5a5au;
+             const bool updated = table.Update(Id{idx, m.generation}, value);
+             if (updated != m.alive) {
+                 std::fprintf(stderr, "fuzz seed=%llu step=%u: update mismatch\\n",
+                              static_cast<unsigned long long>(seed), step);
+                 CHECK(updated == m.alive);
+                 return;
+             }
+             if (updated)
+                 model[idx].stamp = value.stamp;
+         } else if (op == 5 && !model.empty()) {
+             const uint32_t idx = rng.Next() % uint32_t(model.size());
+             auto& m = model[idx];
+             const Id id{idx, m.generation};
+             const bool erased = table.Erase(id);
+             if (erased != m.alive) {
+                 std::fprintf(stderr, "fuzz seed=%llu step=%u: erase mismatch\\n",
+                              static_cast<unsigned long long>(seed), step);
+                 CHECK(erased == m.alive);
+                 return;
+             }
+             if (erased) {
+                 stale.push_back(id);
+                 m.alive = false;
+                 ++m.generation;
+                 freeList.push_back(idx);
+             }
+         } else if (op == 6 && !stale.empty()) {
+             const Id id = stale[rng.Next() % uint32_t(stale.size())];
+             FuzzPayload value{};
+             CHECK(!table.Contains(id));
+             CHECK(!table.Update(id, value));
+             CHECK(!table.Erase(id));
+         } else {
+             const uint32_t f = rng.Next() % N;
+             const bool full = !initialized[f] || (rng.Next() % 37 == 0);
+             // Inject a failed writer. If multiple ranges exist, also allow
+             // failure after an earlier range succeeded: replay must converge.
+             const bool injectFailure = rng.Next() % 9 == 0;
+             const uint32_t failAfter = rng.Next() % 3;
+             uint32_t writeCalls = 0;
+             bool wrote = false;
+             const bool result = table.Publish(f, full, [&](size_t offset,
+                                                           const void* bytes,
+                                                           size_t count) {
+                 if (injectFailure && writeCalls++ == failAfter)
+                     return false;
+                 if (offset % sizeof(Entry) || count % sizeof(Entry) ||
+                     offset + count > table.Size() * sizeof(Entry))
+                     return false;
+                 auto& mirror = gpu[f];
+                 if (mirror.size() < table.Size())
+                     mirror.resize(table.Size());
+                 if (count)
+                     std::memcpy(reinterpret_cast<unsigned char*>(mirror.data()) + offset,
+                                 bytes, count);
+                 writtenBytes[f] += count;
+                 wrote = true;
+                 return true;
+             });
+             if (result) {
+                 initialized[f] = true;
+                 const auto& mirror = gpu[f];
+                 bool equal = mirror.size() == table.Rows().size();
+                 if (equal) {
+                     for (uint32_t i = 0; i < model.size(); ++i) {
+                         const auto& actual = mirror[i];
+                         const auto& wanted = table.Rows()[i];
+                         equal &= actual.identity.x == wanted.identity.x &&
+                                  actual.identity.y == wanted.identity.y;
+                         if (wanted.identity.y)
+                             equal &= actual.value.stamp == wanted.value.stamp &&
+                                      actual.value.guard == wanted.value.guard;
+                     }
+                 }
+                 if (!equal) {
+                     std::fprintf(stderr, "fuzz seed=%llu step=%u flight=%u: GPU mirror mismatch\\n",
+                                  static_cast<unsigned long long>(seed), step, f);
+                     CHECK(equal);
+                     return;
+                 }
+                 if (!full && !wrote)
+                     CHECK(table.PendingRows(f) == 0);
+             }
+         }
+         if (!verify(step))
+             return;
+     }
+     // Converge every flight and assert a subsequent no-op publication writes nothing.
+     for (uint32_t f = 0; f < N; ++f) {
+         CHECK(table.Publish(f, !initialized[f], [&](size_t offset, const void* bytes,
+                                                      size_t count) {
+             auto& mirror = gpu[f];
+             mirror.resize(table.Size());
+             if (count)
+                 std::memcpy(reinterpret_cast<unsigned char*>(mirror.data()) + offset,
+                             bytes, count);
+             return true;
+         }));
+         CHECK(table.PendingRows(f) == 0);
+         uint32_t writes = 0;
+         CHECK(table.Publish(f, false, [&](size_t, const void*, size_t) {
+             ++writes;
+             return true;
+         }));
+         CHECK(writes == 0);
+         CHECK(gpu[f].size() == table.Size());
+         for (uint32_t i = 0; i < model.size(); ++i) {
+             CHECK(gpu[f][i].identity.x == model[i].generation);
+             CHECK(gpu[f][i].identity.y == uint32_t(model[i].alive));
+             if (model[i].alive)
+                 CHECK(gpu[f][i].value.stamp == model[i].stamp);
+         }
+     }
+ }
+ 
+ void CheckTableFuzz() {
+     // Fixed seeds are reproducible. Add the printed seed/step from any
+     // failure to this corpus before fixing a regression.
+     for (uint64_t seed : {UINT64_C(1), UINT64_C(0xC0FFEE),
+                           UINT64_C(0xDEADBEEF), UINT64_C(0x9E3779B97F4A7C15)})
+         FuzzTable(seed);
+ }
+
 void CheckLargeScene() {
     Table<Instance, Flights> table;
     FakeGpu<Instance> gpu;
@@ -244,6 +472,7 @@ int main() {
     CheckDatabase();
     CheckPackedSkinWork();
     CheckLargeScene();
+    CheckTableFuzz();
     std::printf("checks=%d failures=%d\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }
