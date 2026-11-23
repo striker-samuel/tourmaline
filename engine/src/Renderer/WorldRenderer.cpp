@@ -13447,6 +13447,39 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                                                     ? 0u
                                                                     : gfx.clusters.size() - 1u)
                                                          .c_str());
+                                        // Scale cross-check: the instance localSphere
+                                        // (from World::Surface bounds) vs the meshlet
+                                        // cluster bounds. A large mismatch (sphere
+                                        // ~1..10 m but cluster radius ~0.007) points at
+                                        // a units bug in the meshlet cook.
+                                        float sMin = 1e30f, sMax = -1e30f;
+                                        const auto& instRows = m_gpuSceneDatabase.instances.Rows();
+                                        for (size_t i = 0; i < instRows.size(); ++i) {
+                                            if (instRows[i].identity.y != 1u)
+                                                continue;
+                                            const float r = instRows[i].value.localSphere.w;
+                                            sMin = std::min(sMin, r);
+                                            sMax = std::max(sMax, r);
+                                        }
+                                        std::fprintf(stderr,
+                                                     "[TaskMeshDiag] instance localSphere "
+                                                     "radius min=%.4g max=%.4g\n",
+                                                     sMin < 1e30f ? sMin : -1.0f,
+                                                     sMax);
+                                        // Per-mesh union bounds (FinishMesh: the
+                                        // union of that mesh's cluster bounds). If
+                                        // these ~match the instance localSphere,
+                                        // the cluster bounds are fine-grained but
+                                        // consistent; a large gap means the meshlet
+                                        // cook bound space diverges from World.
+                                        float bMax = 0.0f;
+                                        for (const auto& mb : gfx.meshBounds)
+                                            bMax = std::max(bMax, mb.w);
+                                        std::fprintf(stderr,
+                                                     "[TaskMeshDiag] mesh union bound "
+                                                     "radius max=%.4g (meshBounds=%zu)\n",
+                                                     bMax,
+                                                     gfx.meshBounds.size());
                                     }
                                 }
                                 // Diagnostic isolation toggles for the task
@@ -13500,6 +13533,26 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                                            hz.mipCount != 0u && hizOcclusion)
                                                               ? 1u
                                                               : 0u;
+                                    }
+                                }
+                                {
+                                    static bool s_taskHizDiag = false;
+                                    if (!s_taskHizDiag && m_frameCounter == 30u) {
+                                        s_taskHizDiag = true;
+                                        const uint32_t hzSlot = m_gfxRenderer.LastSlot();
+                                        const bool hizOcclusion =
+                                            (uint32_t(m_gfxRenderer.config.cullFlags) &
+                                             uint32_t(smvk::gfx::CullFlagBit_HzbOcclusion)) != 0u;
+                                        std::fprintf(
+                                            stderr,
+                                            "[TaskMeshDiag] frame%llu hizValid=%u hiz=%llu "
+                                            "mips=%u hizOcclusion=%d slot=%u\n",
+                                            (unsigned long long)m_frameCounter,
+                                            inputs.hizValid,
+                                            (unsigned long long)inputs.hiz,
+                                            inputs.hizMips,
+                                            hizOcclusion ? 1 : 0,
+                                            hzSlot == UINT32_MAX ? 0xffffffffu : hzSlot);
                                     }
                                 }
                                 // Match legacy temporal seed/remainder with one keyed
@@ -15784,10 +15837,16 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                          temporalCommands,
                          temporalSlots);
     }
-    if (s_gpuSceneTemporal && !m_gpuSceneMeshletCompactActive && !m_gpuSceneTaskMeshActive &&
-        m_gpuSceneRasterDrawActive && temporalProgramsReady &&
-        !m_gpuScenePhysicalIndexedRanges.empty() && temporalCommands != 0 && temporalSlots != 0 &&
-        temporalCommands <= 4u * 1048576u && temporalSlots <= 4194304u) {
+    // Cooperative temporal: the raster seed/remainder/Hi-Z chain runs for the
+    // indexed (native-suffix) subset even while the task/mesh mesh shader owns
+    // the meshleted ids — the two backends share one occluder depth + HZB
+    // instead of the raster temporal being a pure fallback gated off by the
+    // task path. (The dense-meshlet compact fallback still excludes: it has
+    // its own Hi-Z with no temporal remainder/history.)
+    if (s_gpuSceneTemporal && !m_gpuSceneMeshletCompactActive && m_gpuSceneRasterDrawActive &&
+        temporalProgramsReady && !m_gpuScenePhysicalIndexedRanges.empty() &&
+        temporalCommands != 0 && temporalSlots != 0 && temporalCommands <= 4u * 1048576u &&
+        temporalSlots <= 4194304u) {
         const uint32_t previousFlight = m_gpuSceneRasterLastHistoryFlight;
         gpuHistoryValid =
             previousFlight < smvk::limits::MaxFramesInFlight &&
@@ -16186,6 +16245,13 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     bool taskTemporalActive = m_gpuSceneTaskMeshActive && m_gpuSceneTaskTemporalReady &&
                               !depthSplit && !gfxFilterOn && !cullingFrozen &&
                               m_gpuSceneTaskTemporalClearProgram.shaderCount == 1;
+    if (m_frameCounter == 30u)
+        std::fprintf(stderr,
+                     "[TaskMeshDiag] frame30 taskTemporalActive=%d temporalReady=%d "
+                     "depthProgram=%d\n",
+                     taskTemporalActive ? 1 : 0,
+                     m_gpuSceneTaskTemporalReady ? 1 : 0,
+                     m_gpuSceneTaskDepthProgram.shaderCount);
     if (taskTemporalActive) {
         const auto temporal = m_gpuSceneTaskTemporalFrame;
         auto& clear = m_rendergraph->AddComputePass("GpuSceneTaskTemporalClear");
