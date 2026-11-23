@@ -29,9 +29,16 @@ void mainCS(uint3 id:SV_DispatchThreadID) {
         pc.maxX!=0u && pc.maxY!=0u) {
         const uint total=pc.taskOffsets.Get().values[pc.workCapacity];
         if (total<=pc.taskGroupCapacity && total<=GS_MAX_TASK_GROUPS) {
-            // Fixed x is also the task shader's pushed taskGridX.
-            // Padded task workgroups are safely rejected in mainAS.
-            x=total==0u?0u:pc.maxX;
+            // Dispatch only the groups that carry work: x = min(total, maxX),
+            // not the full device-limit width. Launching pc.maxX groups (the
+            // pre-2d9744bb "fixed x" design) made every small scene pay a
+            // 4194304-group dispatch for ~184 real groups - a ~15 ms fixed
+            // task/mesh cost on single Sponza. For total <= maxX this is a
+            // single row (y=1, groupId.y==0) so the task shader's
+            // taskGridX flatten is unused; for total > maxX x stays maxX and
+            // the flatten matches. Padded workgroups are still rejected in
+            // mainAS for the multi-row case.
+            x=total==0u?0u:(total<pc.maxX?total:pc.maxX);
             y=total==0u?0u:(total/x+(total%x!=0u?1u:0u));
             if (y>pc.maxY) { x=0u;y=0u; }
         }
