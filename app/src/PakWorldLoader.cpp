@@ -413,6 +413,10 @@ tour::mem::LinearPtr<tour::World> LoadPakWorld(PakPreload pre,
     contentVfs.Mount(pre.backend, 10, pre.scenePak);
     session.AdoptPakBackend(pre.scenePak, pre.backend);
     PostLoadTail(*world, StemOf(pre.scenePak), session);
+    // Prespecified baked placement instancers: the authored PointInstancer
+    // clouds the cook embedded as BakedPlacement blobs. The renderer
+    // auto-loads them; no per-app placement wiring.
+    world->LoadBakedPlacements(reader);
     return world;
 }
 

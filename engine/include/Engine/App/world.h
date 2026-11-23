@@ -154,13 +154,10 @@ struct World {
     }
 
     // Prespecified baked placement instancers (the authored PointInstancer
-    // clouds). The world loader calls LoadBakedPlacement once per .geometry
-    // family that carried one; the renderer auto-loads the cooked cloud and
-    // drives its PR03 chain — no per-app runtime wiring.
-    bool LoadBakedPlacement(const asset::PakReader& reader,
-                            const std::string& familyPath,
-                            float interestRadius = 64.0f,
-                            uint32_t slotBudget = 32);
+    // clouds). The world loader calls LoadBakedPlacements once; the renderer
+    // auto-loads each cooked cloud and drives its PR03 chain — no per-app
+    // runtime wiring.
+    void LoadBakedPlacements(const asset::PakReader& reader);
     [[nodiscard]] const std::vector<tour::placement::BakedPlacementRef>& BakedPlacementRefs()
         const noexcept {
         return bakedPlacementRefs;

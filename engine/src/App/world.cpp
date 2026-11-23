@@ -90,20 +90,29 @@ WorldPage& World::LoadPageFromPak(ResourceManager& ctx,
     return ref;
 }
 
-bool World::LoadBakedPlacement(const PakReader& reader,
-                               const std::string& familyPath,
-                               float interestRadius,
-                               uint32_t slotBudget) {
-    tour::placement::BakedPlacementCooked cooked;
-    if (!tour::placement::LoadBakedPlacementFromPak(reader, familyPath, cooked))
-        return false; // the family carried no PointInstancer
-    tour::placement::BakedPlacementRef ref;
-    ref.familyPath = familyPath;
-    ref.interestRadius = interestRadius;
-    ref.slotBudget = slotBudget;
-    bakedPlacementRefs.push_back(std::move(ref));
-    bakedPlacementCooked.push_back(std::move(cooked));
-    return true;
+void World::LoadBakedPlacements(const PakReader& reader) {
+    for (const PakTocEntry* e : reader.BlobsOfKind(PakAssetKind::BakedPlacement)) {
+        // e->path = "<stem>.baked_placement_cooked"; the .geometry family is
+        // the sibling "<stem>.geometry" (the ref's identity, for diagnostics).
+        std::string family = e->path;
+        const std::string suffix = ".baked_placement_cooked";
+        if (family.size() >= suffix.size() &&
+            family.compare(family.size() - suffix.size(), suffix.size(), suffix) == 0)
+            family = family.substr(0, family.size() - suffix.size()) + ".geometry";
+        try {
+            const auto bytes = reader.Payload(*e);
+            tour::placement::BakedPlacementCooked cooked;
+            if (!tour::placement::DeserializeBakedPlacementCooked(
+                    bytes.data(), bytes.size(), cooked))
+                continue;
+            tour::placement::BakedPlacementRef ref;
+            ref.familyPath = std::move(family);
+            bakedPlacementRefs.push_back(std::move(ref));
+            bakedPlacementCooked.push_back(std::move(cooked));
+        } catch (...) {
+            continue;
+        }
+    }
 }
 
 bool World::LoadTerrainFromPak(const PakReader& reader, std::string& err) {
