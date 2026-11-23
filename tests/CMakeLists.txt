@@ -1704,6 +1704,7 @@ add_test(NAME source_scene_tests COMMAND SourceSceneTests)
 add_executable(SmvkRawTableTests test_smvk_raw_table.cpp)
 target_include_directories(SmvkRawTableTests PRIVATE
     ${CMAKE_SOURCE_DIR}/engine/include
+    ${CMAKE_SOURCE_DIR}/core/include
     ${CMAKE_SOURCE_DIR}/external/glm)
 add_test(NAME smvk_raw_table_tests COMMAND SmvkRawTableTests)
 
@@ -1711,6 +1712,7 @@ add_test(NAME smvk_raw_table_tests COMMAND SmvkRawTableTests)
 add_executable(SmvkDescriptorTableTests test_smvk_descriptor_table.cpp)
 target_include_directories(SmvkDescriptorTableTests PRIVATE
     ${CMAKE_SOURCE_DIR}/engine/include
+    ${CMAKE_SOURCE_DIR}/core/include
     ${CMAKE_SOURCE_DIR}/external/glm)
 add_test(NAME smvk_descriptor_table_tests COMMAND SmvkDescriptorTableTests)
 
