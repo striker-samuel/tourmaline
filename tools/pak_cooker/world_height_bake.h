@@ -12,7 +12,7 @@
 #include <cstdint>
 #include <vector>
 
-#include <Engine/App/cluster.h>
+#include <Engine/App/world_page.h>
 #include <Engine/Rendergraph/terrain_meta.h>
 #include <Engine/Rendergraph/terrain_pack.h>
 

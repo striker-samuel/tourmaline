@@ -14,7 +14,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include <Engine/App/animator.h>
-#include <Engine/App/cluster.h>
+#include <Engine/App/world_page.h>
 #include <Engine/Asset/cluster_serializer.h> // smvk::ExternalTextureResolver
 #include <Engine/Asset/lut_handle.h>
 #include <Engine/Asset/mesh_handle.h>

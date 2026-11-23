@@ -824,7 +824,7 @@ assets, camera, world, audio, gi, placement, mem, profiler); smvk:: =
 the RHI ONLY; smvk::detail::vulkan = the private impl. Remaining:
 
   4. THE PRIMARY MIGRATION (engine-owned definitions OUT of smvk:: ->
-     tour::: App/app.h, App/world.h, App/cluster.h -> tour::(scene);
+     tour::: App/app.h, App/world.h, App/world_page.h -> tour::(scene);
      Asset/pak.h + Asset/tour.h's smvk::tour -> tour::asset;
      smvk::audio/gi/placement/mem/profiler -> tour::*) — compat
      using-aliases keep the tree compiling; retire as call sites

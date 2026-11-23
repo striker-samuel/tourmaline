@@ -4,7 +4,7 @@
 
 Tourmaline currently uses **Cluster** for two unrelated concepts:
 
-- `tour::Cluster` (`engine/include/Engine/App/cluster.h`): a scene-backed resource owner with its own lifecycle, pools, and serialization/loading boundaries.
+- `tour::Cluster` (`engine/include/Engine/App/world_page.h`): a scene-backed resource owner with its own lifecycle, pools, and serialization/loading boundaries.
 - `tour::gfx::Cluster` (`engine/include/Engine/Renderer/gpu_scene_static.h`): a small physical geometry partition, holding triangle and vertex ranges plus bounds/cone information for indexed and task/mesh raster backends.
 
 **Proposed change:** keep `tour::Cluster` as-is for now and rename the renderer-side `tour::gfx::Cluster` to `tour::gfx::Meshlet`. Align adjacent names, such as `ClusterConstants` → `MeshletConstants`, `kMaxClusterTris` → `kMaxMeshletTriangles`, `StaticGeometry::clusters` → `meshlets`, and `clusterStart/clusterCount` → `meshletStart/meshletCount` where those fields denote GPU geometry partitions. Rename related CPU/GPU buffer fields consistently.

@@ -54,7 +54,7 @@
 #include "ProjectRuntime.h"
 #include "ProjectScenes.h"
 
-#include <Engine/App/cluster.h>
+#include <Engine/App/world_page.h>
 #include <Engine/App/world.h>
 #include <Engine/Asset/appmanifest.h>
 #include <Engine/Asset/content_registry.h>

@@ -25,7 +25,7 @@
 #include <crtdbg.h>
 #endif
 
-#include <Engine/App/cluster.h>
+#include <Engine/App/world_page.h>
 #include <Engine/App/static_merge.h>
 #include <Engine/App/world.h>
 #include <Engine/Asset/asset_plan.h>

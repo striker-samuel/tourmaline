@@ -70,7 +70,7 @@
 #include <glm/glm.hpp>
 
 #include "../cook/src/cube_png.h"
-#include <Engine/App/cluster.h>
+#include <Engine/App/world_page.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/GI/bake.h>
 #include <Engine/Renderer/cubemap.h>

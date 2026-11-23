@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
-#include <Engine/App/cluster.h>
+#include <Engine/App/world_page.h>
 #include <Engine/Asset/asset_registry.h>
 // GetMeshHeapVertexBase reads StaticMeshAllocation::vertexBase through the
 // forward-declared pointer — the heap header carries the full definition.

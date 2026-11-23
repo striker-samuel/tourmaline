@@ -726,7 +726,7 @@ int main() {
             {"App/app.h", 1, 0},
             {"App/static_merge.h", 1, 0},
             {"App/animator.h", 6, 0},
-            {"App/cluster.h", 9, 0},
+            {"App/world_page.h", 9, 0},
             {"App/world.h", 18, 0},
             {"Asset/asset_plan.h", 3, 0},
             // 3 = WorldPage + GiBinding + TextureStreamer (the streamer moved
@@ -875,7 +875,7 @@ int main() {
             {"App/app.h", 7, 1}, // ResourceManager*
             {"App/app.h", 8, 1}, // Swapchain*
             {"App/app.h", 9, 1}, // RenderGraph*
-            {"App/cluster.h", 7, 2},
+            {"App/world_page.h", 7, 2},
             {"App/world.h", 7, 1},
             {"App/Element.h", 10, 1}, // ElementFrame::fb
             {"ImGui/imgui_overlay.h", 7, 1},

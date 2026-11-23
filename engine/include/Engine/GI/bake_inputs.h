@@ -58,7 +58,7 @@
 
 #pragma once
 
-#include <Engine/App/cluster.h>
+#include <Engine/App/world_page.h>
 #include <Engine/GI/bake.h>       // GiTraceScene (the reach sweep)
 #include <Engine/Renderer/mesh.h> // MeshData
 #include <Engine/Scene/scene.h>

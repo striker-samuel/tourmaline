@@ -20,7 +20,7 @@
 // material name via the .material files / the source glTF when the name
 // classification matters; the numeric breakdown here is the authoritative
 // view of what the bake BVH admits.
-#include <Engine/App/cluster.h>
+#include <Engine/App/world_page.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Scene/scene.h>
 #include <Engine/Scene/scene_tables.h>

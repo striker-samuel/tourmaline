@@ -10,7 +10,7 @@
 //   cubemap_plan <content-dir> <geometry-vfs-path> [minX minY minZ maxX maxY maxZ]
 //
 // Defaults to the bistro AABB when the bounds are omitted.
-#include <Engine/App/cluster.h>
+#include <Engine/App/world_page.h>
 #include <Engine/GI/bake.h>
 #include <Engine/Vfs/vfs.h>
 #include <Engine/WorldPartition/CubemapCaptureDiagnostics.h>

@@ -81,7 +81,7 @@
 
 #include "pak_tool.h"
 #include "terrain_cook.h"
-#include <Engine/App/cluster.h>
+#include <Engine/App/world_page.h>
 #include <Engine/App/static_merge.h>
 #include <Engine/Asset/audiograph.h>
 #include <Engine/Asset/bake_asset.h> // bake-asset identity (bake GUIDs)

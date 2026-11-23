@@ -9,7 +9,7 @@
 
 #include "ProjectRuntime.h" // the content session (LoadProjectWorld's resolver lane)
 
-#include <Engine/App/cluster.h>
+#include <Engine/App/world_page.h>
 #include <Engine/App/scene_page_streamer.h>
 #include <Engine/App/world.h>
 #include <Engine/Asset/appmanifest.h>        // kCatalogKind* (the resolver's kind byte)

@@ -417,7 +417,7 @@ propose splitting them again.
 | Frame renderer | `engine/Renderer/WorldRenderer.h` | `Configure(passes, run)` (parse-once `RunConfig`); `IFrameRenderer::AppendPasses(AppFrameContext)` |
 | Run config | `engine/App/RunConfig.h+.cpp` | `Parse()` once in `main`, `Log()`, `WarnUnknown()`; new knobs go here first |
 | Rendergraph | `engine/Rendergraph/*.h`, impl in `engine/src/Vulkan/impl.cpp` | `Add*Hints` barrier discipline; `RendergraphContractTests` |
-| GPU scene | `engine/App/world.h+cluster.h`, `engine/Scene/scene.h` | `ResolveAndFixup_pages` rebuilds `drawItems/flagLists/lodChains` |
+| GPU scene | `engine/App/world.h+world_page.h`, `engine/Scene/scene.h` | `ResolveAndFixup_pages` rebuilds `drawItems/flagLists/lodChains` |
 | Tour | `engine/Asset/tour.h+.cpp`, `editor/src/editor_commands.cpp` | `CmdToTour`/`TourToCmd`/`ApplyTourToCluster`/`ReplayTourDoc`; `TestTourFuzz` |
 | Memory | `engine/Memory/memory.h+linear_vector.h` | `FrameVector` = FrameScratch (reset/frame); `UploadInFlightVector` = monotonic (never reset while live); `ProcessVector` = process (ThreadPool ring) |
 | GPU-driven filter | RETIRED (see `docs/gfx_retirement.md`) — recovered as the `ComputeFilter` geometry backend; the `gfxfilter*`/`gfxbatchcull*`/`gfxdrawcull*` shaders are back in `engine/shaders/`, lightmap-pull surface dropped |
