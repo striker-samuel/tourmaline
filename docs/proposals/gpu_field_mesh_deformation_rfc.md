@@ -15,57 +15,27 @@ wheel tracks, imprints from instanced rocks) is the first example, not a snow-on
 subsystem. Reuse the same mechanism later for sand, mud, bent vegetation, and local
 procedural deformation.
 
-### Existing seams, not a greenfield renderer
+## Master audit — 2026-11-24
 
-- `Engine/Graph/graph.h`: UI-free `tour::graph::Document` with typed ports,
-  topological validation and consumer-owned semantics.
-- `Engine/Placement/placement_ir.h` and `placement_gpu.h`: field instructions,
-  GPU SSA evaluation and producer-owned GPU instance streams. Placement currently
-  *produces instances*; it is **not** a general persistent-texture processing graph.
-- GPU Scene + the procedural batch publication contract (PR #331): use stable
-  producer snapshots, not one World node per GPU-generated instance. Check
-  publication/retirement epochs and per-flight buffer lifetimes.
-- `RenderViewSet::AllocateCustomView`: per-frame virtual view allocation, not
-  a persistent target identity.
-- RenderGraph: explicit compute/raster resource dependencies.
-- `docs/shader_library_design.md`: ProjectLit hooks provide a shading seam;
-  arbitrary vertex displacement is **not** currently supported and must
-  be introduced separately, with parity across all raster paths.
-- Draft PR #337: CPU-only render-target selection vocabulary, **not** offscreen
-  image allocation. A capture-based stamp source is optional and needs subsequent
-  implementation.
+Audited tree: [6708a89b](https://github.com/striker-samuel/tourmaline/tree/6708a89b55205359b360efe431355757fe993875). The original proposal diverged from master at 0ca3600f; the branch comparison returned 462 master-only commits. This is a source audit, not a build or GPU validation.
 
-## Architecture: three independent primitives
+### Existing seams and decisions
 
-1. **Persistent `GpuField`**: renderer-owned, generation-checked handle to an
-   image with format, extent, world-to-UV mapping, history/reset/clear semantics,
-   explicit read/write usage and lifetime. `R16F` displacement is a first
-   candidate; `RG16F` or more channels are future options. Define what values
-   mean in world units, and allow explicit unclamped or clamped ranges.
-2. **`GpuFieldGraph`**: a domain-specific compiler using `tour::graph::Document`
-   for typed topology. This is not arbitrary runtime HLSL or a redefinition of
-   Placement's instance-generation IR. It may reuse mathematical expression
-   operations/evaluation patterns but owns texture writes, dispatch scheduling,
-   source typing and resource binding.
-3. **`MeshDeformationBinding`**: opt-in shader-time displacement that samples
-   a field. A material/mesh may reference a field and a mapping. The source
-   geometry remains unchanged; there is no mutation of GPU Scene's static
-   geometry heaps.
+- `Engine/WorldFields/WorldField.h`, `WorldFieldTypes.h`, `WorldFieldAtlas.h`, `WorldFieldGpu.h`, `WorldFieldProvider.h` and `world_field.hlsli`: reuse the world-space field vocabulary, decoded units/fallback, residency concepts and WorldPartition publication boundary. Existing storage is a persistent **3D** brick atlas (64 interior, 2 halo per side), designed for streamed cooked/procedural data. CpuUpdated and GpuGenerated modes are reserved; registration is append-only after first publication, unregister is pre-publication only. Do not treat these as mutable surface APIs or reuse the stable table in-place for concurrent GPU writes.
+- `Engine/Renderer/GeometryBackend.h`, `GeometryBackendTypes.h`, `gpu_scene_render_route.h`, and `docs/gfx_retirement.md`: target the modular geometry backend and canonical GPU Scene static ownership; the composer owns common depth/Hi-Z/targets. ComputeFilter recovery is shader-only per the November 21 record, not a working prerequisite. Do not revive GfxRenderer or obsolete lightmap layouts.
+- `Engine/Graph/graph.h`: typed document and consumer-defined semantics; reuse topology validation, not an arbitrary shader generator.
+- `Engine/Placement/placement_gpu.h`, `placement_ir.h`, `placement_pass.h`: reuse producer-native field math and instance streams through an explicit adapter. Do not assume historical record strides or a legacy procedural publication API; validate current producer count, layout, lifetime and GPU dependency at integration.
+- `Engine/Rendergraph/rendergraph.h`: external image/view/buffer registration is available. Import persistent field versions and declare actual sampled/storage accesses; do not hide field hazards behind bindless indices.
+- `Engine/Renderer/renderview.h`: AllocateCustomView remains a frame-local view, not target ownership. #337 is still a separate draft CPU-only selection contract. Offline geometry capture atlas is not a runtime capture facility.
+- `docs/shader_library_design.md`: ProjectLit surface hooks and userdata are not a vertex deformation contract. Do not overload material userdata or inherit historical ABI offsets without inspecting current layouts.
 
-```text
-GPU Placement snapshots ----\
-Physics/game contact events --+--> Source buffers / optional capture
-Node graph field expressions --/                  |
-                                                v
-                               Stamp raster / bounded compute
-                                                |
-                           Previous field --> Accumulate
-                                                |
-                              Persistent GPU deformation texture
-                                     /                    \
-                          Vertex/mesh paths          Surface shading
-                            + depth/shadows        + normals/roughness
-```
+## Architecture: surface-field extension, not a parallel world system
+
+1. **Mutable surface field storage** (working name `SurfaceField`, under WorldFields): a renderer-owned 2D sampled/storage image, generation-checked identity, explicit XZ/UV mapping, units, fallback, version and reset. Keep this storage and mutable handle registry separate from the existing static 3D atlas and its fixed registration table. Share common semantics and later WorldPartition provider integration, not an incompatible storage ABI. A local non-streamed R16F compression field is the first candidate; query capabilities and use R32F fallback if needed.
+2. **GpuFieldGraph**: domain compiler over the existing typed document. Own texture writes and scheduling, with shared math utilities only where semantics match. MVP is a fixed stamp/accumulate graph; do not require editor or asset cooking for first rendering.
+3. **MeshDeformationBinding**: per-renderable opt-in binding (material may opt into a compatible shader family, but cannot own unique spatial state). Resolve via canonical source identity and generation into immutable flight-visible data. Use a common HLSL position/normal evaluator across admitted raster routes, leaving static geometry heaps unchanged.
+
+The first use case is a dense static snow overlay with bounded world-Y displacement; no collision mutation, general skinning or terrain LOD support in v1.
 
 ### Suggested graph node taxonomy (proposal)
 
@@ -77,7 +47,7 @@ Node graph field expressions --/                  |
 | ShapeStamp | stamp stream + footprint shape/strength | stamp field |
 | TextureSample | image + UV mapping | scalar/vector field |
 | FieldMath | scalar fields; Add/Min/Max/Mul/Falloff/Noise | scalar field |
-| History | previous *completed* field version | image/field |
+| History | previous logically published field version (GPU dependency enforced) | image/field |
 | Accumulate | history + new stamps + policy | next field |
 | TextureOutput | evaluated field | persistent output field |
 
@@ -88,11 +58,11 @@ acyclic; model history as an explicit feedback resource edge across frames.
 ### Proposed user-facing sketch (illustrative, NOT IMPLEMENTED)
 
 ```cpp
-auto field = renderer.CreateGpuField({
-    .format = GpuFieldFormat::R16F,
+auto field = renderer.CreateSurfaceField({
+    .format = SurfaceFieldFormat::R16F,
     .extent = {1024, 1024},
     .worldBounds = snowBounds,
-    .history = GpuFieldHistory::Persistent
+    .history = SurfaceFieldHistory::Persistent
 });
 auto graph = renderer.LoadGpuFieldGraph(project::graphs::SnowImprints);
 graph.BindInstanceSource("rocks", placementBatch);
@@ -109,113 +79,61 @@ Exact method names, type ownership, project asset representation and runtime gra
 cooking are open design questions. Prefer renderer/RHI resource interfaces to game
 code holding raw Vulkan objects, bindless indices or device addresses.
 
-## Execution model
+## Execution and lifetime contract
 
-- Compile/validate graph only on graph revision, **not** each frame.
-- Consume GPU Placement's immutable published producer batches (per-producer key,
-  incarnation/version, format/bounds, residency); never reinterpret compact
-  40-byte placement records as 128-byte GPU Scene records.
-- For small numbers of contacts, upload bounded stamp/event data and perform GPU
-  stamping. For many instances, keep transforms on GPU and prefer tiled binning
-  or rasterized stamp accumulation; do not read back positions.
-- Use a separate temporary stamp image when overlaps require deterministic,
-  well-defined blending. Resolve into the persistent field in one compute pass.
-  Define accumulation explicitly (e.g. compression:
-  `next = clamp(max(previous, stamp), 0, maxDepth)`). Avoid assuming R16F
-  atomic max is available across all target GPUs.
-- Use ping-pong or equivalent versioning for history; no simultaneous unsynchronized
-  read/write of the same image. RenderGraph must know all image reads/writes.
-- Schedule the update **before** depth/shadow/main passes that sample the field;
-  if GPU Scene culling needs deformed bounds, publish expanded bounds first.
-- Defining world-space mapping is mandatory: origin, axes, dimensions, clamp/
-  repeat behavior, field ownership per tile/region, and effect of scene transforms.
+- Compile on graph revision; validate source types, output ownership, finite inputs, extent/format and bounded work. Structural DAG remains acyclic; history is an explicit inter-frame dependency.
+- At the frame publication boundary resolve live source identities, field generations, mapping, reset epoch, and conservative bounds; freeze bindings before visibility/recording. Publish changes once per simulation/render frame, not once per view.
+- Import persistent images as RenderGraph external resources. Explicitly declare previous sampled image, stamp scratch and next storage image, followed by shader reads at every consumer stage. Handle cross-frame queue ordering, layouts and transfer/graphics/compute synchronization; external registration alone is not a barrier.
+- Logical previous means the version used by the preceding rendered frame, not whichever fence completed most recently. Track physical version last-reader/writer retirement across flights. Two images are sufficient only if reuse is proven safe by dependencies; otherwise use a bounded retirement-aware pool or explicit serialization. Keep current/previous mappings and reset epochs with the snapshot. On reset initialize history coherently and invalidate motion/temporal history as appropriate.
+- Start with bounded CPU contact events and one writer per texel (gather or tiled gather). Compression in metres: next = clamp(max(previous, stamp), 0, maxDepth); geometry moves downward. Specify pixel-center mapping, zero outside domain, overlap determinism, finite/clamped values and explicit clear. No assumed floating-point atomic support. No production readback.
+- Placement comes later: consume producer-native buffers and GPU counts only once producer work and publication are valid. Never reinterpret placement data as GPU Scene rows, use a view-culled list as the authoritative stamp source, or promote instances to World nodes. Track generation/epoch and retirement; reject stale inputs, and define repeated stamp/event semantics.
+- Stamp source capture is optional; reject same-frame capture/deformation feedback unless explicitly versioned. No per-view duplicate updates.
+- Use ResourceManager holders and deferred destruction; defer image, descriptor and binding reuse until all consumers retire. Failed allocation or missing variant must choose a coherent fallback before admission, never a partly deformed object.
 
-## Mesh deformation integration
+## Geometry integration
 
-Propose an explicit opt-in geometry hook rather than changing the existing
-ProjectLit surface-only contract without review:
+Introduce an engine-owned shared position evaluator (proposed, not implemented), independent of ProjectLit fragment hooks. Start with world-aligned static overlays; use stable world coordinates consistent with GPU Scene position reconstruction, and test large coordinates.
 
-```hlsl
-// Pseudocode signature — NOT implemented.
-float3 ProjectDeformPosition(
-    float3 positionWS, float2 fieldUV, uint bindingIndex);
-```
+Inventory active route capability at the pinned master before modifying ABIs: GPU Scene indexed and task/mesh, direct indexed, depth/thin G-buffer, directional/spot/point shadows, motion, reflection/custom views where enabled. Relevant entry points include gpu_scene_raster.vert.hlsl, gpu_scene_meshlet.mesh.hlsl, gpu_scene_meshlet_motion.mesh.hlsl, gpu_scene_motion.vert.hlsl, gpu_scene_shadow.vert.hlsl and default.vert.hlsl. Verify actual pipeline registration and shader sharing rather than relying on filenames alone. ComputeFilter is a future capability check, not an MVP dependency.
 
-The hook is sampled during vertex/mesh generation and **must** apply
-consistently to:
-- direct indexed vertex path;
-- GPU Scene indexed and task/mesh variants;
-- depth/prepass, shadows, reflection views, and motion vectors;
-- geometry normals/tangents when deformation changes slopes.
+The composer should select one coherent deformation capability per renderable across all required passes, using existing canonical ownership. If an enabled route lacks support, use a fully compatible direct route where available or disable deformation consistently; never mix displaced color with undeformed depth/shadow. Keep common Hi-Z and pass ownership intact. Preserve material/pipeline identity unless a variant genuinely requires a different pipeline. Any new CPU/HLSL layout requires pinned offsets, sizes and shader compilation checks.
 
-Shading-only parallax is not geometry displacement. Deep footprints need a dense
-snow overlay/mesh, adaptive geometry, or another high-resolution geometry source:
-the existing coarse far-terrain representation cannot produce centimeter-scale
-silhouettes merely by sampling a texture. Existing `terrain.vert.hlsl` operates
-on near-terrain world-space vertices; `terrainfar.vert.hlsl` reconstructs heights
-from its terrain atlas. Integrate each explicitly, or scope v1 to snow-overlay
-meshes (recommended), rather than silently adding divergent behavior.
+Expand conservative bounds **before** instance/LOD and meshlet culling; account for displacement in shadow caster selection, occlusion and normal-cone tests (disable unsupported fine culling for deformed objects). Use the same current displacement for all current-position passes and the previous rendered version plus previous transform/mapping for motion. Reconstruct normals from field derivatives with correct world texel spacing. Reset/teleport/first-frame handling must avoid false velocity. No static geometry heap rewrites or mesh registration duplication.
 
-Require conservative displacement-expanded world bounds for CPU/GPU Scene culling,
-LOD, shadows, and occlusion. Sample the **previous** field consistently for
-previous-frame motion vectors, rather than copying only the current deformation.
+Scope v1 to dense snow overlay geometry. Coarse terrain cannot reproduce footprints by texture sampling alone; near/far terrain, skinned meshes, collision and arbitrary displacement remain future explicit integrations.
 
-## Relationship to render targets
+## Optional render-target input
 
-The render target is only **one possible graph input**: optional orthographic
-depth/mask capture of selected objects from the World. A low-cost footprint
-may be generated from contact events without any offscreen camera. A persistent
-`GpuField` is not a view/camera target: its own storage, versioning and
-compute-write semantics are first class.
+Keep #337 independent. Custom views are frame-local allocations, not persistent images or selection APIs. Once runtime capture exists, import depth/mask outputs through RenderGraph and validate generation-aware selection; keep render selection separate from light linking. The offline geometry capture atlas is unrelated. Contact-stamp MVP must not depend on #337.
 
-No dependency on merging PR #337 should be required for the contact-stamp MVP.
-If capture support is added later, keep render-layer masks independent of
-light-linking masks, and resolve included/excluded World handles with generations.
+## Implementation sequence (separate PRs; this RFC remains draft)
 
-## MVP and staged implementation (future PRs, not this PR)
+| Slice | Deliverable | Gate |
+|---|---|---|
+| 0 | Headless surface descriptor, generation/version/retirement model and route capability contract; document ownership under WorldFields | Architecture tests; stale handles, bounds, reset, invalid mapping, simulated multi-flight reuse |
+| 1 | Persistent local 2D field, external graph registration, fixed CPU stamps, deterministic GPU accumulation and explicit reset | CPU oracle vs GPU readback (tests only), format capability/failure, overlapping stamps, no-op frames, Vulkan validation |
+| 2 | Dense static overlay and shared deformation evaluator with coherent supported direct/GPU Scene route admission | Main/depth/G-buffer/shadow/motion parity, normals, expanded bounds, first frame/reset; unsupported routes fail coherently |
+| 3 | Placement-native GPU source adapter and bounded tiled stamp processing | Producer retirement/reuse, GPU count bounds, off-camera source behavior, deterministic overlap, no readback; compare CPU/GPU cost |
+| 4 | Typed graph compiler, cooking and authoring for proven operations | Headless graph validation, history feedback rules, revision caching, invalid source rejection |
+| 5 | Optional WorldPartition surface tiling, streaming and capture | Seam/halo tests, tile eviction and reload policy, capture selection and graph dependencies; no implicit persistence promise |
 
-1. Resource contract and headless tests: handles, ownership, extent validation,
-   field history, graph type validation, stale producer/source rejection.
-2. One persistent single-channel GPU field, explicit reset, bounded CPU-sourced
-   stamps, versioned accumulation pass and Vulkan capture/readback tests.
-3. One opt-in high-density snow overlay with a world-Y displacement shader,
-   depth/shadow/motion parity and expanded culling bounds.
-4. Placement producer consumption with batch-version validation, GPU stamp
-   generation and overlapping stamp tests; evaluate performance vs CPU events.
-5. Graph asset cooking/editor authoring, optional selected-object capture source,
-   tiling/streaming, serialization of modified regions, and general field math.
+### Acceptance and performance
 
-### Validation/acceptance gates
+- Run existing WorldFields, GPU Scene, architecture and rendergraph contract tests plus new surface field tests; compile supported C++ and HLSL configurations.
+- Vulkan validation and capture/readback oracle on actual hardware; report exact backend, pass and capability matrix, not blanket parity claims.
+- Exercise multiple flights, delayed completion, descriptor reuse, resize, teardown, stream unload, producer retirement, field reset, camera teleport and missing resources.
+- Test identical displacement in depth/color/shadows and current/previous motion, static and moving transforms, grazing silhouettes, fine-culling boundaries and large world coordinates.
+- Measure bounded image allocation, stamp count/overflow, dispatch cost, frame time, GPU memory and retirement high-water mark. A 1024² R16F image costs 2 MiB before allocation overhead; budget versions and scratch separately. No production CPU readback or unbounded per-frame allocation.
+- Disabled feature preserves existing layouts/paths unless an explicitly reviewed ABI change is required; no claimed runtime results in this RFC.
 
-- Deterministic reference comparisons for overlapping and repeated stamps;
-  no race-driven divergence, no stale-image reads.
-- GPU Scene on/off screenshot parity in main/depth/shadow views, including
-  indexed + task/mesh paths and motion during deformation.
-- Destroy/recreate fields, node deletion/reuse, stream unload and GPU producer
-  retirement while flights are in progress.
-- No unbounded per-frame copies/allocations, no hidden GPU->CPU readback.
-- Explicit world-space mapping and tile-boundary behavior.
-- Disabled paths preserve current engine shading, binary layouts and perf.
+## Decisions still open
 
-## Questions to resolve before implementation
-
-1. Should the field be bound per World node, per material instance, or both?
-   How do shared meshes and multiple deformed instances resolve mapping?
-2. What shader hook ABI is minimal for direct/GPU Scene paths, including
-   previous-frame deformation and normals?
-3. Which parts of Placement SSA can be shared without coupling the instancer
-   to texture writes? Is a separate field IR with shared math utilities cleaner?
-4. What is the authoritative GPU producer record format and published snapshot
-   contract during PR #331's follow-ups?
-5. Are world-aligned Y-displacement overlays enough for v1, or should support
-   arbitrary mesh-local normals be designed immediately?
-6. What persistence/streaming policy is required for deformed fields on
-   unloaded world tiles?
-7. Which backend features are required for format/storage operations and
-   what is the Vulkan parity test matrix?
+- Exact surface registry owner, public handle/API and how it shares WorldFields concepts without changing static atlas publication.
+- Actual current producer publication seam and record format; inspect implementation at slice 3 rather than freezing historical ABI.
+- Exact per-renderable GPU binding transport and route capability matrix; confirm against current renderer at slice 0/2.
+- Format/filter support and physical version count under the renderer's submission model.
+- Tile ownership, persistence across unload, collision and non-world-Y deformation are deferred.
 
 ## Review policy
 
-**DO NOT MERGE THIS PR.** Keep it as a draft discussion artifact. Any eventual
-implementation should arrive in separate, small PRs with independent tests and
-explicit code review. No runtime implementation or validation is claimed here.
+**DO NOT MERGE THIS PR.** Keep it as a draft discussion artifact. All runtime implementation belongs in separately reviewed and validated PRs. This audit changes Markdown only; no compilation, GPU testing or runtime implementation is claimed.
