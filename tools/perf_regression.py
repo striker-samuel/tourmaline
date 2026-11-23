@@ -97,13 +97,20 @@ def load_matrix(path):
 
 
 def resolve_exe(raw):
-    """Tolerate the extensionless spelling on Windows (shared with scenario_matrix.py)."""
+    """Tolerate the extensionless spelling on Windows.
+
+    Must check ``is_file()``, not ``exists()``: on a case-insensitive Windows
+    disk the extensionless "out/.../App" matches the CMake ``app/`` build
+    *directory*, so ``exists()`` returns True for a directory and the resolved
+    path becomes the lowercased "app" (a directory), which the harness then
+    rejects as "executable does not exist".
+    """
     path = Path(raw)
-    if path.exists():
+    if path.is_file():
         return path
     if os.name == "nt":
         with_ext = path.with_name(path.name + ".exe")
-        if with_ext.exists():
+        if with_ext.is_file():
             return with_ext
     return path
 

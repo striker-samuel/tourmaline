@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "scenarios": [
+    "sponza-atrium",
+    "bistro-gi-atrium"
+  ],
+  "setups": [
+    {
+      "name": "release-taskmesh",
+      "exe": "out/build/x64-Release/App",
+      "mode": "bench",
+      "env": {}
+    }
+  ]
+}
