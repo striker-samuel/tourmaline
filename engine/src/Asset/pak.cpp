@@ -1672,14 +1672,23 @@ std::optional<WorldManifestView> ReadWorldManifest(const PakReader& reader, std:
     memcpy(&version, blob.data() + 4, 4);
     memcpy(&sceneCount, blob.data() + 8, 4);
     if (magic != kWorldManifestMagic) {
-        if (err)
-            *err = "bad world manifest magic";
-        return std::nullopt;
+        // The manifest blob is present but not the world-manifest format.
+        // No compatibility reads — a mismatched magic means a foreign/corrupt
+        // pak, which must break loudly, never fall back to a no-streaming world.
+        std::fprintf(stderr,
+                     "[WorldManifest] FATAL: bad magic (got %08x, want %08x)\n",
+                     magic,
+                     kWorldManifestMagic);
+        std::abort();
     }
     if (version != kWorldManifestVersion) {
-        if (err)
-            *err = "unsupported world manifest version";
-        return std::nullopt;
+        // Old-format manifest: no versioned/compatibility read — break the pak.
+        std::fprintf(stderr,
+                     "[WorldManifest] FATAL: unsupported version %u (want %u) — "
+                     "re-cook the pak\n",
+                     version,
+                     kWorldManifestVersion);
+        std::abort();
     }
     if (sceneCount > (1u << 20)) {
         if (err)
