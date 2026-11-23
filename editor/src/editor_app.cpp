@@ -652,6 +652,7 @@ void EditorApp::CloseScene() {
     m_references.clear();
     m_materialAssets.clear(); // session pool-import records (fresh scene)
     m_textureAssets.clear();  // cookie/.texture pool imports (fresh scene)
+    m_lightCookieBakes.clear(); // fixture-cookie recipes (fresh scene)
     m_refPhCluster.clear();
     m_envCurrent = UINT32_MAX;
     m_materialFocus = UINT32_MAX;
