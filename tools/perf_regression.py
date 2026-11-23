@@ -1,15 +1,25 @@
 #!/usr/bin/env python3
 """Run the benchmark scenario matrix and diff it against historic results.
 
-Two-phase, local-first regression harness (stdlib only, no network):
+Local-first regression harness (stdlib only, no network):
 
   run      Execute every (setup, scenario) cell in a matrix JSON through
-           perf_harness.py ``bench`` mode, write a consolidated candidate
-           results file, then (if a baseline exists) diff against it.
-  record   Promote a completed candidate file to the tracked historic
-           baseline.
+           perf_harness.py ``bench`` mode, archive the run in a datestamped
+           folder under the git-ignored historic-runs directory, then (if a
+           baseline exists) diff against it.
+  record   Promote a candidate file to the tracked historic baseline.
   compare  Diff an existing candidate against the baseline and report
            regressions / upgrades per cell.
+
+Every ``run`` produces a self-contained, git-ignored archive::
+
+    out/historic-runs/                # ignored in git
+      20261123_194512/                # one run, UTC datestamp
+        candidate.json                # consolidated results (schema_version 1)
+        summary.json                  # human-friendly index + verdicts
+        results/<setup>/<scenario>/   # per-cell result.json + bench logs
+        screenshots/<setup>__<scenario>.png   # one scene capture per cell
+                                                 (--capture)
 
 The baseline is a source-controlled JSON (default
 ``benchmarks/results/baseline.json``): commit it like any other performance
@@ -23,6 +33,12 @@ from the run log - whether the GPU-scene task/mesh draw engaged
 (``[perf] indexed drawn tris N`` / ``[GpuSceneTaskMesh] ... indexed
 fallback``) - so a silent cutover regression (task/mesh -> indexed) is
 flagged even when the frame time is flat.
+
+Screenshots (``--capture``) reuse the engine's one-shot
+``TOURMALINE_CAPTURE=<frame>`` pin: the app writes
+``exports/screenshot_<stamp>.png`` into its working directory, and this
+harness copies the newest such file into the run archive under a stable
+``<setup>__<scenario>`` name.
 """
 import argparse
 import datetime as dt
@@ -33,11 +49,11 @@ import platform
 import re
 import subprocess
 import sys
+import time
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_BASELINE = ROOT / "benchmarks" / "results" / "baseline.json"
-DEFAULT_CANDIDATE = ROOT / "out" / "perf-matrix" / "candidate.json"
-DEFAULT_OUTPUT = ROOT / "out" / "perf-matrix"
+DEFAULT_RUNS_DIR = ROOT / "out" / "historic-runs"
 IDENT = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 
 # Path-engagement markers parsed out of each cell's run logs.
@@ -116,17 +132,51 @@ def parse_path_verdict(log_text):
             "fell_back_to_indexed": fallback}
 
 
-def run_cell(perf_harness, matrix, setup, scenario, args, cell_dir):
+def _exports_dir(setup, exe):
+    """The app's screenshot exports directory: <workdir>/exports."""
+    if setup.get("workdir"):
+        return Path(setup["workdir"]).resolve() / "exports"
+    return resolve_exe(exe).resolve().parent / "exports"
+
+
+def _capture_screenshot(setup, exe, started, dest):
+    """Copy the newest one-shot capture produced since ``started`` into ``dest``."""
+    exports = _exports_dir(setup, exe)
+    if not exports.is_dir():
+        return None
+    newest = None
+    for png in exports.glob("screenshot_*.png"):
+        try:
+            if png.stat().st_mtime >= started and (newest is None or png.stat().st_mtime > newest.stat().st_mtime):
+                newest = png
+        except OSError:
+            continue
+    if newest is None:
+        return None
+    try:
+        import shutil
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(newest, dest)
+        return str(dest)
+    except OSError as exc:
+        print(f"[perf-regression] screenshot copy failed: {exc}", file=sys.stderr)
+        return None
+
+
+def run_cell(perf_harness, matrix, setup, scenario, args, cell_dir, shot_dest):
     """Run one matrix cell through perf_harness.py bench and summarize it."""
+    exe = resolve_exe(args.exe or setup["exe"]).resolve()
     cmd = [sys.executable, str(perf_harness), "bench",
            "--scenario", scenario, "--catalog", str(args.catalog.resolve()),
-           "--exe", str(resolve_exe(args.exe or setup["exe"]).resolve()),
-           "--output", str(cell_dir)]
+           "--exe", str(exe), "--output", str(cell_dir)]
     if setup.get("workdir"):
         cmd += ["--workdir", str(Path(setup["workdir"]).resolve())]
     for k, v in sorted(setup.get("env", {}).items()):
         cmd += ["--env", k + "=" + v]
+    if args.capture:
+        cmd += ["--env", f"TOURMALINE_CAPTURE={args.capture_frame}"]
     cmd += ["--repeat", str(args.repeat)]
+    started = time.time()
     try:
         proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                               text=True, timeout=args.timeout, check=False)
@@ -140,8 +190,12 @@ def run_cell(perf_harness, matrix, setup, scenario, args, cell_dir):
                 "error": f"cannot launch harness: {exc}"}
     (cell_dir / "matrix.log").write_text(log, encoding="utf-8")
 
-    # The harness already aggregates per-run logs + result.json into cell_dir;
-    # additionally collect the raw engine log text for the path verdict.
+    screenshot = None
+    if args.capture and rc == 0:
+        screenshot = _capture_screenshot(setup, str(exe), started, shot_dest)
+
+    # Collect the raw engine log text (harness logs + bench logs) for the
+    # path verdict.
     all_logs = []
     for log_file in sorted(cell_dir.glob("*.log")):
         try:
@@ -155,7 +209,7 @@ def run_cell(perf_harness, matrix, setup, scenario, args, cell_dir):
     except (OSError, ValueError):
         return {"setup": setup["name"], "scenario": scenario, "status": "error",
                 "error": "harness produced no valid result.json",
-                "exit_code": rc, **verdict}
+                "exit_code": rc, "screenshot": screenshot, **verdict}
 
     cell = {"setup": setup["name"], "scenario": scenario,
             "status": "ok" if (rc == 0 and result.get("ok")) else "error",
@@ -163,7 +217,7 @@ def run_cell(perf_harness, matrix, setup, scenario, args, cell_dir):
             "environment": result.get("environment", {}),
             "source_args": result.get("source_args"),
             "app_args": result.get("app_args"),
-            **verdict}
+            "screenshot": screenshot, **verdict}
     summary = result.get("summary")
     if summary:
         cell["summary"] = summary
@@ -172,7 +226,18 @@ def run_cell(perf_harness, matrix, setup, scenario, args, cell_dir):
     return cell
 
 
-def build_candidate(args):
+def unique_run_dir(runs_dir):
+    """A datestamped, collision-free archive folder for one run."""
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d_%H%M%S")
+    candidate = runs_dir / stamp
+    n = 1
+    while candidate.exists():
+        candidate = runs_dir / f"{stamp}_{n}"
+        n += 1
+    return candidate
+
+
+def build_candidate(args, run_dir):
     matrix = load_matrix(args.matrix)
     perf_harness = ROOT / "tools" / "perf_harness.py"
     if not perf_harness.is_file():
@@ -184,13 +249,15 @@ def build_candidate(args):
     failures = 0
     for setup in matrix["setups"]:
         for scenario in matrix["scenarios"]:
-            cell_dir = args.output.resolve() / args.machine / setup["name"] / scenario
+            cell_dir = run_dir / "results" / setup["name"] / scenario
             cell_dir.mkdir(parents=True, exist_ok=True)
-            cell = run_cell(perf_harness, matrix, setup, scenario, args, cell_dir)
+            shot_dest = run_dir / "screenshots" / f"{setup['name']}__{scenario}.png"
+            cell = run_cell(perf_harness, matrix, setup, scenario, args, cell_dir, shot_dest)
             (cell_dir / "cell.json").write_text(json.dumps(cell, indent=2) + "\n", encoding="utf-8")
             cells[cell_key(setup["name"], scenario)] = cell
             print(json.dumps({"setup": setup["name"], "scenario": scenario,
                               "status": cell["status"], "path": cell.get("path"),
+                              "screenshot": cell.get("screenshot"),
                               "median_ms": (cell.get("summary") or {}).get("median_ms")}), flush=True)
             if cell["status"] != "ok":
                 failures += 1
@@ -200,9 +267,19 @@ def build_candidate(args):
                  "platform": platform.platform(),
                  "timestamp_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
                  "matrix": str(args.matrix.resolve()), "cells": cells}
-    args.candidate.parent.mkdir(parents=True, exist_ok=True)
-    args.candidate.write_text(json.dumps(candidate, indent=2) + "\n", encoding="utf-8")
-    print(f"[perf-regression] candidate -> {args.candidate} ({len(cells)} cells, "
+    candidate_path = run_dir / "candidate.json"
+    candidate_path.write_text(json.dumps(candidate, indent=2) + "\n", encoding="utf-8")
+
+    summary = {"run_dir": str(run_dir), "machine": args.machine, "code_id": args.code_id,
+               "timestamp_utc": candidate["timestamp_utc"],
+               "candidate": str(candidate_path), "cells": [
+                   {"setup": c["setup"], "scenario": c["scenario"], "status": c["status"],
+                    "path": c.get("path"), "median_ms": (c.get("summary") or {}).get("median_ms"),
+                    "screenshot": c.get("screenshot"), "error": c.get("error")}
+                   for c in cells.values()]}
+    (run_dir / "summary.json").write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")
+
+    print(f"[perf-regression] run archived -> {run_dir} ({len(cells)} cells, "
           f"{failures} error)", file=sys.stderr)
     return candidate, failures
 
@@ -291,6 +368,14 @@ def load_results(path, kind):
     return data
 
 
+def latest_candidate(runs_dir):
+    """The most recent archived candidate.json under the historic-runs dir."""
+    if not runs_dir.is_dir():
+        return None
+    candidates = sorted(runs_dir.glob("*/candidate.json"))
+    return candidates[-1] if candidates else None
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__,
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -306,8 +391,10 @@ def main(argv=None):
     common.add_argument("--code-id", default=os.environ.get("GITHUB_SHA", "unknown"))
     common.add_argument("--repeat", type=int, default=3)
     common.add_argument("--timeout", type=int, default=900)
-    common.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
-    common.add_argument("--candidate", type=Path, default=DEFAULT_CANDIDATE)
+    common.add_argument("--runs-dir", type=Path, default=DEFAULT_RUNS_DIR,
+                        help="git-ignored base dir for datestamped run archives")
+    common.add_argument("--candidate", type=Path, default=None,
+                        help="candidate results file (default: latest archived run)")
     common.add_argument("--baseline", type=Path, default=DEFAULT_BASELINE)
     common.add_argument("--max-regression", type=float, default=5.0,
                         help="fail a cell if slower by more than this percent")
@@ -315,7 +402,11 @@ def main(argv=None):
                         help="report a cell as an upgrade if faster by more than this percent")
 
     run_p = sub.add_parser("run", parents=[common],
-                           help="execute the matrix and write a candidate results file")
+                           help="execute the matrix and archive it under --runs-dir")
+    run_p.add_argument("--capture", action="store_true",
+                       help="capture one scene screenshot per cell (TOURMALINE_CAPTURE)")
+    run_p.add_argument("--capture-frame", type=int, default=30,
+                       help="1-based app frame for the one-shot capture")
     run_p.add_argument("--no-compare", action="store_true",
                        help="skip the post-run diff against the baseline")
 
@@ -323,7 +414,7 @@ def main(argv=None):
                            help="promote a candidate file to the historic baseline")
 
     cmp_p = sub.add_parser("compare", parents=[common],
-                           help="diff an existing candidate against the baseline")
+                           help="diff a candidate against the baseline")
 
     args = parser.parse_args(argv)
     if args.repeat < 1 or args.timeout < 1:
@@ -331,23 +422,33 @@ def main(argv=None):
 
     try:
         if args.command == "run":
-            candidate, failures = build_candidate(args)
+            run_dir = unique_run_dir(args.runs_dir.resolve())
+            run_dir.mkdir(parents=True, exist_ok=False)
+            candidate, failures = build_candidate(args, run_dir)
             rc = 1 if failures else 0
             if not args.no_compare and args.baseline.is_file():
                 baseline = load_results(args.baseline, "baseline")
                 rows, regressions, errors = compare_cells(
                     baseline, candidate, args.max_regression, args.min_upgrade)
-                summary = print_compare(rows, regressions, errors,
-                                        args.max_regression, args.min_upgrade)
+                print_compare(rows, regressions, errors,
+                              args.max_regression, args.min_upgrade)
                 if regressions:
                     rc = 2
                 elif errors and rc == 0:
                     rc = 1
-                return rc
             return rc
 
+        if args.command in ("record", "compare"):
+            candidate_path = args.candidate
+            if candidate_path is None:
+                candidate_path = latest_candidate(args.runs_dir.resolve())
+                if candidate_path is None:
+                    parser.error(f"no archived candidate under {args.runs_dir}; "
+                                 "run the matrix first or pass --candidate")
+            candidate_path = candidate_path.resolve()
+
         if args.command == "record":
-            candidate = load_results(args.candidate, "candidate")
+            candidate = load_results(candidate_path, "candidate")
             if candidate.get("kind") not in (None, "candidate"):
                 raise ValueError("record expects a candidate results file")
             if not candidate.get("cells"):
@@ -358,7 +459,7 @@ def main(argv=None):
             args.baseline.parent.mkdir(parents=True, exist_ok=True)
             args.baseline.write_text(json.dumps(baseline, indent=2) + "\n", encoding="utf-8")
             print(f"[perf-regression] baseline -> {args.baseline} "
-                  f"({len(baseline['cells'])} cells)", file=sys.stderr)
+                  f"({len(baseline['cells'])} cells, source {candidate_path})", file=sys.stderr)
             print("commit this file so future runs diff against the same historic numbers",
                   file=sys.stderr)
             return 0
@@ -366,10 +467,10 @@ def main(argv=None):
         if args.command == "compare":
             if not args.baseline.is_file():
                 parser.error(f"baseline not found: {args.baseline}")
-            if not args.candidate.is_file():
-                parser.error(f"candidate not found: {args.candidate}")
+            if not candidate_path.is_file():
+                parser.error(f"candidate not found: {candidate_path}")
             baseline = load_results(args.baseline, "baseline")
-            candidate = load_results(args.candidate, "candidate")
+            candidate = load_results(candidate_path, "candidate")
             rows, regressions, errors = compare_cells(
                 baseline, candidate, args.max_regression, args.min_upgrade)
             print_compare(rows, regressions, errors, args.max_regression, args.min_upgrade)
