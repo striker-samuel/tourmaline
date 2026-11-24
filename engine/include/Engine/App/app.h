@@ -230,6 +230,14 @@ class App {
     // readbacks, structural rebuilds).
     void WaitForDeviceIdle();
 
+    // RHI fatal-error handler: the PURE RHI reports unrecoverable device
+    // failures (OOM, device loss) as an smvk::Error + message here instead
+    // of printing/aborting (see Engine/smvk.h). The App surfaces it — a log
+    // line plus an SDL message box on interactive runs — then returns so the
+    // RHI's default abort writes the crash dump. Installed once from
+    // InitializeGraphicsCore.
+    static void FatalErrorCallback(smvk::Error code, const char* message);
+
   protected:
 #pragma region ===[ App / Core State ]===
     RandomService m_random{};
@@ -264,6 +272,10 @@ class App {
     mem::LinearPtr<Swapchain> m_swapchain;
     mem::LinearPtr<RenderGraph> m_rendergraph;
     mem::LinearPtr<World> m_world;
+    // Live instance reachable from the static FatalErrorCallback (one App per
+    // process; set in InitializeGraphicsCore) so the handler can reach the
+    // window for the error dialog.
+    static App* s_activeApp;
 #pragma endregion
 
 #pragma region ===[ Element Stack ]===
