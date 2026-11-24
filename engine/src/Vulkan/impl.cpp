@@ -13003,8 +13003,10 @@ struct smvk::RenderGraph::TransientHeapOpaque {
 };
 
 smvk::RenderGraph::RenderGraph(ResourceManager& ctx)
-    : ctx_(ctx), pipelineCacheOpaque_(smvk::mem::ProcessAllocator().Create<PipelineCacheOpaque>(
-                     static_cast<VulkanResourceManager*>(ctx.GetVulkanOpaque()))),
+    : frameData_(FrameArena()),
+      ctx_(ctx),
+      pipelineCacheOpaque_(smvk::mem::ProcessAllocator().Create<PipelineCacheOpaque>(
+          static_cast<VulkanResourceManager*>(ctx.GetVulkanOpaque()))),
       transientHeapOpaque_(smvk::mem::ProcessAllocator().Create<TransientHeapOpaque>()) {}
 smvk::RenderGraph::~RenderGraph() {
     ReleaseResolvedResources();

@@ -28,7 +28,7 @@ struct WeightsFrame {
 };
 struct MixFrame {
     ShaderProgram* program = nullptr;
-    std::vector<uint32_t> dstIndices;
+    std::span<const uint32_t> dstIndices;
     uint32_t mipCount = 0;
     uint32_t size = 0;
     uint64_t selBda = 0;
@@ -341,14 +341,13 @@ bool ProbePremix::AppendPasses(RenderGraph& rg,
         }
         smvk::ShaderProgram* prog = &mixProgram;
         const uint32_t localSize = 8;
-        const std::vector<uint32_t> dstIndices = mipStorageIndex;
         const uint32_t mipCountLocal = mipCount;
         const uint32_t sizeLocal = size;
         const uint64_t selBda = selectionBda;
         const uint32_t samplerLocal = samplerIndex;
         MixFrame& frame = rg.PassFrameData<MixFrame>(pass);
         frame.program = prog;
-        frame.dstIndices = dstIndices;
+        frame.dstIndices = mipStorageIndex; // stable member: no copy needed
         frame.mipCount = mipCountLocal;
         frame.size = sizeLocal;
         frame.selBda = selBda;

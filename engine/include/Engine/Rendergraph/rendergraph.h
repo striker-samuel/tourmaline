@@ -4,6 +4,7 @@
 #pragma once
 
 #include <Engine/Memory/memory.h>
+#include <Engine/Memory/arena.h>
 #include <Engine/Memory/pool.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Renderer/vertex_layouts.h>
@@ -16,9 +17,11 @@
 
 #include <cassert>
 #include <cstddef>
+#include <cstring>
 #include <functional>
 #include <memory>
 #include <span>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -342,50 +345,76 @@ struct PassData {
 using RecordFn = void (*)(CommandBuffer&, const FrameContext&, const PassData&);
 
 // Per-flight data table owned by the graph (RFC "per-flight binding tables").
-// Renderers allocate a typed slot once at build time and refresh it every
-// frame; RecordFn reads it by index. Slots hold record-time constants (push
-// blocks, dispatch counts, derived flags) consumed synchronously during
-// recording, so single-buffered overwrite is safe — GPU-visible per-frame data
-// (BDAs, indirect buffers) stays in the renderer's frameIndex-ringed buffers.
+// Slot storage rides a linear Arena — FrameArena while the declaration set is
+// rebuilt each frame (reset wholesale at frame start); AppArena once the
+// build-once executor keeps the graph across frames. Slot types must be
+// trivially copyable/destructible (no owning std::vector): variable-length
+// per-frame data is stored as arena-allocated spans via CopyArray, so the
+// arena reset reclaims everything without per-slot destructors or malloc.
 class FrameDataTable {
   public:
-    FrameDataTable() = default;
-    ~FrameDataTable() { Clear(); }
+    explicit FrameDataTable(Arena& arena) : arena_(&arena) {}
     FrameDataTable(const FrameDataTable&) = delete;
     FrameDataTable& operator=(const FrameDataTable&) = delete;
 
     // Allocate a default-constructed slot of type T; returns its stable index.
     template <typename T>
     uint32_t Allocate() {
-        const uint32_t id = static_cast<uint32_t>(slots_.size());
-        slots_.push_back(Slot{new T{}, +[](void* p) { delete static_cast<T*>(p); }});
+        static_assert(std::is_trivially_copyable_v<T>,
+                      "FrameDataTable slots must be trivially copyable");
+        const uint32_t id = size_;
+        if (id == capacity_)
+            Grow();
+        T* p = arena_->Create<T>();
+        pointers_[id] = p;
+        size_ = id + 1;
         return id;
+    }
+
+    // Copy a span of trivially-copyable elements into the arena; the returned
+    // span lives until the next arena reset (the whole frame).
+    template <typename T>
+    std::span<const T> CopyArray(std::span<const T> src) {
+        if (src.empty())
+            return {};
+        T* dst = static_cast<T*>(arena_->Allocate(src.size() * sizeof(T), alignof(T)));
+        std::memcpy(dst, src.data(), src.size() * sizeof(T));
+        return {dst, src.size()};
     }
 
     template <typename T>
     T& Get(uint32_t id) {
-        return *static_cast<T*>(slots_[id].data);
+        return *static_cast<T*>(pointers_[id]);
     }
     template <typename T>
     const T& Get(uint32_t id) const {
-        return *static_cast<const T*>(slots_[id].data);
+        return *static_cast<const T*>(pointers_[id]);
     }
 
-    [[nodiscard]] uint32_t Size() const { return static_cast<uint32_t>(slots_.size()); }
+    [[nodiscard]] uint32_t Size() const { return size_; }
 
-    void Clear() {
-        for (Slot& s : slots_)
-            if (s.destroy)
-                s.destroy(s.data);
-        slots_.clear();
+    // Rewind the cursor at frame start (paired with the arena reset, which
+    // reclaims the storage). Next frame re-grows from scratch.
+    void Reset() {
+        size_ = 0;
+        pointers_ = nullptr;
+        capacity_ = 0;
     }
 
   private:
-    struct Slot {
-        void* data = nullptr;
-        void (*destroy)(void*) = nullptr;
-    };
-    std::vector<Slot> slots_;
+    void Grow() {
+        const uint32_t next = capacity_ ? capacity_ * 2u : 16u;
+        void** np = static_cast<void**>(arena_->Allocate(next * sizeof(void*), alignof(void*)));
+        if (size_)
+            std::memcpy(np, pointers_, size_ * sizeof(void*));
+        pointers_ = np;
+        capacity_ = next;
+    }
+
+    Arena* arena_ = nullptr;
+    void** pointers_ = nullptr;
+    uint32_t size_ = 0;
+    uint32_t capacity_ = 0;
 };
 
 struct RenderPass final {
@@ -830,9 +859,10 @@ struct RenderGraph final {
     void NewFrame() {
         passes_.clear();
         // Migration phase: the declaration set is rebuilt each frame, so the
-        // per-flight table is re-allocated alongside it. The build-once
-        // executor (checkpoint B/C) will stop clearing here and reuse slots.
-        frameData_.Clear();
+        // per-flight table rewinds its cursor alongside (the FrameArena reset
+        // reclaims the storage). The build-once executor (checkpoint B/C) will
+        // stop rebuilding and the table rides a stable arena instead.
+        frameData_.Reset();
     }
 
     RenderPass& AddPass(const char* name = nullptr) {

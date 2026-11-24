@@ -265,8 +265,8 @@ bool World2DRenderer::AppendPass(smvk::ResourceManager& ctx,
     Frame& frame = rg.PassFrameData<Frame>(pass);
     frame.program = &m_program;
     frame.push = push;
-    frame.runs = std::move(runs);
-    frame.pages = std::move(pages);
+    frame.runs = rg.FrameData().CopyArray<SpriteRun2D>(runs);
+    frame.pages = rg.FrameData().CopyArray<uint32_t>(pages);
     pass.SetRecordFn(&World2DRenderer::RecordDraw);
     return true;
 }

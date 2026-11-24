@@ -29,7 +29,7 @@ struct ProbeBallFrame {
     float intensity = 1.0f;
     uint32_t samplerIndex = 0;
     uint64_t frameUniformsAddress = 0;
-    std::vector<ProbeBallRow> drawRows;
+    std::span<const ProbeBallRow> drawRows;
 };
 
 void RecordProbeBalls(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
@@ -268,7 +268,7 @@ bool ProbeBallVisual::AppendPass(RenderGraph& rg,
     frame.intensity = intensity;
     frame.samplerIndex = samplerIndex;
     frame.frameUniformsAddress = frameUniformsAddress;
-    frame.drawRows = std::move(drawRows);
+    frame.drawRows = rg.FrameData().CopyArray<ProbeBallRow>(drawRows);
     pass.SetRecordFn(&RecordProbeBalls, this);
     return true;
 }

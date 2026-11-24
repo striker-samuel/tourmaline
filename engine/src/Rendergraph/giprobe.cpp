@@ -29,7 +29,7 @@ struct GiProbeFrame {
     uint64_t frameUniformsAddress = 0;
     uint32_t colorMode = 0;
     float markerGain = 1.0f;
-    std::vector<GiProbeVolumeRow> drawRows;
+    std::span<const GiProbeVolumeRow> drawRows;
 };
 
 void RecordGiProbes(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
@@ -283,7 +283,7 @@ bool GiProbeVisual::AppendPass(RenderGraph& rg,
     frame.frameUniformsAddress = frameUniformsAddress;
     frame.colorMode = colorMode;
     frame.markerGain = markerGain;
-    frame.drawRows = std::move(drawRows);
+    frame.drawRows = rg.FrameData().CopyArray<GiProbeVolumeRow>(drawRows);
     pass.SetRecordFn(&RecordGiProbes, this);
     return true;
 }

@@ -195,8 +195,8 @@ class World2DRenderer final : public engine::IRenderer {
     struct Frame {
         smvk::ShaderProgram* program = nullptr;
         Push push{};
-        std::vector<SpriteRun2D> runs;
-        std::vector<uint32_t> pages;
+        std::span<const SpriteRun2D> runs;
+        std::span<const uint32_t> pages;
     };
     static void RecordDraw(smvk::CommandBuffer& cmd,
                            const smvk::FrameContext& fc,
