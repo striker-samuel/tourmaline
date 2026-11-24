@@ -21436,7 +21436,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         SMVK_PROFILE_RENDER("UpdateDescriptors");
         m_context->UpdateDescriptors();
     }
-    m_rendergraph->Execute(fb);
+    m_rendergraph->Execute(fb, &fc);
     // TOURMALINE_FOG_TILE_DUMP=<frame>: one-shot post-Execute
     // download of the DEDICATED volumetric shadow atlas (the coarse
     // fog tile's ground truth - stats + an ASCII content map, the

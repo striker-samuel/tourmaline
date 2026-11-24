@@ -14179,7 +14179,7 @@ struct PrimitiveCountCtx {
     VkQueryPool regularPool = VK_NULL_HANDLE; // regular (indexed path)
     bool supported = false;
 };
-void smvk::RenderGraph::Execute(Framebuffer& fb) {
+void smvk::RenderGraph::Execute(Framebuffer& fb, const FrameContext* fc) {
     // The flight this Execute records for: every pass's CommandBuffer binds
     // defaultDescriptorSets_[flightSlot_] (see BindRenderPipeline /
     // BindComputePipeline - the bindless sets are replicated per frame, each
@@ -14998,7 +14998,10 @@ void smvk::RenderGraph::Execute(Framebuffer& fb) {
                              pass,
                              stageTimerCtxPtr,
                              primitiveCountCtxPtr};
-            if (pass.recordingFunction_)
+            if (pass.recordFn_) {
+                assert(fc != nullptr && "RecordFn pass executed without a FrameContext");
+                pass.recordFn_(cb, *fc, pass.passData_ ? *pass.passData_ : PassData{});
+            } else if (pass.recordingFunction_)
                 pass.recordingFunction_(cb);
 #if defined(TOURMALINE_NSIGHT_MARKERS)
             if (nsightLabelActive)
@@ -15122,7 +15125,10 @@ void smvk::RenderGraph::Execute(Framebuffer& fb) {
         }
         CommandBuffer cb{
             reinterpret_cast<void*>(dstCmd), *this, pass, stageTimerCtxPtr, primitiveCountCtxPtr};
-        if (pass.recordingFunction_)
+        if (pass.recordFn_) {
+            assert(fc != nullptr && "RecordFn pass executed without a FrameContext");
+            pass.recordFn_(cb, *fc, pass.passData_ ? *pass.passData_ : PassData{});
+        } else if (pass.recordingFunction_)
             pass.recordingFunction_(cb);
         vkCmdEndRendering(dstCmd);
         if (passTimingIndex >= 0)

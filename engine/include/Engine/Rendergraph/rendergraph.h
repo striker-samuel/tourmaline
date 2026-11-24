@@ -950,7 +950,10 @@ struct RenderGraph final {
     // Execution
     // ========================================================
 
-    void Execute(Framebuffer& fb);
+    // Records the frame. `fc` is the per-frame input the record functions
+    // (RecordFn) read; legacy recording lambdas ignore it. Null during the
+    // migration where the caller has no FrameContext yet (samples/tests).
+    void Execute(Framebuffer& fb, const FrameContext* fc = nullptr);
 
     // Compile the current declaration set into an immutable plan (checkpoint B
     // foundation): canonicalizes the physical resources into dense ids,
