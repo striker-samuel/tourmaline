@@ -8722,6 +8722,16 @@ void RecordDsPhase(smvk::CommandBuffer& cmd, const smvk::FrameContext& fc, const
     cmd.PushConstants(0, sizeof(f.push), &f.push, smvk::ShaderStage::All);
     cmd.Dispatch(f.x, f.y, 1);
 }
+struct SeedFrame {
+    smvk::ShaderProgram* program = nullptr;
+    tour::gpu_scene::RasterSeedPush push{};
+};
+void RecordSeed(smvk::CommandBuffer& cmd, const smvk::FrameContext& fc, const smvk::PassData& pd) {
+    const SeedFrame& f = fc.rg->FrameData().Get<SeedFrame>(pd.frameSlot);
+    cmd.BindComputePipeline(*f.program);
+    cmd.PushConstants(0, sizeof(f.push), &f.push, smvk::ShaderStage::Compute);
+    cmd.Dispatch((f.push.commandCapacity + 127u) / 128u, 1, 1);
+}
 } // namespace
 void WorldRenderer::AppendDeferredShadowPhases(uint32_t frameIndex,
                                                uint64_t frameUniformsAddress,
@@ -16175,12 +16185,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // Non-const copy: BindComputePipeline takes a non-const ref and
             // a `const auto` capture stays const inside the closure even
             // with `mutable`.
-            auto program = m_gpuSceneRasterSeedProgram;
-            pass.SetRecordingFunc([program, seedPush](smvk::CommandBuffer& cmd) mutable {
-                cmd.BindComputePipeline(program);
-                cmd.PushConstants(0, sizeof(seedPush), &seedPush, smvk::ShaderStage::Compute);
-                cmd.Dispatch((seedPush.commandCapacity + 127u) / 128u, 1, 1);
-            });
+            SeedFrame& frame = m_rendergraph->PassFrameData<SeedFrame>(pass);
+            frame.program = &m_gpuSceneRasterSeedProgram;
+            frame.push = seedPush;
+            pass.SetRecordFn(&RecordSeed);
         }
     }
     if (!gpuTemporalReady)
