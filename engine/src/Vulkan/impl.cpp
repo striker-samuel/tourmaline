@@ -6903,34 +6903,38 @@ void smvk::VulkanResourceManager::UploadDataToImage3DRegion(ImageHandle image,
     const VkResult allocRes = vmaCreateImage(
         m_allocator, &vkCI, &allocCI, &image.vkImage, &image.allocation, &allocInfo);
     if (allocRes != VK_SUCCESS) {
-        if (allocRes == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
-            // A friendly, actionable OOM instead of a bare VkResult: report the
-            // offending image (name, dimensions, format, samples, layers) and an
-            // approximate byte size, plus the usual remedy. The common cause is
-            // an over-large shadow/EVSM cascade atlas or render scale.
-            const FormatInfo fmt = getFormatInfo(vkCI.format);
-            const VkDeviceSize blocksX =
-                (vkCI.extent.width + fmt.blockWidth - 1) / fmt.blockWidth;
-            const VkDeviceSize blocksY =
-                (vkCI.extent.height + fmt.blockHeight - 1) / fmt.blockHeight;
-            const VkDeviceSize approxBytes = blocksX * blocksY * vkCI.extent.depth *
-                                             fmt.bytesPerBlock * vkCI.arrayLayers *
-                                             static_cast<VkDeviceSize>(vkCI.samples);
-            std::fprintf(stderr,
-                         "[Vulkan OOM] out of device memory allocating image '%s' "
-                         "(%ux%ux%u format=%d samples=%u layers=%u, ~%.1f MiB). "
-                         "Reduce shadow/EVSM cascade resolution, render scale, or close "
-                         "other GPU work.\n",
-                         ci.name ? ci.name : "<unnamed>",
-                         vkCI.extent.width,
-                         vkCI.extent.height,
-                         vkCI.extent.depth,
-                         static_cast<int>(vkCI.format),
-                         static_cast<uint32_t>(vkCI.samples),
-                         vkCI.arrayLayers,
-                         static_cast<double>(approxBytes) / (1024.0 * 1024.0));
-        }
-        VK_CHECK(allocRes);
+        // Report the failure as an smvk::Error + an actionable message (image
+        // name, dimensions, format, samples, layers + an approximate byte
+        // size) instead of a bare VkResult: the App's handler surfaces it, the
+        // default aborts. The common OOM cause is an over-large shadow/EVSM
+        // cascade atlas or render scale.
+        const FormatInfo fmt = getFormatInfo(vkCI.format);
+        const VkDeviceSize blocksX =
+            (vkCI.extent.width + fmt.blockWidth - 1) / fmt.blockWidth;
+        const VkDeviceSize blocksY =
+            (vkCI.extent.height + fmt.blockHeight - 1) / fmt.blockHeight;
+        const VkDeviceSize approxBytes = blocksX * blocksY * vkCI.extent.depth *
+                                         fmt.bytesPerBlock * vkCI.arrayLayers *
+                                         static_cast<VkDeviceSize>(vkCI.samples);
+        const char* remedy = (allocRes == VK_ERROR_OUT_OF_DEVICE_MEMORY)
+                                 ? " Reduce shadow/EVSM cascade resolution, render scale, "
+                                   "or close other GPU work."
+                                 : "";
+        char msg[512];
+        std::snprintf(msg,
+                      sizeof(msg),
+                      "failed to allocate image '%s' "
+                      "(%ux%ux%u format=%d samples=%u layers=%u, ~%.1f MiB).%s",
+                      ci.name ? ci.name : "<unnamed>",
+                      vkCI.extent.width,
+                      vkCI.extent.height,
+                      vkCI.extent.depth,
+                      static_cast<int>(vkCI.format),
+                      static_cast<uint32_t>(vkCI.samples),
+                      vkCI.arrayLayers,
+                      static_cast<double>(approxBytes) / (1024.0 * 1024.0),
+                      remedy);
+        ReportFatalError(FromVkResult(allocRes), msg);
     }
     image.allocBytes = allocInfo.size;
 
@@ -7411,6 +7415,7 @@ void FatalMirrorClose();
 } // namespace
 namespace smvk {
 static bool g_strictResources = false;
+static FatalErrorHandler g_fatalErrorHandler = nullptr;
 void SetStrictResources(bool on) {
     g_strictResources = on;
 }
@@ -7434,6 +7439,116 @@ void OnResourceExhaustion(const char* site) {
     FatalFlush();
     FatalMirrorClose();
     std::abort();
+}
+// Fatal-error report path (the RHI reports a code + message here INSTEAD of
+// printing). The App-installed handler surfaces it; the default aborts.
+void SetFatalErrorHandler(FatalErrorHandler handler) {
+    g_fatalErrorHandler = handler;
+}
+void ReportFatalError(Error code, const char* message) {
+    if (g_fatalErrorHandler)
+        g_fatalErrorHandler(code, message); // expected to unwind (throw / longjmp / abort)
+    // Fall through: no handler, or the handler returned -> default abort.
+    FatalMirrorOpen();
+    FatalPrintf("[smvk] fatal error %s: %s\n",
+                ErrorName(code), message ? message : "?");
+    FatalFlush();
+    FatalMirrorClose();
+    std::abort();
+}
+
+namespace {
+struct ErrorEntry {
+    const char* name;
+    const char* description;
+};
+constexpr ErrorEntry kErrorTable[] = {
+    {"None", "no error"},
+    {"OutOfHostMemory", "the host ran out of memory"},
+    {"OutOfDeviceMemory", "the device ran out of memory"},
+    {"InitializationFailed", "device initialization failed"},
+    {"DeviceLost", "the device was lost and must be recreated"},
+    {"MemoryMapFailed", "a host memory mapping failed"},
+    {"LayerNotPresent", "a requested validation/instance layer is unavailable"},
+    {"ExtensionNotPresent", "a requested extension is unavailable"},
+    {"FeatureNotPresent", "a requested feature is unavailable"},
+    {"IncompatibleDriver", "the installed driver is incompatible"},
+    {"TooManyObjects", "too many objects of a type are allocated"},
+    {"FormatNotSupported", "the requested image/vertex format is unsupported"},
+    {"FragmentedPool", "a descriptor pool is too fragmented to satisfy the request"},
+    {"OutOfPoolMemory", "a descriptor pool ran out of memory"},
+    {"InvalidExternalHandle", "an external handle is invalid or in the wrong state"},
+    {"Fragmentation", "a memory block is too fragmented to satisfy the request"},
+    {"InvalidOpaqueCaptureAddress", "an opaque capture address is invalid"},
+    {"PipelineCompileRequired", "a pipeline must be compiled before use"},
+    {"SurfaceLost", "the presentation surface was lost"},
+    {"NativeWindowInUse", "the native window is already in use by another API"},
+    {"ValidationFailed", "a validation-layer check failed"},
+    {"InvalidShader", "the driver rejected a shader"},
+    {"Unknown", "an unrecognized error"},
+    {"PoolExhaustion", "a logical pool or budget refused a creation"},
+};
+static_assert(std::size(kErrorTable) == static_cast<size_t>(smvk::Error::Count));
+} // namespace
+
+const char* smvk::ErrorName(Error code) {
+    const size_t i = static_cast<size_t>(code);
+    return i < std::size(kErrorTable) ? kErrorTable[i].name : "<unknown>";
+}
+const char* smvk::ErrorDescription(Error code) {
+    const size_t i = static_cast<size_t>(code);
+    return i < std::size(kErrorTable) ? kErrorTable[i].description : "<unknown>";
+}
+smvk::Error smvk::FromVkResult(int32_t vkResult) {
+    switch (vkResult) {
+    case VK_ERROR_OUT_OF_HOST_MEMORY:
+        return Error::OutOfHostMemory;
+    case VK_ERROR_OUT_OF_DEVICE_MEMORY:
+        return Error::OutOfDeviceMemory;
+    case VK_ERROR_INITIALIZATION_FAILED:
+        return Error::InitializationFailed;
+    case VK_ERROR_DEVICE_LOST:
+        return Error::DeviceLost;
+    case VK_ERROR_MEMORY_MAP_FAILED:
+        return Error::MemoryMapFailed;
+    case VK_ERROR_LAYER_NOT_PRESENT:
+        return Error::LayerNotPresent;
+    case VK_ERROR_EXTENSION_NOT_PRESENT:
+        return Error::ExtensionNotPresent;
+    case VK_ERROR_FEATURE_NOT_PRESENT:
+        return Error::FeatureNotPresent;
+    case VK_ERROR_INCOMPATIBLE_DRIVER:
+        return Error::IncompatibleDriver;
+    case VK_ERROR_TOO_MANY_OBJECTS:
+        return Error::TooManyObjects;
+    case VK_ERROR_FORMAT_NOT_SUPPORTED:
+        return Error::FormatNotSupported;
+    case VK_ERROR_FRAGMENTED_POOL:
+        return Error::FragmentedPool;
+    case VK_ERROR_OUT_OF_POOL_MEMORY:
+        return Error::OutOfPoolMemory;
+    case VK_ERROR_INVALID_EXTERNAL_HANDLE:
+        return Error::InvalidExternalHandle;
+    case VK_ERROR_FRAGMENTATION:
+        return Error::Fragmentation;
+    case VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS:
+        return Error::InvalidOpaqueCaptureAddress;
+    case VK_ERROR_SURFACE_LOST_KHR:
+        return Error::SurfaceLost;
+    case VK_ERROR_NATIVE_WINDOW_IN_USE_KHR:
+        return Error::NativeWindowInUse;
+    case VK_ERROR_VALIDATION_FAILED_EXT:
+        return Error::ValidationFailed;
+    case VK_ERROR_INVALID_SHADER_NV:
+        return Error::InvalidShader;
+    case VK_ERROR_UNKNOWN:
+        return Error::Unknown;
+    default:
+        // Positive/neutral results (success/incomplete/timeout, and the
+        // positive VK_PIPELINE_COMPILE_REQUIRED status) -> None; any other
+        // negative code -> Unknown.
+        return vkResult < 0 ? Error::Unknown : Error::None;
+    }
 }
 } // namespace smvk
 
@@ -12864,7 +12979,32 @@ bool tour::App::InitializeGraphicsCore() {
     m_rendergraph = smvk::mem::MakeProcess<RenderGraph>(*m_context);
     m_world = smvk::mem::MakeProcess<World>();
 
+    // Surface RHI-reported device failures (OOM, device loss) at the App
+    // level instead of the RHI printing/aborting directly.
+    s_activeApp = this;
+    smvk::SetFatalErrorHandler(&App::FatalErrorCallback);
+
     return true;
+}
+
+tour::App* tour::App::s_activeApp = nullptr;
+
+void tour::App::FatalErrorCallback(smvk::Error code, const char* message) {
+    const char* name = smvk::ErrorName(code);
+    const char* desc = smvk::ErrorDescription(code);
+    std::fprintf(stderr, "[App] fatal RHI error: %s (%s): %s\n",
+                 name, desc, message ? message : "(no detail)");
+    std::fflush(stderr);
+    // Interactive runs surface the failure in a dialog; headless/bench runs
+    // (frameBudget_ > 0) skip it so automated matrices never block on input.
+    App* app = s_activeApp;
+    if (app && app->window && app->frameBudget_ == 0) {
+        char title[128];
+        std::snprintf(title, sizeof(title), "Renderer fatal error: %s", name);
+        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, title,
+                                 message ? message : desc, app->window);
+    }
+    // Return so ReportFatalError's default path writes the crash dump + aborts.
 }
 void tour::App::WaitForDeviceIdle() {
     if (device_ == VK_NULL_HANDLE)
@@ -12939,6 +13079,8 @@ tour::App::~App() {
     // left here missed Shutdown (its Holders would release against a
     // dead context) — the debug assert catches the forgotten call.
     assert(m_elements.empty());
+    if (s_activeApp == this)
+        s_activeApp = nullptr;
     WaitForDeviceIdle();
     m_audio.Shutdown();
     // Member destructors run AFTER this destructor body. Explicitly tear

@@ -53,6 +53,62 @@ void SetStrictResources(bool on);
 bool StrictResources();
 void OnResourceExhaustion(const char* site);
 
+// RHI error codes: the PURE RHI reports unrecoverable device failures as a
+// code + message instead of printing/aborting. The App installs a
+// FatalErrorHandler to surface it (log, dialog, clean shutdown); the default
+// (no handler) prints to stderr and aborts.
+//
+// Values mirror the Vulkan VkResult negative error codes (FromVkResult maps
+// them); the tail holds engine-level operational failures that are not a raw
+// VkResult.
+enum class Error : uint32_t {
+    None = 0,
+
+    // --- Vulkan host/device errors (VkResult < 0) ---
+    OutOfHostMemory,              // VK_ERROR_OUT_OF_HOST_MEMORY
+    OutOfDeviceMemory,            // VK_ERROR_OUT_OF_DEVICE_MEMORY
+    InitializationFailed,         // VK_ERROR_INITIALIZATION_FAILED
+    DeviceLost,                   // VK_ERROR_DEVICE_LOST
+    MemoryMapFailed,              // VK_ERROR_MEMORY_MAP_FAILED
+    LayerNotPresent,              // VK_ERROR_LAYER_NOT_PRESENT
+    ExtensionNotPresent,          // VK_ERROR_EXTENSION_NOT_PRESENT
+    FeatureNotPresent,            // VK_ERROR_FEATURE_NOT_PRESENT
+    IncompatibleDriver,           // VK_ERROR_INCOMPATIBLE_DRIVER
+    TooManyObjects,               // VK_ERROR_TOO_MANY_OBJECTS
+    FormatNotSupported,           // VK_ERROR_FORMAT_NOT_SUPPORTED
+    FragmentedPool,               // VK_ERROR_FRAGMENTED_POOL
+    OutOfPoolMemory,              // VK_ERROR_OUT_OF_POOL_MEMORY (VK_KHR_maintenance1)
+    InvalidExternalHandle,        // VK_ERROR_INVALID_EXTERNAL_HANDLE
+    Fragmentation,                // VK_ERROR_FRAGMENTATION
+    InvalidOpaqueCaptureAddress,  // VK_ERROR_INVALID_OPAQUE_CAPTURE_ADDRESS
+    PipelineCompileRequired,      // VK_ERROR_PIPELINE_COMPILE_REQUIRED_EXT
+    SurfaceLost,                  // VK_ERROR_SURFACE_LOST_KHR
+    NativeWindowInUse,            // VK_ERROR_NATIVE_WINDOW_IN_USE_KHR
+    ValidationFailed,             // VK_ERROR_VALIDATION_FAILED_EXT
+    InvalidShader,                // VK_ERROR_INVALID_SHADER_NV
+    Unknown,                      // VK_ERROR_UNKNOWN (the catch-all)
+
+    // --- Engine-level operational failures ---
+    PoolExhaustion,               // a logical pool/budget refused a creation (strict-resources path)
+
+    Count,                        // sentinel: number of distinct codes
+};
+
+// Error name (enum spelling, e.g. "OutOfDeviceMemory") and a one-line human
+// description (e.g. "the device ran out of memory"). Return "<unknown>" for an
+// out-of-range code.
+[[nodiscard]] const char* ErrorName(Error code);
+[[nodiscard]] const char* ErrorDescription(Error code);
+
+// Map a Vulkan VkResult (the raw int32_t error code) to an smvk::Error.
+// VK_SUCCESS / VK_INCOMPLETE and positive/neutral results map to Error::None;
+// unrecognized negative results map to Error::Unknown.
+[[nodiscard]] Error FromVkResult(int32_t vkResult);
+
+using FatalErrorHandler = void (*)(Error code, const char* message);
+void SetFatalErrorHandler(FatalErrorHandler handler);
+void ReportFatalError(Error code, const char* message);
+
 struct Image;
 
 // ============================================================================
