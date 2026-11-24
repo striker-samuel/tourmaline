@@ -8747,10 +8747,12 @@ void RecordTaskTemporalClear(smvk::CommandBuffer& cmd,
 struct HizGateFrame {
     smvk::ShaderProgram* program = nullptr;
     tour::gpu_scene::RasterHizCullPush push{};
+    bool timestamp = false; // raster-cull stage begin (temporal leg only)
 };
 void RecordHizGate(smvk::CommandBuffer& cmd, const smvk::FrameContext& fc, const smvk::PassData& pd) {
     const HizGateFrame& f = fc.rg->FrameData().Get<HizGateFrame>(pd.frameSlot);
-    cmd.WriteStageTimestamp(smvk::kGpuStageSceneCull, true);
+    if (f.timestamp)
+        cmd.WriteStageTimestamp(smvk::kGpuStageSceneCull, true);
     cmd.BindComputePipeline(*f.program);
     cmd.PushConstants(0, sizeof(f.push), &f.push, smvk::ShaderStage::Compute);
     cmd.Dispatch((f.push.commandCapacity + 127u) / 128u, 1, 1);
@@ -8774,6 +8776,20 @@ void RecordHistory(smvk::CommandBuffer& cmd, const smvk::FrameContext& fc, const
     cmd.PushConstants(0, sizeof(commitPush), &commitPush, smvk::ShaderStage::Compute);
     cmd.Dispatch((f.push.commandCapacity + 127u) / 128u, 1, 1);
     cmd.WriteStageTimestamp(smvk::kGpuStageSceneCull, false);
+}
+struct ExposureHistFrame {
+    smvk::ShaderProgram* program = nullptr;
+    smvk::ExposureHistogramPush push{};
+    uint32_t dx = 0;
+    uint32_t dy = 0;
+};
+void RecordExposureHist(smvk::CommandBuffer& cmd,
+                        const smvk::FrameContext& fc,
+                        const smvk::PassData& pd) {
+    const ExposureHistFrame& f = fc.rg->FrameData().Get<ExposureHistFrame>(pd.frameSlot);
+    cmd.BindComputePipeline(*f.program);
+    cmd.PushConstants(0, sizeof(f.push), &f.push, smvk::ShaderStage::All);
+    cmd.Dispatch(f.dx, f.dy, 1);
 }
 } // namespace
 void WorldRenderer::RecordMeshParticlesCull(smvk::CommandBuffer& cmd,
@@ -8873,6 +8889,18 @@ void WorldRenderer::RecordParticlesDraw(smvk::CommandBuffer& cmd,
     // Fixed instance count: dead slots collapse to off-screen degenerate
     // quads in the VS (no CPU alive list - the pool is fully GPU-resident).
     cmd.Draw(6, PARTICLE_MAX, 0, 0);
+}
+void WorldRenderer::RecordSnapshotCopy(smvk::CommandBuffer& cmd,
+                                       const smvk::FrameContext& fc,
+                                       const smvk::PassData& pd) {
+    auto* self = const_cast<WorldRenderer*>(static_cast<const WorldRenderer*>(pd.config));
+    const SnapshotCopyFrame& f = fc.rg->FrameData().Get<SnapshotCopyFrame>(pd.frameSlot);
+    if (!self->m_context->RecordSnapshotImageCopy(cmd.GetNativeHandle(),
+                                                  self->m_captureImage,
+                                                  self->m_scopedCaptureBuffer,
+                                                  f.slot * self->m_scopedFrameBytes,
+                                                  f.outExtent))
+        throw std::runtime_error("scoped snapshot GPU copy recording failed");
 }
 void WorldRenderer::AppendDeferredShadowPhases(uint32_t frameIndex,
                                                uint64_t frameUniformsAddress,
@@ -16761,6 +16789,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             HizGateFrame& gateFrame = m_rendergraph->PassFrameData<HizGateFrame>(gate);
             gateFrame.program = &m_gpuSceneRasterHizCullProgram;
             gateFrame.push = hizPush;
+            gateFrame.timestamp = true;
             gate.SetRecordFn(&RecordHizGate);
             // Publish only actually surviving GPU work, never stale work
             // slots or CPU draw IDs. A strict shader barrier separates
@@ -16863,14 +16892,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         hizRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
                         gate.AddBufferHint(hz.logical, hizRead);
                         gate.AddBufferHint(m_gpuSceneRasterWorkLogical[flight], hizRead);
-                        auto hizProgram = m_gpuSceneRasterHizCullProgram;
-                        gate.SetRecordingFunc(
-                            [hizProgram, hizPush](smvk::CommandBuffer& cmd) mutable {
-                                cmd.BindComputePipeline(hizProgram);
-                                cmd.PushConstants(
-                                    0, sizeof(hizPush), &hizPush, smvk::ShaderStage::Compute);
-                                cmd.Dispatch((hizPush.commandCapacity + 127u) / 128u, 1, 1);
-                            });
+                        HizGateFrame& gateFrame = m_rendergraph->PassFrameData<HizGateFrame>(gate);
+                        gateFrame.program = &m_gpuSceneRasterHizCullProgram;
+                        gateFrame.push = hizPush;
+                        gateFrame.timestamp = false;
+                        gate.SetRecordFn(&RecordHizGate);
                     }
                 }
             }
@@ -21097,16 +21123,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                        renderExtent.height);
                     }
                 }
-                smvk::ShaderProgram histProg = meter.histogramProgram;
                 smvk::RenderPass& histPass = meter.AddHistogramPass(
                     *m_rendergraph, sceneHdrView, expPush, fb.frameIndex, "ExposureHistogram");
-                histPass.SetRecordingFunc([histProg, expPush, dx, dy](
-                                              smvk::CommandBuffer& cmd) mutable {
-                    cmd.BindComputePipeline(histProg);
-                    cmd.PushConstants(
-                        0, sizeof(smvk::ExposureHistogramPush), &expPush, smvk::ShaderStage::All);
-                    cmd.Dispatch(dx, dy, 1);
-                });
+                ExposureHistFrame& histFrame =
+                    m_rendergraph->PassFrameData<ExposureHistFrame>(histPass);
+                histFrame.program = &meter.histogramProgram;
+                histFrame.push = expPush;
+                histFrame.dx = dx;
+                histFrame.dy = dy;
+                histPass.SetRecordFn(&RecordExposureHist);
             }
         }
     }
@@ -21421,15 +21446,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 source.barrierMasks.stageMask = smvk::PipelineStageBit_Transfer;
                 source.barrierMasks.accessMask = smvk::AccessFlags::TransferRead;
                 copyPass.AddImageHint(m_captureLogical, source);
-                copyPass.SetRecordingFunc([this, slot, outExtent](smvk::CommandBuffer& cmd) {
-                    if (!m_context->RecordSnapshotImageCopy(cmd.GetNativeHandle(),
-                                                            m_captureImage,
-                                                            m_scopedCaptureBuffer,
-                                                            static_cast<uint64_t>(slot) *
-                                                                m_scopedFrameBytes,
-                                                            outExtent))
-                        throw std::runtime_error("scoped snapshot GPU copy recording failed");
-                });
+                SnapshotCopyFrame& copyFrame =
+                    m_rendergraph->PassFrameData<SnapshotCopyFrame>(copyPass);
+                copyFrame.slot = slot;
+                copyFrame.outExtent = outExtent;
+                copyPass.SetRecordFn(&WorldRenderer::RecordSnapshotCopy, this);
             }
         }
     }

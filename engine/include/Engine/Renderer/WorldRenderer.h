@@ -3776,6 +3776,11 @@ class WorldRenderer : public IRenderer {
         bool mixed = false;
     };
     static void RecordParticlesDraw(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
+    struct SnapshotCopyFrame {
+        size_t slot = 0;
+        smvk::Extent2D outExtent{};
+    };
+    static void RecordSnapshotCopy(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
     // Must mirror the HLSL SdsmGroupStats (264 bytes).
     struct SdsmGroupStats {
         float minV = 0.0f;
