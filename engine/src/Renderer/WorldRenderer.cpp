@@ -8867,6 +8867,180 @@ void RecordGpuSceneProd(smvk::CommandBuffer& cmd,
     cmd.PushConstants(0, sizeof(f.rasterPush), &f.rasterPush, smvk::ShaderStage::Compute);
     cmd.Dispatch((f.rasterPush.commandCapacity + 127u) / 128u, 1, 1);
 }
+struct GpuSceneCullChainFrame {
+    smvk::ShaderProgram* program = nullptr;
+    smvk::ShaderProgram* compactPrograms = nullptr;   // [3]
+    smvk::ShaderProgram* workPrograms = nullptr;      // [3]
+    smvk::ShaderProgram* workScanPrograms = nullptr;  // [3]
+    smvk::ShaderProgram* rasterProgram = nullptr;
+    smvk::ShaderProgram* indirectPrograms = nullptr;  // [2]
+    smvk::ShaderProgram* meshletPrograms = nullptr;   // [4]
+    smvk::ShaderProgram* psoScanProgram = nullptr;
+    smvk::ShaderProgram* taskPrograms = nullptr;      // [3]
+    bool taskReady = false;
+    tour::gpu_scene::TaskMeshDispatchPlan taskPlan{};
+    tour::gpu_scene::InstanceCullGpuPush gpuPush{};
+    tour::gpu_scene::CompactCountPush countPush{};
+    tour::gpu_scene::CompactPrefixPush prefixPush{};
+    tour::gpu_scene::CompactScatterPush scatterPush{};
+    tour::gpu_scene::WorkSelectPush workSelect{};
+    tour::gpu_scene::WorkPrefixPush workPrefix{};
+    tour::gpu_scene::WorkScatterPush workScatter{};
+    tour::gpu_scene::ParallelWorkBlockPush workBlock{};
+    tour::gpu_scene::ParallelWorkGroupPush workGroups{};
+    tour::gpu_scene::ParallelWorkAddPush workAdd{};
+    tour::gpu_scene::RasterWorkDrawBuildPush rasterPush{};
+    tour::gpu_scene::SceneIndirectArgsPush indirectArgs{};
+    tour::gpu_scene::SceneIndirectVerifyPush indirectVerify{};
+    smvk::BufferHandle indirectBuffer{};
+    uint32_t groups = 0;
+    bool compactReady = false;
+    bool workReady = false;
+    bool parallelScanReady = false;
+    bool rasterReady = false;
+    bool meshletCompactReady = false;
+    bool indirectReady = false;
+    tour::gpu_scene::CandidateValidator::MeshletCompactPlan meshletPlan{};
+};
+void RecordGpuSceneCullChain(smvk::CommandBuffer& cmd,
+                             const smvk::FrameContext& fc,
+                             const smvk::PassData& pd) {
+    const GpuSceneCullChainFrame& f =
+        fc.rg->FrameData().Get<GpuSceneCullChainFrame>(pd.frameSlot);
+    cmd.BindComputePipeline(*f.program);
+    cmd.PushConstants(0, sizeof(f.gpuPush), &f.gpuPush, smvk::ShaderStage::Compute);
+    cmd.Dispatch(f.groups, 1, 1);
+    if (!f.compactReady)
+        return;
+    cmd.EmitGlobalMemoryBarrier();
+    cmd.BindComputePipeline(f.compactPrograms[0]);
+    cmd.PushConstants(0, sizeof(f.countPush), &f.countPush, smvk::ShaderStage::Compute);
+    cmd.Dispatch(f.groups, 1, 1);
+    cmd.EmitGlobalMemoryBarrier();
+    cmd.BindComputePipeline(f.compactPrograms[1]);
+    cmd.PushConstants(0, sizeof(f.prefixPush), &f.prefixPush, smvk::ShaderStage::Compute);
+    cmd.Dispatch(1, 1, 1);
+    cmd.EmitGlobalMemoryBarrier();
+    cmd.BindComputePipeline(f.compactPrograms[2]);
+    cmd.PushConstants(0, sizeof(f.scatterPush), &f.scatterPush, smvk::ShaderStage::Compute);
+    cmd.Dispatch(f.groups, 1, 1);
+    if (!f.workReady)
+        return;
+    cmd.EmitGlobalMemoryBarrier();
+    cmd.BindComputePipeline(f.workPrograms[0]);
+    cmd.PushConstants(0, sizeof(f.workSelect), &f.workSelect, smvk::ShaderStage::Compute);
+    cmd.Dispatch(f.groups, 1, 1);
+    cmd.EmitGlobalMemoryBarrier();
+    if (f.parallelScanReady) {
+        cmd.BindComputePipeline(f.workScanPrograms[0]);
+        cmd.PushConstants(0, sizeof(f.workBlock), &f.workBlock, smvk::ShaderStage::Compute);
+        cmd.Dispatch((f.workBlock.candidateCount + 255u) / 256u, 1, 1);
+        cmd.EmitGlobalMemoryBarrier();
+        cmd.BindComputePipeline(f.workScanPrograms[1]);
+        cmd.PushConstants(0, sizeof(f.workGroups), &f.workGroups, smvk::ShaderStage::Compute);
+        cmd.Dispatch(1, 1, 1);
+        cmd.EmitGlobalMemoryBarrier();
+        cmd.BindComputePipeline(f.workScanPrograms[2]);
+        cmd.PushConstants(0, sizeof(f.workAdd), &f.workAdd, smvk::ShaderStage::Compute);
+        cmd.Dispatch((f.workAdd.candidateCount + 255u) / 256u, 1, 1);
+    } else {
+        cmd.BindComputePipeline(f.workPrograms[1]);
+        cmd.PushConstants(0, sizeof(f.workPrefix), &f.workPrefix, smvk::ShaderStage::Compute);
+        cmd.Dispatch(1, 1, 1);
+    }
+    cmd.EmitGlobalMemoryBarrier();
+    cmd.BindComputePipeline(f.workPrograms[2]);
+    cmd.PushConstants(0, sizeof(f.workScatter), &f.workScatter, smvk::ShaderStage::Compute);
+    cmd.Dispatch(f.groups, 1, 1);
+    if (f.taskReady) {
+        cmd.EmitGlobalMemoryBarrier();
+        cmd.BindComputePipeline(f.taskPrograms[0]);
+        cmd.PushConstants(0, sizeof(f.taskPlan.count), &f.taskPlan.count, smvk::ShaderStage::Compute);
+        cmd.Dispatch((f.taskPlan.workCapacity + 255u) / 256u, 1, 1);
+        cmd.EmitGlobalMemoryBarrier();
+        cmd.BindComputePipeline(f.workScanPrograms[0]);
+        cmd.PushConstants(
+            0, sizeof(f.taskPlan.scanBlock), &f.taskPlan.scanBlock, smvk::ShaderStage::Compute);
+        cmd.Dispatch((f.taskPlan.workCapacity + 255u) / 256u, 1, 1);
+        cmd.EmitGlobalMemoryBarrier();
+        cmd.BindComputePipeline(f.workScanPrograms[1]);
+        cmd.PushConstants(
+            0, sizeof(f.taskPlan.scanGroups), &f.taskPlan.scanGroups, smvk::ShaderStage::Compute);
+        cmd.Dispatch(1, 1, 1);
+        cmd.EmitGlobalMemoryBarrier();
+        cmd.BindComputePipeline(f.workScanPrograms[2]);
+        cmd.PushConstants(
+            0, sizeof(f.taskPlan.scanAdd), &f.taskPlan.scanAdd, smvk::ShaderStage::Compute);
+        cmd.Dispatch((f.taskPlan.workCapacity + 255u) / 256u, 1, 1);
+        cmd.EmitGlobalMemoryBarrier();
+        cmd.BindComputePipeline(f.taskPrograms[1]);
+        cmd.PushConstants(
+            0, sizeof(f.taskPlan.scatter), &f.taskPlan.scatter, smvk::ShaderStage::Compute);
+        cmd.Dispatch((f.taskPlan.taskGroupCapacity + 127u) / 128u, 1, 1);
+        cmd.EmitGlobalMemoryBarrier();
+        cmd.BindComputePipeline(f.taskPrograms[2]);
+        cmd.PushConstants(
+            0, sizeof(f.taskPlan.indirect), &f.taskPlan.indirect, smvk::ShaderStage::Compute);
+        cmd.Dispatch(1, 1, 1);
+    } else if (f.meshletCompactReady) {
+        cmd.EmitGlobalMemoryBarrier();
+        cmd.BindComputePipeline(f.meshletPrograms[0]);
+        cmd.PushConstants(
+            0, sizeof(f.meshletPlan.count), &f.meshletPlan.count, smvk::ShaderStage::Compute);
+        cmd.Dispatch((f.meshletPlan.workCapacity + 255u) / 256u, 1, 1);
+        cmd.EmitGlobalMemoryBarrier();
+        cmd.BindComputePipeline(f.workScanPrograms[0]);
+        cmd.PushConstants(
+            0, sizeof(f.meshletPlan.scanBlock), &f.meshletPlan.scanBlock, smvk::ShaderStage::Compute);
+        cmd.Dispatch((f.meshletPlan.scanBlock.candidateCount + 255u) / 256u, 1, 1);
+        cmd.EmitGlobalMemoryBarrier();
+        cmd.BindComputePipeline(f.workScanPrograms[1]);
+        cmd.PushConstants(
+            0, sizeof(f.meshletPlan.scanGroups), &f.meshletPlan.scanGroups, smvk::ShaderStage::Compute);
+        cmd.Dispatch(1, 1, 1);
+        cmd.EmitGlobalMemoryBarrier();
+        cmd.BindComputePipeline(f.workScanPrograms[2]);
+        cmd.PushConstants(
+            0, sizeof(f.meshletPlan.scanAdd), &f.meshletPlan.scanAdd, smvk::ShaderStage::Compute);
+        cmd.Dispatch((f.meshletPlan.scanAdd.candidateCount + 255u) / 256u, 1, 1);
+        cmd.EmitGlobalMemoryBarrier();
+        cmd.BindComputePipeline(f.meshletPrograms[1]);
+        cmd.PushConstants(
+            0, sizeof(f.meshletPlan.scatter), &f.meshletPlan.scatter, smvk::ShaderStage::Compute);
+        cmd.Dispatch((f.meshletPlan.candidateCapacity + 127u) / 128u, 1, 1);
+        cmd.EmitGlobalMemoryBarrier();
+        cmd.BindComputePipeline(f.meshletPrograms[2]);
+        cmd.PushConstants(
+            0, sizeof(f.meshletPlan.psoCount), &f.meshletPlan.psoCount, smvk::ShaderStage::Compute);
+        cmd.Dispatch(f.meshletPlan.psoBlocks, 1, 1);
+        cmd.EmitGlobalMemoryBarrier();
+        cmd.BindComputePipeline(*f.psoScanProgram);
+        cmd.PushConstants(
+            0, sizeof(f.meshletPlan.psoScan), &f.meshletPlan.psoScan, smvk::ShaderStage::Compute);
+        cmd.Dispatch(1, 1, 1);
+        cmd.EmitGlobalMemoryBarrier();
+        cmd.BindComputePipeline(f.meshletPrograms[3]);
+        cmd.PushConstants(
+            0, sizeof(f.meshletPlan.psoScatter), &f.meshletPlan.psoScatter, smvk::ShaderStage::Compute);
+        cmd.Dispatch(f.meshletPlan.psoBlocks, 1, 1);
+    }
+    if (f.rasterReady && !f.meshletCompactReady) {
+        cmd.EmitGlobalMemoryBarrier();
+        cmd.BindComputePipeline(*f.rasterProgram);
+        cmd.PushConstants(0, sizeof(f.rasterPush), &f.rasterPush, smvk::ShaderStage::Compute);
+        cmd.Dispatch((f.rasterPush.commandCapacity + 127u) / 128u, 1, 1);
+    }
+    if (!f.indirectReady)
+        return;
+    cmd.EmitGlobalMemoryBarrier();
+    cmd.BindComputePipeline(f.indirectPrograms[0]);
+    cmd.PushConstants(0, sizeof(f.indirectArgs), &f.indirectArgs, smvk::ShaderStage::Compute);
+    cmd.Dispatch(1, 1, 1);
+    cmd.EmitGlobalMemoryBarrier();
+    cmd.BindComputePipeline(f.indirectPrograms[1]);
+    cmd.PushConstants(0, sizeof(f.indirectVerify), &f.indirectVerify, smvk::ShaderStage::Compute);
+    cmd.DispatchIndirect(f.indirectBuffer, 0);
+}
 } // namespace
 void WorldRenderer::RecordMeshParticlesCull(smvk::CommandBuffer& cmd,
                                             const smvk::FrameContext& fc,
@@ -14521,254 +14695,43 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         pass.AddBufferHint(m_gpuSceneRasterOwnerMaskLogical[fb.frameIndex],
                                            ownerRead);
                     }
-                    // ShaderProgram copies must be mutable for BindComputePipeline.
-                    auto program = m_gpuSceneCullProgram;
-                    auto compactPrograms = m_gpuSceneCompactPrograms;
-                    auto workPrograms = m_gpuSceneWorkPrograms;
-                    auto workScanPrograms = m_gpuSceneWorkScanPrograms;
-                    auto rasterProgram = m_gpuSceneRasterBuildProgram;
-                    auto indirectPrograms = m_gpuSceneIndirectPrograms;
-                    auto meshletPrograms = m_gpuSceneMeshletPrograms;
-                    auto psoScanProgram = m_gpuScenePsoScanProgram;
-                    auto taskPrograms = m_gpuSceneTaskComputePrograms;
                     const uint32_t groups = (selected.candidateCount + 63u) / 64u;
-                    pass.SetRecordingFunc([program,
-                                           compactPrograms,
-                                           workPrograms,
-                                           workScanPrograms,
-                                           rasterProgram,
-                                           indirectPrograms,
-                                           meshletPrograms,
-                                           psoScanProgram,
-                                           taskPrograms,
-                                           taskReady,
-                                           taskPlan,
-                                           gpuPush,
-                                           countPush,
-                                           prefixPush,
-                                           scatterPush,
-                                           workSelect,
-                                           workPrefix,
-                                           workScatter,
-                                           workBlock,
-                                           workGroups,
-                                           workAdd,
-                                           rasterPush,
-                                           rasterCommands,
-                                           indirectArgs,
-                                           indirectVerify,
-                                           indirectBuffer,
-                                           groups,
-                                           compactReady,
-                                           workReady,
-                                           parallelScanReady,
-                                           rasterReady,
-                                           meshletCompactReady,
-                                           meshletPlan,
-                                           indirectReady](smvk::CommandBuffer& cmd) mutable {
-                        cmd.BindComputePipeline(program);
-                        cmd.PushConstants(0, sizeof(gpuPush), &gpuPush, smvk::ShaderStage::Compute);
-                        cmd.Dispatch(groups, 1, 1);
-                        if (!compactReady)
-                            return;
-                        // All inputs are BDA-only. Explicit shader-write/read
-                        // barriers are required between dependent dispatches.
-                        cmd.EmitGlobalMemoryBarrier();
-                        cmd.BindComputePipeline(compactPrograms[0]);
-                        cmd.PushConstants(
-                            0, sizeof(countPush), &countPush, smvk::ShaderStage::Compute);
-                        cmd.Dispatch(groups, 1, 1);
-                        cmd.EmitGlobalMemoryBarrier();
-                        cmd.BindComputePipeline(compactPrograms[1]);
-                        cmd.PushConstants(
-                            0, sizeof(prefixPush), &prefixPush, smvk::ShaderStage::Compute);
-                        cmd.Dispatch(1, 1, 1);
-                        cmd.EmitGlobalMemoryBarrier();
-                        cmd.BindComputePipeline(compactPrograms[2]);
-                        cmd.PushConstants(
-                            0, sizeof(scatterPush), &scatterPush, smvk::ShaderStage::Compute);
-                        cmd.Dispatch(groups, 1, 1);
-                        if (!workReady)
-                            return;
-                        cmd.EmitGlobalMemoryBarrier();
-                        cmd.BindComputePipeline(workPrograms[0]);
-                        cmd.PushConstants(
-                            0, sizeof(workSelect), &workSelect, smvk::ShaderStage::Compute);
-                        cmd.Dispatch(groups, 1, 1);
-                        cmd.EmitGlobalMemoryBarrier();
-                        if (parallelScanReady) {
-                            // 1) Parallel intra-block scan. 2) bounded scan of
-                            // block totals. 3) parallel global base addition.
-                            // No single-thread walk across instance candidates.
-                            cmd.BindComputePipeline(workScanPrograms[0]);
-                            cmd.PushConstants(
-                                0, sizeof(workBlock), &workBlock, smvk::ShaderStage::Compute);
-                            cmd.Dispatch((workBlock.candidateCount + 255u) / 256u, 1, 1);
-                            cmd.EmitGlobalMemoryBarrier();
-                            cmd.BindComputePipeline(workScanPrograms[1]);
-                            cmd.PushConstants(
-                                0, sizeof(workGroups), &workGroups, smvk::ShaderStage::Compute);
-                            cmd.Dispatch(1, 1, 1);
-                            cmd.EmitGlobalMemoryBarrier();
-                            cmd.BindComputePipeline(workScanPrograms[2]);
-                            cmd.PushConstants(
-                                0, sizeof(workAdd), &workAdd, smvk::ShaderStage::Compute);
-                            cmd.Dispatch((workAdd.candidateCount + 255u) / 256u, 1, 1);
-                        } else {
-                            cmd.BindComputePipeline(workPrograms[1]);
-                            cmd.PushConstants(
-                                0, sizeof(workPrefix), &workPrefix, smvk::ShaderStage::Compute);
-                            cmd.Dispatch(1, 1, 1);
-                        }
-                        cmd.EmitGlobalMemoryBarrier();
-                        cmd.BindComputePipeline(workPrograms[2]);
-                        cmd.PushConstants(
-                            0, sizeof(workScatter), &workScatter, smvk::ShaderStage::Compute);
-                        cmd.Dispatch(groups, 1, 1);
-                        if (taskReady) {
-                            // GPU task-work producer:
-                            // count -> block scan -> block-base scan ->
-                            // global add -> scatter -> indirect command build.
-                            cmd.EmitGlobalMemoryBarrier();
-                            cmd.BindComputePipeline(taskPrograms[0]);
-                            cmd.PushConstants(0,
-                                              sizeof(taskPlan.count),
-                                              &taskPlan.count,
-                                              smvk::ShaderStage::Compute);
-                            cmd.Dispatch((taskPlan.workCapacity + 255u) / 256u, 1, 1);
-                            cmd.EmitGlobalMemoryBarrier();
-                            cmd.BindComputePipeline(workScanPrograms[0]);
-                            cmd.PushConstants(0,
-                                              sizeof(taskPlan.scanBlock),
-                                              &taskPlan.scanBlock,
-                                              smvk::ShaderStage::Compute);
-                            cmd.Dispatch((taskPlan.workCapacity + 255u) / 256u, 1, 1);
-                            cmd.EmitGlobalMemoryBarrier();
-                            cmd.BindComputePipeline(workScanPrograms[1]);
-                            cmd.PushConstants(0,
-                                              sizeof(taskPlan.scanGroups),
-                                              &taskPlan.scanGroups,
-                                              smvk::ShaderStage::Compute);
-                            cmd.Dispatch(1, 1, 1);
-                            cmd.EmitGlobalMemoryBarrier();
-                            cmd.BindComputePipeline(workScanPrograms[2]);
-                            cmd.PushConstants(0,
-                                              sizeof(taskPlan.scanAdd),
-                                              &taskPlan.scanAdd,
-                                              smvk::ShaderStage::Compute);
-                            cmd.Dispatch((taskPlan.workCapacity + 255u) / 256u, 1, 1);
-                            cmd.EmitGlobalMemoryBarrier();
-                            cmd.BindComputePipeline(taskPrograms[1]);
-                            cmd.PushConstants(0,
-                                              sizeof(taskPlan.scatter),
-                                              &taskPlan.scatter,
-                                              smvk::ShaderStage::Compute);
-                            cmd.Dispatch((taskPlan.taskGroupCapacity + 127u) / 128u, 1, 1);
-                            cmd.EmitGlobalMemoryBarrier();
-                            cmd.BindComputePipeline(taskPrograms[2]);
-                            cmd.PushConstants(0,
-                                              sizeof(taskPlan.indirect),
-                                              &taskPlan.indirect,
-                                              smvk::ShaderStage::Compute);
-                            cmd.Dispatch(1, 1, 1);
-                        } else if (meshletCompactReady) {
-                            // Dense meshlet chain: per-work candidate counts
-                            // -> the SAME three-stage work scan (over the
-                            // meshlet counts, extent = work capacity) ->
-                            // dense candidate scatter (per-meshlet frustum/
-                            // cone tests, whole-submesh fallback rows) ->
-                            // #301 four-class PSO compaction -> compact
-                            // indexed commands + exact GPU class counts for
-                            // DrawIndexedIndirectCount. Every dispatch is
-                            // capacity-bounded with an in-kernel early exit
-                            // at the GPU-produced total — correct without a
-                            // DispatchIndirect args pass (the follow-up).
-                            cmd.EmitGlobalMemoryBarrier();
-                            cmd.BindComputePipeline(meshletPrograms[0]);
-                            cmd.PushConstants(0,
-                                              sizeof(meshletPlan.count),
-                                              &meshletPlan.count,
-                                              smvk::ShaderStage::Compute);
-                            cmd.Dispatch((meshletPlan.workCapacity + 255u) / 256u, 1, 1);
-                            cmd.EmitGlobalMemoryBarrier();
-                            cmd.BindComputePipeline(workScanPrograms[0]);
-                            cmd.PushConstants(0,
-                                              sizeof(meshletPlan.scanBlock),
-                                              &meshletPlan.scanBlock,
-                                              smvk::ShaderStage::Compute);
-                            cmd.Dispatch(
-                                (meshletPlan.scanBlock.candidateCount + 255u) / 256u, 1, 1);
-                            cmd.EmitGlobalMemoryBarrier();
-                            cmd.BindComputePipeline(workScanPrograms[1]);
-                            cmd.PushConstants(0,
-                                              sizeof(meshletPlan.scanGroups),
-                                              &meshletPlan.scanGroups,
-                                              smvk::ShaderStage::Compute);
-                            cmd.Dispatch(1, 1, 1);
-                            cmd.EmitGlobalMemoryBarrier();
-                            cmd.BindComputePipeline(workScanPrograms[2]);
-                            cmd.PushConstants(0,
-                                              sizeof(meshletPlan.scanAdd),
-                                              &meshletPlan.scanAdd,
-                                              smvk::ShaderStage::Compute);
-                            cmd.Dispatch((meshletPlan.scanAdd.candidateCount + 255u) / 256u, 1, 1);
-                            cmd.EmitGlobalMemoryBarrier();
-                            cmd.BindComputePipeline(meshletPrograms[1]);
-                            cmd.PushConstants(0,
-                                              sizeof(meshletPlan.scatter),
-                                              &meshletPlan.scatter,
-                                              smvk::ShaderStage::Compute);
-                            cmd.Dispatch((meshletPlan.candidateCapacity + 127u) / 128u, 1, 1);
-                            cmd.EmitGlobalMemoryBarrier();
-                            cmd.BindComputePipeline(meshletPrograms[2]);
-                            cmd.PushConstants(0,
-                                              sizeof(meshletPlan.psoCount),
-                                              &meshletPlan.psoCount,
-                                              smvk::ShaderStage::Compute);
-                            cmd.Dispatch(meshletPlan.psoBlocks, 1, 1);
-                            cmd.EmitGlobalMemoryBarrier();
-                            cmd.BindComputePipeline(psoScanProgram);
-                            cmd.PushConstants(0,
-                                              sizeof(meshletPlan.psoScan),
-                                              &meshletPlan.psoScan,
-                                              smvk::ShaderStage::Compute);
-                            cmd.Dispatch(1, 1, 1);
-                            cmd.EmitGlobalMemoryBarrier();
-                            cmd.BindComputePipeline(meshletPrograms[3]);
-                            cmd.PushConstants(0,
-                                              sizeof(meshletPlan.psoScatter),
-                                              &meshletPlan.psoScatter,
-                                              smvk::ShaderStage::Compute);
-                            cmd.Dispatch(meshletPlan.psoBlocks, 1, 1);
-                        }
-                        if (rasterReady && !meshletCompactReady) {
-                            // GPU work -> indexed draw argument visibility; no
-                            // CPU readback, and all 20 command bytes are GPU-written.
-                            // Mixed path: when the task/mesh shader owns the
-                            // meshleted subset (meshletBoundary set above), this
-                            // build skips those ids and emits commands only for
-                            // the native-suffix (indexed-raster) geometry.
-                            cmd.EmitGlobalMemoryBarrier();
-                            cmd.BindComputePipeline(rasterProgram);
-                            cmd.PushConstants(
-                                0, sizeof(rasterPush), &rasterPush, smvk::ShaderStage::Compute);
-                            cmd.Dispatch((rasterPush.commandCapacity + 127u) / 128u, 1, 1);
-                        }
-                        if (!indirectReady)
-                            return;
-                        cmd.EmitGlobalMemoryBarrier();
-                        cmd.BindComputePipeline(indirectPrograms[0]);
-                        cmd.PushConstants(
-                            0, sizeof(indirectArgs), &indirectArgs, smvk::ShaderStage::Compute);
-                        cmd.Dispatch(1, 1, 1);
-                        cmd.EmitGlobalMemoryBarrier();
-                        cmd.BindComputePipeline(indirectPrograms[1]);
-                        cmd.PushConstants(
-                            0, sizeof(indirectVerify), &indirectVerify, smvk::ShaderStage::Compute);
-                        // A GPU-computed command launches exactly the work-record
-                        // consumers needed: no CPU count/readback on the hot path.
-                        cmd.DispatchIndirect(indirectBuffer, 0);
-                    });
+                    GpuSceneCullChainFrame& chainFrame =
+                        m_rendergraph->PassFrameData<GpuSceneCullChainFrame>(pass);
+                    chainFrame.program = &m_gpuSceneCullProgram;
+                    chainFrame.compactPrograms = m_gpuSceneCompactPrograms.data();
+                    chainFrame.workPrograms = m_gpuSceneWorkPrograms.data();
+                    chainFrame.workScanPrograms = m_gpuSceneWorkScanPrograms.data();
+                    chainFrame.rasterProgram = &m_gpuSceneRasterBuildProgram;
+                    chainFrame.indirectPrograms = m_gpuSceneIndirectPrograms.data();
+                    chainFrame.meshletPrograms = m_gpuSceneMeshletPrograms.data();
+                    chainFrame.psoScanProgram = &m_gpuScenePsoScanProgram;
+                    chainFrame.taskPrograms = m_gpuSceneTaskComputePrograms.data();
+                    chainFrame.taskReady = taskReady;
+                    chainFrame.taskPlan = taskPlan;
+                    chainFrame.gpuPush = gpuPush;
+                    chainFrame.countPush = countPush;
+                    chainFrame.prefixPush = prefixPush;
+                    chainFrame.scatterPush = scatterPush;
+                    chainFrame.workSelect = workSelect;
+                    chainFrame.workPrefix = workPrefix;
+                    chainFrame.workScatter = workScatter;
+                    chainFrame.workBlock = workBlock;
+                    chainFrame.workGroups = workGroups;
+                    chainFrame.workAdd = workAdd;
+                    chainFrame.rasterPush = rasterPush;
+                    chainFrame.indirectArgs = indirectArgs;
+                    chainFrame.indirectVerify = indirectVerify;
+                    chainFrame.indirectBuffer = indirectBuffer;
+                    chainFrame.groups = groups;
+                    chainFrame.compactReady = compactReady;
+                    chainFrame.workReady = workReady;
+                    chainFrame.parallelScanReady = parallelScanReady;
+                    chainFrame.rasterReady = rasterReady;
+                    chainFrame.meshletCompactReady = meshletCompactReady;
+                    chainFrame.indirectReady = indirectReady;
+                    chainFrame.meshletPlan = meshletPlan;
+                    pass.SetRecordFn(&RecordGpuSceneCullChain);
                     m_gpuSceneValidator.MarkDispatched(fb.frameIndex);
                 }
             } else if (selected.status != tour::gpu_scene::CandidateStatus::Ok) {
