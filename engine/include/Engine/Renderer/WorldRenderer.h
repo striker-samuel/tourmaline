@@ -3763,6 +3763,19 @@ class WorldRenderer : public IRenderer {
                                          const smvk::FrameContext&,
                                          const smvk::PassData&);
     static void RecordSdsm(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
+    struct ParticlesEmitFrame { smvk::ParticlesEmitPush push{}; };
+    struct ParticlesSimFrame { smvk::ParticlesSimPush push{}; };
+    struct MeshParticlesEmitFrame { smvk::MeshParticlesEmitPush push{}; };
+    struct MeshParticlesSimFrame { smvk::MeshParticlesSimPush push{}; };
+    static void RecordParticlesEmit(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
+    static void RecordParticlesSim(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
+    static void RecordMeshParticlesEmit(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
+    static void RecordMeshParticlesSim(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
+    struct ParticlesDrawFrame {
+        smvk::ParticlesDrawPush push{};
+        bool mixed = false;
+    };
+    static void RecordParticlesDraw(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
     // Must mirror the HLSL SdsmGroupStats (264 bytes).
     struct SdsmGroupStats {
         float minV = 0.0f;

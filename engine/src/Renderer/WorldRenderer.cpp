@@ -8818,6 +8818,62 @@ void WorldRenderer::RecordSdsm(smvk::CommandBuffer& cmd,
     cmd.PushConstants(0, sizeof(f.push), &f.push, smvk::ShaderStage::Compute);
     cmd.Dispatch(kSdsmGroups, 1, 1);
 }
+void WorldRenderer::RecordParticlesEmit(smvk::CommandBuffer& cmd,
+                                        const smvk::FrameContext& fc,
+                                        const smvk::PassData& pd) {
+    auto* self = const_cast<WorldRenderer*>(static_cast<const WorldRenderer*>(pd.config));
+    const ParticlesEmitFrame& f = fc.rg->FrameData().Get<ParticlesEmitFrame>(pd.frameSlot);
+    cmd.BindComputePipeline(self->m_viewportResources.particles.emitProgram);
+    cmd.PushConstants(0, sizeof(f.push), &f.push, smvk::ShaderStage::All);
+    cmd.Dispatch(PARTICLE_MAX_EMITTERS, 1, 1);
+}
+void WorldRenderer::RecordParticlesSim(smvk::CommandBuffer& cmd,
+                                       const smvk::FrameContext& fc,
+                                       const smvk::PassData& pd) {
+    auto* self = const_cast<WorldRenderer*>(static_cast<const WorldRenderer*>(pd.config));
+    const ParticlesSimFrame& f = fc.rg->FrameData().Get<ParticlesSimFrame>(pd.frameSlot);
+    cmd.BindComputePipeline(self->m_viewportResources.particles.simProgram);
+    cmd.PushConstants(0, sizeof(f.push), &f.push, smvk::ShaderStage::All);
+    cmd.Dispatch(smvk::Particles::SimGroupsFor(PARTICLE_MAX, PARTICLE_SIM_THREADS), 1, 1);
+}
+void WorldRenderer::RecordMeshParticlesEmit(smvk::CommandBuffer& cmd,
+                                            const smvk::FrameContext& fc,
+                                            const smvk::PassData& pd) {
+    auto* self = const_cast<WorldRenderer*>(static_cast<const WorldRenderer*>(pd.config));
+    const MeshParticlesEmitFrame& f = fc.rg->FrameData().Get<MeshParticlesEmitFrame>(pd.frameSlot);
+    smvk::MeshParticles::PushAndDispatchEmit(
+        cmd, self->m_viewportResources.meshParticles.emitProgram, f.push);
+}
+void WorldRenderer::RecordMeshParticlesSim(smvk::CommandBuffer& cmd,
+                                           const smvk::FrameContext& fc,
+                                           const smvk::PassData& pd) {
+    auto* self = const_cast<WorldRenderer*>(static_cast<const WorldRenderer*>(pd.config));
+    const MeshParticlesSimFrame& f = fc.rg->FrameData().Get<MeshParticlesSimFrame>(pd.frameSlot);
+    smvk::MeshParticles::PushAndDispatchSim(
+        cmd,
+        self->m_viewportResources.meshParticles.simProgram,
+        f.push,
+        self->m_viewportResources.meshParticles.SimGroupsFor(f.push.maxParticles));
+}
+void WorldRenderer::RecordParticlesDraw(smvk::CommandBuffer& cmd,
+                                        const smvk::FrameContext& fc,
+                                        const smvk::PassData& pd) {
+    auto* self = const_cast<WorldRenderer*>(static_cast<const WorldRenderer*>(pd.config));
+    const ParticlesDrawFrame& f = fc.rg->FrameData().Get<ParticlesDrawFrame>(pd.frameSlot);
+    cmd.BindRenderPipeline(self->m_viewportResources.particles.drawProgram,
+                           ::tour::vertex_layouts::Empty,
+                           smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                               .writeEnable = false,
+                                               .depthTestEnable = true},
+                           smvk::StencilSettings{},
+                           f.mixed ? smvk::BlendSettings::Mixed() : smvk::BlendSettings::Add(),
+                           smvk::MSAASettings::Count1(),
+                           smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+    cmd.PushConstants(0, sizeof(f.push), &f.push, smvk::ShaderStage::All);
+    // Fixed instance count: dead slots collapse to off-screen degenerate
+    // quads in the VS (no CPU alive list - the pool is fully GPU-resident).
+    cmd.Draw(6, PARTICLE_MAX, 0, 0);
+}
 void WorldRenderer::AppendDeferredShadowPhases(uint32_t frameIndex,
                                                uint64_t frameUniformsAddress,
                                                uint64_t fpLightsAddress,
@@ -17026,11 +17082,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         emitPush.dt = particleDt;
         emitPush.frameSeed = 1664525u * (uint32_t)m_frameCounter + 1013904223u;
         auto& emitPass = ps.AddEmitPass(*m_rendergraph);
-        emitPass.SetRecordingFunc([this, emitPush](smvk::CommandBuffer& cmd) {
-            cmd.BindComputePipeline(m_viewportResources.particles.emitProgram);
-            cmd.PushConstants(0, sizeof(emitPush), &emitPush, smvk::ShaderStage::All);
-            cmd.Dispatch(PARTICLE_MAX_EMITTERS, 1, 1);
-        });
+        ParticlesEmitFrame& emitFrame = m_rendergraph->PassFrameData<ParticlesEmitFrame>(emitPass);
+        emitFrame.push = emitPush;
+        emitPass.SetRecordFn(&WorldRenderer::RecordParticlesEmit, this);
 
         smvk::ParticlesSimPush simPush{};
         simPush.particles = ps.ParticlesAddress(*m_context);
@@ -17050,11 +17104,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             simPush.cameraZ = cam.z;
         }
         auto& simPass = ps.AddSimPass(*m_rendergraph);
-        simPass.SetRecordingFunc([this, simPush](smvk::CommandBuffer& cmd) {
-            cmd.BindComputePipeline(m_viewportResources.particles.simProgram);
-            cmd.PushConstants(0, sizeof(simPush), &simPush, smvk::ShaderStage::All);
-            cmd.Dispatch(smvk::Particles::SimGroupsFor(PARTICLE_MAX, PARTICLE_SIM_THREADS), 1, 1);
-        });
+        ParticlesSimFrame& simFrame = m_rendergraph->PassFrameData<ParticlesSimFrame>(simPass);
+        simFrame.push = simPush;
+        simPass.SetRecordFn(&WorldRenderer::RecordParticlesSim, this);
     }
 
     // Emit and simulate live mesh instances before the view-specific
@@ -17072,10 +17124,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         emit.frameSeed = uint32_t(m_frameCounter);
         if (meshEmitterCount > 0) {
             auto& emitPass = meshPs.AddEmitPass(*m_rendergraph);
-            emitPass.SetRecordingFunc([this, emit](smvk::CommandBuffer& cmd) {
-                smvk::MeshParticles::PushAndDispatchEmit(
-                    cmd, m_viewportResources.meshParticles.emitProgram, emit);
-            });
+            MeshParticlesEmitFrame& emitFrame =
+                m_rendergraph->PassFrameData<MeshParticlesEmitFrame>(emitPass);
+            emitFrame.push = emit;
+            emitPass.SetRecordFn(&WorldRenderer::RecordMeshParticlesEmit, this);
         }
         smvk::MeshParticlesSimPush sim{};
         sim.particles = emit.particles;
@@ -17084,13 +17136,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         sim.dt = dt;
         sim.maxParticles = meshPs.desc.maxParticles;
         auto& simPass = meshPs.AddSimPass(*m_rendergraph);
-        simPass.SetRecordingFunc([this, sim](smvk::CommandBuffer& cmd) {
-            smvk::MeshParticles::PushAndDispatchSim(
-                cmd,
-                m_viewportResources.meshParticles.simProgram,
-                sim,
-                m_viewportResources.meshParticles.SimGroupsFor(sim.maxParticles));
-        });
+        MeshParticlesSimFrame& simFrame = m_rendergraph->PassFrameData<MeshParticlesSimFrame>(simPass);
+        simFrame.push = sim;
+        simPass.SetRecordFn(&WorldRenderer::RecordMeshParticlesSim, this);
     }
 
     // Transparent frustum-cull views (snapshots: recording lambdas run
@@ -19543,24 +19591,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // consumer stride contract — see the scene push comment).
         drawPush.fpMaxPerTile = m_viewportResources.forwardPlus.desc.maxLightsPerTile;
         drawPush.maxParticles = PARTICLE_MAX;
-        particlePass.SetRecordingFunc([this, drawPush](smvk::CommandBuffer& cmd) {
-            cmd.BindRenderPipeline(m_viewportResources.particles.drawProgram,
-                                   ::tour::vertex_layouts::Empty,
-                                   smvk::DepthSettings{
-                                       .depthFunc = smvk::CompareOp::GreaterEqual,
-                                       .writeEnable = false,
-                                       .depthTestEnable = true,
-                                   },
-                                   smvk::StencilSettings{},
-                                   smvk::BlendSettings::Add(),
-                                   smvk::MSAASettings::Count1(),
-                                   smvk::RasterSettings{.cullMode = smvk::CullMode::None});
-            cmd.PushConstants(0, sizeof(drawPush), &drawPush, smvk::ShaderStage::All);
-            // Fixed instance count: dead slots collapse to off-screen
-            // degenerate quads in the VS (no CPU alive list - the pool is
-            // fully GPU-resident; the dead-slot VS cost is the trade).
-            cmd.Draw(6, PARTICLE_MAX, 0, 0);
-        });
+        ParticlesDrawFrame& particleFrame =
+            m_rendergraph->PassFrameData<ParticlesDrawFrame>(particlePass);
+        particleFrame.push = drawPush;
+        particleFrame.mixed = false;
+        particlePass.SetRecordFn(&WorldRenderer::RecordParticlesDraw, this);
 
         // Same GPU pool, separate premultiplied-alpha blend state.
         // Draw after additive sprites; both VS paths reject other-mode
@@ -19572,21 +19607,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                         "GroundDustDraw");
         smvk::ParticlesDrawPush dustPush = drawPush;
         dustPush.renderMode = 1;
-        dustPass.SetRecordingFunc([this, dustPush](smvk::CommandBuffer& cmd) {
-            cmd.BindRenderPipeline(m_viewportResources.particles.drawProgram,
-                                   ::tour::vertex_layouts::Empty,
-                                   smvk::DepthSettings{
-                                       .depthFunc = smvk::CompareOp::GreaterEqual,
-                                       .writeEnable = false,
-                                       .depthTestEnable = true,
-                                   },
-                                   smvk::StencilSettings{},
-                                   smvk::BlendSettings::Mixed(),
-                                   smvk::MSAASettings::Count1(),
-                                   smvk::RasterSettings{.cullMode = smvk::CullMode::None});
-            cmd.PushConstants(0, sizeof(dustPush), &dustPush, smvk::ShaderStage::All);
-            cmd.Draw(6, PARTICLE_MAX, 0, 0);
-        });
+        ParticlesDrawFrame& dustFrame = m_rendergraph->PassFrameData<ParticlesDrawFrame>(dustPass);
+        dustFrame.push = dustPush;
+        dustFrame.mixed = true;
+        dustPass.SetRecordFn(&WorldRenderer::RecordParticlesDraw, this);
     }
 
     // ---------------------------------------------------------------------
