@@ -15003,8 +15003,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb, const FrameContext* fc) {
             if (pass.recordFn_) {
                 assert(fc != nullptr && "RecordFn pass executed without a FrameContext");
                 pass.recordFn_(cb, *fc, PassData{pass.passDataConfig_, pass.frameSlot_});
-            } else if (pass.recordingFunction_)
-                pass.recordingFunction_(cb);
+            }
 #if defined(TOURMALINE_NSIGHT_MARKERS)
             if (nsightLabelActive)
                 vkCmdEndDebugUtilsLabelEXT(dstCmd);
@@ -15130,8 +15129,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb, const FrameContext* fc) {
         if (pass.recordFn_) {
             assert(fc != nullptr && "RecordFn pass executed without a FrameContext");
             pass.recordFn_(cb, *fc, PassData{pass.passDataConfig_, pass.frameSlot_});
-        } else if (pass.recordingFunction_)
-            pass.recordingFunction_(cb);
+        }
         vkCmdEndRendering(dstCmd);
         if (passTimingIndex >= 0)
             vkCmdWriteTimestamp(dstCmd,

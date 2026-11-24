@@ -18,7 +18,6 @@
 #include <cassert>
 #include <cstddef>
 #include <cstring>
-#include <functional>
 #include <memory>
 #include <span>
 #include <type_traits>
@@ -314,8 +313,6 @@ struct BufferHint {
 // ============================================================
 // Render pass
 // ============================================================
-
-using RecordingFunction = std::function<void(CommandBuffer&)>;
 
 // ------------------------------------------------------------
 // Stable record-function ABI (static compiled render graph)
@@ -690,12 +687,6 @@ struct RenderPass final {
         return *this;
     }
 
-    RenderPass& SetRecordingFunc(RecordingFunction fn) {
-        recordingFunction_ = std::move(fn);
-
-        return *this;
-    }
-
     // Stable record-function ABI (static compiled graph): a non-capturing
     // function pointer plus an immutable, caller-owned configuration block.
     // `config` must outlive the compiled graph (typically a renderer member).
@@ -778,8 +769,6 @@ struct RenderPass final {
 
     int32_t offsetX_ = 0;
     int32_t offsetY_ = 0;
-
-    RecordingFunction recordingFunction_{};
 
     RecordFn recordFn_ = nullptr;
     const void* passDataConfig_ = nullptr;
