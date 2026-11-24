@@ -61,14 +61,20 @@ PSOut mainPS(PSIn IN) {
 
     // SV_Position is post-divide pixel coords; same NDC->UV convention as
     // the Y-flipped proj both frames share.
-    float2 currUV = IN.pos.xy * frame.invViewportSize;
-    float2 prevUV = (IN.prevClip.xy / IN.prevClip.w) * 0.5 + 0.5;
-    float2 motion = prevUV - currUV;
-
-    // Guard: geometry behind the previous camera, first frame or camera
-    // reset produces huge reprojected deltas – treat them as "no history".
-    if (dot(motion, motion) > 1.0)
-        motion = float2(0.0, 0.0);
+    const float2 currUV = IN.pos.xy * frame.invViewportSize;
+    float2 motion = float2(0.0f, 0.0f);
+    // A previous clip position is a VALID reprojection only when its W is
+    // positive and finite (in front of the previous camera). Behind-camera or
+    // non-finite history reads as "no history" (zero motion) — never a huge
+    // spurious delta, and never a NaN/Inf reaching a temporal consumer. This
+    // replaces the old magnitude heuristic, which both discarded legitimate
+    // large motion and failed to reject invalid W before the divide.
+    if (isfinite(IN.prevClip.w) && IN.prevClip.w > 0.0f) {
+        const float2 prevUV = (IN.prevClip.xy / IN.prevClip.w) * 0.5f + 0.5f;
+        const float2 m = prevUV - currUV;
+        if (isfinite(m.x) && isfinite(m.y))
+            motion = m;
+    }
 
     OUT.motion = motion;
     return OUT;
