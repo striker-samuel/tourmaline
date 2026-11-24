@@ -62,6 +62,7 @@
 #include <Engine/Rendergraph/meshparticles.h>
 #include <Engine/Rendergraph/placement_pass.h>
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/renderer.h>
 
 namespace {
 
@@ -78,6 +79,167 @@ void Check(bool cond, const char* name) {
 }
 
 using namespace smvk::placement;
+
+// Per-flight frame slots + non-capturing record functions for the GPU parity
+// dispatches (static compiled ABI).
+struct PlacementEvalFrame {
+    PlacementPass* pass = nullptr;
+    PlacementTilePush push{};
+};
+void RecordPlacementEval(smvk::CommandBuffer& cmd,
+                         const smvk::FrameContext& fc,
+                         const smvk::PassData& pd) {
+    const PlacementEvalFrame& f = fc.rg->FrameData().Get<PlacementEvalFrame>(pd.frameSlot);
+    f.pass->PushAndDispatch(cmd, f.push);
+}
+struct ScatterEvalFrame {
+    smvk::ShaderProgram* program = nullptr;
+    PlacementScatterPush push{};
+};
+void RecordScatterEval(smvk::CommandBuffer& cmd,
+                       const smvk::FrameContext& fc,
+                       const smvk::PassData& pd) {
+    const ScatterEvalFrame& f = fc.rg->FrameData().Get<ScatterEvalFrame>(pd.frameSlot);
+    PlacementScatterPrograms::PushAndDispatchScatter(cmd, *f.program, f.push);
+}
+struct ConstraintFrame {
+    smvk::ShaderProgram* program = nullptr;
+    PlacementConPush push{};
+    uint32_t width = 0;
+};
+void RecordConstraint(smvk::CommandBuffer& cmd,
+                      const smvk::FrameContext& fc,
+                      const smvk::PassData& pd) {
+    const ConstraintFrame& f = fc.rg->FrameData().Get<ConstraintFrame>(pd.frameSlot);
+    PlacementConstraint::PushAndDispatchCon(cmd, *f.program, f.push, f.width);
+}
+struct CullFrame {
+    smvk::ShaderProgram* program = nullptr;
+    PlacementCullPush push{};
+    uint32_t groups = 0;
+};
+void RecordCull(smvk::CommandBuffer& cmd,
+                const smvk::FrameContext& fc,
+                const smvk::PassData& pd) {
+    const CullFrame& f = fc.rg->FrameData().Get<CullFrame>(pd.frameSlot);
+    PlacementCullPrograms::PushAndDispatchCull(cmd, *f.program, f.push, f.groups);
+}
+struct PrefixFrame {
+    smvk::ShaderProgram* program = nullptr;
+    PlacementCullPush push{};
+};
+void RecordPrefix(smvk::CommandBuffer& cmd,
+                  const smvk::FrameContext& fc,
+                  const smvk::PassData& pd) {
+    const PrefixFrame& f = fc.rg->FrameData().Get<PrefixFrame>(pd.frameSlot);
+    PlacementCullPrograms::PushAndDispatchPrefix(cmd, *f.program, f.push);
+}
+struct ScatterVisFrame {
+    smvk::ShaderProgram* program = nullptr;
+    PlacementScatterVisPush push{};
+    uint32_t groups = 0;
+};
+void RecordScatterVis(smvk::CommandBuffer& cmd,
+                      const smvk::FrameContext& fc,
+                      const smvk::PassData& pd) {
+    const ScatterVisFrame& f = fc.rg->FrameData().Get<ScatterVisFrame>(pd.frameSlot);
+    PlacementCullPrograms::PushAndDispatchScatterVis(cmd, *f.program, f.push, f.groups);
+}
+struct DrawBuildFrame {
+    smvk::ShaderProgram* program = nullptr;
+    PlacementDrawBuildPush push{};
+};
+void RecordDrawBuild(smvk::CommandBuffer& cmd,
+                     const smvk::FrameContext& fc,
+                     const smvk::PassData& pd) {
+    const DrawBuildFrame& f = fc.rg->FrameData().Get<DrawBuildFrame>(pd.frameSlot);
+    PlacementCullPrograms::PushAndDispatchDrawBuild(cmd, *f.program, f.push);
+}
+struct MeshEmitFrame {
+    smvk::MeshParticles* mp = nullptr;
+    smvk::MeshParticlesEmitPush push{};
+};
+void RecordMeshEmit(smvk::CommandBuffer& cmd,
+                    const smvk::FrameContext& fc,
+                    const smvk::PassData& pd) {
+    const MeshEmitFrame& f = fc.rg->FrameData().Get<MeshEmitFrame>(pd.frameSlot);
+    f.mp->PushAndDispatchEmit(cmd, f.mp->emitProgram, f.push);
+}
+struct MeshSimFrame {
+    smvk::MeshParticles* mp = nullptr;
+    smvk::MeshParticlesSimPush push{};
+};
+void RecordMeshSim(smvk::CommandBuffer& cmd,
+                   const smvk::FrameContext& fc,
+                   const smvk::PassData& pd) {
+    const MeshSimFrame& f = fc.rg->FrameData().Get<MeshSimFrame>(pd.frameSlot);
+    f.mp->PushAndDispatchSim(cmd, f.mp->simProgram, f.push, f.mp->SimGroupsFor(f.push.maxParticles));
+}
+struct MeshCullFrame {
+    smvk::MeshParticles* mp = nullptr;
+    smvk::MeshParticlesCullPush push{};
+};
+void RecordMeshCull(smvk::CommandBuffer& cmd,
+                    const smvk::FrameContext& fc,
+                    const smvk::PassData& pd) {
+    const MeshCullFrame& f = fc.rg->FrameData().Get<MeshCullFrame>(pd.frameSlot);
+    f.mp->PushAndDispatchCull(cmd, f.mp->cullProgram, f.push);
+}
+struct MeshPrefixFrame {
+    smvk::MeshParticles* mp = nullptr;
+    smvk::MeshParticlesPrefixPush push{};
+};
+void RecordMeshPrefix(smvk::CommandBuffer& cmd,
+                      const smvk::FrameContext& fc,
+                      const smvk::PassData& pd) {
+    const MeshPrefixFrame& f = fc.rg->FrameData().Get<MeshPrefixFrame>(pd.frameSlot);
+    f.mp->PushAndDispatchPrefix(cmd, f.mp->prefixProgram, f.push);
+}
+struct MeshScatterFrame {
+    smvk::MeshParticles* mp = nullptr;
+    smvk::MeshParticlesScatterPush push{};
+};
+void RecordMeshScatter(smvk::CommandBuffer& cmd,
+                       const smvk::FrameContext& fc,
+                       const smvk::PassData& pd) {
+    const MeshScatterFrame& f = fc.rg->FrameData().Get<MeshScatterFrame>(pd.frameSlot);
+    f.mp->PushAndDispatchScatter(cmd, f.mp->scatterProgram, f.push);
+}
+struct MeshDrawBuildFrame {
+    smvk::MeshParticles* mp = nullptr;
+    PlacementDrawBuildPush push{};
+};
+void RecordMeshDrawBuild(smvk::CommandBuffer& cmd,
+                         const smvk::FrameContext& fc,
+                         const smvk::PassData& pd) {
+    const MeshDrawBuildFrame& f = fc.rg->FrameData().Get<MeshDrawBuildFrame>(pd.frameSlot);
+    f.mp->PushAndDispatchDrawBuild(cmd, f.mp->buildProgram, f.push);
+}
+struct DrawFrame {
+    smvk::ShaderProgram* program = nullptr;
+    PlacementVsPush tail{};
+    smvk::BufferHandle indirectBuf{};
+};
+void RecordDraw(smvk::CommandBuffer& cmd,
+                const smvk::FrameContext& fc,
+                const smvk::PassData& pd) {
+    const DrawFrame& f = fc.rg->FrameData().Get<DrawFrame>(pd.frameSlot);
+    cmd.BindStaticVertexFmt();
+    cmd.BindRenderPipeline(*f.program,
+                           ::tour::vertex_layouts::Static,
+                           smvk::DepthSettings{.depthFunc = smvk::CompareOp::Always,
+                                               .writeEnable = false,
+                                               .depthTestEnable = false},
+                           smvk::StencilSettings{},
+                           smvk::BlendSettings{},
+                           smvk::MSAASettings{},
+                           smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+    cmd.PushConstants(
+        kPlacementVsPushOffset, sizeof(f.tail), &f.tail, smvk::ShaderStage::All);
+    for (int p = 0; p < 3; ++p)
+        cmd.DrawIndexedIndirect(
+            f.indirectBuf, uint64_t(p) * kPlacementIndirectStride, 1, kPlacementIndirectStride);
+}
 
 // ---------------------------------------------------------------------------
 // Frame host: one hidden window + RM + swapchain + rendergraph. Each
@@ -97,7 +259,9 @@ struct GpuHost {
         record(*rg);
         rm->UpdateDescriptors();
         smvk::Framebuffer fb = swap->AcquireFramebuffer();
-        rg->Execute(fb);
+        smvk::FrameContext fc{};
+        fc.rg = rg;
+        rg->Execute(fb, &fc);
         swap->EndAndPresentFramebuffer(fb);
     }
 };
@@ -403,8 +567,10 @@ int main() {
         Check(ok, "gpu.grid-push-built");
         host.RunFrame([&](smvk::RenderGraph& g) {
             smvk::RenderPass& eval = pass.AddEvalPass(g, 0, "PlacementEvalGrid");
-            eval.SetRecordingFunc(
-                [&](smvk::CommandBuffer& cmd) { pass.PushAndDispatch(cmd, push); });
+            PlacementEvalFrame& frame = g.PassFrameData<PlacementEvalFrame>(eval);
+            frame.pass = &pass;
+            frame.push = push;
+            eval.SetRecordFn(&RecordPlacementEval);
         });
         rm.FlushUploads();
         rm.WaitForUploads();
@@ -487,9 +653,10 @@ int main() {
         host.RunFrame([&](smvk::RenderGraph& g) {
             smvk::RenderPass& eval = PlacementScatterPrograms::AddScatterPass(
                 g, pass, 1, meshGpu.ReadLogicals(), paramsGpu.logical, "PlacementScatterMesh");
-            eval.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
-                PlacementScatterPrograms::PushAndDispatchScatter(cmd, scatter.meshProgram, push);
-            });
+            ScatterEvalFrame& frame = g.PassFrameData<ScatterEvalFrame>(eval);
+            frame.program = &scatter.meshProgram;
+            frame.push = push;
+            eval.SetRecordFn(&RecordScatterEval);
         });
         rm.FlushUploads();
         rm.WaitForUploads();
@@ -568,9 +735,10 @@ int main() {
         host.RunFrame([&](smvk::RenderGraph& g) {
             smvk::RenderPass& eval = PlacementScatterPrograms::AddScatterPass(
                 g, pass, 2, {hfGpu.heightsL}, paramsGpu.logical, "PlacementScatterHf");
-            eval.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
-                PlacementScatterPrograms::PushAndDispatchScatter(cmd, scatter.hfProgram, push);
-            });
+            ScatterEvalFrame& frame = g.PassFrameData<ScatterEvalFrame>(eval);
+            frame.program = &scatter.hfProgram;
+            frame.push = push;
+            eval.SetRecordFn(&RecordScatterEval);
         });
         rm.FlushUploads();
         rm.WaitForUploads();
@@ -640,9 +808,10 @@ int main() {
                                                          cloudGpu.ReadLogicals(),
                                                          paramsGpu.logical,
                                                          "PlacementScatterPaintedPoints");
-            eval.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
-                PlacementScatterPrograms::PushAndDispatchScatter(cmd, scatter.pointProgram, push);
-            });
+            ScatterEvalFrame& frame = g.PassFrameData<ScatterEvalFrame>(eval);
+            frame.program = &scatter.pointProgram;
+            frame.push = push;
+            eval.SetRecordFn(&RecordScatterEval);
         });
         rm.FlushUploads();
         rm.WaitForUploads();
@@ -697,8 +866,10 @@ int main() {
         Check(ok, "gpu.tiny-push-built");
         host.RunFrame([&](smvk::RenderGraph& g) {
             smvk::RenderPass& eval = tiny.AddEvalPass(g, 0, "PlacementEvalOverflow");
-            eval.SetRecordingFunc(
-                [&](smvk::CommandBuffer& cmd) { tiny.PushAndDispatch(cmd, push); });
+            PlacementEvalFrame& frame = g.PassFrameData<PlacementEvalFrame>(eval);
+            frame.pass = &tiny;
+            frame.push = push;
+            eval.SetRecordFn(&RecordPlacementEval);
         });
         rm.FlushUploads();
         rm.WaitForUploads();
@@ -779,8 +950,10 @@ int main() {
 
         host.RunFrame([&](smvk::RenderGraph& g) {
             smvk::RenderPass& eval = pass.AddEvalPass(g, 3, "PlacementEvalCon");
-            eval.SetRecordingFunc(
-                [&](smvk::CommandBuffer& cmd) { pass.PushAndDispatch(cmd, push); });
+            PlacementEvalFrame& evalFrame = g.PassFrameData<PlacementEvalFrame>(eval);
+            evalFrame.pass = &pass;
+            evalFrame.push = push;
+            eval.SetRecordFn(&RecordPlacementEval);
             // Dispatch width: candidateCount (the CPU-known upper bound —
             // every candidate produces at most one instance; con threads
             // past the live count early out). No count readback on the
@@ -788,19 +961,25 @@ int main() {
             const uint32_t width = lb.config.candidatesPerTile;
             smvk::RenderPass& build = PlacementConstraint::AddBuildPass(
                 g, con, pass.instanceLogicals[3], pass.countLogicals[3]);
-            build.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
-                PlacementConstraint::PushAndDispatchCon(cmd, con.buildProgram, conPush, width);
-            });
+            ConstraintFrame& buildFrame = g.PassFrameData<ConstraintFrame>(build);
+            buildFrame.program = &con.buildProgram;
+            buildFrame.push = conPush;
+            buildFrame.width = width;
+            build.SetRecordFn(&RecordConstraint);
             smvk::RenderPass& elect = PlacementConstraint::AddElectPass(
                 g, con, pass.instanceLogicals[3], pass.countLogicals[3], con.flag2Logical);
-            elect.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
-                PlacementConstraint::PushAndDispatchCon(cmd, con.electProgram, conPush, width);
-            });
+            ConstraintFrame& electFrame = g.PassFrameData<ConstraintFrame>(elect);
+            electFrame.program = &con.electProgram;
+            electFrame.push = conPush;
+            electFrame.width = width;
+            elect.SetRecordFn(&RecordConstraint);
             smvk::RenderPass& kill = PlacementConstraint::AddKillPass(
                 g, con, pass.instanceLogicals[3], pass.countLogicals[3], con.flag2Logical);
-            kill.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
-                PlacementConstraint::PushAndDispatchCon(cmd, con.killProgram, conPush, width);
-            });
+            ConstraintFrame& killFrame = g.PassFrameData<ConstraintFrame>(kill);
+            killFrame.program = &con.killProgram;
+            killFrame.push = conPush;
+            killFrame.width = width;
+            kill.SetRecordFn(&RecordConstraint);
         });
         rm.FlushUploads();
         rm.WaitForUploads();
@@ -1111,29 +1290,33 @@ int main() {
 
         host.RunFrame([&](smvk::RenderGraph& g) {
             smvk::RenderPass& eval = pass2.AddEvalPass(g, 0, "PlacementEvalVis");
-            eval.SetRecordingFunc(
-                [&](smvk::CommandBuffer& cmd) { pass2.PushAndDispatch(cmd, push); });
+            PlacementEvalFrame& evalFrame = g.PassFrameData<PlacementEvalFrame>(eval);
+            evalFrame.pass = &pass2;
+            evalFrame.push = push;
+            eval.SetRecordFn(&RecordPlacementEval);
             smvk::RenderPass& cull = PlacementCullPrograms::AddCullPass(
                 g, pass2, 0, vis, smvk::LogicalBufferHandle{}, viewSlabL);
-            cull.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
-                PlacementCullPrograms::PushAndDispatchCull(
-                    cmd, cullProgs.cullProgram, cullPush, 4096);
-            });
+            CullFrame& cullFrame = g.PassFrameData<CullFrame>(cull);
+            cullFrame.program = &cullProgs.cullProgram;
+            cullFrame.push = cullPush;
+            cullFrame.groups = 4096;
+            cull.SetRecordFn(&RecordCull);
             smvk::RenderPass& pre = PlacementCullPrograms::AddPrefixPass(g, vis);
-            pre.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
-                PlacementCullPrograms::PushAndDispatchPrefix(
-                    cmd, cullProgs.prefixProgram, cullPush);
-            });
+            PrefixFrame& preFrame = g.PassFrameData<PrefixFrame>(pre);
+            preFrame.program = &cullProgs.prefixProgram;
+            preFrame.push = cullPush;
+            pre.SetRecordFn(&RecordPrefix);
             smvk::RenderPass& sc = PlacementCullPrograms::AddScatterVisPass(g, pass2, 0, vis);
-            sc.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
-                PlacementCullPrograms::PushAndDispatchScatterVis(
-                    cmd, cullProgs.scatterProgram, scPush, 4096);
-            });
+            ScatterVisFrame& scFrame = g.PassFrameData<ScatterVisFrame>(sc);
+            scFrame.program = &cullProgs.scatterProgram;
+            scFrame.push = scPush;
+            scFrame.groups = 4096;
+            sc.SetRecordFn(&RecordScatterVis);
             smvk::RenderPass& db = PlacementCullPrograms::AddDrawBuildPass(g, vis);
-            db.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
-                PlacementCullPrograms::PushAndDispatchDrawBuild(
-                    cmd, cullProgs.buildProgram, dbPush);
-            });
+            DrawBuildFrame& dbFrame = g.PassFrameData<DrawBuildFrame>(db);
+            dbFrame.program = &cullProgs.buildProgram;
+            dbFrame.push = dbPush;
+            db.SetRecordFn(&RecordDrawBuild);
         });
         rm.FlushUploads();
         rm.WaitForUploads();
@@ -1354,9 +1537,10 @@ int main() {
         host.RunFrame([&](smvk::RenderGraph& g) {
             smvk::RenderPass& eval = PlacementScatterPrograms::AddScatterPass(
                 g, pass, 2, {hfGpu.heightsL}, paramsGpu.logical, "PlacementScatterEco");
-            eval.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
-                PlacementScatterPrograms::PushAndDispatchScatter(cmd, scatter.hfProgram, push);
-            });
+            ScatterEvalFrame& frame = g.PassFrameData<ScatterEvalFrame>(eval);
+            frame.program = &scatter.hfProgram;
+            frame.push = push;
+            eval.SetRecordFn(&RecordScatterEval);
         });
         rm.FlushUploads();
         rm.WaitForUploads();
@@ -1948,9 +2132,10 @@ int main() {
             ep0.frameSeed = 7u;
             host.RunFrame([&](smvk::RenderGraph& g) {
                 smvk::RenderPass& emit = mp.AddEmitPass(g);
-                emit.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
-                    mp.PushAndDispatchEmit(cmd, mp.emitProgram, ep0);
-                });
+                MeshEmitFrame& emitFrame = g.PassFrameData<MeshEmitFrame>(emit);
+                emitFrame.mp = &mp;
+                emitFrame.push = ep0;
+                emit.SetRecordFn(&RecordMeshEmit);
             });
             rm.FlushUploads();
             rm.WaitForUploads();
@@ -2044,30 +2229,35 @@ int main() {
             dbp.protoCount = mp.protoTableCount;
             host.RunFrame([&](smvk::RenderGraph& g) {
                 smvk::RenderPass& emit = mp.AddEmitPass(g);
-                emit.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
-                    mp.PushAndDispatchEmit(cmd, mp.emitProgram, ep);
-                });
+                MeshEmitFrame& emitFrame = g.PassFrameData<MeshEmitFrame>(emit);
+                emitFrame.mp = &mp;
+                emitFrame.push = ep;
+                emit.SetRecordFn(&RecordMeshEmit);
                 smvk::RenderPass& sim = mp.AddSimPass(g);
-                sim.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
-                    mp.PushAndDispatchSim(
-                        cmd, mp.simProgram, sp, mp.SimGroupsFor(mpd.maxParticles));
-                });
+                MeshSimFrame& simFrame = g.PassFrameData<MeshSimFrame>(sim);
+                simFrame.mp = &mp;
+                simFrame.push = sp;
+                sim.SetRecordFn(&RecordMeshSim);
                 smvk::RenderPass& cull = mp.AddCullPass(g, viewSlabL);
-                cull.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
-                    mp.PushAndDispatchCull(cmd, mp.cullProgram, cp);
-                });
+                MeshCullFrame& cullFrame = g.PassFrameData<MeshCullFrame>(cull);
+                cullFrame.mp = &mp;
+                cullFrame.push = cp;
+                cull.SetRecordFn(&RecordMeshCull);
                 smvk::RenderPass& pre = mp.AddPrefixPass(g);
-                pre.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
-                    mp.PushAndDispatchPrefix(cmd, mp.prefixProgram, pp);
-                });
+                MeshPrefixFrame& preFrame = g.PassFrameData<MeshPrefixFrame>(pre);
+                preFrame.mp = &mp;
+                preFrame.push = pp;
+                pre.SetRecordFn(&RecordMeshPrefix);
                 smvk::RenderPass& scat = mp.AddScatterPass(g);
-                scat.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
-                    mp.PushAndDispatchScatter(cmd, mp.scatterProgram, scp);
-                });
+                MeshScatterFrame& scatFrame = g.PassFrameData<MeshScatterFrame>(scat);
+                scatFrame.mp = &mp;
+                scatFrame.push = scp;
+                scat.SetRecordFn(&RecordMeshScatter);
                 smvk::RenderPass& db = mp.AddDrawBuildPass(g);
-                db.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
-                    mp.PushAndDispatchDrawBuild(cmd, mp.buildProgram, dbp);
-                });
+                MeshDrawBuildFrame& dbFrame = g.PassFrameData<MeshDrawBuildFrame>(db);
+                dbFrame.mp = &mp;
+                dbFrame.push = dbp;
+                db.SetRecordFn(&RecordMeshDrawBuild);
             });
             rm.FlushUploads();
             rm.WaitForUploads();
@@ -2223,14 +2413,15 @@ int main() {
             sp.maxParticles = mpd.maxParticles;
             host.RunFrame([&](smvk::RenderGraph& g) {
                 smvk::RenderPass& emit = mp.AddEmitPass(g);
-                emit.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
-                    mp.PushAndDispatchEmit(cmd, mp.emitProgram, ep);
-                });
+                MeshEmitFrame& emitFrame = g.PassFrameData<MeshEmitFrame>(emit);
+                emitFrame.mp = &mp;
+                emitFrame.push = ep;
+                emit.SetRecordFn(&RecordMeshEmit);
                 smvk::RenderPass& sim = mp.AddSimPass(g);
-                sim.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
-                    mp.PushAndDispatchSim(
-                        cmd, mp.simProgram, sp, mp.SimGroupsFor(mpd.maxParticles));
-                });
+                MeshSimFrame& simFrame = g.PassFrameData<MeshSimFrame>(sim);
+                simFrame.mp = &mp;
+                simFrame.push = sp;
+                sim.SetRecordFn(&RecordMeshSim);
             });
             rm.FlushUploads();
             rm.WaitForUploads();
@@ -2569,27 +2760,11 @@ int main() {
             // bug this test was built to catch).
             const smvk::BufferHandle indirectBuf = vs->IndirectBuffer();
             smvk::ShaderProgram* const program = &drawProgs.program;
-            draw.SetRecordingFunc([tail, indirectBuf, program](smvk::CommandBuffer& cmd) {
-                cmd.BindStaticVertexFmt();
-                cmd.BindRenderPipeline(*program,
-                                       ::tour::vertex_layouts::Static,
-                                       smvk::DepthSettings{.depthFunc = smvk::CompareOp::Always,
-                                                           .writeEnable = false,
-                                                           .depthTestEnable = false},
-                                       smvk::StencilSettings{},
-                                       smvk::BlendSettings{},
-                                       smvk::MSAASettings{},
-                                       smvk::RasterSettings{.cullMode = smvk::CullMode::None});
-                cmd.PushConstants(
-                    kPlacementVsPushOffset, sizeof(tail), &tail, smvk::ShaderStage::All);
-                // ONE indirect draw per prototype bin — the GPU-written
-                // instanceCount + firstInstance drive everything.
-                for (int p = 0; p < 3; ++p)
-                    cmd.DrawIndexedIndirect(indirectBuf,
-                                            uint64_t(p) * kPlacementIndirectStride,
-                                            1,
-                                            kPlacementIndirectStride);
-            });
+            DrawFrame& frame = g.PassFrameData<DrawFrame>(draw);
+            frame.program = program;
+            frame.tail = tail;
+            frame.indirectBuf = indirectBuf;
+            draw.SetRecordFn(&RecordDraw);
         };
         // ONE draw frame IS the whole proof now. The tile published in
         // frame 1; THIS frame's draw-build writes the COMPLETE commands
@@ -2836,22 +3011,27 @@ int main() {
         host.RunFrame([&](smvk::RenderGraph& g) {
             smvk::RenderPass& cull = PlacementCullPrograms::AddCullPass(
                 g, bp, 0, bv, smvk::LogicalBufferHandle{}, viewSlabL);
-            cull.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
-                PlacementCullPrograms::PushAndDispatchCull(cmd, cullProgs.cullProgram, cp, 64);
-            });
+            CullFrame& cullFrame = g.PassFrameData<CullFrame>(cull);
+            cullFrame.program = &cullProgs.cullProgram;
+            cullFrame.push = cp;
+            cullFrame.groups = 64;
+            cull.SetRecordFn(&RecordCull);
             smvk::RenderPass& pre = PlacementCullPrograms::AddPrefixPass(g, bv);
-            pre.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
-                PlacementCullPrograms::PushAndDispatchPrefix(cmd, cullProgs.prefixProgram, cp);
-            });
+            PrefixFrame& preFrame = g.PassFrameData<PrefixFrame>(pre);
+            preFrame.program = &cullProgs.prefixProgram;
+            preFrame.push = cp;
+            pre.SetRecordFn(&RecordPrefix);
             smvk::RenderPass& sc = PlacementCullPrograms::AddScatterVisPass(g, bp, 0, bv);
-            sc.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
-                PlacementCullPrograms::PushAndDispatchScatterVis(
-                    cmd, cullProgs.scatterProgram, sp, 64);
-            });
+            ScatterVisFrame& scFrame = g.PassFrameData<ScatterVisFrame>(sc);
+            scFrame.program = &cullProgs.scatterProgram;
+            scFrame.push = sp;
+            scFrame.groups = 64;
+            sc.SetRecordFn(&RecordScatterVis);
             smvk::RenderPass& db = PlacementCullPrograms::AddDrawBuildPass(g, bv);
-            db.SetRecordingFunc([&](smvk::CommandBuffer& cmd) {
-                PlacementCullPrograms::PushAndDispatchDrawBuild(cmd, cullProgs.buildProgram, dp);
-            });
+            DrawBuildFrame& dbFrame = g.PassFrameData<DrawBuildFrame>(db);
+            dbFrame.program = &cullProgs.buildProgram;
+            dbFrame.push = dp;
+            db.SetRecordFn(&RecordDrawBuild);
         });
         rm.FlushUploads();
         rm.WaitForUploads();
