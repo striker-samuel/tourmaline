@@ -1137,6 +1137,14 @@ struct RenderGraph final {
     mutable std::vector<size_t> analysisSorted_;
     mutable bool analysisValid_ = false;
 
+    // Cached prepare result (skips PrepareGraph's interning + hashing on a
+    // steady-state hit). Invalidated on relayout (per-flight handles change).
+    mutable GraphPrepare cachedPrep_;
+    mutable bool prepValid_ = false;
+    mutable uint64_t prepHash_ = 0;
+    mutable uint64_t prepRevision_ = 0;
+    mutable bool prepUseAsync_ = false;
+
     // Collect per-pass physical image/buffer usage with derived layout/access
     // (the NAMESPACE-LEVEL smvk::PassUsage - hoisted for testability).
     std::vector<PassUsage> CollectPassUsages() const;

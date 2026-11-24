@@ -14419,12 +14419,13 @@ void smvk::RenderGraph::Execute(Framebuffer& fb, const FrameContext* fc) {
     }
     const std::vector<PassUsage>& usages = analysisUsages_;
     const std::vector<size_t>& sorted = topo_.sorted;
+    bool relayout = false;
     {
         // CompileTransientHeap owns the packed-target memory analysis;
         // the relayout tag marks the frames it detonated + recreated the
         // packed set (the expensive, churn-driven outcome).
         SMVK_PROFILE_RENDER("RG_CompileTransientHeap");
-        const bool relayout = CompileTransientHeap(usages, sorted);
+        relayout = CompileTransientHeap(usages, sorted);
         SMVK_PROFILE_TAG("relayout", relayout ? 1u : 0u);
         if (relayout) {
             SMVK_PROFILE_RENDER("RG_CollectUsages");
@@ -14609,7 +14610,17 @@ void smvk::RenderGraph::Execute(Framebuffer& fb, const FrameContext* fc) {
     // expensive timeline compile) is cached under its GraphKey; the per-flight
     // handles are refreshed every frame from `prep`, so a transient-heap
     // relayout never serves a stale handle.
-    const GraphPrepare prep = PrepareGraph(usages, sorted, useAsyncCompute);
+    // Cache the prepare result (skip the interning + hashing on a steady-state
+    // hit). Invalidated on relayout (handles change) or async-split change.
+    if (!(prepValid_ && prepHash_ == structureHash && prepRevision_ == resourceRevision_ &&
+          prepUseAsync_ == useAsyncCompute && !relayout)) {
+        cachedPrep_ = PrepareGraph(usages, sorted, useAsyncCompute);
+        prepHash_ = structureHash;
+        prepRevision_ = resourceRevision_;
+        prepUseAsync_ = useAsyncCompute;
+        prepValid_ = true;
+    }
+    const GraphPrepare& prep = cachedPrep_;
     std::shared_ptr<const smvk::rg::Plan> planPtr;
     auto planIt = planCache_.find(prep.key);
     if (planIt != planCache_.end())
