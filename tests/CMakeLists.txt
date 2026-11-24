@@ -1775,3 +1775,9 @@ target_link_libraries(GeometryBackendTests PRIVATE engine)
 set_target_properties(GeometryBackendTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME geometry_backend_tests COMMAND GeometryBackendTests)
+
+# CPU-only static render graph compiler contract tests.
+add_executable(StaticRenderGraphCompilerTests test_static_rendergraph_compiler.cpp)
+target_include_directories(StaticRenderGraphCompilerTests PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../engine/include)
+target_compile_features(StaticRenderGraphCompilerTests PRIVATE cxx_std_17)
+add_test(NAME static_rendergraph_compiler_tests COMMAND StaticRenderGraphCompilerTests)
