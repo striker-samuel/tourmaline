@@ -57,6 +57,7 @@
 #include <Engine/Rendergraph/forwardplus.h>
 #include <Engine/Rendergraph/probepremix.h>
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/renderer.h>
 
 namespace {
 
@@ -241,7 +242,9 @@ int main() {
         Check(premix.AppendPasses(rg, lightsBda, 0, 1, poi, samplerIndex), "premix.smoke.append");
         rm.UpdateDescriptors();
         smvk::Framebuffer fb = swap.AcquireFramebuffer();
-        rg.Execute(fb);
+        smvk::FrameContext fc{};
+        fc.rg = &rg;
+        rg.Execute(fb, &fc);
         swap.EndAndPresentFramebuffer(fb);
         rm.FlushUploads();
         rm.WaitForUploads();

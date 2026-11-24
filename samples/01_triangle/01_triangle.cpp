@@ -8,6 +8,7 @@
 
 #include <Engine/Renderer/dxc_integration.h>
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/renderer.h>
 #include <Engine/core.h>
 
 static constexpr const char* kTriangleVertShader = R"(
@@ -128,7 +129,9 @@ class TriangleApp : public smvk::App {
                       smvk::ClearColor(0, 0, 0, 1))
             .SetRecordFn(&TriangleApp::RecordTriangle, this);
 
-        m_rendergraph->Execute(fb);
+        smvk::FrameContext fc{};
+        fc.rg = m_rendergraph.get();
+        m_rendergraph->Execute(fb, &fc);
         m_context->ProcessDeferrredTasks(); // Not needed here
     }
 

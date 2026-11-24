@@ -49,6 +49,7 @@
 #include <SDL3/SDL_video.h> // the window self-resize mode (SDL_SetWindowSize)
 
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/renderer.h>
 #include <Engine/core.h>
 
 namespace {
@@ -590,7 +591,9 @@ class FuzzApp : public smvk::App {
                     .SetRecordFn(&smvk::RecordNoop);
             }
         }
-        m_rendergraph->Execute(fb);
+        smvk::FrameContext fc{};
+        fc.rg = m_rendergraph.get();
+        m_rendergraph->Execute(fb, &fc);
         // The editor's drain cadence: the deferred-destroy queue should
         // retire the churned objects a few frames after each recreate.
         m_context->ProcessDeferredTasks();
