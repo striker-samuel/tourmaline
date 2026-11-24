@@ -117,6 +117,7 @@
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/renderer.h>
 #include <Engine/platform.h>
 
 #include <algorithm>
@@ -629,6 +630,63 @@ struct ScreenSpaceReflections {
     ShaderProgram indirectProgram{};     // compute, 1x1x1
     ShaderProgram intersectProgram{};    // compute, indirect 8x8 groups
     ShaderProgram copyProgram{};         // fullscreen FS (tonemap VS + the copy PS)
+
+    struct SeparableBlurFrame {
+        ShaderProgram* program = nullptr;
+        SsrSeparableBlurPush push{};
+    };
+    static void RecordSeparableBlur(CommandBuffer& cmd,
+                                    const FrameContext& fc,
+                                    const PassData& pd) {
+        const SeparableBlurFrame& f =
+            fc.rg->FrameData().Get<SeparableBlurFrame>(pd.frameSlot);
+        cmd.BindRenderPipeline(*f.program,
+                               ::tour::vertex_layouts::Empty,
+                               DepthSettings::Disabled(),
+                               StencilSettings::DefaultDisabled(),
+                               BlendSettings::Opaque(),
+                               MSAASettings::Count1(),
+                               RasterSettings{.cullMode = CullMode::None});
+        cmd.PushConstants(0, sizeof(SsrSeparableBlurPush), &f.push, ShaderStage::All);
+        cmd.Draw(3, 1, 0, 0); // fullscreen triangle
+    }
+    struct BlurFrame {
+        ShaderProgram* program = nullptr;
+        SsrBlurPush push{};
+    };
+    static void RecordBlur(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+        const BlurFrame& f = fc.rg->FrameData().Get<BlurFrame>(pd.frameSlot);
+        cmd.BindRenderPipeline(*f.program,
+                               ::tour::vertex_layouts::Empty,
+                               DepthSettings::Disabled(),
+                               StencilSettings::DefaultDisabled(),
+                               BlendSettings::Opaque(),
+                               MSAASettings::Count1(),
+                               RasterSettings{.cullMode = CullMode::None});
+        cmd.PushConstants(0, sizeof(SsrBlurPush), &f.push, ShaderStage::All);
+        cmd.Draw(3, 1, 0, 0); // fullscreen triangle
+    }
+    struct ClassifyFrame {
+        ShaderProgram* program = nullptr;
+        SsrClassifyPush push{};
+        uint32_t gx = 0, gy = 0;
+    };
+    static void RecordClassify(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+        const ClassifyFrame& f = fc.rg->FrameData().Get<ClassifyFrame>(pd.frameSlot);
+        cmd.BindComputePipeline(*f.program);
+        cmd.PushConstants(0, sizeof(SsrClassifyPush), &f.push, ShaderStage::Compute);
+        cmd.Dispatch(f.gx, f.gy, 1);
+    }
+    struct IndirectFrame {
+        ShaderProgram* program = nullptr;
+        SsrIndirectPush push{};
+    };
+    static void RecordIndirect(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+        const IndirectFrame& f = fc.rg->FrameData().Get<IndirectFrame>(pd.frameSlot);
+        cmd.BindComputePipeline(*f.program);
+        cmd.PushConstants(0, sizeof(SsrIndirectPush), &f.push, ShaderStage::Compute);
+        cmd.Dispatch(1, 1, 1);
+    }
     ShaderProgram depthHistoryProgram{}; // fullscreen FS (tonemap VS + the depth-mirror PS)
     SsrDesc desc{};
 
@@ -1423,18 +1481,11 @@ struct ScreenSpaceReflections {
                     recvRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
                     pass.AddBufferHint(receiverDataLogical, recvRead);
                 }
-                ShaderProgram progCopy = separableBlurProgram; // copyable (handles only)
-                pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-                    cmd.BindRenderPipeline(progCopy,
-                                           ::tour::vertex_layouts::Empty,
-                                           DepthSettings::Disabled(),
-                                           StencilSettings::DefaultDisabled(),
-                                           BlendSettings::Opaque(),
-                                           MSAASettings::Count1(),
-                                           RasterSettings{.cullMode = CullMode::None});
-                    cmd.PushConstants(0, sizeof(SsrSeparableBlurPush), &push, ShaderStage::All);
-                    cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-                });
+                SeparableBlurFrame& frame =
+                    rg.PassFrameData<SeparableBlurFrame>(pass);
+                frame.program = const_cast<ShaderProgram*>(&separableBlurProgram);
+                frame.push = push;
+                pass.SetRecordFn(&RecordSeparableBlur);
             }
             return;
         }
@@ -1475,18 +1526,10 @@ struct ScreenSpaceReflections {
                 recvRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
                 pass.AddBufferHint(receiverDataLogical, recvRead);
             }
-            ShaderProgram progCopy = blurProgram; // copyable (handles only)
-            pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(progCopy,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Opaque(),
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(SsrBlurPush), &push, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-            });
+            BlurFrame& frame = rg.PassFrameData<BlurFrame>(pass);
+            frame.program = const_cast<ShaderProgram*>(&blurProgram);
+            frame.push = push;
+            pass.SetRecordFn(&RecordBlur);
         }
     }
 

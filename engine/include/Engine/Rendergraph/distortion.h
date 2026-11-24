@@ -9,6 +9,7 @@
 #include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/ShaderSwap.h>
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/renderer.h>
 #include <Engine/platform.h>
 
 #include <algorithm>
@@ -74,6 +75,23 @@ struct Distortion {
     Holder<ShaderModuleHandle> fragModule;
     ShaderProgram program{};
     DistortionDesc desc{};
+
+    struct Frame {
+        ShaderProgram* program = nullptr;
+        DistortionPush push{};
+    };
+    static void Record(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+        const Frame& f = fc.rg->FrameData().Get<Frame>(pd.frameSlot);
+        cmd.BindRenderPipeline(*f.program,
+                               ::tour::vertex_layouts::Empty,
+                               DepthSettings::Disabled(),
+                               StencilSettings::DefaultDisabled(),
+                               BlendSettings::Opaque(),
+                               MSAASettings::Count1(),
+                               RasterSettings{.cullMode = CullMode::None});
+        cmd.PushConstants(0, sizeof(DistortionPush), &f.push, ShaderStage::All);
+        cmd.Draw(3, 1, 0, 0);
+    }
 
     [[nodiscard]] bool TargetValid() const {
         return !image.empty() && !view.empty() && !bindless.empty() && !logicalView.empty() &&
@@ -254,18 +272,10 @@ struct Distortion {
             .SetExtent(passExtent)
             .SetInputImages(inputs)
             .SetColor({logicalView}, AttachmentLoadOp::DontCare, AttachmentStoreOp::Store);
-        ShaderProgram progCopy = program;
-        pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-            cmd.BindRenderPipeline(progCopy,
-                                   ::tour::vertex_layouts::Empty,
-                                   DepthSettings::Disabled(),
-                                   StencilSettings::DefaultDisabled(),
-                                   BlendSettings::Opaque(),
-                                   MSAASettings::Count1(),
-                                   RasterSettings{.cullMode = CullMode::None});
-            cmd.PushConstants(0, sizeof(DistortionPush), &push, ShaderStage::All);
-            cmd.Draw(3, 1, 0, 0);
-        });
+        Frame& frame = rg.PassFrameData<Frame>(pass);
+        frame.program = const_cast<ShaderProgram*>(&program);
+        frame.push = push;
+        pass.SetRecordFn(&Record);
         return pass;
     }
 

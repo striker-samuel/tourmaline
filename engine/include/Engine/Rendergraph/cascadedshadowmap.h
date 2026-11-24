@@ -19,6 +19,7 @@
 #include <Engine/Renderer/light.h>
 #include <Engine/Rendergraph/mipchain.h>
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/renderer.h>
 #include <Engine/platform.h>
 
 #include <glm/gtc/type_ptr.hpp>
@@ -157,6 +158,18 @@ struct CascadedShadowAtlas {
     Holder<ShaderModuleHandle> fogSpdModule;
     ShaderProgram fogSpdProgram{};
     uint32_t fogMipCount = 0;
+
+    struct SpdFrame {
+        ShaderProgram* program = nullptr;
+        FogShadowSpdPush push{};
+        uint32_t gx = 0, gy = 0;
+    };
+    static void RecordSpd(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+        const SpdFrame& f = fc.rg->FrameData().Get<SpdFrame>(pd.frameSlot);
+        cmd.BindComputePipeline(*f.program);
+        cmd.PushConstants(0, sizeof(FogShadowSpdPush), &f.push, ShaderStage::Compute);
+        cmd.Dispatch(f.gx, f.gy, 1);
+    }
 
     // Default depth-only program (shadow.vert, mainVS). Created by
     // EnsureShaders/Create/Ensure so apps don't own shadow modules.
@@ -761,12 +774,12 @@ struct CascadedShadowAtlas {
         push.groupCount = gx * gy;
         push.counter = ctx.GetBufferDeviceAddress(fogSpdCounter) +
                        uint64_t(frameIndex % limits::MaxFramesInFlight) * kFogSpdCounterStride;
-        ShaderProgram prog = fogSpdProgram;
-        pass.SetRecordingFunc([push, prog, gx, gy](CommandBuffer& cmd) mutable {
-            cmd.BindComputePipeline(prog);
-            cmd.PushConstants(0, sizeof(FogShadowSpdPush), &push, ShaderStage::Compute);
-            cmd.Dispatch(gx, gy, 1);
-        });
+        SpdFrame& frame = rg.PassFrameData<SpdFrame>(pass);
+        frame.program = const_cast<ShaderProgram*>(&fogSpdProgram);
+        frame.push = push;
+        frame.gx = gx;
+        frame.gy = gy;
+        pass.SetRecordFn(&RecordSpd);
         return pass;
     }
 };

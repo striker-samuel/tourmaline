@@ -29,6 +29,7 @@
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/renderer.h>
 #include <Engine/platform.h>
 
 #include <algorithm>
@@ -280,6 +281,25 @@ struct VolumetricFog {
     ShaderProgram integrateProgram{};
     ShaderProgram compositeProgram{};
     VolumetricDesc desc{};
+
+    template <typename Push>
+    struct Frame {
+        ShaderProgram* program = nullptr;
+        Push push{};
+    };
+    template <typename Push>
+    static void Record(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+        const Frame<Push>& f = fc.rg->FrameData().Get<Frame<Push>>(pd.frameSlot);
+        cmd.BindRenderPipeline(*f.program,
+                               ::tour::vertex_layouts::Empty,
+                               DepthSettings::Disabled(),
+                               StencilSettings::DefaultDisabled(),
+                               BlendSettings::Opaque(),
+                               MSAASettings::Count1(),
+                               RasterSettings{.cullMode = CullMode::None});
+        cmd.PushConstants(0, sizeof(Push), &f.push, ShaderStage::All);
+        cmd.Draw(3, 1, 0, 0); // fullscreen triangle
+    }
 
     [[nodiscard]] bool TargetValid() const {
         return !image.empty() && !logicalView.empty() && !fogImage.empty() && !fogLogical.empty() &&
@@ -742,18 +762,10 @@ struct VolumetricFog {
         pass.SetColor(
             {fogLogical, fogDepthLogical}, AttachmentLoadOp::DontCare, AttachmentStoreOp::Store);
         {
-            ShaderProgram progCopy = integrateProgram; // copyable (handles only)
-            pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(progCopy,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Opaque(),
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(VolumetricPush), &push, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-            });
+            Frame<VolumetricPush>& frame = rg.PassFrameData<Frame<VolumetricPush>>(pass);
+            frame.program = const_cast<ShaderProgram*>(&integrateProgram);
+            frame.push = push;
+            pass.SetRecordFn(&Record<VolumetricPush>);
         }
 
         // ---- Pass 2: the COMPOSITE (full res) - the depth-aware
@@ -781,18 +793,11 @@ struct VolumetricFog {
                 .SetExtent(extent)
                 .SetInputImages({hdrView, depthView, fogLogical, fogDepthLogical})
                 .SetColor({logicalView}, AttachmentLoadOp::DontCare, AttachmentStoreOp::Store);
-            ShaderProgram progCopy = compositeProgram; // copyable (handles only)
-            cpass.SetRecordingFunc([progCopy, cpush](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(progCopy,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Opaque(),
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(VolumetricCompositePush), &cpush, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-            });
+            Frame<VolumetricCompositePush>& frame =
+                rg.PassFrameData<Frame<VolumetricCompositePush>>(cpass);
+            frame.program = const_cast<ShaderProgram*>(&compositeProgram);
+            frame.push = cpush;
+            cpass.SetRecordFn(&Record<VolumetricCompositePush>);
         }
         return pass;
     }

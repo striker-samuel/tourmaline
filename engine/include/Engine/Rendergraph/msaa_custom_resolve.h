@@ -7,6 +7,7 @@
 #include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/ShaderSwap.h>
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/renderer.h>
 #include <cstdint>
 #include <vector>
 
@@ -52,29 +53,35 @@ struct MsaaCustomResolve {
         }
         return changed;
     }
+    struct Frame {
+        ShaderProgram* program = nullptr;
+        uint32_t colorIndex = 0;
+    };
+    static void Record(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+        const Frame& f = fc.rg->FrameData().Get<Frame>(pd.frameSlot);
+        cmd.BindRenderPipeline(*f.program,
+                               ::tour::vertex_layouts::Empty,
+                               DepthSettings::Disabled(),
+                               StencilSettings::DefaultDisabled(),
+                               BlendSettings::Opaque(),
+                               MSAASettings::Count1(),
+                               RasterSettings{.cullMode = CullMode::None});
+        cmd.PushConstants(0, sizeof(f.colorIndex), &f.colorIndex, ShaderStage::All);
+        cmd.Draw(3, 1, 0, 0);
+    }
+
     void AddPass(RenderGraph& rg,
                  LogicalImageViewHandle src,
                  LogicalImageViewHandle dst,
                  uint32_t bindlessIndex,
                  Extent2D extent) const {
-        struct Push {
-            uint32_t colorIndex;
-        } push{bindlessIndex};
         auto& pass = rg.AddPass("MsaaCustomResolve");
         pass.SetOffset(0, 0).SetExtent(extent).SetInputImages({src}).SetColor(
             {dst}, AttachmentLoadOp::DontCare, AttachmentStoreOp::Store);
-        ShaderProgram prog = program;
-        pass.SetRecordingFunc([prog, push](CommandBuffer& cmd) mutable {
-            cmd.BindRenderPipeline(prog,
-                                   ::tour::vertex_layouts::Empty,
-                                   DepthSettings::Disabled(),
-                                   StencilSettings::DefaultDisabled(),
-                                   BlendSettings::Opaque(),
-                                   MSAASettings::Count1(),
-                                   RasterSettings{.cullMode = CullMode::None});
-            cmd.PushConstants(0, sizeof(push), &push, ShaderStage::All);
-            cmd.Draw(3, 1, 0, 0);
-        });
+        Frame& frame = rg.PassFrameData<Frame>(pass);
+        frame.program = const_cast<ShaderProgram*>(&program);
+        frame.colorIndex = bindlessIndex;
+        pass.SetRecordFn(&Record);
     }
 };
 } // namespace smvk

@@ -27,6 +27,7 @@
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/renderer.h>
 #include <Engine/platform.h>
 
 #include <cassert>
@@ -151,6 +152,26 @@ struct UiComposite {
     Holder<ShaderModuleHandle> fragModule;
     ShaderProgram program{};
 
+    struct Frame {
+        ShaderProgram* program = nullptr;
+        UiCompositePush push{};
+        bool opaqueBlend = false;
+    };
+    static void Record(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+        const Frame& f = fc.rg->FrameData().Get<Frame>(pd.frameSlot);
+        cmd.BindRenderPipeline(
+            *f.program,
+            ::tour::vertex_layouts::Empty,
+            DepthSettings::Disabled(),
+            StencilSettings::DefaultDisabled(),
+            f.opaqueBlend ? BlendSettings::Opaque()      // 1:1 copy: src replaces dst
+                          : BlendSettings::AlphaBlend(), // src.rgb*src.a + dst.rgb*(1-src.a)
+            MSAASettings::Count1(),
+            RasterSettings{.cullMode = CullMode::None});
+        cmd.PushConstants(0, sizeof(UiCompositePush), &f.push, ShaderStage::All);
+        cmd.Draw(3, 1, 0, 0); // fullscreen triangle
+    }
+
     [[nodiscard]] bool ShadersValid() const {
         return program.shaderCount != 0 && !vsModule.empty() && !fragModule.empty();
     }
@@ -250,20 +271,11 @@ struct UiComposite {
                       AttachmentLoadOp::Load,
                       AttachmentStoreOp::Store,
                       ClearColor(0, 0, 0, 1));
-        ShaderProgram progCopy = program; // ShaderProgram is copyable (handles only)
-        pass.SetRecordingFunc([progCopy, push, opaqueBlend](CommandBuffer& cmd) mutable {
-            cmd.BindRenderPipeline(
-                progCopy,
-                ::tour::vertex_layouts::Empty,
-                DepthSettings::Disabled(),
-                StencilSettings::DefaultDisabled(),
-                opaqueBlend ? BlendSettings::Opaque()      // 1:1 copy: src replaces dst
-                            : BlendSettings::AlphaBlend(), // src.rgb*src.a + dst.rgb*(1-src.a)
-                MSAASettings::Count1(),
-                RasterSettings{.cullMode = CullMode::None});
-            cmd.PushConstants(0, sizeof(UiCompositePush), &push, ShaderStage::All);
-            cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-        });
+        Frame& frame = rg.PassFrameData<Frame>(pass);
+        frame.program = const_cast<ShaderProgram*>(&program);
+        frame.push = push;
+        frame.opaqueBlend = opaqueBlend;
+        pass.SetRecordFn(&Record);
         return pass;
     }
 };

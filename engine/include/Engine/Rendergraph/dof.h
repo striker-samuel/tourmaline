@@ -43,6 +43,7 @@
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/renderer.h>
 #include <Engine/platform.h>
 
 #include <algorithm>
@@ -152,6 +153,25 @@ struct DepthOfField {
     ShaderProgram cocProgram{};
     ShaderProgram bokehProgram{};
     DofDesc desc{};
+
+    template <typename Push>
+    struct Frame {
+        ShaderProgram* program = nullptr;
+        Push push{};
+    };
+    template <typename Push>
+    static void Record(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+        const Frame<Push>& f = fc.rg->FrameData().Get<Frame<Push>>(pd.frameSlot);
+        cmd.BindRenderPipeline(*f.program,
+                               ::tour::vertex_layouts::Empty,
+                               DepthSettings::Disabled(),
+                               StencilSettings::DefaultDisabled(),
+                               BlendSettings::Opaque(),
+                               MSAASettings::Count1(),
+                               RasterSettings{.cullMode = CullMode::None});
+        cmd.PushConstants(0, sizeof(Push), &f.push, ShaderStage::All);
+        cmd.Draw(3, 1, 0, 0);
+    }
 
     [[nodiscard]] bool TargetsValid() const {
         // CoC is HQ-only: low mode needs just the HDR output.
@@ -412,18 +432,10 @@ struct DepthOfField {
                 .SetExtent(passExtent)
                 .SetInputImages({hdrView, depthView})
                 .SetColor({output.logical}, AttachmentLoadOp::DontCare, AttachmentStoreOp::Store);
-            ShaderProgram progCopy = lowProgram;
-            pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(progCopy,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Opaque(),
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(DofLowPush), &push, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0);
-            });
+            Frame<DofLowPush>& frame = rg.PassFrameData<Frame<DofLowPush>>(pass);
+            frame.program = const_cast<ShaderProgram*>(&lowProgram);
+            frame.push = push;
+            pass.SetRecordFn(&Record<DofLowPush>);
             return;
         }
 
@@ -445,18 +457,10 @@ struct DepthOfField {
                 .SetExtent(passExtent)
                 .SetInputImages({depthView})
                 .SetColor({coc.logical}, AttachmentLoadOp::DontCare, AttachmentStoreOp::Store);
-            ShaderProgram progCopy = cocProgram;
-            pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(progCopy,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Opaque(),
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(DofCocPush), &push, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0);
-            });
+            Frame<DofCocPush>& frame = rg.PassFrameData<Frame<DofCocPush>>(pass);
+            frame.program = const_cast<ShaderProgram*>(&cocProgram);
+            frame.push = push;
+            pass.SetRecordFn(&Record<DofCocPush>);
         }
 
         // ---- HQ: bokeh gather (HDR + CoC + depth -> HDR) ----
@@ -480,18 +484,10 @@ struct DepthOfField {
                 .SetExtent(passExtent)
                 .SetInputImages({hdrView, coc.logical, depthView})
                 .SetColor({output.logical}, AttachmentLoadOp::DontCare, AttachmentStoreOp::Store);
-            ShaderProgram progCopy = bokehProgram;
-            pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(progCopy,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Opaque(),
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(DofBokehPush), &push, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0);
-            });
+            Frame<DofBokehPush>& frame = rg.PassFrameData<Frame<DofBokehPush>>(pass);
+            frame.program = const_cast<ShaderProgram*>(&bokehProgram);
+            frame.push = push;
+            pass.SetRecordFn(&Record<DofBokehPush>);
         }
     }
 

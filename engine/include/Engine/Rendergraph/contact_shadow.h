@@ -50,6 +50,7 @@
 
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/renderer.h>
 #include <Engine/platform.h>
 
 #include <algorithm>
@@ -124,6 +125,18 @@ struct SunContactShadows {
     ShaderProgram program{};
     Holder<ShaderModuleHandle> rayCsModule;
     ShaderProgram rayProgram{};
+
+    struct Frame {
+        ShaderProgram* program = nullptr;
+        ContactShadowPush push{};
+        uint32_t w = 0, h = 0;
+    };
+    static void Record(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+        const Frame& f = fc.rg->FrameData().Get<Frame>(pd.frameSlot);
+        cmd.BindComputePipeline(*f.program);
+        cmd.PushConstants(0, sizeof(ContactShadowPush), &f.push, ShaderStage::Compute);
+        cmd.Dispatch((f.w + 7) / 8, (f.h + 7) / 8, 1);
+    }
 
     [[nodiscard]] bool TargetsValid() const {
         return visibility.Valid();
@@ -395,14 +408,12 @@ struct SunContactShadows {
             pass.AddImageHint(visibility.logical, visReq);
         }
 
-        ShaderProgram progCopy = rayTraced ? rayProgram : program; // copyable (handles only)
-        const uint32_t w = visExtent.width;
-        const uint32_t h = visExtent.height;
-        pass.SetRecordingFunc([progCopy, push, w, h](CommandBuffer& cmd) mutable {
-            cmd.BindComputePipeline(progCopy);
-            cmd.PushConstants(0, sizeof(ContactShadowPush), &push, ShaderStage::Compute);
-            cmd.Dispatch((w + 7) / 8, (h + 7) / 8, 1);
-        });
+        Frame& frame = rg.PassFrameData<Frame>(pass);
+        frame.program = const_cast<ShaderProgram*>(rayTraced ? &rayProgram : &program);
+        frame.push = push;
+        frame.w = visExtent.width;
+        frame.h = visExtent.height;
+        pass.SetRecordFn(&Record);
     }
 };
 

@@ -43,6 +43,7 @@
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/renderer.h>
 #include <Engine/platform.h>
 
 #include <algorithm>
@@ -169,6 +170,25 @@ struct ScreenSpaceGodRays {
     ShaderProgram filterProgram{};
     ShaderProgram compositeProgram{};
     GodraysDesc desc{};
+
+    template <typename Push>
+    struct Frame {
+        ShaderProgram* program = nullptr;
+        Push push{};
+    };
+    template <typename Push>
+    static void Record(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+        const Frame<Push>& f = fc.rg->FrameData().Get<Frame<Push>>(pd.frameSlot);
+        cmd.BindRenderPipeline(*f.program,
+                               ::tour::vertex_layouts::Empty,
+                               DepthSettings::Disabled(),
+                               StencilSettings::DefaultDisabled(),
+                               BlendSettings::Opaque(),
+                               MSAASettings::Count1(),
+                               RasterSettings{.cullMode = CullMode::None});
+        cmd.PushConstants(0, sizeof(Push), &f.push, ShaderStage::All);
+        cmd.Draw(3, 1, 0, 0); // fullscreen triangle
+    }
 
     [[nodiscard]] bool TargetsValid() const {
         return mask.Valid() && rays.Valid() && raysFiltered.Valid() && composed.Valid();
@@ -463,18 +483,10 @@ struct ScreenSpaceGodRays {
                 .SetExtent(quarterExtent)
                 .SetInputImages({depthView})
                 .SetColor({mask.logical}, AttachmentLoadOp::DontCare, AttachmentStoreOp::Store);
-            ShaderProgram progCopy = maskProgram; // copyable (handles only)
-            pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(progCopy,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Opaque(),
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(GodraysMaskPush), &push, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-            });
+            Frame<GodraysMaskPush>& frame = rg.PassFrameData<Frame<GodraysMaskPush>>(pass);
+            frame.program = const_cast<ShaderProgram*>(&maskProgram);
+            frame.push = push;
+            pass.SetRecordFn(&Record<GodraysMaskPush>);
         }
 
         // ---- Radial: the decayed march toward the sun (1/16 res).
@@ -494,18 +506,10 @@ struct ScreenSpaceGodRays {
                 .SetExtent(sixteenthExtent)
                 .SetInputImages({mask.logical})
                 .SetColor({rays.logical}, AttachmentLoadOp::DontCare, AttachmentStoreOp::Store);
-            ShaderProgram progCopy = radialProgram; // copyable (handles only)
-            pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(progCopy,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Opaque(),
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(GodraysRadialPush), &push, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-            });
+            Frame<GodraysRadialPush>& frame = rg.PassFrameData<Frame<GodraysRadialPush>>(pass);
+            frame.program = const_cast<ShaderProgram*>(&radialProgram);
+            frame.push = push;
+            pass.SetRecordFn(&Record<GodraysRadialPush>);
         }
 
         // ---- Filter: the tight 5x5 smoothing (1/16 res).
@@ -523,18 +527,10 @@ struct ScreenSpaceGodRays {
                 .SetInputImages({rays.logical})
                 .SetColor(
                     {raysFiltered.logical}, AttachmentLoadOp::DontCare, AttachmentStoreOp::Store);
-            ShaderProgram progCopy = filterProgram; // copyable (handles only)
-            pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(progCopy,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Opaque(),
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(GodraysFilterPush), &push, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-            });
+            Frame<GodraysFilterPush>& frame = rg.PassFrameData<Frame<GodraysFilterPush>>(pass);
+            frame.program = const_cast<ShaderProgram*>(&filterProgram);
+            frame.push = push;
+            pass.SetRecordFn(&Record<GodraysFilterPush>);
         }
 
         // ---- Composite: base + rays*sunHdr*intensity*fogFront (full).
@@ -561,18 +557,11 @@ struct ScreenSpaceGodRays {
                 .SetInputImages(
                     {hdrView, depthView, mask.logical, rays.logical, raysFiltered.logical})
                 .SetColor({composed.logical}, AttachmentLoadOp::DontCare, AttachmentStoreOp::Store);
-            ShaderProgram progCopy = compositeProgram; // copyable (handles only)
-            pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(progCopy,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Opaque(),
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(GodraysCompositePush), &push, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-            });
+            Frame<GodraysCompositePush>& frame =
+                rg.PassFrameData<Frame<GodraysCompositePush>>(pass);
+            frame.program = const_cast<ShaderProgram*>(&compositeProgram);
+            frame.push = push;
+            pass.SetRecordFn(&Record<GodraysCompositePush>);
         }
     }
 };

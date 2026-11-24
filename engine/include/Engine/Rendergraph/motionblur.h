@@ -44,6 +44,7 @@
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/renderer.h>
 #include <Engine/platform.h>
 
 #include <algorithm>
@@ -166,6 +167,45 @@ struct MotionBlur {
     Holder<ShaderModuleHandle> dilateCsModule;
     ShaderProgram tilesProgram{};
     ShaderProgram dilateProgram{};
+
+    struct TilesFrame {
+        ShaderProgram* program = nullptr;
+        MotionBlurTilesPush push{};
+        uint32_t gx = 0, gy = 0;
+    };
+    static void RecordTiles(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+        const TilesFrame& f = fc.rg->FrameData().Get<TilesFrame>(pd.frameSlot);
+        cmd.BindComputePipeline(*f.program);
+        cmd.PushConstants(0, sizeof(f.push), &f.push, ShaderStage::Compute);
+        cmd.Dispatch(f.gx, f.gy, 1);
+    }
+    struct DilateFrame {
+        ShaderProgram* program = nullptr;
+        MotionBlurTileDilatePush push{};
+        uint32_t gx = 0, gy = 0;
+    };
+    static void RecordDilate(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+        const DilateFrame& f = fc.rg->FrameData().Get<DilateFrame>(pd.frameSlot);
+        cmd.BindComputePipeline(*f.program);
+        cmd.PushConstants(0, sizeof(f.push), &f.push, ShaderStage::Compute);
+        cmd.Dispatch((f.gx + 7) / 8, (f.gy + 7) / 8, 1);
+    }
+    struct Frame {
+        ShaderProgram* program = nullptr;
+        MotionBlurPush push{};
+    };
+    static void Record(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+        const Frame& f = fc.rg->FrameData().Get<Frame>(pd.frameSlot);
+        cmd.BindRenderPipeline(*f.program,
+                               ::tour::vertex_layouts::Empty,
+                               DepthSettings::Disabled(),
+                               StencilSettings::DefaultDisabled(),
+                               BlendSettings::Opaque(),
+                               MSAASettings::Count1(),
+                               RasterSettings{.cullMode = CullMode::None});
+        cmd.PushConstants(0, sizeof(MotionBlurPush), &f.push, ShaderStage::All);
+        cmd.Draw(3, 1, 0, 0); // fullscreen triangle
+    }
 
     [[nodiscard]] bool TargetValid() const {
         return !image.empty() && !logicalView.empty();
@@ -535,13 +575,12 @@ struct MotionBlur {
 
         RenderPass& tilesPass = rg.AddComputePass(tilesName ? tilesName : "MotionBlurTiles");
         tilesPass.AddImageHint(motionView, motionRead).AddImageHint(tileMaxLogical, tileMaxWrite);
-        ShaderProgram tilesProgCopy = tilesProgram; // handles only, copyable
-        tilesPass.SetRecordingFunc(
-            [tilesProgCopy, tPush, tilesX, tilesY](CommandBuffer& cmd) mutable {
-                cmd.BindComputePipeline(tilesProgCopy);
-                cmd.PushConstants(0, sizeof(tPush), &tPush, ShaderStage::Compute);
-                cmd.Dispatch(tilesX, tilesY, 1);
-            });
+        TilesFrame& tFrame = rg.PassFrameData<TilesFrame>(tilesPass);
+        tFrame.program = const_cast<ShaderProgram*>(&tilesProgram);
+        tFrame.push = tPush;
+        tFrame.gx = tilesX;
+        tFrame.gy = tilesY;
+        tilesPass.SetRecordFn(&RecordTiles);
 
         MotionBlurTileDilatePush dPush{};
         dPush.tileMaxTextureIndex = tileMaxBindlessIndex;
@@ -562,13 +601,12 @@ struct MotionBlur {
             rg.AddComputePass(dilateName ? dilateName : "MotionBlurTileDilate");
         dilatePass.AddImageHint(tileMaxLogical, tileMaxRead)
             .AddImageHint(tileVelLogical, tileVelWrite);
-        ShaderProgram dilateProgCopy = dilateProgram;
-        dilatePass.SetRecordingFunc(
-            [dilateProgCopy, dPush, tilesX, tilesY](CommandBuffer& cmd) mutable {
-                cmd.BindComputePipeline(dilateProgCopy);
-                cmd.PushConstants(0, sizeof(dPush), &dPush, ShaderStage::Compute);
-                cmd.Dispatch((tilesX + 7) / 8, (tilesY + 7) / 8, 1);
-            });
+        DilateFrame& dFrame = rg.PassFrameData<DilateFrame>(dilatePass);
+        dFrame.program = const_cast<ShaderProgram*>(&dilateProgram);
+        dFrame.push = dPush;
+        dFrame.gx = tilesX;
+        dFrame.gy = tilesY;
+        dilatePass.SetRecordFn(&RecordDilate);
         return dilatePass;
     }
 
@@ -629,18 +667,10 @@ struct MotionBlur {
                 tilesOn ? std::vector<LogicalImageViewHandle>{hdrView, motionView, tileVelLogical}
                         : std::vector<LogicalImageViewHandle>{hdrView, motionView})
             .SetColor({logicalView}, AttachmentLoadOp::DontCare, AttachmentStoreOp::Store);
-        ShaderProgram progCopy = program; // ShaderProgram is copyable (handles only)
-        pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-            cmd.BindRenderPipeline(progCopy,
-                                   ::tour::vertex_layouts::Empty,
-                                   DepthSettings::Disabled(),
-                                   StencilSettings::DefaultDisabled(),
-                                   BlendSettings::Opaque(),
-                                   MSAASettings::Count1(),
-                                   RasterSettings{.cullMode = CullMode::None});
-            cmd.PushConstants(0, sizeof(MotionBlurPush), &push, ShaderStage::All);
-            cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-        });
+        Frame& frame = rg.PassFrameData<Frame>(pass);
+        frame.program = const_cast<ShaderProgram*>(&program);
+        frame.push = push;
+        pass.SetRecordFn(&Record);
         return pass;
     }
 

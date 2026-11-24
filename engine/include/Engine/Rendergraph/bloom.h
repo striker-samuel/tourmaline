@@ -37,6 +37,7 @@
 #include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/ShaderSwap.h>
 #include <Engine/Rendergraph/mipchain.h>
+#include <Engine/Rendergraph/renderer.h>
 #include <Engine/platform.h>
 
 #include <cassert>
@@ -138,6 +139,61 @@ struct BloomChain {
     ShaderProgram upProgram{};
     ShaderProgram spdProgram{};
     ShaderProgram fftProgram{};
+
+    struct SpdFrame {
+        ShaderProgram* program = nullptr;
+        SpdPush push{};
+        uint32_t gx = 0, gy = 0;
+    };
+    static void RecordSpd(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+        const SpdFrame& f = fc.rg->FrameData().Get<SpdFrame>(pd.frameSlot);
+        cmd.BindComputePipeline(*f.program);
+        cmd.PushConstants(0, sizeof(SpdPush), &f.push, ShaderStage::Compute);
+        cmd.Dispatch(f.gx, f.gy, 1);
+    }
+    struct FftFrame {
+        ShaderProgram* program = nullptr;
+        FftBloomPush push{};
+        uint32_t gx = 0, gy = 0;
+    };
+    static void RecordFft(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+        const FftFrame& f = fc.rg->FrameData().Get<FftFrame>(pd.frameSlot);
+        cmd.BindComputePipeline(*f.program);
+        cmd.PushConstants(0, sizeof(FftBloomPush), &f.push, ShaderStage::Compute);
+        cmd.Dispatch(f.gx, f.gy, 1);
+    }
+    struct DownFrame {
+        ShaderProgram* program = nullptr;
+        BloomDownPush push{};
+    };
+    static void RecordDown(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+        const DownFrame& f = fc.rg->FrameData().Get<DownFrame>(pd.frameSlot);
+        cmd.BindRenderPipeline(*f.program,
+                               ::tour::vertex_layouts::Empty,
+                               DepthSettings::Disabled(),
+                               StencilSettings::DefaultDisabled(),
+                               BlendSettings::Opaque(),
+                               MSAASettings::Count1(),
+                               RasterSettings{.cullMode = CullMode::None});
+        cmd.PushConstants(0, sizeof(BloomDownPush), &f.push, ShaderStage::All);
+        cmd.Draw(3, 1, 0, 0);
+    }
+    struct UpFrame {
+        ShaderProgram* program = nullptr;
+        BloomUpPush push{};
+    };
+    static void RecordUp(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+        const UpFrame& f = fc.rg->FrameData().Get<UpFrame>(pd.frameSlot);
+        cmd.BindRenderPipeline(*f.program,
+                               ::tour::vertex_layouts::Empty,
+                               DepthSettings::Disabled(),
+                               StencilSettings::DefaultDisabled(),
+                               BlendSettings::Add(), // src ONE + dst ONE
+                               MSAASettings::Count1(),
+                               RasterSettings{.cullMode = CullMode::None});
+        cmd.PushConstants(0, sizeof(BloomUpPush), &f.push, ShaderStage::All);
+        cmd.Draw(3, 1, 0, 0);
+    }
 
     [[nodiscard]] bool Valid() const {
         return chain.Valid();
@@ -426,11 +482,12 @@ struct BloomChain {
 
         const uint32_t groupsX = (chain.baseExtent.width + kSpdBlock - 1) / kSpdBlock;
         const uint32_t groupsY = (chain.baseExtent.height + kSpdBlock - 1) / kSpdBlock;
-        pass.SetRecordingFunc([spdProg, push, groupsX, groupsY](CommandBuffer& cmd) mutable {
-            cmd.BindComputePipeline(spdProg);
-            cmd.PushConstants(0, sizeof(SpdPush), &push, ShaderStage::Compute);
-            cmd.Dispatch(groupsX, groupsY, 1);
-        });
+        SpdFrame& frame = rg.PassFrameData<SpdFrame>(pass);
+        frame.program = &spdProg;
+        frame.push = push;
+        frame.gx = groupsX;
+        frame.gy = groupsY;
+        pass.SetRecordFn(&RecordSpd);
         return pass;
     }
 
@@ -466,14 +523,14 @@ struct BloomChain {
         pass.AddImageHint(fftOutput.mips[0].logical, dst);
         FftBloomPush push{chain.mips[0].bindlessIndex, fftOutput.mips[0].bindlessIndex,
                           chain.baseExtent.width, chain.baseExtent.height};
-        ShaderProgram program = fftProgram;
         const uint32_t gx = (push.width + 15u) / 16u;
         const uint32_t gy = (push.height + 15u) / 16u;
-        pass.SetRecordingFunc([program, push, gx, gy](CommandBuffer& cmd) mutable {
-            cmd.BindComputePipeline(program);
-            cmd.PushConstants(0, sizeof(FftBloomPush), &push, ShaderStage::Compute);
-            cmd.Dispatch(gx, gy, 1);
-        });
+        FftFrame& frame = rg.PassFrameData<FftFrame>(pass);
+        frame.program = const_cast<ShaderProgram*>(&fftProgram);
+        frame.push = push;
+        frame.gx = gx;
+        frame.gy = gy;
+        pass.SetRecordFn(&RecordFft);
     }
 
     // ---- One-call helper: emits down chain + up chain with recordings ----
@@ -509,17 +566,10 @@ struct BloomChain {
 
             const char* name = isFirst ? "BloomDown0" : nullptr;
             RenderPass& pass = AddDownsamplePass(rg, i, srcView, name);
-            pass.SetRecordingFunc([downProg, push](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(downProg,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Opaque(),
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(BloomDownPush), &push, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0);
-            });
+            DownFrame& frame = rg.PassFrameData<DownFrame>(pass);
+            frame.program = &downProg;
+            frame.push = push;
+            pass.SetRecordFn(&RecordDown);
         }
 
         // Up chain coarse->fine, additive onto the downsampled content.
@@ -549,17 +599,10 @@ struct BloomChain {
             push.pad2 = 0;
 
             RenderPass& pass = AddUpsamplePass(rg, dst, nullptr);
-            pass.SetRecordingFunc([upProg, push](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(upProg,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Add(), // src ONE + dst ONE
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(BloomUpPush), &push, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0);
-            });
+            UpFrame& frame = rg.PassFrameData<UpFrame>(pass);
+            frame.program = &upProg;
+            frame.push = push;
+            pass.SetRecordFn(&RecordUp);
         }
     }
 
