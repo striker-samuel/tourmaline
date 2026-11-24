@@ -17067,12 +17067,56 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 std::fprintf(stderr, "[GpuSceneMotion] active: task/mesh\n");
             }
         }
+        // Camera-only reconstruction (Phase 3): a fullscreen compute that
+        // writes the camera motion for static geometry into the motion target,
+        // so the raster leg only has to override genuinely dynamic geometry.
+        // Gated on the same GPU-scene motion toggle while the dynamic-only
+        // raster filter lands; when off, the raster leg clears as before.
+        const bool cameraMotionActive =
+            gpuSceneMotionActive &&
+            m_viewportResources.motionVectors.EnsureCameraMotionShaders(*m_context) &&
+            m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX &&
+            m_viewportResources.motionVectors.target.storageBindlessIndex != UINT32_MAX;
+        if (cameraMotionActive) {
+            const smvk::RenderView mainView = m_renderViews.Get(mainRenderView);
+            const glm::dvec3 curCam = glm::dvec3(m_cameraPositioner.cameraPosition_);
+            const glm::dvec3 prevCam =
+                m_prevGpuSceneViewValid
+                    ? tour::math::JoinDoubleFloat(m_prevGpuSceneViewData.origin)
+                    : curCam;
+            smvk::CameraMotionPush cmp{};
+            glm::dmat4 invTranslated(1.0);
+            invTranslated[3] = glm::dvec4(-curCam, 1.0);
+            cmp.invRelativeViewProj =
+                glm::mat4(invTranslated * glm::dmat4(mainView.m_inverseViewProjectionMatrix));
+            cmp.prevRelativeViewProj = m_prevGpuSceneViewData.relativeViewProjection;
+            cmp.originDelta = glm::vec4(glm::vec3(curCam - prevCam), 0.0f);
+            cmp.depthTextureIndex = m_viewportResources.renderDepth.bindlessIndex;
+            cmp.outImageIndex = m_viewportResources.motionVectors.target.storageBindlessIndex;
+            cmp.outWidth = renderExtent.width;
+            cmp.outHeight = renderExtent.height;
+            cmp.samplerIndex = m_context->GetOrCreateSampler(
+                smvk::SamplerCreateInfo{.magFilter = smvk::Filter::Nearest,
+                                        .minFilter = smvk::Filter::Nearest,
+                                        .mipmapMode = smvk::MipmapMode::Nearest,
+                                        .addressU = smvk::AddressMode::ClampToEdge,
+                                        .addressV = smvk::AddressMode::ClampToEdge,
+                                        .addressW = smvk::AddressMode::ClampToEdge,
+                                        .maxAnisotropy = 1.0f});
+            m_viewportResources.motionVectors.AddCameraMotionPass(
+                *m_rendergraph,
+                m_viewportResources.renderDepth.logicalView,
+                m_viewportResources.renderDepth.bindlessIndex,
+                cmp.samplerIndex,
+                cmp);
+        }
         auto& motionPass = m_viewportResources.motionVectors.AddMotionVectorPass(
             *m_rendergraph,
             m_viewportResources.renderDepth.logicalView,
             m_viewportResources.motionVectors.target.logicalView,
             renderExtent,
-            "MotionVectors");
+            "MotionVectors",
+            cameraMotionActive);
         // The batched task/mesh leg reads the task/mesh indirect command
         // buffer (DrawMeshTasksIndirect) + the group/offset/work streams the
         // task shader consumes — the SAME edges the task/mesh prepass declares.

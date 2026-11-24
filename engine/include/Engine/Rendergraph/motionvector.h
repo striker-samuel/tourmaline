@@ -45,6 +45,13 @@ struct MotionVectorTarget {
     Holder<ImageViewHandle> view;
     Holder<BindlessImageHandle> bindless;
     uint32_t bindlessIndex = UINT32_MAX;
+    // The STORAGE bindless (General layout) for the camera-motion compute
+    // write (RWTexture2D). Dual-visible with `bindless` above (which stays
+    // ShaderReadOnlyOptimal for the sampled temporal consumers) — the
+    // contact-shadow pattern: one image, a sampling descriptor + a storage
+    // descriptor.
+    Holder<BindlessImageHandle> storageBindless;
+    uint32_t storageBindlessIndex = UINT32_MAX;
     LogicalImageViewHandle logicalView;
     Extent2D extent{0, 0};
     Format format = Format::RG16_Float;
@@ -64,7 +71,7 @@ struct MotionVectorTarget {
         ImageCreateInfo ci{};
         ci.extent = {targetExtent.width, targetExtent.height, 1};
         ci.format = d.format;
-        ci.usage = ImageUsage::ColorAttachment | ImageUsage::Sampled;
+        ci.usage = ImageUsage::ColorAttachment | ImageUsage::Sampled | ImageUsage::Storage;
         // TransferSrc: the TOURMALINE_MOTION_DUMP one-shot readback (armed
         // dumps only — the normal path keeps the leanest usage set).
         if (DebugImageDumpArmed())
@@ -92,6 +99,12 @@ struct MotionVectorTarget {
         if (newBindless.empty())
             return false;
         const uint32_t newBindlessIndex = ctx.GetBindlessIndex(newBindless);
+        // The storage twin (General) for the camera-motion compute write.
+        Holder<BindlessImageHandle> newStorageBindless =
+            ctx.CreateBindlessImage(newView, ImageLayout::General);
+        if (newStorageBindless.empty())
+            return false;
+        const uint32_t newStorageBindlessIndex = ctx.GetBindlessIndex(newStorageBindless);
 
         LogicalImageViewHandle newLogical =
             rg.AddExternalImageView(newView, d.format, d.logicalName);
@@ -102,6 +115,8 @@ struct MotionVectorTarget {
         view = std::move(newView);
         bindless = std::move(newBindless);
         bindlessIndex = newBindlessIndex;
+        storageBindless = std::move(newStorageBindless);
+        storageBindlessIndex = newStorageBindlessIndex;
         logicalView = newLogical;
         extent = targetExtent;
         format = d.format;
@@ -115,6 +130,8 @@ struct MotionVectorTarget {
         logicalView = {};
         bindlessIndex = UINT32_MAX;
         bindless = {};
+        storageBindlessIndex = UINT32_MAX;
+        storageBindless = {};
         view = {};
         image = {};
         extent = {0, 0};
@@ -136,11 +153,30 @@ struct MotionVectorTarget {
 inline constexpr const char* kMotionVectorVsPath = "content/shaders/motionvector.vert.hlsl.spv";
 inline constexpr const char* kMotionVectorPsPath = "content/shaders/motionvector.frag.hlsl.spv";
 
+// Camera-only motion reconstruction (Phase 3): mirrors
+// gpu_scene_camera_motion.cs.hlsl CameraMotionPush. uint64/float4x4 members
+// carry the natural 16-byte alignment; the HLSL struct packs to 168 bytes —
+// the 8 bytes of trailing C++ padding are simply never read.
+inline constexpr const char* kCameraMotionCsPath = "content/shaders/gpu_scene_camera_motion.cs.hlsl.spv";
+struct CameraMotionPush {
+    glm::mat4 invRelativeViewProj{1.0f};   // current inverse rebased view-proj
+    glm::mat4 prevRelativeViewProj{1.0f};  // previous rebased view-proj
+    glm::vec4 originDelta{0.0f, 0.0f, 0.0f, 0.0f}; // xyz = curCameraPos - prevCameraPos
+    uint32_t depthTextureIndex = UINT32_MAX;        // full-res opaque depth (prepass)
+    uint32_t outImageIndex = UINT32_MAX;            // motion target storage bindless index
+    uint32_t outWidth = 0;                         // motion extent (dispatch domain)
+    uint32_t outHeight = 0;
+    uint32_t samplerIndex = 0;                     // point/clamp (hard depth taps)
+    uint32_t pad0 = 0;
+};
+
 struct MotionVectors {
     MotionVectorTarget target;
     Holder<ShaderModuleHandle> vsModule;
     Holder<ShaderModuleHandle> fragModule;
     ShaderProgram program{};
+    Holder<ShaderModuleHandle> cameraMotionModule;
+    ShaderProgram cameraMotionProgram{};
 
     [[nodiscard]] bool ShadersValid() const {
         return program.shaderCount != 0 && !vsModule.empty() && !fragModule.empty();
@@ -148,6 +184,31 @@ struct MotionVectors {
 
     [[nodiscard]] bool Valid() const {
         return target.Valid() && ShadersValid();
+    }
+
+    [[nodiscard]] bool CameraMotionShadersValid() const {
+        return cameraMotionProgram.shaderCount != 0 && !cameraMotionModule.empty();
+    }
+
+    // The camera-only reconstruction leg (Phase 3): loaded on demand so a
+    // missing module keeps the raster fallback intact.
+    bool EnsureCameraMotionShaders(ResourceManager& ctx) {
+        if (CameraMotionShadersValid())
+            return true;
+        try {
+            if (cameraMotionModule.empty())
+                cameraMotionModule =
+                    ctx.CreateShaderModule(readFile(kCameraMotionCsPath), "cameraMotionCS");
+        } catch (...) {
+            return false;
+        }
+        if (cameraMotionModule.empty())
+            return false;
+        Shader cs{.module = cameraMotionModule,
+                  .entryPoint = "mainCS",
+                  .stage = ShaderStage::Compute};
+        cameraMotionProgram = {.shaders = {cs}, .shaderCount = 1};
+        return true;
     }
 
     bool EnsureShaders(ResourceManager& ctx,
@@ -177,6 +238,8 @@ struct MotionVectors {
         program = ShaderProgram();
         vsModule = {};
         fragModule = {};
+        cameraMotionProgram = ShaderProgram();
+        cameraMotionModule = {};
     }
 
     // HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
@@ -220,7 +283,8 @@ struct MotionVectors {
                                     LogicalImageViewHandle depthView,
                                     LogicalImageViewHandle motionView,
                                     Extent2D passExtent,
-                                    const char* name = nullptr) const {
+                                    const char* name = nullptr,
+                                    bool load = false) const {
         assert(ShadersValid());
         assert(!depthView.empty());
         assert(!motionView.empty());
@@ -228,15 +292,63 @@ struct MotionVectors {
         RenderPass& pass = rg.AddPass(name ? name : "MotionVectors");
         std::vector<LogicalImageViewHandle> colors;
         colors.push_back(motionView);
+        // `load` preserves the camera-only reconstruction the compute pass
+        // wrote; the default clear is the standalone raster path.
         pass.SetOffset(0, 0)
             .SetExtent(passExtent)
-            .SetColor(
-                colors, AttachmentLoadOp::Clear, AttachmentStoreOp::Store, ClearColor(0, 0, 0, 0))
+            .SetColor(colors,
+                      load ? AttachmentLoadOp::Load : AttachmentLoadOp::Clear,
+                      AttachmentStoreOp::Store,
+                      ClearColor(0, 0, 0, 0))
             .SetDepth(depthView,
                       AttachmentLoadOp::Load,
                       AttachmentStoreOp::Store,
                       ClearDepthStencil(0, 0));
         return pass;
+    }
+
+    // The camera-only reconstruction leg (Phase 3): ONE compute pass that
+    // writes the motion target through its storage bindless (the dynamic-only
+    // raster pass then LOADs and overrides it for genuinely moving geometry).
+    // Runs BEFORE the raster leg; the raster leg's depth edge still orders the
+    // whole motion chain after the prepass.
+    void AddCameraMotionPass(RenderGraph& rg,
+                             LogicalImageViewHandle depthView,
+                             uint32_t depthBindlessIndex,
+                             uint32_t pointSamplerIndex,
+                             const CameraMotionPush& push,
+                             const char* name = "CameraMotion") const {
+        assert(CameraMotionShadersValid());
+        assert(!depthView.empty() && depthBindlessIndex != UINT32_MAX);
+        assert(push.outImageIndex != UINT32_MAX);
+
+        RenderPass& pass = rg.AddComputePass(name);
+        {
+            // The opaque depth, sampled from compute (the SSRClassify/HZB shape).
+            ImageSyncRequest depthReq{};
+            depthReq.barrierMasks.accessMask = AccessFlags::ShaderRead;
+            depthReq.barrierMasks.stageMask = PipelineStageBit_Compute;
+            depthReq.layout = ImageLayout::DepthStencilReadOnlyOptimal;
+            pass.AddImageHint(depthView, depthReq);
+        }
+        {
+            // The motion target storage write (General); the raster override
+            // LOADs it as a color attachment afterwards.
+            ImageSyncRequest writeReq{};
+            writeReq.barrierMasks.accessMask = AccessFlags::ShaderWrite;
+            writeReq.barrierMasks.stageMask = PipelineStageBit_Compute;
+            writeReq.layout = ImageLayout::General;
+            pass.AddImageHint(target.logicalView, writeReq);
+        }
+
+        ShaderProgram progCopy = cameraMotionProgram; // copyable (handles only)
+        const uint32_t w = push.outWidth;
+        const uint32_t h = push.outHeight;
+        pass.SetRecordingFunc([progCopy, push, w, h](CommandBuffer& cmd) mutable {
+            cmd.BindComputePipeline(progCopy);
+            cmd.PushConstants(0, sizeof(CameraMotionPush), &push, ShaderStage::Compute);
+            cmd.Dispatch((w + 7) / 8, (h + 7) / 8, 1);
+        });
     }
 };
 
