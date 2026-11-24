@@ -23,6 +23,195 @@
 
 namespace engine {
 
+namespace {
+
+// Per-flight slot payload + non-capturing record function for the depth
+// prepass (static compiled ABI). `config` points to the ForwardPlusRenderer
+// (its programs + fp builder are the stable side); per-frame values already
+// on AppFrameContext are read directly from it, and the few derived values
+// (visibility mask, main view, gbuffer/fallback flags) ride the frame slot.
+struct PrepassFrame {
+    std::span<const uint8_t> staticMask;
+    smvk::RenderView mainView{};
+    bool hasMainView = false;
+    bool fallbackOnly = false;
+    bool gbufferOn = false;
+};
+
+void RecordPrepass(smvk::CommandBuffer& cmd,
+                   const smvk::FrameContext& base,
+                   const smvk::PassData& pd) {
+    const AppFrameContext& fc = static_cast<const AppFrameContext&>(base);
+    auto* self =
+        const_cast<ForwardPlusRenderer*>(static_cast<const ForwardPlusRenderer*>(pd.config));
+    const PrepassFrame& f = fc.rg->FrameData().Get<PrepassFrame>(pd.frameSlot);
+
+    const IRenderer::PushConstants& depthPC = fc.pc;
+    smvk::World* const world = fc.world;
+    const bool lodEnabled = fc.lodEnabled;
+    const smvk::LodFrameInputs& lodInputs = fc.lodInputs;
+    const std::span<const uint8_t>& staticMask = f.staticMask;
+    const smvk::RenderView& mainView = f.mainView;
+    const bool hasMainView = f.hasMainView;
+    const bool fallbackOnly = f.fallbackOnly;
+    const auto& lodFilterable = fc.gfxLodFilterable;
+    const auto& gpuRasterOwnsNode = fc.gpuRasterOwnsNode;
+    const bool gbufferOn = f.gbufferOn;
+    const glm::vec3& ditherEye = fc.eye;
+    const uint64_t skinBda = fc.skinDeformedBda;
+    const uint32_t skinBase = fc.skinDeformedBase;
+    const bool skinValid = fc.skinDeformedValid;
+
+    smvk::CullMode boundMaskedCull = smvk::CullMode::FrontAndBack;
+    auto ensureMaskedPipeline = [&](smvk::CullMode cull) {
+        if (cull == boundMaskedCull)
+            return;
+        cmd.BindRenderPipeline(
+            gbufferOn ? self->gbufferMaskedProgram : self->prepassMaskedProgram,
+            ::tour::vertex_layouts::Static,
+            smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                .writeEnable = true,
+                                .depthTestEnable = true},
+            smvk::StencilSettings{},
+            smvk::BlendSettings{},
+            smvk::MSAASettings{},
+            smvk::RasterSettings{.cullMode = cull});
+        cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &depthPC, smvk::ShaderStage::All);
+        boundMaskedCull = cull;
+    };
+    smvk::CullMode boundSolidCull = smvk::CullMode::FrontAndBack;
+    auto ensureSolidPipeline = [&](smvk::CullMode cull) {
+        if (cull == boundSolidCull)
+            return;
+        cmd.BindRenderPipeline(gbufferOn ? self->gbufferProgram : self->fp->depthProgram,
+                               ::tour::vertex_layouts::Static,
+                               smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                                   .writeEnable = true,
+                                                   .depthTestEnable = true},
+                               smvk::StencilSettings{},
+                               smvk::BlendSettings{},
+                               smvk::MSAASettings{},
+                               smvk::RasterSettings{.cullMode = cull});
+        cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &depthPC, smvk::ShaderStage::All);
+        boundSolidCull = cull;
+    };
+    auto drawPrepassNode = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
+        if (gpuRasterOwnsNode && gpuRasterOwnsNode(item.node))
+            return; // depth/G-buffer already written by GPU scene
+        const DitherCloseupState ditherState =
+            DitherCloseupStateFor(world->scene, int(item.node), ditherEye);
+        if (ditherState == DitherCloseupState::Hidden)
+            return;
+        const bool ditherFade = ditherState == DitherCloseupState::Fade;
+        if (((item.flags & smvk::IteratorFlagBit_Masked) != 0 || ditherFade) != maskedPhase)
+            return;
+        if (fallbackOnly && lodFilterable && item.material != smvk::World::kInvalidIndex) {
+            const uint32_t lod =
+                lodEnabled ? world->LodIndexForNode(item.node, item.mesh, lodInputs) : 0u;
+            if (lodFilterable(item.node, item.mesh, lod, item.material))
+                return;
+        }
+        if (!staticMask.empty() && item.node < staticMask.size() && staticMask[item.node] == 0)
+            return;
+        if (item.node >= world->scene.globalTransform.size())
+            return;
+        auto& model = world->scene.globalTransform[item.node];
+        if (hasMainView && (item.flags & smvk::IteratorFlagBit_Static) == 0) {
+            if (smvk::StaticMesh* baseDesc = world->GetMesh(item.mesh)) {
+                glm::vec3 c{0.0f};
+                float r = 0.0f;
+                smvk::MeshBoundsToWorld(
+                    model, baseDesc->geometry.aabbMin, baseDesc->geometry.aabbMax, c, r);
+                if (!smvk::RenderViewIntersectsSphere(mainView, c, r)) {
+                    bool visible = false;
+                    if (lodEnabled) {
+                        const uint32_t lod =
+                            world->LodIndexForNode(item.node, item.mesh, lodInputs);
+                        if (smvk::StaticMesh* selDesc = world->GetLodMesh(item.mesh, lod);
+                            selDesc && selDesc != baseDesc) {
+                            smvk::MeshBoundsToWorld(model,
+                                                    selDesc->geometry.aabbMin,
+                                                    selDesc->geometry.aabbMax,
+                                                    c,
+                                                    r);
+                            visible = smvk::RenderViewIntersectsSphere(mainView, c, r);
+                        }
+                    }
+                    if (!visible)
+                        return;
+                }
+            }
+        }
+        smvk::StaticMesh* meshDesc = nullptr;
+        if (lodEnabled) {
+            const uint32_t lod = world->LodIndexForNode(item.node, item.mesh, lodInputs);
+            meshDesc = world->GetLodMesh(item.mesh, lod);
+        } else {
+            meshDesc = world->GetMesh(item.mesh);
+        }
+        if (!meshDesc)
+            return;
+        if (maskedPhase) {
+            smvk::CullMode cull = smvk::CullMode::None;
+            if (const smvk::Material* mat =
+                    static_cast<const smvk::World&>(*world).GetMaterial(item.material))
+                cull = mat->pipeline.raster.cullMode;
+            ensureMaskedPipeline(cull);
+        } else {
+            smvk::CullMode cull = smvk::CullMode::Back;
+            if (const smvk::Material* mat =
+                    static_cast<const smvk::World&>(*world).GetMaterial(item.material))
+                cull = mat->pipeline.raster.cullMode;
+            ensureSolidPipeline(cull);
+        }
+        // Direct-path skin tail: a skinned draw swaps bind-pose inputs for the
+        // frame's deformed words. Always pushed (zeroed on non-skinned) so a
+        // stale tail never leaks. Must follow the phase ensures (clobber rule).
+        DepthSkinTail skinTail{};
+        if (meshDesc->skinned && skinValid) {
+            skinTail.skinned = 1u;
+            skinTail.deformedBase = skinBase;
+            skinTail.vsDeformed = skinBda;
+        }
+        cmd.PushConstants(
+            kDepthSkinTailOffset, sizeof(DepthSkinTail), &skinTail, smvk::ShaderStage::All);
+        IRenderer::PushConstants objectPC{};
+        std::copy_n(glm::value_ptr(model), 16, objectPC.model);
+        objectPC.padEnd_[0] = ditherFade ? 1u : 0u;
+        cmd.PushConstants(offsetof(IRenderer::PushConstants, padEnd_),
+                          sizeof(objectPC.padEnd_[0]),
+                          &objectPC.padEnd_[0],
+                          smvk::ShaderStage::All);
+        if (maskedPhase || gbufferOn) {
+            objectPC.materialId = item.material;
+            cmd.PushConstants(offsetof(IRenderer::PushConstants, materialId),
+                              sizeof(objectPC.materialId),
+                              &objectPC.materialId,
+                              smvk::ShaderStage::All);
+        }
+        cmd.PushConstants(offsetof(IRenderer::PushConstants, model),
+                          sizeof(objectPC.model),
+                          objectPC.model,
+                          smvk::ShaderStage::All);
+        for (auto& draw_set : meshDesc->geometry.surfaces) {
+            cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
+        };
+    };
+    ensureSolidPipeline(smvk::CullMode::Back);
+    world->forEachRenderItem(smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
+                                 smvk::IteratorFlagBit_StaticVertexFmt,
+                             [&](const smvk::World::RenderItem& item) {
+                                 drawPrepassNode(item, true);
+                             });
+    world->forEachRenderItem(smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
+                                 smvk::IteratorFlagBit_StaticVertexFmt,
+                             [&](const smvk::World::RenderItem& item) {
+                                 drawPrepassNode(item, false);
+                             });
+}
+
+} // namespace
+
 bool ForwardPlusRenderer::Ensure(smvk::ResourceManager& ctx, smvk::RenderGraph& rg) {
     (void)ctx;
     (void)rg;
@@ -70,7 +259,6 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base, bool fallbackO
     // culling below only removes off-screen nodes, so on-screen fallback
     // geometry is still covered.
     const bool seeded = fc.seedDepthPrimed || fc.gpuSceneDepthPrimed;
-    const auto gpuRasterOwnsNode = fc.gpuRasterOwnsNode;
     // Depth is opaque-only (solid + MASK cutout). AlphaMode::Blend
     // transparent is excluded in both modes (dithered and blended) so it
     // never pollutes depth-driven passes (SSAO, HZB, Forward+ tile
@@ -82,21 +270,8 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base, bool fallbackO
     // behavior (transparent tests against opaque depth, writes none) and
     // is what SSAO correctness requires.
 
-    // Snapshots for the recording lambdas (recorded now, executed later at
-    // Execute(); nothing here may reference the frame-local fc).
     smvk::World* world = fc.world;
-    const IRenderer::PushConstants depthPC = fc.pc;
-    // Dither-on-closeup anchor eye (TransformHierarchy::ditherCloseup; per frame): the
-    // state walk measures the camera distance to the flagged subtree's
-    // anchor, exactly like the filtered path (GfxRenderer::FilterMainView)
-    // and the direct Main/shadow legs — one decision per draw per frame.
-    const glm::vec3 ditherEye = fc.eye;
     const smvk::LogicalImageViewHandle depthView = fc.depthView;
-    const bool lodEnabled = fc.lodEnabled;
-    const smvk::LodFrameInputs lodInputs = fc.lodInputs;
-    // Null on full-prepass frames (fallbackOnly stays false then).
-    const std::function<bool(NodeId, uint32_t, uint32_t, uint32_t)> lodFilterable =
-        fc.gfxLodFilterable;
     // SSSR-style thin G-buffer (see gbuffer.frag.hlsl): on when wanted AND
     // the programs loaded. On temporal-split frames (fallbackOnly) the
     // G-buffer Loads last frame's values — the seed pass draws the
@@ -155,298 +330,14 @@ void ForwardPlusRenderer::AppendPrepass(smvk::FrameContext& base, bool fallbackO
             gbufferLoad,
             gbufferOn ? fc.gbuffer2View : smvk::LogicalImageViewHandle{},
             gbufferLoad);
-        // Direct-path skin tail (default.vert.hlsl's 208..240 overlay): the
-        // prepass/occluder legs push it per skinned draw so the direct VS
-        // fetches the ANIMATED pose instead of the bind pose.
-        const uint64_t skinBda = fc.skinDeformedBda;
-        const uint32_t skinBase = fc.skinDeformedBase;
-        const bool skinValid = fc.skinDeformedValid;
-        prepass.SetRecordingFunc(
-            [this,
-             depthPC,
-             world,
-             lodEnabled,
-             lodInputs,
-             staticMask,
-             mainView,
-             hasMainView,
-             fallbackOnly,
-             lodFilterable,
-             gpuRasterOwnsNode,
-             gbufferOn,
-             ditherEye,
-             skinBda,
-             skinBase,
-             skinValid](smvk::CommandBuffer& cmd)
-
-            {
-                // GPU context + pass scope come from RenderGraph::Execute.
-                // Phase 2 masked pipeline: cull follows the material raster
-                // so the depth contains exactly the faces the shaded pass
-                // draws (double-sided masked materials carry Cull None
-                // with it).
-                // boundMaskedCull starts at a never-bound sentinel; rebinds
-                // only on cull changes and the CommandBuffer dedupes identical
-                // pipeline states, so an all-masked scene pays one bind.
-                // G-buffer on: the masked pair switches to
-                // gbufferMaskedProgram (same alpha test + the G-buffer
-                // output).
-                smvk::CullMode boundMaskedCull = smvk::CullMode::FrontAndBack;
-                auto ensureMaskedPipeline = [&](smvk::CullMode cull) {
-                    if (cull == boundMaskedCull)
-                        return;
-                    cmd.BindRenderPipeline(gbufferOn ? gbufferMaskedProgram : prepassMaskedProgram,
-                                           ::tour::vertex_layouts::Static,
-                                           smvk::DepthSettings{
-                                               .depthFunc = smvk::CompareOp::GreaterEqual,
-                                               .writeEnable = true,
-                                               .depthTestEnable = true,
-                                           },
-                                           smvk::StencilSettings{},
-                                           smvk::BlendSettings{},
-                                           smvk::MSAASettings{},
-                                           smvk::RasterSettings{.cullMode = cull});
-                    cmd.PushConstants(
-                        0, sizeof(IRenderer::PushConstants), &depthPC, smvk::ShaderStage::All);
-                    boundMaskedCull = cull;
-                };
-                // Solid-phase twin (the SAME per-material cull rule): the
-                // depth/G-buffer must cover the faces Main draws — a
-                // double-sided material's Cull None raster means the solid
-                // phase writes depth for both faces, else the F+ tile cull
-                // and SSSR's thin G-buffer miss the backface pixels Main
-                // shades. boundSolidCull's sentinel forces the first item
-                // through the ensure; identical states dedupe free.
-                smvk::CullMode boundSolidCull = smvk::CullMode::FrontAndBack;
-                auto ensureSolidPipeline = [&](smvk::CullMode cull) {
-                    if (cull == boundSolidCull)
-                        return;
-                    cmd.BindRenderPipeline(gbufferOn ? gbufferProgram : fp->depthProgram,
-                                           ::tour::vertex_layouts::Static,
-                                           smvk::DepthSettings{
-                                               .depthFunc = smvk::CompareOp::GreaterEqual,
-                                               .writeEnable = true,
-                                               .depthTestEnable = true,
-                                           },
-                                           smvk::StencilSettings{},
-                                           smvk::BlendSettings{},
-                                           smvk::MSAASettings{},
-                                           smvk::RasterSettings{.cullMode = cull});
-                    cmd.PushConstants(
-                        0, sizeof(IRenderer::PushConstants), &depthPC, smvk::ShaderStage::All);
-                    boundSolidCull = cull;
-                };
-                auto drawPrepassNode = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
-                    if (gpuRasterOwnsNode && gpuRasterOwnsNode(item.node))
-                        return; // depth/G-buffer already written by GPU scene
-                    // Dither-on-closeup (TransformHierarchy::ditherCloseup; per frame, per
-                    // draw): Hidden draws drop out of the depth entirely (the
-                    // CPU cull — no leg sees them this frame); Fade draws join
-                    // the MASKED phase so their depth runs the alpha-tested FS
-                    // (the closeup screen-door — solid depth would leave black
-                    // holes through the fading subtree where the lit pass
-                    // discards) and carry the per-draw flag
-                    // (PushConstants::padEnd_[0] -> default.vert forwards it
-                    // flat to the FS).
-                    const DitherCloseupState ditherState =
-                        DitherCloseupStateFor(world->scene, int(item.node), ditherEye);
-                    if (ditherState == DitherCloseupState::Hidden)
-                        return;
-                    const bool ditherFade = ditherState == DitherCloseupState::Fade;
-                    // Masked (cutout) flag replaces the per-node material
-                    // fetch the phase split used to pay. Material-less meshes
-                    // carry no flag and stay in the solid phase (drawn, like
-                    // the old mat == nullptr path).
-                    if (((item.flags & smvk::IteratorFlagBit_Masked) != 0 || ditherFade) !=
-                        maskedPhase)
-                        return;
-                    // Fallback-only mode (Northlight depth split): the gfx
-                    // filter's temporal set owns this item's depth — the seed
-                    // pass covers its prev∩curr clusters and the remainder
-                    // pass the newly visible curr−prev ones (both drawn with
-                    // the proven CPU-command machinery, each cluster once).
-                    // This walk only covers the unfilterable rest: unregistered
-                    // meshes/LOD levels, unknown-material clusters and shader-LOD
-                    // vertex-lit instances. MASKED items are NOT exempted: the
-                    // seed/remainder masked draws run the real alpha test with
-                    // material cull (see RecordDepthList), and re-walking the
-                    // full masked set here would double the alpha-tested raster
-                    // the split exists to avoid.
-                    // Material-less meshes keep their defensive depth draw
-                    // (the filter never pushes them; nothing shades them).
-                    if (fallbackOnly && lodFilterable &&
-                        item.material != smvk::World::kInvalidIndex) {
-                        const uint32_t lod =
-                            lodEnabled ? world->LodIndexForNode(item.node, item.mesh, lodInputs)
-                                       : 0u;
-                        if (lodFilterable(item.node, item.mesh, lod, item.material))
-                            return;
-                    }
-                    // Static frustum cull: O(1) mask lookup from the single
-                    // ::tour::frustumCullBVH walk at Append time (dynamic nodes are
-                    // always 1 here and get sphere-tested below).
-                    if (staticMask && item.node < staticMask->size() &&
-                        (*staticMask)[item.node] == 0)
-                        return;
-                    if (item.node >= world->scene.globalTransform.size())
-                        return;
-                    auto& model = world->scene.globalTransform[item.node];
-                    // Dynamic frustum cull: conservative LOD-union sphere test
-                    // against the guarded main-view planes (mirrors
-                    // GfxRenderer::FilterMainView). Keep the instance when
-                    // EITHER the base or the selected LOD sibling intersects so
-                    // LOD flips can never open a 1-frame depth hole.
-                    if (hasMainView && (item.flags & smvk::IteratorFlagBit_Static) == 0) {
-                        if (smvk::StaticMesh* baseDesc = world->GetMesh(item.mesh)) {
-                            glm::vec3 c{0.0f};
-                            float r = 0.0f;
-                            smvk::MeshBoundsToWorld(model,
-                                                    baseDesc->geometry.aabbMin,
-                                                    baseDesc->geometry.aabbMax,
-                                                    c,
-                                                    r);
-                            if (!smvk::RenderViewIntersectsSphere(mainView, c, r)) {
-                                bool visible = false;
-                                if (lodEnabled) {
-                                    const uint32_t lod =
-                                        world->LodIndexForNode(item.node, item.mesh, lodInputs);
-                                    if (smvk::StaticMesh* selDesc =
-                                            world->GetLodMesh(item.mesh, lod);
-                                        selDesc && selDesc != baseDesc) {
-                                        smvk::MeshBoundsToWorld(model,
-                                                                selDesc->geometry.aabbMin,
-                                                                selDesc->geometry.aabbMax,
-                                                                c,
-                                                                r);
-                                        visible = smvk::RenderViewIntersectsSphere(mainView, c, r);
-                                    }
-                                }
-                                if (!visible)
-                                    return;
-                            }
-                        }
-                    }
-                    // Error-driven LOD (same budget as the main view): the
-                    // prepass fills the depth the tile cull + Main test
-                    // against, so it must rasterize the same LOD Main draws.
-                    // Decision cache: World::LodIndexForNode refreshes every
-                    // node per frame by default (halfrate parity opt-out) —
-                    // the prepass, main pass and filter all share one decision
-                    // per node per frame.
-                    smvk::StaticMesh* meshDesc = nullptr;
-                    if (lodEnabled) {
-                        const uint32_t lod =
-                            world->LodIndexForNode(item.node, item.mesh, lodInputs);
-                        meshDesc = world->GetLodMesh(item.mesh, lod);
-                    } else {
-                        meshDesc = world->GetMesh(item.mesh);
-                    }
-                    if (!meshDesc)
-                        return;
-                    // Pipeline selection FIRST (both phase ensures full-push
-                    // depthPC over [0, sizeof(PushConstants)) on a rebind —
-                    // any partial overlay pushed before them would be
-                    // clobbered with depthPC's tail bytes).
-                    if (maskedPhase) {
-                        smvk::CullMode cull = smvk::CullMode::None;
-                        if (const smvk::Material* mat =
-                                static_cast<const smvk::World&>(*world).GetMaterial(item.material))
-                            cull = mat->pipeline.raster.cullMode;
-                        ensureMaskedPipeline(cull);
-                    } else {
-                        // Solid phase: the material raster (Cull None for
-                        // double-sided — see ensureSolidPipeline's comment).
-                        smvk::CullMode cull = smvk::CullMode::Back;
-                        if (const smvk::Material* mat =
-                                static_cast<const smvk::World&>(*world).GetMaterial(item.material))
-                            cull = mat->pipeline.raster.cullMode;
-                        ensureSolidPipeline(cull);
-                    }
-                    // Direct-path skin tail (default.vert.hlsl's 208..240 overlay):
-                    // a skinned draw swaps the bind-pose vertex inputs for the
-                    // frame's deformed words. Always pushed (zeroed on non-skinned
-                    // draws) so a stale tail never leaks into the next draw.
-                    // ORDERING CONTRACT: this partial push MUST follow the
-                    // phase ensures above (the clobber rule in the comment
-                    // above; the prepass regressed exactly this way — a
-                    // skinned caster's tail was overwritten on the rebind,
-                    // leaving bind-pose depth the animated Main then
-                    // depth-rejected against). The padEnd_/materialId/model
-                    // partial pushes below are per-draw overlays on their
-                    // own offsets and follow the same rule.
-                    DepthSkinTail skinTail{};
-                    if (meshDesc->skinned && skinValid) {
-                        skinTail.skinned = 1u;
-                        skinTail.deformedBase = skinBase;
-                        skinTail.vsDeformed = skinBda;
-                    }
-                    cmd.PushConstants(kDepthSkinTailOffset,
-                                      sizeof(DepthSkinTail),
-                                      &skinTail,
-                                      smvk::ShaderStage::All);
-                    IRenderer::PushConstants objectPC{};
-                    std::copy_n(glm::value_ptr(model), 16, objectPC.model);
-                    // Per-draw dither-on-closeup flag (padEnd_[0] — the partial
-                    // push range persists across draws, so EVERY draw pushes its
-                    // word: 0 or 1, never a stale Fade flag leaking into the next
-                    // draw's pipeline state).
-                    objectPC.padEnd_[0] = ditherFade ? 1u : 0u;
-                    cmd.PushConstants(offsetof(IRenderer::PushConstants, padEnd_),
-                                      sizeof(objectPC.padEnd_[0]),
-                                      &objectPC.padEnd_[0],
-                                      smvk::ShaderStage::All);
-                    // materialId: the masked FS always read it (alpha test); the
-                    // G-buffer solid FS reads it too (roughness/metal lookup).
-                    if (maskedPhase || gbufferOn) {
-                        objectPC.materialId = item.material;
-                        cmd.PushConstants(offsetof(IRenderer::PushConstants, materialId),
-                                          sizeof(objectPC.materialId),
-                                          &objectPC.materialId,
-                                          smvk::ShaderStage::All);
-                    }
-                    cmd.PushConstants(offsetof(IRenderer::PushConstants, model),
-                                      sizeof(objectPC.model),
-                                      objectPC.model,
-                                      smvk::ShaderStage::All);
-                    for (auto& draw_set : meshDesc->geometry.surfaces) {
-                        cmd.DrawIndexed(
-                            draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
-                    };
-                };
-                // Phase 1: solid geometry. VS-only fast path (legacy) or the
-                // G-buffer FS pair (SSSR: the trivial gbuffer.frag reads the
-                // interpolated world normal + material factors and writes the
-                // RGBA8 thin G-buffer — no textures, no lighting).
-                // Initial bind BEFORE the walks (PushConstants asserts on a
-                // bound pipeline layout — the per-draw skin-tail push lands
-                // before the phase ensures); the per-item ensures rebind
-                // from here, identical states dedupe free.
-                ensureSolidPipeline(smvk::CullMode::Back);
-                // Phase order: MOST EXPENSIVE FIRST. Phase 1 = MASK cutout
-                // (alpha-tested FS: baseColor fetch + discard — the expensive
-                // per-fragment work): it runs against empty depth, but masked
-                // is the FRONT layer (foliage occludes, is rarely occluded) so
-                // priming would buy it little anyway. Phase 2 = solid (the
-                // trivial G-buffer FS / VS-only): its fragments BEHIND the
-                // masked depth now fail GreaterEqual and die to early-Z before
-                // the FS + ROP work — the phase that benefits from priming runs
-                // last. Final depth/G-buffer content is order-independent
-                // (front-most surviving fragment wins under GreaterEqual+write
-                // either way).
-                world->forEachRenderItem(
-                    smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
-                        smvk::IteratorFlagBit_StaticVertexFmt,
-                    [&](const smvk::World::RenderItem& item) { drawPrepassNode(item, true); });
-                // Phase 2: solid geometry. The pipeline binds above (the
-                // G-buffer FS pair or the VS-only legacy path); early-Z
-                // reaps the masked priming (building walls behind foliage
-                // skip the FS).
-                world->forEachRenderItem(
-                    smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
-                        smvk::IteratorFlagBit_StaticVertexFmt,
-                    [&](const smvk::World::RenderItem& item) { drawPrepassNode(item, false); });
-                // No Phase 3: transparent excluded by design (see header note).
-            });
+        PrepassFrame& frame = rg.PassFrameData<PrepassFrame>(prepass);
+        frame.staticMask = staticMask ? rg.FrameData().CopyArray<uint8_t>(*staticMask)
+                                      : std::span<const uint8_t>{};
+        frame.mainView = mainView;
+        frame.hasMainView = hasMainView;
+        frame.fallbackOnly = fallbackOnly;
+        frame.gbufferOn = gbufferOn;
+        prepass.SetRecordFn(&RecordPrepass, this);
     }
 }
 
