@@ -7,6 +7,7 @@
 #include <Engine/Rendergraph/skinning.h>
 
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/renderer.h>
 
 #include <cstdio>
 #include <fstream>
@@ -21,6 +22,28 @@ std::vector<char> ReadShader(const char* path) {
         return {};
     return std::vector<char>((std::istreambuf_iterator<char>(in)),
                              std::istreambuf_iterator<char>());
+}
+
+// Per-flight slot payload + non-capturing record function for the skinning
+// dispatch (static compiled ABI).
+struct SkinFrame {
+    ShaderProgram* program = nullptr;
+    SkinPush push{};
+    uint32_t dispatchX = 0;
+};
+
+void RecordSkinning(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+    const SkinFrame& f = fc.rg->FrameData().Get<SkinFrame>(pd.frameSlot);
+    cmd.BindComputePipeline(*f.program);
+    cmd.PushConstants(0, sizeof(f.push), &f.push, ShaderStage::Compute);
+    cmd.Dispatch(f.dispatchX, 1, 1);
+    // The deformed heap is BDA-only (the graph has no handle to hint on), so
+    // it will not order this dispatch before the draw passes' deformed
+    // fetches. Emit the compute->graphics dependency through the RHI seam
+    // (per-backend: an all-commands barrier on Vulkan, a global UAV barrier on
+    // D3D12); once the deformed span is declared as a graph buffer resource
+    // this folds back into the per-resource barrier machinery.
+    cmd.EmitGlobalMemoryBarrier();
 }
 
 } // namespace
@@ -111,21 +134,11 @@ bool SkinVisual::AppendPass(ResourceManager& ctx,
     p.shadeHeap = ctx.GetBufferDeviceAddress(staticVertexFmtHeap.m_staticVertexShadingBuffer);
 
     RenderPass& pass = rg.AddComputePass("GPUSkinning");
-    ShaderProgram* prog = &program;
-    const uint32_t dispatchX = push.rangeCount;
-    pass.SetRecordingFunc([prog, p, dispatchX](CommandBuffer& cmd) {
-        cmd.BindComputePipeline(*prog);
-        cmd.PushConstants(0, sizeof(p), &p, ShaderStage::Compute);
-        cmd.Dispatch(dispatchX, 1, 1);
-        // The deformed heap is BDA-only (the graph has no handle to hint
-        // on), so it will not order this dispatch before the draw passes'
-        // deformed fetches. Emit the compute->graphics dependency through
-        // the RHI seam (per-backend: an all-commands barrier on Vulkan, a
-        // global UAV barrier on D3D12); once the deformed span is
-        // declared as a graph buffer resource this folds back into the
-        // per-resource barrier machinery.
-        cmd.EmitGlobalMemoryBarrier();
-    });
+    SkinFrame& frame = rg.PassFrameData<SkinFrame>(pass);
+    frame.program = &program;
+    frame.push = p;
+    frame.dispatchX = push.rangeCount;
+    pass.SetRecordFn(&RecordSkinning);
     return true;
 }
 

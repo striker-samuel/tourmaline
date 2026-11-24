@@ -7,6 +7,7 @@
 
 #include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/probeball.h>
+#include <Engine/Rendergraph/renderer.h>
 #include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 
 #include <algorithm>
@@ -17,6 +18,55 @@
 namespace smvk::probeball {
 
 namespace {
+
+// Per-flight slot payload + non-capturing record function for the probe-ball
+// pass (static compiled ABI). `config` points to the ProbeBallVisual module
+// (stable, holds the programs + geometry); the frame slot carries the
+// per-frame view/rows.
+struct ProbeBallFrame {
+    glm::mat4 viewProj{1.0f};
+    glm::vec3 eye{0.0f};
+    float intensity = 1.0f;
+    uint32_t samplerIndex = 0;
+    uint64_t frameUniformsAddress = 0;
+    std::vector<ProbeBallRow> drawRows;
+};
+
+void RecordProbeBalls(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+    auto* self = const_cast<ProbeBallVisual*>(static_cast<const ProbeBallVisual*>(pd.config));
+    const ProbeBallFrame& f = fc.rg->FrameData().Get<ProbeBallFrame>(pd.frameSlot);
+    // TEST-ONLY depth (GreaterEqual reversed-Z): the balls occlude against
+    // the scene depth but never write it.
+    const DepthSettings depth{
+        .depthFunc = CompareOp::GreaterEqual,
+        .writeEnable = false,
+        .depthTestEnable = true,
+    };
+    cmd.BindRenderPipeline(self->program,
+                           ::tour::vertex_layouts::TerrainFull,
+                           depth,
+                           StencilSettings{},
+                           BlendSettings::Opaque(),
+                           MSAASettings::Count1(),
+                           RasterSettings{} /* back-face cull, CCW front (sphere winding) */);
+    cmd.BindVertexBuffer(self->sphereVB, 0, 0);
+    cmd.BindIndexBuffer(self->sphereIB, 0);
+    for (const ProbeBallRow& r : f.drawRows) {
+        // Ball radius reads the influence at a glance (proportional,
+        // clamped — a 10 m capture must not fill the frame; the old
+        // editor chrome-ball rule).
+        const float radius = std::clamp(r.influenceRadius * 0.15f, 0.1f, 0.4f);
+        ProbeBallPush push{};
+        push.viewProj = f.viewProj;
+        push.eye = glm::vec4(f.eye, 0.0f);
+        push.xform = glm::vec4(r.center, radius);
+        push.probe =
+            glm::vec4(float(r.cubemapIndex), r.mipLevels, f.intensity, float(f.samplerIndex));
+        push.frame = f.frameUniformsAddress;
+        cmd.PushConstants(0, sizeof(push), &push, ShaderStage::All);
+        cmd.DrawIndexed(self->indexCount, 1, 0, 0, 0);
+    }
+}
 
 // Unit UV sphere (24 slices x 16 stacks) in the terrain vertex format:
 // pos = n (unit), normal = n; tangent/color are bound but unused (the
@@ -210,48 +260,16 @@ bool ProbeBallVisual::AppendPass(RenderGraph& rg,
                       AttachmentLoadOp::Load,
                       AttachmentStoreOp::Store,
                       ClearDepthStencil(0, 0));
-    // The recording captures `this` (the module lives on the WorldRenderer,
-    // which outlives every frame's Execute) — Holders are single-owner, so
-    // the buffers are read through the module at record time, never copied.
-    pass.SetRecordingFunc([this,
-                           viewProj,
-                           eye,
-                           intensity,
-                           samplerIndex,
-                           frameUniformsAddress,
-                           drawRows = std::move(drawRows)](CommandBuffer& cmd) mutable {
-        // TEST-ONLY depth (GreaterEqual reversed-Z): the balls occlude
-        // against the scene depth but never write it.
-        const DepthSettings depth{
-            .depthFunc = CompareOp::GreaterEqual,
-            .writeEnable = false,
-            .depthTestEnable = true,
-        };
-        cmd.BindRenderPipeline(program,
-                               ::tour::vertex_layouts::TerrainFull,
-                               depth,
-                               StencilSettings{},
-                               BlendSettings::Opaque(),
-                               MSAASettings::Count1(),
-                               RasterSettings{} /* back-face cull, CCW front (sphere winding) */);
-        cmd.BindVertexBuffer(sphereVB, 0, 0);
-        cmd.BindIndexBuffer(sphereIB, 0);
-        for (const ProbeBallRow& r : drawRows) {
-            // Ball radius reads the influence at a glance (proportional,
-            // clamped — a 10 m capture must not fill the frame; the old
-            // editor chrome-ball rule).
-            const float radius = std::clamp(r.influenceRadius * 0.15f, 0.1f, 0.4f);
-            ProbeBallPush push{};
-            push.viewProj = viewProj;
-            push.eye = glm::vec4(eye, 0.0f);
-            push.xform = glm::vec4(r.center, radius);
-            push.probe =
-                glm::vec4(float(r.cubemapIndex), r.mipLevels, intensity, float(samplerIndex));
-            push.frame = frameUniformsAddress;
-            cmd.PushConstants(0, sizeof(push), &push, ShaderStage::All);
-            cmd.DrawIndexed(indexCount, 1, 0, 0, 0);
-        }
-    });
+    // Stable record ABI: the module (this) is the immutable config; the
+    // per-frame view + draw rows live in this pass's per-flight slot.
+    ProbeBallFrame& frame = rg.PassFrameData<ProbeBallFrame>(pass);
+    frame.viewProj = viewProj;
+    frame.eye = eye;
+    frame.intensity = intensity;
+    frame.samplerIndex = samplerIndex;
+    frame.frameUniformsAddress = frameUniformsAddress;
+    frame.drawRows = std::move(drawRows);
+    pass.SetRecordFn(&RecordProbeBalls, this);
     return true;
 }
 

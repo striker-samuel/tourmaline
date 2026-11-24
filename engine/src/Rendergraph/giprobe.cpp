@@ -7,6 +7,7 @@
 
 #include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/giprobe.h>
+#include <Engine/Rendergraph/renderer.h>
 #include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 
 #include <algorithm>
@@ -18,6 +19,55 @@
 namespace smvk::giprobe {
 
 namespace {
+
+// Per-flight slot payload + non-capturing record function for the GI-probe
+// pass (static compiled ABI). `config` points to the GiProbeVisual module.
+struct GiProbeFrame {
+    glm::mat4 viewProj{1.0f};
+    glm::vec3 eye{0.0f};
+    float maxDist = 0.0f;
+    uint64_t frameUniformsAddress = 0;
+    uint32_t colorMode = 0;
+    float markerGain = 1.0f;
+    std::vector<GiProbeVolumeRow> drawRows;
+};
+
+void RecordGiProbes(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+    auto* self = const_cast<GiProbeVisual*>(static_cast<const GiProbeVisual*>(pd.config));
+    const GiProbeFrame& f = fc.rg->FrameData().Get<GiProbeFrame>(pd.frameSlot);
+    // Depth test AND write (GreaterEqual reversed-Z): the test hides probes
+    // behind scene geometry like probeball's TEST-ONLY — but the WRITE is
+    // load-bearing here (sphere-vs-sphere occlusion). Nothing after the HDR
+    // tail reads depth, so the write is safe at this slot.
+    const DepthSettings depth{
+        .depthFunc = CompareOp::GreaterEqual,
+        .writeEnable = true,
+        .depthTestEnable = true,
+    };
+    cmd.BindRenderPipeline(self->program,
+                           ::tour::vertex_layouts::TerrainFull,
+                           depth,
+                           StencilSettings{},
+                           BlendSettings::Opaque(),
+                           MSAASettings::Count1(),
+                           RasterSettings{} /* back-face cull, CCW front (sphere winding) */);
+    cmd.BindVertexBuffer(self->sphereVB, 0, 0);
+    cmd.BindIndexBuffer(self->sphereIB, 0);
+    for (const GiProbeVolumeRow& r : f.drawRows) {
+        GiProbePush push{};
+        push.viewProj = f.viewProj;
+        push.eyeMaxDist = glm::vec4(f.eye, f.maxDist);
+        push.frame = f.frameUniformsAddress;
+        push.instances = r.instancesBda;
+        push.volumeIndex = r.volumeIndex;
+        push.mode = f.colorMode;
+        push.markerGain = f.markerGain;
+        cmd.PushConstants(0, sizeof(push), &push, ShaderStage::All);
+        // ONE instanced call per volume: the shared icosphere over this
+        // volume's instance rows (SV_InstanceID-indexed).
+        cmd.DrawIndexed(self->indexCount, std::min(r.instanceCount, kGiProbeMaxInstances), 0, 0, 0);
+    }
+}
 
 // Hardcoded single-subdivision icosphere: the 12-vertex icosahedron
 // (golden-ratio lattice) with every face split once at its edge
@@ -226,55 +276,15 @@ bool GiProbeVisual::AppendPass(RenderGraph& rg,
                       AttachmentLoadOp::Load,
                       AttachmentStoreOp::Store,
                       ClearDepthStencil(0, 0));
-    // The recording captures `this` (the module lives on the
-    // WorldRenderer, which outlives every frame's Execute) + the row
-    // copies (plain values — the caller's tables may mutate after).
-    pass.SetRecordingFunc([this,
-                           viewProj,
-                           eye,
-                           maxDist,
-                           frameUniformsAddress,
-                           colorMode,
-                           markerGain,
-                           drawRows = std::move(drawRows)](CommandBuffer& cmd) mutable {
-        // Depth test AND write (GreaterEqual reversed-Z): the test hides
-        // probes behind scene geometry like probeball's TEST-ONLY — but
-        // the WRITE is load-bearing here: 1120+ overlapping spheres in
-        // one instanced draw need sphere-vs-sphere occlusion, and without
-        // writes the draw order decides (the see-through-probes bug — a
-        // far sphere painted over a near one). Safe at this slot: nothing
-        // AFTER the HDR tail (exposure / bloom / tonemap / capture / SMAA
-        // / UI) reads depth — the depth-marching consumers (godrays,
-        // volumetrics) all run BEFORE it.
-        const DepthSettings depth{
-            .depthFunc = CompareOp::GreaterEqual,
-            .writeEnable = true,
-            .depthTestEnable = true,
-        };
-        cmd.BindRenderPipeline(program,
-                               ::tour::vertex_layouts::TerrainFull,
-                               depth,
-                               StencilSettings{},
-                               BlendSettings::Opaque(),
-                               MSAASettings::Count1(),
-                               RasterSettings{} /* back-face cull, CCW front (sphere winding) */);
-        cmd.BindVertexBuffer(sphereVB, 0, 0);
-        cmd.BindIndexBuffer(sphereIB, 0);
-        for (const GiProbeVolumeRow& r : drawRows) {
-            GiProbePush push{};
-            push.viewProj = viewProj;
-            push.eyeMaxDist = glm::vec4(eye, maxDist);
-            push.frame = frameUniformsAddress;
-            push.instances = r.instancesBda;
-            push.volumeIndex = r.volumeIndex;
-            push.mode = colorMode;
-            push.markerGain = markerGain;
-            cmd.PushConstants(0, sizeof(push), &push, ShaderStage::All);
-            // ONE instanced call per volume: the shared icosphere over
-            // this volume's instance rows (SV_InstanceID-indexed).
-            cmd.DrawIndexed(indexCount, std::min(r.instanceCount, kGiProbeMaxInstances), 0, 0, 0);
-        }
-    });
+    GiProbeFrame& frame = rg.PassFrameData<GiProbeFrame>(pass);
+    frame.viewProj = viewProj;
+    frame.eye = eye;
+    frame.maxDist = maxDist;
+    frame.frameUniformsAddress = frameUniformsAddress;
+    frame.colorMode = colorMode;
+    frame.markerGain = markerGain;
+    frame.drawRows = std::move(drawRows);
+    pass.SetRecordFn(&RecordGiProbes, this);
     return true;
 }
 

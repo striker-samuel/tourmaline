@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <Engine/Rendergraph/probepremix.h>
+#include <Engine/Rendergraph/renderer.h>
 #include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 
 #include <algorithm>
@@ -19,6 +20,48 @@ namespace {
 // working).
 inline constexpr const char* kWeightsCsPath = "content/shaders/probepremix_weights.cs.hlsl.spv";
 inline constexpr const char* kMixCsPath = "content/shaders/probepremix_mix.cs.hlsl.spv";
+
+// Per-flight slots + non-capturing record functions (static compiled ABI).
+struct WeightsFrame {
+    ShaderProgram* program = nullptr;
+    WeightsPush push{};
+};
+struct MixFrame {
+    ShaderProgram* program = nullptr;
+    std::vector<uint32_t> dstIndices;
+    uint32_t mipCount = 0;
+    uint32_t size = 0;
+    uint64_t selBda = 0;
+    uint32_t samplerIndex = 0;
+    uint32_t localSize = 8;
+};
+
+void RecordWeights(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+    const WeightsFrame& f = fc.rg->FrameData().Get<WeightsFrame>(pd.frameSlot);
+    cmd.BindComputePipeline(*f.program);
+    cmd.PushConstants(0, sizeof(f.push), &f.push, ShaderStage::Compute);
+    cmd.Dispatch(1, 1, 1);
+}
+
+void RecordMix(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+    const MixFrame& f = fc.rg->FrameData().Get<MixFrame>(pd.frameSlot);
+    cmd.BindComputePipeline(*f.program);
+    for (uint32_t m = 0; m < f.mipCount; ++m) {
+        const uint32_t faceSize = std::max(f.size >> m, 1u);
+        MixPush push{};
+        push.selection = f.selBda;
+        push.dstIndex = f.dstIndices[m];
+        push.mip = m;
+        push.faceSize = faceSize;
+        push.samplerIndex = f.samplerIndex;
+        push.mipCount = f.mipCount;
+        cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
+        const uint32_t groups = (faceSize + f.localSize - 1) / f.localSize;
+        // z = the face layer (6) - one dispatch per mip covers every
+        // (face, texel) of the level.
+        cmd.Dispatch(groups, groups, kCubemapFaceCount);
+    }
+}
 
 } // namespace
 
@@ -269,12 +312,10 @@ bool ProbePremix::AppendPasses(RenderGraph& rg,
         selWrite.barrierMasks.accessMask = AccessFlags::ShaderRead | AccessFlags::ShaderWrite;
         selWrite.barrierMasks.stageMask = PipelineStageBit_Compute;
         pass.AddBufferHint(selectionLogical, selWrite);
-        smvk::ShaderProgram* prog = &weightsProgram;
-        pass.SetRecordingFunc([prog, push](CommandBuffer& cmd) {
-            cmd.BindComputePipeline(*prog);
-            cmd.PushConstants(0, sizeof(push), &push, smvk::ShaderStage::Compute);
-            cmd.Dispatch(1, 1, 1);
-        });
+        WeightsFrame& frame = rg.PassFrameData<WeightsFrame>(pass);
+        frame.program = &weightsProgram;
+        frame.push = push;
+        pass.SetRecordFn(&RecordWeights);
     }
 
     // ---- Pass B: mix (one dispatch per mip; groups cover face*8x8) ----
@@ -305,26 +346,15 @@ bool ProbePremix::AppendPasses(RenderGraph& rg,
         const uint32_t sizeLocal = size;
         const uint64_t selBda = selectionBda;
         const uint32_t samplerLocal = samplerIndex;
-        pass.SetRecordingFunc(
-            [prog, dstIndices, mipCountLocal, sizeLocal, selBda, samplerLocal, localSize](
-                CommandBuffer& cmd) {
-                cmd.BindComputePipeline(*prog);
-                for (uint32_t m = 0; m < mipCountLocal; ++m) {
-                    const uint32_t faceSize = std::max(sizeLocal >> m, 1u);
-                    MixPush push{};
-                    push.selection = selBda;
-                    push.dstIndex = dstIndices[m];
-                    push.mip = m;
-                    push.faceSize = faceSize;
-                    push.samplerIndex = samplerLocal;
-                    push.mipCount = mipCountLocal;
-                    cmd.PushConstants(0, sizeof(push), &push, smvk::ShaderStage::Compute);
-                    const uint32_t groups = (faceSize + localSize - 1) / localSize;
-                    // z = the face layer (6) - one dispatch per mip covers
-                    // every (face, texel) of the level.
-                    cmd.Dispatch(groups, groups, smvk::kCubemapFaceCount);
-                }
-            });
+        MixFrame& frame = rg.PassFrameData<MixFrame>(pass);
+        frame.program = prog;
+        frame.dstIndices = dstIndices;
+        frame.mipCount = mipCountLocal;
+        frame.size = sizeLocal;
+        frame.selBda = selBda;
+        frame.samplerIndex = samplerLocal;
+        frame.localSize = localSize;
+        pass.SetRecordFn(&RecordMix);
     }
     return true;
 }
