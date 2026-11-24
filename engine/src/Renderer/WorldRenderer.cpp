@@ -21413,7 +21413,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         read.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
         m_rendergraph->AddComputePass("InlineRelease")
             .AddImageHint(m_inlineTargetLogical, read)
-            .SetRecordingFunc([](smvk::CommandBuffer&) {});
+            .SetRecordFn(&smvk::RecordNoop);
     }
 
     // (retired) cooperative shadow list build/upload path removed — the

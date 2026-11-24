@@ -221,7 +221,7 @@ bool GameUiRenderer::AppendPass(smvk::ResourceManager& ctx,
                           smvk::AttachmentLoadOp::Clear,
                           smvk::AttachmentStoreOp::Store,
                           smvk::ClearColor(0, 0, 0, 0))
-                .SetRecordingFunc([](smvk::CommandBuffer&) {});
+                .SetRecordFn(&smvk::RecordNoop);
         }
         return true;
     }

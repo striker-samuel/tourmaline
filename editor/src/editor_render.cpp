@@ -2522,7 +2522,7 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
                                  smvk::AttachmentLoadOp::Clear,
                                  smvk::AttachmentStoreOp::Store,
                                  smvk::ClearDepthStencil(0.0f, 0));
-        bg.SetRecordingFunc([](smvk::CommandBuffer& cmd) { (void)cmd; });
+        bg.SetRecordFn(&smvk::RecordNoop);
         if (legacyImageLane) {
             // A complete clear prevents vacated/docked stage rects from
             // displaying pixels from an earlier layout or scene.
@@ -2533,7 +2533,7 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
                           smvk::AttachmentLoadOp::Clear,
                           smvk::AttachmentStoreOp::Store,
                           smvk::ClearColor(0.18f, 0.18f, 0.18f, 1.0f))
-                .SetRecordingFunc([](smvk::CommandBuffer&) {});
+                .SetRecordFn(&smvk::RecordNoop);
         }
     }
     if (m_sceneHdr.Valid()) {
@@ -2550,7 +2550,7 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
                                     smvk::AttachmentLoadOp::Clear,
                                     smvk::AttachmentStoreOp::Store,
                                     smvk::ClearColor(0, 0, 0, 1));
-        hdrBg.SetRecordingFunc([](smvk::CommandBuffer& cmd) { (void)cmd; });
+        hdrBg.SetRecordFn(&smvk::RecordNoop);
     }
     m_rendergraph->Execute(fb);
 
@@ -2625,7 +2625,7 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
             read.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
             m_rendergraph->AddComputePass("MaterialPreviewRelease")
                 .AddImageHint(m_matBallLogical, read)
-                .SetRecordingFunc([](smvk::CommandBuffer&) {});
+                .SetRecordFn(&smvk::RecordNoop);
         }
 
         if (legacyImageLane) {
@@ -2638,7 +2638,7 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
             read.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
             m_rendergraph->AddComputePass("EditorLegacyRelease")
                 .AddImageHint(m_legacyStageLogical, read)
-                .SetRecordingFunc([](smvk::CommandBuffer&) {});
+                .SetRecordFn(&smvk::RecordNoop);
         }
         if (m_imgui && m_imgui->IsInitialized()) {
             // Optick: the ImGui build + record (NewFrame through the
@@ -3456,7 +3456,7 @@ void EditorApp::RecordLiveViewComposePass(smvk::LogicalImageViewHandle swapView)
                       smvk::AttachmentLoadOp::Clear,
                       smvk::AttachmentStoreOp::Store,
                       smvk::ClearColor(1.0f, 0.0f, 1.0f, 1.0f))
-            .SetRecordingFunc([](smvk::CommandBuffer&) {});
+            .SetRecordFn(&smvk::RecordNoop);
         if (diagNow)
             std::fprintf(stderr,
                          "[LIVE-COMPOSE] PINK-FLOOD swap %ux%u (stage was "

@@ -794,7 +794,7 @@ bool AddDlssPasses(RenderGraph& rg,
             AttachmentLoadOp::Clear,
             AttachmentStoreOp::Store,
             ClearColor(exposureValue, 0.0f, 0.0f, 0.0f));
-        pass.SetRecordingFunc([](CommandBuffer&) {});
+        pass.SetRecordFn(&smvk::RecordNoop);
     }
 
     // 2) DLSS evaluate. Compute-style pass: no attachments, the recording

@@ -533,7 +533,7 @@ class FuzzApp : public smvk::App {
                               smvk::AttachmentLoadOp::Clear,
                               smvk::AttachmentStoreOp::Store,
                               smvk::ClearColor(0.1f, 0.2f, 0.3f, 1.0f))
-                    .SetRecordingFunc([](smvk::CommandBuffer& cmd) { (void)cmd; });
+                    .SetRecordFn(&smvk::RecordNoop);
             }
             if (m_modeClaims) {
                 // A clear pass over EVERY claim target — the world
@@ -549,7 +549,7 @@ class FuzzApp : public smvk::App {
                                   smvk::AttachmentLoadOp::Clear,
                                   smvk::AttachmentStoreOp::Store,
                                   smvk::ClearColor(0.2f, 0.3f, 0.4f, 1.0f))
-                        .SetRecordingFunc([](smvk::CommandBuffer& cmd) { (void)cmd; });
+                        .SetRecordFn(&smvk::RecordNoop);
                 }
             }
             if (m_modeGraph && !m_graphView.empty()) {
@@ -560,7 +560,7 @@ class FuzzApp : public smvk::App {
                               smvk::AttachmentLoadOp::Clear,
                               smvk::AttachmentStoreOp::Store,
                               smvk::ClearColor(0.1f, 0.2f, 0.3f, 1.0f))
-                    .SetRecordingFunc([](smvk::CommandBuffer& cmd) { (void)cmd; });
+                    .SetRecordFn(&smvk::RecordNoop);
                 // FUZZ_PASS_TOGGLE: a SECOND clear pass over the SAME target
                 // on alternate cadences - the pass count + the target's use
                 // interval change while its placement stays alive, which is
@@ -576,7 +576,7 @@ class FuzzApp : public smvk::App {
                                   smvk::AttachmentLoadOp::Load,
                                   smvk::AttachmentStoreOp::Store,
                                   smvk::ClearColor(0.3f, 0.2f, 0.1f, 1.0f))
-                        .SetRecordingFunc([](smvk::CommandBuffer& cmd) { (void)cmd; });
+                        .SetRecordFn(&smvk::RecordNoop);
                 }
             }
             if (!m_swapViews.empty() && fb.imageIndex < m_swapViews.size() && !m_graphOnly) {
@@ -587,7 +587,7 @@ class FuzzApp : public smvk::App {
                               smvk::AttachmentLoadOp::Clear,
                               smvk::AttachmentStoreOp::Store,
                               smvk::ClearColor(0.05f, 0.05f, 0.05f, 1.0f))
-                    .SetRecordingFunc([](smvk::CommandBuffer& cmd) { (void)cmd; });
+                    .SetRecordFn(&smvk::RecordNoop);
             }
         }
         m_rendergraph->Execute(fb);

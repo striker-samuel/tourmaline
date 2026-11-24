@@ -344,6 +344,10 @@ struct PassData {
 
 using RecordFn = void (*)(CommandBuffer&, const FrameContext&, const PassData&);
 
+// Shared no-op record function for passes with no draw/dispatch (clears,
+// attachment-only passes). Stable and allocation-free.
+inline void RecordNoop(CommandBuffer&, const FrameContext&, const PassData&) {}
+
 // Per-flight data table owned by the graph (RFC "per-flight binding tables").
 // Slot storage rides a linear Arena — FrameArena while the declaration set is
 // rebuilt each frame (reset wholesale at frame start); AppArena once the
