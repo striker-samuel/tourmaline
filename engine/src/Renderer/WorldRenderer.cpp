@@ -8902,6 +8902,14 @@ void WorldRenderer::RecordSnapshotCopy(smvk::CommandBuffer& cmd,
                                                   f.outExtent))
         throw std::runtime_error("scoped snapshot GPU copy recording failed");
 }
+void WorldRenderer::RecordFogShadow(smvk::CommandBuffer& cmd,
+                                    const smvk::FrameContext& fc,
+                                    const smvk::PassData& pd) {
+    auto* self = const_cast<WorldRenderer*>(static_cast<const WorldRenderer*>(pd.config));
+    const FogShadowFrame& f = fc.rg->FrameData().Get<FogShadowFrame>(pd.frameSlot);
+    self->RecordVolumetricShadowCasters(
+        cmd, self->m_viewportResources.directionalShadows.program, f.fogPC);
+}
 void WorldRenderer::AppendDeferredShadowPhases(uint32_t frameIndex,
                                                uint64_t frameUniformsAddress,
                                                uint64_t fpLightsAddress,
@@ -15802,10 +15810,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // renderViewIndex path - the same single-source contract the
         // cascade/spot passes use).
         fogPC.renderViewIndex = fogShadowViewIndex;
-        fogShadowPass.SetRecordingFunc([this, fogPC](smvk::CommandBuffer& cmd) {
-            RecordVolumetricShadowCasters(
-                cmd, m_viewportResources.directionalShadows.program, fogPC);
-        });
+        FogShadowFrame& fogFrame = m_rendergraph->PassFrameData<FogShadowFrame>(fogShadowPass);
+        fogFrame.fogPC = fogPC;
+        fogShadowPass.SetRecordFn(&WorldRenderer::RecordFogShadow, this);
         (void)fogShadowPass;
         // Full mip pyramid, one compute SPD pass, no extra caster draws.
         m_viewportResources.directionalShadows.AddVolumetricShadowSpdPass(

@@ -3781,6 +3781,8 @@ class WorldRenderer : public IRenderer {
         smvk::Extent2D outExtent{};
     };
     static void RecordSnapshotCopy(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
+    struct FogShadowFrame { IRenderer::PushConstants fogPC{}; };
+    static void RecordFogShadow(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
     // Must mirror the HLSL SdsmGroupStats (264 bytes).
     struct SdsmGroupStats {
         float minV = 0.0f;
