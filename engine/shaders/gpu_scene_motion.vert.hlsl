@@ -23,6 +23,10 @@ struct RasterViewData {
     float4x4 relativeViewProjection;
     DoubleFloat3 origin;
 };
+// Deformed heap (5 words/vertex: pos3, normalW, tangentW) — the same local
+// mirror as gpu_scene_raster.vert.hlsl so the motion VS stays free of
+// gfxfilter.hlsli's includes.
+struct RasterSkinDeformedHeap { uint word[64 * 1024 * 1024]; };
 struct GpuScenePrevTransform {
     DoubleFloat3 worldPosition;
     float4 basisX;
@@ -44,6 +48,14 @@ struct RasterMotionVsPush {
     GPU_PTR_READ(RasterViewData) prevView;
     uint prevValid;
     uint prevSlots;
+    // Skinned tail (mirrors the raster VS + RasterMotionVsPush C++ side): the
+    // frame's deformed heap + base for the CURRENT pose, and the previous
+    // parity half + validity for the skeletal-motion leg.
+    GPU_PTR_READ(RasterSkinDeformedHeap) skinDeformed;
+    uint skinDeformedBase;
+    uint skinValid;
+    GPU_PTR_READ(RasterSkinDeformedHeap) skinDeformedPrev;
+    uint skinPrevValid;
 };
 GPU_PUSH(RasterMotionVsPush, pcMV);
 
@@ -52,6 +64,7 @@ struct VSIn {
     [[vk::location(1)]] float4 color : COLOR0;
     [[vk::location(2)]] float2 uv : TEXCOORD0;
     uint instanceID : SV_InstanceID;
+    uint vertexID : SV_VertexID;
 };
 struct VSOut {
     float4 pos : SV_Position;
@@ -86,9 +99,33 @@ VSOut mainVS(VSIn IN) {
     const float3 a = inst.basisX.xyz;
     const float3 b = inst.basisY.xyz;
     const float3 c = inst.basisZ.xyz;
+    // Skinned fetch (mirrors gpu_scene_raster.vert.hlsl): swap the bind-pose
+    // position for the frame's DEFORMED words. A null BDA / unknown base means
+    // the frame ran no skinning pass and the bind pose is the honest answer.
+    const bool skinned = (inst.refs.w & GPU_SCENE_INSTANCE_SKINNED) != 0u;
+    float3 position = IN.position;
+    if (skinned && pcMV.skinValid != 0u) {
+        const uint d = (IN.vertexID - pcMV.skinDeformedBase) * 5u;
+        position = float3(
+            asfloat(pcMV.skinDeformed.Get().word[d + 0u]),
+            asfloat(pcMV.skinDeformed.Get().word[d + 1u]),
+            asfloat(pcMV.skinDeformed.Get().word[d + 2u]));
+    }
+    // Previous deformed position (skeletal motion): the previous parity half
+    // of the SAME base when valid, else fall back to `position` (current pose,
+    // or bind pose when the frame skinned nothing) — rigid + camera motion
+    // preserved, unavailable skeletal motion suppressed.
+    float3 prevPosition = position;
+    if (skinned && pcMV.skinPrevValid != 0u) {
+        const uint pd = (IN.vertexID - pcMV.skinDeformedBase) * 5u;
+        prevPosition = float3(
+            asfloat(pcMV.skinDeformedPrev.Get().word[pd + 0u]),
+            asfloat(pcMV.skinDeformedPrev.Get().word[pd + 1u]),
+            asfloat(pcMV.skinDeformedPrev.Get().word[pd + 2u]));
+    }
     const float3 relative = DoubleFloatRelative(
         inst.worldPosition, pcMV.view.Get().origin) +
-        a * IN.position.x + b * IN.position.y + c * IN.position.z;
+        a * position.x + b * position.y + c * position.z;
 
     OUT.pos = mul(pcMV.view.Get().relativeViewProjection, float4(relative, 1.0f));
     // Default zero motion (first frame / no history): prevClip == pos.
@@ -109,7 +146,7 @@ VSOut mainVS(VSIn IN) {
             const float3 pc_ = prev.basisZ.xyz;
             const float3 prevRelative = DoubleFloatRelative(
                 prev.worldPosition, pcMV.prevView.Get().origin) +
-                pa * IN.position.x + pb * IN.position.y + pc_ * IN.position.z;
+                pa * prevPosition.x + pb * prevPosition.y + pc_ * prevPosition.z;
             OUT.prevClip = mul(
                 pcMV.prevView.Get().relativeViewProjection, float4(prevRelative, 1.0f));
         }
