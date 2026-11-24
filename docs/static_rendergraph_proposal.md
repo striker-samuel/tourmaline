@@ -1,6 +1,10 @@
 # RFC: Static compiled render graph
 
-Status: proposed; review required. This PR is documentation only, not a runtime change.
+Status: architecture decisions supplied by maintainer; implementation pending. This PR is documentation only, not a runtime change.
+
+## Accepted constraints
+
+One monolithic compiled graph per structural permutation; no independently compiled subgraphs. Explicit async submit sections from the first compiled executor. Clean replacement of the existing RenderGraph, retaining familiar API naming and builder style where practical; update all affected callers in the same integration change. Cached compiled permutations and fixed topology for dynamic work. Whole-resource synchronization initially. No split barriers.
 
 ## Goal
 
@@ -15,8 +19,7 @@ Compile persistent graph variants at initialization or explicit structural chang
 
 ## Proposed architecture
 
-Feature tree -> GraphBuilder -> GraphCompiler -> immutable CompiledRenderGraph -> Executor.
-A feature tree is a compositional declaration hierarchy, not a tree restriction on the dependency graph. Flatten it into stable IDs and contiguous arrays; resource timelines encode the DAG. No tree traversal on steady-state execution.
+Monolithic RenderGraph declaration -> compiler -> immutable CompiledRenderGraph -> executor. Feature helpers append declarations to the same graph; no independently compiled or executed subgraphs. Flatten into stable IDs and contiguous arrays; timelines encode the DAG. One plan owns all resources, batches and submit sections for a permutation.
 
 Suggested types (illustrative):
 ```cpp
@@ -31,11 +34,11 @@ struct CompiledGraph {
 };
 using RecordFn = void(*)(CommandBuffer&, const FrameContext&, const PassData&);
 ```
-PassData is immutable owned configuration; frame-dependent data lives in typed FrameContext or per-flight binding tables. Never retain references to a previous frame's locals. Stable IDs and names are compile-time data. Keep existing pass builder sugar as a migration adapter, with precise access declarations underneath. Explicit side-effect/fence declarations for uploads, queries, readbacks, presentation, global bindless/BDA resources and opaque callbacks. Unknown usage pins a pass or section conservatively; do not silently reorder.
+PassData is immutable owned configuration; frame-dependent data lives in typed FrameContext or per-flight binding tables. Never retain references to a previous frame's locals. Stable IDs and names are compile-time data. Retain familiar AddImage, AddExternalImage, AddPass, AddComputePass, SetColor, SetDepth and hint-style names where practical, but replace their implementation and contracts directly. No compatibility adapter or permanent legacy execution path. Compile explicitly; Execute accepts current frame data and bindings. Remove NewFrame pass-list reconstruction and update all affected callers atomically at integration. Explicit side-effect/fence declarations for uploads, queries, readbacks, presentation, global bindless/BDA resources and opaque callbacks. Unknown usage pins a pass or section conservatively; do not silently reorder.
 
 ## Compiler
 
-1. Flatten feature tree; validate IDs, descriptors, imports, pass access types and side effects. Normalize by resource identity (including multiple logical aliases) and subresource range. Reject conflicting same-pass layouts unless explicitly supported. Track whole resource conservatively when range is unknown.
+1. Flatten monolithic declarations; validate IDs, descriptors, imports, pass access types and side effects. Normalize by resource identity (including multiple logical aliases) at whole-resource granularity. Reject conflicting same-pass layouts unless explicitly supported. Views retain their ranges for rendering, but all views of the same image share one synchronization timeline initially. Reject unsupported conflicting layouts rather than pretending ranges are independent; add finer tracking in a later change.
 2. Construct resource timelines in logical recording order. Each ordinary write is a singleton; consecutive reads form groups with unioned access/stage masks. A writer waits for all readers since the previous write; readers wait for prior writer. Optional concurrent writes require explicit proven disjoint/atomic semantics, not ordinary writes. Preserve prior-write visibility and all reader stages. Layout-incompatible reads initially split into ordered groups; enable compatible common layout (including GENERAL only when all commands/descriptors support it) after validation and profiling. Depth read-only and indirect command fetch need precise access.
 3. Schedule each pass at earliest legal dependency level: batch = max(predecessor batch + 1), or zero. Groups track min/max assigned batch; a later writer waits on max. Read group transition is before min. No explicit adjacency required for primary algorithm; retain debug dependency export. Preserve order for side effects and submit fences. Deterministic stable tie breaks. Initially preserve order inside batches; later sort by graphics/compute/transfer only if measured and safe.
 4. Optional backwards slack sweep: move noncritical passes later without increasing dependency depth, only if resource byte-batch area decreases (or measured queue-kind policy improves). Recompute group min/max and intervals. Disabled initially.
@@ -51,27 +54,27 @@ Optional work: prefer fixed topology with valid empty dispatch/draw or neutral p
 
 ## Queues
 
-Recommendation: first enable compiled reordering on a single graphics queue, retain existing EVSM path as compatibility mode; do not delete async implementation before parity. Then explicitly authored submit sections, with opt-in queue assignment and no reordering across fences. Validate exclusive per-section resource use on a queue or explicit supported concurrent read contract; cross-queue resources use concurrent sharing or explicit ownership protocol, semaphore stages and state handoff. Aliasing across queues forbidden unless happens-before is proven. Full barriers are distinct from semaphore submission dependencies. No automatic queue assignment or split barriers.
+Explicit submit sections are mandatory from the first compiled executor. Each section has explicitly assigned graphics/compute passes and an authored submit boundary; do not reorder across sections. Validate that each resource is used by only one queue within a section (including physical aliases); reject conflicting declarations. Cross-section dependencies compile into timeline semaphore signal/wait pairs with appropriate stage scopes. Cross-queue resources use concurrent sharing initially; no implicit ownership transfer. On hardware without a dedicated compute queue, lower to one graphics queue with the same section order and full barriers. Preserve EVSM behavior through authored sections. Use queue-local batches and prohibit aliasing across concurrently executing streams unless a compiled happens-before proof exists. Full barriers are distinct from semaphore submission dependencies. No automatic queue assignment or split barriers.
 
 ## Migration and review checkpoints
 
-A. CPU-only compiler and synthetic tests; no renderer behavior changes. New files under Rendergraph, keep Vulkan lowering separate. Tests for independent chains, all hazards, read group spanning batches, same physical alias, subresources, layout mismatch, side-effect fence, deterministic order, access/stage legality and invalid declarations.
-B. Compiled executor, single queue, insertion-order mode first; dynamic import boundary state, per-flight binding, ordinary barriers, graph dump. Port triangle/blur/fuzz samples; compare legacy executor; no aliasing changes yet.
-C. Enable grouped reads and ASAP batches behind opt-in. Reuse existing packer with batch lifetimes and explicit alias handoffs; test first use/load, overlapping intervals, multi-flight reuse and resize. Validate with synchronization validation and golden captures.
-D. Migrate WorldRenderer feature by feature: ForwardPlus depth/cull, geometry and shadows, postprocessing, UI, then scene/terrain/particles and temporal systems. Replace frame-local captures with stable record functions and typed data. Retain fallback until feature parity; audit every bindless/BDA access and hidden side effect before enabling reorder.
-E. Cache variants and remove per-frame graph build on migrated path. Exercise camera motion, feature toggles, swapchain recreate, shader hot reload, capacity growth and history resets. Reintroduce manual queue sections after single-queue correctness. Optional slack optimization and buffer aliasing separate PRs.
-F. Benchmark and decide default; remove legacy path only after validation on supported platforms.
+A. CPU-only compiler and tests: whole-resource timelines, access groups, explicit section and queue validation, deterministic dependency levels, barrier templates and lifetime analysis. No runtime change in this preparatory commit.
+B. Implement compiled Vulkan execution with explicit async sections, per-flight binding and imported boundary states, timeline semaphores, single-queue lowering, full barriers and graph dump. Develop against compiler tests and samples; no independently shipped second rendergraph API.
+C. Atomic integration: replace existing RenderGraph implementation and migrate every caller (WorldRenderer, feature modules, editor, samples, tests). Preserve familiar builder names where sensible, replace per-frame captures with stable record functions and typed data, remove NewFrame-driven rebuilding. Audit all bindless/BDA access, opaque callbacks and side effects. No legacy compatibility adapter or permanent dual executor. Keep intermediate development commits buildable; if necessary combine B/C into one integration commit.
+D. Enable ASAP reordering and compatible read groups with correctness tests, reuse existing image packer with batch lifetimes and explicit alias handoffs. Compare against pre-change baseline using an external baseline build, not a second shipped executor.
+E. Cache bounded structural permutations, prewarm at settings/level transitions, exercise resize, reload, capacity and history reset. Optional slack optimization, subresource tracking and buffer aliasing are subsequent independent changes.
+F. Validate and benchmark before merge. No runtime feature may be silently lost; explicit async EVSM and single-queue fallback are required.
 
 ## Acceptance
 
 CPU tests deterministic and device-independent; existing test_rendergraph_contract passes. GPU sync validation clean, no device loss on graph fuzz; representative golden captures match within established tolerances. Test two+ frames in flight, resize, feature toggles, dynamic import alias rejection, async fallback and deferred retirement. Report cold compile cost, cache hit rate, per-frame CPU build/record time, batch count/barrier calls, heap peak/aliased bytes and GPU timings on same scenes/settings/hardware against baseline. No promised performance gain without measurements. Cache hit instrumentation must show zero graph builds/sorts/heap packs and no interior hazard analysis; only patch imported boundary states and record. Preserve debug profiling/checkpoints and hot reload.
 
-## Decisions requested from maintainer
+## Maintainer decisions (resolved)
 
-1. Does static trees mean one composed graph per renderer/view configuration, or an independently compiled tree of reusable subgraphs that can execute separately? Recommend composed feature tree flattened into one plan, with subgraph declarations.
-2. Queue policy: single queue for first compiled path while preserving legacy EVSM, or compile existing async sections from day one? Recommend former.
-3. API migration: compatibility adapter around current RenderPass/feature modules, or clean break? Recommend adapter, but new static callback ABI is mandatory.
-4. Variants: prewarm at explicit settings/level transitions with bounded cache, or one fixed graph with maximum topology and dynamic empty work? Recommend hybrid: fixed topology for frame variability, variants for structural changes.
-5. Initial subresources: conservative whole-resource tracking with precise ranges added incrementally, or full mip/layer/aspect tracking from first release? Recommend exact ranges in compiler model, whole-resource fallback for unknowns.
+- Monolithic static graph, one compiled plan per structural permutation.
+- Explicit async submit sections from day one.
+- Clean replacement, familiar API where practical, breaking changes permitted with caller updates in the same integration commit.
+- Cached compiled permutations plus fixed topology for dynamic work.
+- Whole-resource tracking first; extend to subresources later.
 
-No runtime implementation or merge is authorized by this RFC; follow-up implementation PRs are review checkpoints.
+This RFC is a documentation review checkpoint; the implementation must be separately reviewed before merge.
