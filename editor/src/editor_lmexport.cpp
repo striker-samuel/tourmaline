@@ -93,6 +93,75 @@ void EditorApp::EnsureLightmapExportTarget(smvk::Extent2D extent) {
     m_lmExportExtent = extent;
 }
 
+void EditorApp::RecordLmExport(smvk::CommandBuffer& cmd,
+                               const smvk::FrameContext& fc,
+                               const smvk::PassData& pd) {
+    auto* self = static_cast<EditorApp*>(const_cast<void*>(pd.config));
+    const LmExportFrame& f = fc.rg->FrameData().Get<LmExportFrame>(pd.frameSlot);
+    const engine::IRenderer::PushConstants& pc = f.pc;
+    const bool drawWires = f.drawWires;
+    // Fill: every BAKED mesh unwrapped by its atlas uv2 over the
+    // lightmap content (no selection filter — the export is the full
+    // atlas artifact), or the same layout with the atlas uv itself
+    // as content (UV-coordinate QA mode).
+    smvk::ShaderProgram& prog =
+        self->m_lmExportUv ? self->FlatUvCoordProgram() : self->FlatUvProgram(ViewMode::FlatUv1);
+    const smvk::VertexLayoutDesc& fmt =
+        self->HasDrawItems() ? ::tour::vertex_layouts::Static : ::tour::vertex_layouts::Empty;
+    if (&fmt == &::tour::vertex_layouts::Static)
+        cmd.BindStaticVertexFmt();
+    cmd.BindRenderPipeline(prog,
+                           fmt,
+                           smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                               .writeEnable = true,
+                                               .depthTestEnable = true},
+                           smvk::StencilSettings{},
+                           smvk::BlendSettings{},
+                           smvk::MSAASettings{},
+                           smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+    cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
+    const smvk::IteratorFlags req = smvk::IteratorFlags(smvk::IteratorFlagBit_Renderable |
+                                                        smvk::IteratorFlagBit_StaticVertexFmt);
+    self->m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
+        if (item.material == tour::World::kInvalidIndex)
+            return;
+        const smvk::StaticMesh* mesh = self->m_world->GetMesh(item.mesh);
+        if (!mesh || mesh->lmChunk == 0xFFFFFFFFu)
+            return; // baked meshes only
+        uint32_t matId = item.material;
+        cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, materialId),
+                          sizeof(matId),
+                          &matId,
+                          smvk::ShaderStage::All);
+        for (const auto& s : mesh->geometry.surfaces)
+            cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
+    });
+    // Wireframe overlay: shell edges in NDC space through the
+    // identity projection, depth-tested over the fill.
+    if (!drawWires || self->m_lmExportLines.empty() || self->m_lmExportLinesCount == 0)
+        return;
+    cmd.BindRenderPipeline(self->m_lineProgram,
+                           ::tour::vertex_layouts::DebugLine,
+                           smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                               .writeEnable = false,
+                                               .depthTestEnable = true},
+                           smvk::StencilSettings{},
+                           smvk::BlendSettings{},
+                           smvk::MSAASettings{},
+                           smvk::RasterSettings{.cullMode = smvk::CullMode::None},
+                           smvk::PrimitiveTopology::LineList);
+    cmd.BindVertexBuffer(self->m_lmExportLines, 0, 0);
+    engine::LineDebugPush lp{};
+    const glm::mat4 identity(1.0f);
+    std::memcpy(lp.viewProj, glm::value_ptr(identity), sizeof(lp.viewProj));
+    lp.color[0] = 0.25f;
+    lp.color[1] = 0.9f;
+    lp.color[2] = 0.6f;
+    lp.color[3] = 1.0f;
+    cmd.PushConstants(0, sizeof(lp), &lp, smvk::ShaderStage::All);
+    cmd.Draw(self->m_lmExportLinesCount, 1, 0, 0);
+}
+
 void EditorApp::RecordLightmapExportPass(uint32_t flight) {
     // The export draws through the flat lightmap program — baked content,
     // or the UV-coordinate QA program (same VS, uv-as-color FS). The
@@ -171,68 +240,10 @@ void EditorApp::RecordLightmapExportPass(uint32_t flight) {
                                smvk::AttachmentLoadOp::Clear,
                                smvk::AttachmentStoreOp::Store,
                                smvk::ClearDepthStencil(0.0f, 0)); // reversed-Z
-    pass.SetRecordingFunc([this, pc, drawWires](smvk::CommandBuffer& cmd) {
-        // Fill: every BAKED mesh unwrapped by its atlas uv2 over the
-        // lightmap content (no selection filter — the export is the full
-        // atlas artifact), or the same layout with the atlas uv itself
-        // as content (UV-coordinate QA mode).
-        smvk::ShaderProgram& prog =
-            m_lmExportUv ? FlatUvCoordProgram() : FlatUvProgram(ViewMode::FlatUv1);
-        const smvk::VertexLayoutDesc& fmt =
-            HasDrawItems() ? ::tour::vertex_layouts::Static : ::tour::vertex_layouts::Empty;
-        if (&fmt == &::tour::vertex_layouts::Static)
-            cmd.BindStaticVertexFmt();
-        cmd.BindRenderPipeline(prog,
-                               fmt,
-                               smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
-                                                   .writeEnable = true,
-                                                   .depthTestEnable = true},
-                               smvk::StencilSettings{},
-                               smvk::BlendSettings{},
-                               smvk::MSAASettings{},
-                               smvk::RasterSettings{.cullMode = smvk::CullMode::None});
-        cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
-        const smvk::IteratorFlags req = smvk::IteratorFlags(smvk::IteratorFlagBit_Renderable |
-                                                            smvk::IteratorFlagBit_StaticVertexFmt);
-        m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
-            if (item.material == tour::World::kInvalidIndex)
-                return;
-            const smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
-            if (!mesh || mesh->lmChunk == 0xFFFFFFFFu)
-                return; // baked meshes only
-            uint32_t matId = item.material;
-            cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, materialId),
-                              sizeof(matId),
-                              &matId,
-                              smvk::ShaderStage::All);
-            for (const auto& s : mesh->geometry.surfaces)
-                cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
-        });
-        // Wireframe overlay: shell edges in NDC space through the
-        // identity projection, depth-tested over the fill.
-        if (!drawWires || m_lmExportLines.empty() || m_lmExportLinesCount == 0)
-            return;
-        cmd.BindRenderPipeline(m_lineProgram,
-                               ::tour::vertex_layouts::DebugLine,
-                               smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
-                                                   .writeEnable = false,
-                                                   .depthTestEnable = true},
-                               smvk::StencilSettings{},
-                               smvk::BlendSettings{},
-                               smvk::MSAASettings{},
-                               smvk::RasterSettings{.cullMode = smvk::CullMode::None},
-                               smvk::PrimitiveTopology::LineList);
-        cmd.BindVertexBuffer(m_lmExportLines, 0, 0);
-        engine::LineDebugPush lp{};
-        const glm::mat4 identity(1.0f);
-        std::memcpy(lp.viewProj, glm::value_ptr(identity), sizeof(lp.viewProj));
-        lp.color[0] = 0.25f;
-        lp.color[1] = 0.9f;
-        lp.color[2] = 0.6f;
-        lp.color[3] = 1.0f;
-        cmd.PushConstants(0, sizeof(lp), &lp, smvk::ShaderStage::All);
-        cmd.Draw(m_lmExportLinesCount, 1, 0, 0);
-    });
+    LmExportFrame& frame = m_rendergraph->PassFrameData<LmExportFrame>(pass);
+    frame.pc = pc;
+    frame.drawWires = drawWires;
+    pass.SetRecordFn(&EditorApp::RecordLmExport, this);
 }
 
 void EditorApp::ExportLightmapPng() {

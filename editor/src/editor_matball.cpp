@@ -23,6 +23,7 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <Engine/Renderer/mesh.h>        // TerrainVertex + TerrainFullLayout
+#include <Engine/Rendergraph/renderer.h>
 #include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 #include <Engine/platform.h>             // readFile (the .spv loader)
 #include <imgui_impl_vulkan.h>
@@ -44,6 +45,35 @@ struct MatBallPush {
     uint32_t occlTex;          // 140
 };
 static_assert(sizeof(MatBallPush) == 144);
+
+namespace {
+struct MatBallFrame {
+    smvk::ShaderProgram* program = nullptr;
+    MatBallPush push{};
+    smvk::BufferHandle skyVB{}, sphereVB{}, sphereIB{};
+    uint32_t sphereIdx = 0;
+};
+void RecordMatBall(smvk::CommandBuffer& cmd,
+                   const smvk::FrameContext& fc,
+                   const smvk::PassData& pd) {
+    const MatBallFrame& f = fc.rg->FrameData().Get<MatBallFrame>(pd.frameSlot);
+    smvk::RasterSettings raster{};
+    raster.cullMode = smvk::CullMode::None;
+    cmd.BindRenderPipeline(*f.program,
+                           ::tour::vertex_layouts::TerrainFull,
+                           smvk::DepthSettings::Disabled(),
+                           smvk::StencilSettings::DefaultDisabled(),
+                           smvk::BlendSettings::Opaque(),
+                           smvk::MSAASettings::Count1(),
+                           raster);
+    cmd.PushConstants(0, sizeof(MatBallPush), &f.push, smvk::ShaderStage::All);
+    cmd.BindVertexBuffer(f.skyVB, 0, 0);
+    cmd.Draw(3, 1, 0, 0);
+    cmd.BindVertexBuffer(f.sphereVB, 0, 0);
+    cmd.BindIndexBuffer(f.sphereIB, 0);
+    cmd.DrawIndexed(f.sphereIdx, 1, 0, 0, 0);
+}
+} // namespace
 
 bool EditorApp::EnsureMatBallResources() {
     if (m_matBallReady)
@@ -295,7 +325,6 @@ void EditorApp::RecordMatBallPass() {
     push.normalTex = slotOrNone(m->values.textures.z);
     push.occlTex = slotOrNone(m->values.textures.w);
 
-    smvk::ShaderProgram progCopy = m_matBallProgram; // copyable (handles)
     // Raw handles into the lambda (Holder is move-only; the members keep
     // the ownership — the recorded pass borrows).
     const smvk::BufferHandle skyVB = m_matBallSkyVB;
@@ -306,36 +335,20 @@ void EditorApp::RecordMatBallPass() {
         cube ? smvk::BufferHandle(m_matBallCubeIB) : smvk::BufferHandle(m_matBallSphereIB);
     const uint32_t sphereIdx = cube ? m_matBallCubeIdx : m_matBallSphereIdx;
     auto& rg = *m_rendergraph;
-    rg.AddPass("MatBall")
+    auto& matBallPass = rg.AddPass("MatBall")
         .SetExtent(smvk::Extent2D{256, 256})
         .SetColor({m_matBallLogical},
                   smvk::AttachmentLoadOp::Clear,
                   smvk::AttachmentStoreOp::Store,
-                  smvk::ClearColor(0.03f, 0.03f, 0.05f, 1.0f))
-        .SetRecordingFunc([progCopy, push, skyVB, sphereVB, sphereIB, sphereIdx](
-                              smvk::CommandBuffer& cmd) mutable {
-            // No depth (nothing overlaps: sky first, opaque sphere
-            // second), no cull (the sky tri's raster-space winding under
-            // the Y-flip is not worth a correctness bet; the closed
-            // sphere renders identically either way).
-            smvk::RasterSettings raster{};
-            raster.cullMode = smvk::CullMode::None;
-            cmd.BindRenderPipeline(progCopy,
-                                   ::tour::vertex_layouts::TerrainFull,
-                                   smvk::DepthSettings::Disabled(),
-                                   smvk::StencilSettings::DefaultDisabled(),
-                                   smvk::BlendSettings::Opaque(),
-                                   smvk::MSAASettings::Count1(),
-                                   raster);
-            cmd.PushConstants(0, sizeof(MatBallPush), &push, smvk::ShaderStage::All);
-            // Draw 1: the fullscreen default-sky background.
-            cmd.BindVertexBuffer(skyVB, 0, 0);
-            cmd.Draw(3, 1, 0, 0);
-            // Draw 2: the material ball.
-            cmd.BindVertexBuffer(sphereVB, 0, 0);
-            cmd.BindIndexBuffer(sphereIB, 0);
-            cmd.DrawIndexed(sphereIdx, 1, 0, 0, 0);
-        });
+                  smvk::ClearColor(0.03f, 0.03f, 0.05f, 1.0f));
+    MatBallFrame& frame = rg.PassFrameData<MatBallFrame>(matBallPass);
+    frame.program = &m_matBallProgram;
+    frame.push = push;
+    frame.skyVB = skyVB;
+    frame.sphereVB = sphereVB;
+    frame.sphereIB = sphereIB;
+    frame.sphereIdx = sphereIdx;
+    matBallPass.SetRecordFn(&RecordMatBall);
 }
 
 ImTextureID EditorApp::MaterialPreviewTexture() {

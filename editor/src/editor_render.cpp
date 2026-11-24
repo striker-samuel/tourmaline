@@ -1543,6 +1543,212 @@ void EditorApp::RecordGiProbeLatticePass(int vpIdx) {
                                      uint32_t(vp.y));
 }
 
+void EditorApp::RecordTrianglePreview(smvk::CommandBuffer& cmd,
+                                      const smvk::FrameContext&,
+                                      const smvk::PassData& pd) {
+    auto* self = static_cast<EditorApp*>(const_cast<void*>(pd.config));
+    cmd.BindRenderPipeline(self->m_triangleProgram,
+                           ::tour::vertex_layouts::Empty,
+                           smvk::DepthSettings::Disabled(),
+                           smvk::StencilSettings::DefaultDisabled(),
+                           smvk::BlendSettings::Opaque(),
+                           smvk::MSAASettings::Count1(),
+                           smvk::RasterSettings{});
+    cmd.Draw(3, 1, 0, 0);
+}
+
+void EditorApp::RecordInset(smvk::CommandBuffer& cmd,
+                            const smvk::FrameContext& fc,
+                            const smvk::PassData& pd) {
+    auto* self = static_cast<EditorApp*>(const_cast<void*>(pd.config));
+    const InsetFrame& f = fc.rg->FrameData().Get<InsetFrame>(pd.frameSlot);
+    smvk::ShaderProgram& prog = self->InsetProgram();
+    const smvk::VertexLayoutDesc& fmt =
+        self->HasDrawItems() ? ::tour::vertex_layouts::Static : ::tour::vertex_layouts::Empty;
+    if (&fmt == &::tour::vertex_layouts::Static)
+        cmd.BindStaticVertexFmt();
+    const smvk::DepthSettings depth{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                    .writeEnable = true,
+                                    .depthTestEnable = true};
+    for (int masked = 0; masked <= 1; ++masked) {
+        const bool maskedPhase = (masked == 1);
+        cmd.BindRenderPipeline(prog,
+                               fmt,
+                               depth,
+                               smvk::StencilSettings{},
+                               smvk::BlendSettings{},
+                               smvk::MSAASettings{},
+                               smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+        cmd.PushConstants(0, sizeof(f.pc), &f.pc, smvk::ShaderStage::All);
+        self->DrawWorldNodes(cmd, f.pc, maskedPhase, false, false);
+    }
+    {
+        cmd.BindRenderPipeline(prog,
+                               fmt,
+                               smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                                   .writeEnable = false,
+                                                   .depthTestEnable = true},
+                               smvk::StencilSettings{},
+                               smvk::BlendSettings::AlphaBlend(),
+                               smvk::MSAASettings{},
+                               smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+        engine::IRenderer::PushConstants tpc = f.pc;
+        tpc.pad_pc = 1;
+        cmd.PushConstants(0, sizeof(tpc), &tpc, smvk::ShaderStage::All);
+        if (self->m_world) {
+            const smvk::IteratorFlags req = smvk::IteratorFlags(
+                smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Transparent |
+                smvk::IteratorFlagBit_StaticVertexFmt);
+            self->m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
+                if (item.material == tour::World::kInvalidIndex)
+                    return;
+                if (!IsVisibleNode(self->m_world->scene, int(item.node)))
+                    return;
+                smvk::StaticMesh* mesh = self->m_world->GetMesh(item.mesh);
+                if (!mesh)
+                    return;
+                const glm::mat4& model = self->m_world->scene.globalTransform[item.node];
+                uint32_t matId = item.material;
+                cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, materialId),
+                                  sizeof(matId),
+                                  &matId,
+                                  smvk::ShaderStage::All);
+                cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, model),
+                                  sizeof(model),
+                                  glm::value_ptr(model),
+                                  smvk::ShaderStage::All);
+                for (const auto& s : mesh->geometry.surfaces)
+                    cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
+            });
+        }
+    }
+}
+
+void EditorApp::RecordMainDraw(smvk::CommandBuffer& cmd,
+                               const smvk::FrameContext& fc,
+                               const smvk::PassData& pd) {
+    auto* self = static_cast<EditorApp*>(const_cast<void*>(pd.config));
+    const MainPassFrame& f = fc.rg->FrameData().Get<MainPassFrame>(pd.frameSlot);
+    const engine::IRenderer::PushConstants& pc = f.pc;
+    const bool selectedWireOverlay = f.selectedWireOverlay;
+    const bool bakedOnly = f.bakedOnly;
+    const bool meshletDbg = f.meshletDbg;
+    const bool uvDbg = f.uvDbg;
+    const ViewMode mode = f.mode;
+    // Meshlet debug leg (F4): flat per-meshlet colors, own program +
+    // expanded index buffer; skips the shaded legs entirely.
+    if (meshletDbg) {
+        self->DrawMeshletNodes(cmd);
+        // Still show the selection highlight on top.
+        if (selectedWireOverlay && self->m_selected != UINT32_MAX &&
+            self->m_wireProgram.shaderCount == 2) {
+            cmd.BindRenderPipeline(
+                self->m_wireProgram,
+                ::tour::vertex_layouts::Static,
+                smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                    .writeEnable = false,
+                                    .depthTestEnable = true},
+                smvk::StencilSettings{},
+                smvk::BlendSettings{},
+                smvk::MSAASettings{},
+                smvk::RasterSettings{.polygonMode = smvk::PolygonMode::Line,
+                                     .cullMode = smvk::CullMode::None});
+            cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
+            self->DrawWorldNodes(cmd, pc, false, true, false);
+            self->DrawWorldNodes(cmd, pc, true, true, false);
+        }
+        return;
+    }
+    smvk::ShaderProgram& prog = self->MainProgram(mode);
+    const smvk::VertexLayoutDesc& fmt =
+        self->HasDrawItems() ? ::tour::vertex_layouts::Static : ::tour::vertex_layouts::Empty;
+    if (&fmt == &::tour::vertex_layouts::Static)
+        cmd.BindStaticVertexFmt();
+    const smvk::DepthSettings depth{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                    .writeEnable = true,
+                                    .depthTestEnable = true};
+    const bool wireAll = self->m_wireframeAll && self->m_wireProgram.shaderCount == 2;
+    smvk::ShaderProgram& scene = wireAll ? self->m_wireProgram : prog;
+    for (int masked = 0; masked <= 1; ++masked) {
+        const bool maskedPhase = (masked == 1);
+        cmd.BindRenderPipeline(
+            scene,
+            fmt,
+            depth,
+            smvk::StencilSettings{},
+            smvk::BlendSettings{},
+            smvk::MSAASettings{},
+            smvk::RasterSettings{
+                .polygonMode = wireAll ? smvk::PolygonMode::Line : smvk::PolygonMode::Fill,
+                .cullMode = (maskedPhase || uvDbg || wireAll) ? smvk::CullMode::None
+                                                              : smvk::CullMode::Back});
+        cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
+        self->DrawWorldNodes(cmd, pc, maskedPhase, false, false, bakedOnly);
+    }
+    {
+        cmd.BindRenderPipeline(
+            scene,
+            fmt,
+            smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                .writeEnable = false,
+                                .depthTestEnable = true},
+            smvk::StencilSettings{},
+            smvk::BlendSettings::AlphaBlend(),
+            smvk::MSAASettings{},
+            smvk::RasterSettings{.polygonMode = wireAll ? smvk::PolygonMode::Line
+                                                        : smvk::PolygonMode::Fill,
+                                 .cullMode = smvk::CullMode::None});
+        engine::IRenderer::PushConstants tpc = pc;
+        tpc.pad_pc = 1; // classic alpha blend
+        cmd.PushConstants(0, sizeof(tpc), &tpc, smvk::ShaderStage::All);
+        if (self->m_world) {
+            const smvk::IteratorFlags req = smvk::IteratorFlags(
+                smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Transparent |
+                smvk::IteratorFlagBit_StaticVertexFmt);
+            self->m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
+                if (item.material == tour::World::kInvalidIndex)
+                    return;
+                if (!IsVisibleNode(self->m_world->scene, int(item.node)))
+                    return;
+                smvk::StaticMesh* mesh = self->m_world->GetMesh(item.mesh);
+                if (!mesh)
+                    return;
+                if (bakedOnly && mesh->lmChunk == 0xFFFFFFFFu)
+                    return;
+                const glm::mat4& model = self->m_world->scene.globalTransform[item.node];
+                uint32_t matId = item.material;
+                cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, materialId),
+                                  sizeof(matId),
+                                  &matId,
+                                  smvk::ShaderStage::All);
+                cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, model),
+                                  sizeof(model),
+                                  glm::value_ptr(model),
+                                  smvk::ShaderStage::All);
+                for (const auto& s : mesh->geometry.surfaces)
+                    cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
+            });
+        }
+    }
+    // Selection highlight: wireframe overlay over the selected node.
+    if (selectedWireOverlay && self->m_selected != UINT32_MAX &&
+        self->m_wireProgram.shaderCount == 2) {
+        cmd.BindRenderPipeline(self->m_wireProgram,
+                               ::tour::vertex_layouts::Static,
+                               smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                                   .writeEnable = false,
+                                                   .depthTestEnable = true},
+                               smvk::StencilSettings{},
+                               smvk::BlendSettings{},
+                               smvk::MSAASettings{},
+                               smvk::RasterSettings{.polygonMode = smvk::PolygonMode::Line,
+                                                    .cullMode = smvk::CullMode::None});
+        cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
+        self->DrawWorldNodes(cmd, pc, false, true, false);
+        self->DrawWorldNodes(cmd, pc, true, true, false);
+    }
+}
+
 void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView,
                                int vpIdx,
                                uint32_t flight,
@@ -1615,129 +1821,14 @@ void EditorApp::RecordMainPass(smvk::LogicalImageViewHandle swapView,
                                smvk::AttachmentLoadOp::Clear,
                                smvk::AttachmentStoreOp::Store,
                                smvk::ClearDepthStencil(0.0f, 0)); // reversed-Z
-    pass.SetRecordingFunc([this, pc, selectedWireOverlay, bakedOnly, meshletDbg, uvDbg, mode](
-                              smvk::CommandBuffer& cmd) {
-        // Meshlet debug leg (F4): flat per-meshlet colors, own program +
-        // expanded index buffer; skips the shaded legs entirely.
-        if (meshletDbg) {
-            DrawMeshletNodes(cmd);
-            // Still show the selection highlight on top.
-            if (selectedWireOverlay && m_selected != UINT32_MAX && m_wireProgram.shaderCount == 2) {
-                cmd.BindRenderPipeline(
-                    m_wireProgram,
-                    ::tour::vertex_layouts::Static,
-                    smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
-                                        .writeEnable = false,
-                                        .depthTestEnable = true},
-                    smvk::StencilSettings{},
-                    smvk::BlendSettings{},
-                    smvk::MSAASettings{},
-                    smvk::RasterSettings{.polygonMode = smvk::PolygonMode::Line,
-                                         .cullMode = smvk::CullMode::None});
-                cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
-                DrawWorldNodes(cmd, pc, false, true, false);
-                DrawWorldNodes(cmd, pc, true, true, false);
-            }
-            return;
-        }
-        smvk::ShaderProgram& prog = MainProgram(mode);
-        // BindRenderPipeline re-binds the static monoblock internally for
-        // StaticLayout (which does not exist on an empty world), so
-        // empty passes bind Empty (no draws either way).
-        const smvk::VertexLayoutDesc& fmt =
-            HasDrawItems() ? ::tour::vertex_layouts::Static : ::tour::vertex_layouts::Empty;
-        if (&fmt == &::tour::vertex_layouts::Static)
-            cmd.BindStaticVertexFmt();
-        const smvk::DepthSettings depth{.depthFunc = smvk::CompareOp::GreaterEqual,
-                                        .writeEnable = true,
-                                        .depthTestEnable = true};
-        // Wireframe toggle (Z): the whole scene draws with the flat wire
-        // program in line-polygon mode (falls back to shaded when the
-        // module is missing — a bad cook never blanks the frame).
-        const bool wireAll = m_wireframeAll && m_wireProgram.shaderCount == 2;
-        smvk::ShaderProgram& scene = wireAll ? m_wireProgram : prog;
-        // Opaque leg (opaque + masked; back-cull unless UV/wire view:
-        // the unwrapped UV shells flip winding arbitrarily — culled UVs
-        // look like missing lightmap data).
-        for (int masked = 0; masked <= 1; ++masked) {
-            const bool maskedPhase = (masked == 1);
-            cmd.BindRenderPipeline(
-                scene,
-                fmt,
-                depth,
-                smvk::StencilSettings{},
-                smvk::BlendSettings{},
-                smvk::MSAASettings{},
-                smvk::RasterSettings{
-                    .polygonMode = wireAll ? smvk::PolygonMode::Line : smvk::PolygonMode::Fill,
-                    .cullMode = (maskedPhase || uvDbg || wireAll) ? smvk::CullMode::None
-                                                                  : smvk::CullMode::Back});
-            cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
-            DrawWorldNodes(cmd, pc, maskedPhase, false, false, bakedOnly);
-        }
-        // Transparent leg (alpha blend, no depth write).
-        {
-            cmd.BindRenderPipeline(
-                scene,
-                fmt,
-                smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
-                                    .writeEnable = false,
-                                    .depthTestEnable = true},
-                smvk::StencilSettings{},
-                smvk::BlendSettings::AlphaBlend(),
-                smvk::MSAASettings{},
-                smvk::RasterSettings{.polygonMode = wireAll ? smvk::PolygonMode::Line
-                                                            : smvk::PolygonMode::Fill,
-                                     .cullMode = smvk::CullMode::None});
-            engine::IRenderer::PushConstants tpc = pc;
-            tpc.pad_pc = 1; // classic alpha blend
-            cmd.PushConstants(0, sizeof(tpc), &tpc, smvk::ShaderStage::All);
-            if (m_world) {
-                const smvk::IteratorFlags req = smvk::IteratorFlags(
-                    smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Transparent |
-                    smvk::IteratorFlagBit_StaticVertexFmt);
-                m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
-                    if (item.material == tour::World::kInvalidIndex)
-                        return;
-                    if (!IsVisibleNode(m_world->scene, int(item.node)))
-                        return;
-                    smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
-                    if (!mesh)
-                        return;
-                    if (bakedOnly && mesh->lmChunk == 0xFFFFFFFFu)
-                        return;
-                    const glm::mat4& model = m_world->scene.globalTransform[item.node];
-                    uint32_t matId = item.material;
-                    cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, materialId),
-                                      sizeof(matId),
-                                      &matId,
-                                      smvk::ShaderStage::All);
-                    cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, model),
-                                      sizeof(model),
-                                      glm::value_ptr(model),
-                                      smvk::ShaderStage::All);
-                    for (const auto& s : mesh->geometry.surfaces)
-                        cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
-                });
-            }
-        }
-        // Selection highlight: wireframe overlay over the selected node.
-        if (selectedWireOverlay && m_selected != UINT32_MAX && m_wireProgram.shaderCount == 2) {
-            cmd.BindRenderPipeline(m_wireProgram,
-                                   ::tour::vertex_layouts::Static,
-                                   smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
-                                                       .writeEnable = false,
-                                                       .depthTestEnable = true},
-                                   smvk::StencilSettings{},
-                                   smvk::BlendSettings{},
-                                   smvk::MSAASettings{},
-                                   smvk::RasterSettings{.polygonMode = smvk::PolygonMode::Line,
-                                                        .cullMode = smvk::CullMode::None});
-            cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
-            DrawWorldNodes(cmd, pc, false, true, false);
-            DrawWorldNodes(cmd, pc, true, true, false);
-        }
-    });
+    MainPassFrame& frame = m_rendergraph->PassFrameData<MainPassFrame>(pass);
+    frame.pc = pc;
+    frame.selectedWireOverlay = selectedWireOverlay;
+    frame.bakedOnly = bakedOnly;
+    frame.meshletDbg = meshletDbg;
+    frame.uvDbg = uvDbg;
+    frame.mode = mode;
+    pass.SetRecordFn(&EditorApp::RecordMainDraw, this);
     // The authored GI probe lattice is an HDR overlay. It MUST be
     // recorded before the viewport tonemap, otherwise the spheres
     // are written after HDR has already been resolved to the swapchain
@@ -1811,70 +1902,9 @@ void EditorApp::RecordInsetPass(smvk::LogicalImageViewHandle swapView, uint32_t 
                                smvk::AttachmentLoadOp::Clear,
                                smvk::AttachmentStoreOp::Store,
                                smvk::ClearDepthStencil(0.0f, 0)); // reversed-Z
-    pass.SetRecordingFunc([this, pc](smvk::CommandBuffer& cmd) {
-        smvk::ShaderProgram& prog = InsetProgram();
-        const smvk::VertexLayoutDesc& fmt =
-            HasDrawItems() ? ::tour::vertex_layouts::Static : ::tour::vertex_layouts::Empty;
-        if (&fmt == &::tour::vertex_layouts::Static)
-            cmd.BindStaticVertexFmt();
-        const smvk::DepthSettings depth{.depthFunc = smvk::CompareOp::GreaterEqual,
-                                        .writeEnable = true,
-                                        .depthTestEnable = true};
-        for (int masked = 0; masked <= 1; ++masked) {
-            const bool maskedPhase = (masked == 1);
-            // UV inset: NO backface cull (the second viewport shows
-            // unwrapped UV shells whose winding flips arbitrarily).
-            cmd.BindRenderPipeline(prog,
-                                   fmt,
-                                   depth,
-                                   smvk::StencilSettings{},
-                                   smvk::BlendSettings{},
-                                   smvk::MSAASettings{},
-                                   smvk::RasterSettings{.cullMode = smvk::CullMode::None});
-            cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
-            DrawWorldNodes(cmd, pc, maskedPhase, false, false);
-        }
-        {
-            cmd.BindRenderPipeline(prog,
-                                   fmt,
-                                   smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
-                                                       .writeEnable = false,
-                                                       .depthTestEnable = true},
-                                   smvk::StencilSettings{},
-                                   smvk::BlendSettings::AlphaBlend(),
-                                   smvk::MSAASettings{},
-                                   smvk::RasterSettings{.cullMode = smvk::CullMode::None});
-            engine::IRenderer::PushConstants tpc = pc;
-            tpc.pad_pc = 1;
-            cmd.PushConstants(0, sizeof(tpc), &tpc, smvk::ShaderStage::All);
-            if (m_world) {
-                const smvk::IteratorFlags req = smvk::IteratorFlags(
-                    smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Transparent |
-                    smvk::IteratorFlagBit_StaticVertexFmt);
-                m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
-                    if (item.material == tour::World::kInvalidIndex)
-                        return;
-                    if (!IsVisibleNode(m_world->scene, int(item.node)))
-                        return;
-                    smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
-                    if (!mesh)
-                        return;
-                    const glm::mat4& model = m_world->scene.globalTransform[item.node];
-                    uint32_t matId = item.material;
-                    cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, materialId),
-                                      sizeof(matId),
-                                      &matId,
-                                      smvk::ShaderStage::All);
-                    cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, model),
-                                      sizeof(model),
-                                      glm::value_ptr(model),
-                                      smvk::ShaderStage::All);
-                    for (const auto& s : mesh->geometry.surfaces)
-                        cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
-                });
-            }
-        }
-    });
+    InsetFrame& insetFrame = m_rendergraph->PassFrameData<InsetFrame>(pass);
+    insetFrame.pc = pc;
+    pass.SetRecordFn(&EditorApp::RecordInset, this);
     // The matching tonemap layer for the strip rect (see RecordMainPass).
     if (viaHdr)
         RecordViewportTonemap(
@@ -2552,7 +2582,9 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
                                     smvk::ClearColor(0, 0, 0, 1));
         hdrBg.SetRecordFn(&smvk::RecordNoop);
     }
-    m_rendergraph->Execute(fb);
+    smvk::FrameContext fc{};
+    fc.rg = m_rendergraph.get();
+    m_rendergraph->Execute(fb, &fc);
 
     // ---- WYSIWYG LIVE VIEW (the world layer's record) ---------------
     // The between-rounds slot — now the LAYER contract's position:
@@ -2674,7 +2706,9 @@ void EditorApp::RenderFrame(smvk::Framebuffer& fb) {
             SMVK_PROFILE_RENDER("Editor_UpdateDescriptors");
             m_context->UpdateDescriptors();
         }
-        m_rendergraph->Execute(fb);
+        smvk::FrameContext fc{};
+        fc.rg = m_rendergraph.get();
+        m_rendergraph->Execute(fb, &fc);
         m_context->ProcessDeferredTasks();
         if (lmExportThisFrame) {
             // The export pass ran in this submit: read it back + write PNG.
@@ -3070,17 +3104,10 @@ void EditorApp::RenderWysiwygLayer(smvk::Framebuffer& fb, smvk::Extent2D extent)
                       smvk::AttachmentLoadOp::Clear,
                       smvk::AttachmentStoreOp::Store,
                       smvk::ClearColor(0.03f, 0.03f, 0.05f, 1.0f))
-            .SetRecordingFunc([this](smvk::CommandBuffer& cmd) {
-                cmd.BindRenderPipeline(m_triangleProgram,
-                                       ::tour::vertex_layouts::Empty,
-                                       smvk::DepthSettings::Disabled(),
-                                       smvk::StencilSettings::DefaultDisabled(),
-                                       smvk::BlendSettings::Opaque(),
-                                       smvk::MSAASettings::Count1(),
-                                       smvk::RasterSettings{});
-                cmd.Draw(3, 1, 0, 0);
-            });
-        m_triangleGraph->Execute(fb);
+            .SetRecordFn(&EditorApp::RecordTrianglePreview, this);
+        smvk::FrameContext fc{};
+        fc.rg = m_triangleGraph.get();
+        m_triangleGraph->Execute(fb, &fc);
         return; // the world renderer is BYPASSED in this mode
     }
     // The view-visibility gate: DrawLiveViewStage sets the fresh flag

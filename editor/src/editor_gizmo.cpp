@@ -264,6 +264,59 @@ void EditorApp::ApplyMultiDragScaleUniform(float ratio) {
     }
 }
 
+void EditorApp::RecordGizmo(smvk::CommandBuffer& cmd,
+                            const smvk::FrameContext& fc,
+                            const smvk::PassData& pd) {
+    auto* self = static_cast<EditorApp*>(const_cast<void*>(pd.config));
+    const GizmoFrame& f = fc.rg->FrameData().Get<GizmoFrame>(pd.frameSlot);
+    if (self->m_gizmoLines.empty() || self->m_lineProgram.shaderCount != 2)
+        return;
+    const smvk::RasterSettings raster{.cullMode = smvk::CullMode::None};
+    cmd.BindVertexBuffer(self->m_gizmoLines, 0, 0);
+    bool depthPipeline = false;
+    bool drewAny = false;
+    for (const auto& r : f.ranges) {
+        // Rebind the pipeline only when the depth mode changes
+        // (grid wires = depth-tested, helpers = on top).
+        if (r.depthTest != depthPipeline || drewAny == false) {
+            depthPipeline = r.depthTest;
+            if (depthPipeline)
+                cmd.BindRenderPipeline(
+                    self->m_lineProgram,
+                    ::tour::vertex_layouts::DebugLine,
+                    smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                        .writeEnable = false,
+                                        .depthTestEnable = true},
+                    smvk::StencilSettings{},
+                    smvk::BlendSettings{},
+                    smvk::MSAASettings{},
+                    raster,
+                    smvk::PrimitiveTopology::LineList);
+            else
+                cmd.BindRenderPipeline(
+                    self->m_lineProgram,
+                    ::tour::vertex_layouts::DebugLine,
+                    smvk::DepthSettings{.depthFunc = smvk::CompareOp::Always,
+                                        .writeEnable = false,
+                                        .depthTestEnable = false},
+                    smvk::StencilSettings{},
+                    smvk::BlendSettings{},
+                    smvk::MSAASettings{},
+                    raster,
+                    smvk::PrimitiveTopology::LineList);
+        }
+        engine::LineDebugPush lp{};
+        std::memcpy(lp.viewProj, glm::value_ptr(f.vpViewProj), sizeof(lp.viewProj));
+        lp.color[0] = r.color.x;
+        lp.color[1] = r.color.y;
+        lp.color[2] = r.color.z;
+        lp.color[3] = r.color.w;
+        cmd.PushConstants(0, sizeof(lp), &lp, smvk::ShaderStage::All);
+        cmd.Draw(r.count, 1, r.first, 0);
+        drewAny = true;
+    }
+}
+
 void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
                                 tour::DebugDrawList* debugOutput) {
     if (!m_world || (!debugOutput && swapView.empty()))
@@ -956,12 +1009,7 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
     // grid hides behind geometry; flat wires land over the UV fill);
     // every helper (gizmo axes, AABB, light markers, face/vertex
     // highlights) draws on top like a DCC overlay.
-    struct Range {
-        uint32_t first, count;
-        glm::vec4 color;
-        bool depthTest;
-    };
-    std::vector<Range> ranges;
+    std::vector<GizmoRange> ranges;
     std::vector<smvk::DebugLineVertex> all;
     for (auto& b : batches) {
         if (b.verts.empty())
@@ -1014,55 +1062,10 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
                                    smvk::AttachmentLoadOp::Load,
                                    smvk::AttachmentStoreOp::Store,
                                    smvk::ClearDepthStencil(0.0f, 0));
-        pass.SetRecordingFunc([this, ranges, vpViewProj](smvk::CommandBuffer& cmd) {
-            if (m_gizmoLines.empty() || m_lineProgram.shaderCount != 2)
-                return;
-            const smvk::RasterSettings raster{.cullMode = smvk::CullMode::None};
-            cmd.BindVertexBuffer(m_gizmoLines, 0, 0);
-            bool depthPipeline = false;
-            bool drewAny = false;
-            for (const auto& r : ranges) {
-                // Rebind the pipeline only when the depth mode changes
-                // (grid wires = depth-tested, helpers = on top).
-                if (r.depthTest != depthPipeline || drewAny == false) {
-                    depthPipeline = r.depthTest;
-                    if (depthPipeline)
-                        cmd.BindRenderPipeline(
-                            m_lineProgram,
-                            ::tour::vertex_layouts::DebugLine,
-                            // Reversed-Z: GreaterEqual = closer-or-equal passes.
-                            smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
-                                                .writeEnable = false,
-                                                .depthTestEnable = true},
-                            smvk::StencilSettings{},
-                            smvk::BlendSettings{},
-                            smvk::MSAASettings{},
-                            raster,
-                            smvk::PrimitiveTopology::LineList);
-                    else
-                        cmd.BindRenderPipeline(
-                            m_lineProgram,
-                            ::tour::vertex_layouts::DebugLine,
-                            smvk::DepthSettings{.depthFunc = smvk::CompareOp::Always,
-                                                .writeEnable = false,
-                                                .depthTestEnable = false},
-                            smvk::StencilSettings{},
-                            smvk::BlendSettings{},
-                            smvk::MSAASettings{},
-                            raster,
-                            smvk::PrimitiveTopology::LineList);
-                }
-                engine::LineDebugPush lp{};
-                std::memcpy(lp.viewProj, glm::value_ptr(vpViewProj), sizeof(lp.viewProj));
-                lp.color[0] = r.color.x;
-                lp.color[1] = r.color.y;
-                lp.color[2] = r.color.z;
-                lp.color[3] = r.color.w;
-                cmd.PushConstants(0, sizeof(lp), &lp, smvk::ShaderStage::All);
-                cmd.Draw(r.count, 1, r.first, 0);
-                drewAny = true;
-            }
-        });
+        GizmoFrame& frame = m_rendergraph->PassFrameData<GizmoFrame>(pass);
+        frame.ranges = m_rendergraph->FrameData().CopyArray<GizmoRange>(ranges);
+        frame.vpViewProj = vpViewProj;
+        pass.SetRecordFn(&EditorApp::RecordGizmo, this);
     } // per-viewport loop
 }
 

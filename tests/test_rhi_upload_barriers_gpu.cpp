@@ -53,6 +53,7 @@
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/RHI/swapchain.h>
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/renderer.h>
 #include <Engine/Utils/shader_library.h> // the unified shader reader (dev trees + engine-shaders.pak)
 #include <Engine/platform.h>             // readFile (the exe-relative fallback)
 
@@ -90,6 +91,40 @@ struct IndirectWritePush {
     uint32_t firstInstance = 0;
 };
 static_assert(sizeof(IndirectWritePush) == 16);
+
+struct IndirectWriteFrame {
+    smvk::ShaderProgram* program = nullptr;
+    IndirectWritePush push{};
+};
+void RecordIndirectWrite(smvk::CommandBuffer& cmd,
+                         const smvk::FrameContext& fc,
+                         const smvk::PassData& pd) {
+    const IndirectWriteFrame& f = fc.rg->FrameData().Get<IndirectWriteFrame>(pd.frameSlot);
+    cmd.BindComputePipeline(*f.program);
+    cmd.PushConstants(0, sizeof(f.push), &f.push, smvk::ShaderStage::Compute);
+    cmd.Dispatch(1, 1, 1);
+}
+struct IndirectDrawFrame {
+    smvk::ShaderProgram* program = nullptr;
+    smvk::BufferHandle cmd{};
+    smvk::BufferHandle idx{};
+};
+void RecordIndirectDraw(smvk::CommandBuffer& cmd,
+                        const smvk::FrameContext& fc,
+                        const smvk::PassData& pd) {
+    const IndirectDrawFrame& f = fc.rg->FrameData().Get<IndirectDrawFrame>(pd.frameSlot);
+    cmd.BindIndexBuffer(f.idx, 0);
+    cmd.BindRenderPipeline(*f.program,
+                           ::tour::vertex_layouts::Empty,
+                           smvk::DepthSettings{.depthFunc = smvk::CompareOp::Always,
+                                               .writeEnable = false,
+                                               .depthTestEnable = false},
+                           smvk::StencilSettings{},
+                           smvk::BlendSettings{},
+                           smvk::MSAASettings{},
+                           smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+    cmd.DrawIndexedIndirect(f.cmd, 0, 1, sizeof(IndirectCmd));
+}
 
 } // namespace
 
@@ -238,12 +273,10 @@ int main() {
             write.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
             cs.AddBufferHint(indirectL, write);
             const IndirectWritePush push{rm.GetBufferDeviceAddress(indirectBuf), instanceCount, 0u};
-            smvk::ShaderProgram* prog = &csProgram;
-            cs.SetRecordingFunc([prog, push](smvk::CommandBuffer& cmd) {
-                cmd.BindComputePipeline(*prog);
-                cmd.PushConstants(0, sizeof(push), &push, smvk::ShaderStage::Compute);
-                cmd.Dispatch(1, 1, 1);
-            });
+            IndirectWriteFrame& frame = g.PassFrameData<IndirectWriteFrame>(cs);
+            frame.program = &csProgram;
+            frame.push = push;
+            cs.SetRecordFn(&RecordIndirectWrite);
         }
         {
             smvk::RenderPass& draw = g.AddPass("RhiTestDraw");
@@ -267,26 +300,17 @@ int main() {
             indexRead.barrierMasks.accessMask = smvk::AccessFlags::IndexRead;
             indexRead.barrierMasks.stageMask = smvk::PipelineStageBit_AllGraphics;
             draw.AddBufferHint(indexL, indexRead);
-            const smvk::BufferHandle cmd = indirectBuf;
-            const smvk::BufferHandle idx = indexBuf;
-            smvk::ShaderProgram* prog = &drawProgram;
-            draw.SetRecordingFunc([cmd, idx, prog](smvk::CommandBuffer& c) {
-                c.BindIndexBuffer(idx, 0);
-                c.BindRenderPipeline(*prog,
-                                     ::tour::vertex_layouts::Empty,
-                                     smvk::DepthSettings{.depthFunc = smvk::CompareOp::Always,
-                                                         .writeEnable = false,
-                                                         .depthTestEnable = false},
-                                     smvk::StencilSettings{},
-                                     smvk::BlendSettings{},
-                                     smvk::MSAASettings{},
-                                     smvk::RasterSettings{.cullMode = smvk::CullMode::None});
-                c.DrawIndexedIndirect(cmd, 0, 1, sizeof(IndirectCmd));
-            });
+            IndirectDrawFrame& frame = g.PassFrameData<IndirectDrawFrame>(draw);
+            frame.program = &drawProgram;
+            frame.cmd = indirectBuf;
+            frame.idx = indexBuf;
+            draw.SetRecordFn(&RecordIndirectDraw);
         }
         rm.UpdateDescriptors();
         smvk::Framebuffer fb = swap.AcquireFramebuffer();
-        rg.Execute(fb);
+        smvk::FrameContext fc{};
+        fc.rg = &rg;
+        rg.Execute(fb, &fc);
         swap.EndAndPresentFramebuffer(fb);
     };
 

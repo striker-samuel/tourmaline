@@ -32,6 +32,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -3260,6 +3261,37 @@ class EditorApp : public tour::App {
     // Gizmo/AABB line upload buffer.
     smvk::Holder<smvk::BufferHandle> m_gizmoLines{};
     uint32_t m_gizmoLinesCap = 0;
+
+    // ---- Static record functions (compiled render graph ABI) ----
+    struct GizmoRange {
+        uint32_t first = 0, count = 0;
+        glm::vec4 color{1.0f};
+        bool depthTest = false;
+    };
+    struct GizmoFrame {
+        std::span<const GizmoRange> ranges;
+        glm::mat4 vpViewProj{1.0f};
+    };
+    static void RecordGizmo(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
+    struct LmExportFrame {
+        engine::IRenderer::PushConstants pc{};
+        bool drawWires = false;
+    };
+    static void RecordLmExport(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
+    struct MainPassFrame {
+        engine::IRenderer::PushConstants pc{};
+        bool selectedWireOverlay = false;
+        bool bakedOnly = false;
+        bool meshletDbg = false;
+        bool uvDbg = false;
+        ViewMode mode = ViewMode::Lit;
+    };
+    static void RecordMainDraw(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
+    struct InsetFrame { engine::IRenderer::PushConstants pc{}; };
+    static void RecordInset(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
+    static void RecordTrianglePreview(smvk::CommandBuffer&,
+                                      const smvk::FrameContext&,
+                                      const smvk::PassData&);
     // UV editor window line upload RETIRED with the canvas.
     // smvk::Holder<smvk::BufferHandle> m_uvWinLines{};
     // uint32_t m_uvWinLinesCap = 0;
