@@ -9578,6 +9578,982 @@ void WorldRenderer::RecordMotion(smvk::CommandBuffer& cmd,
         drawDitheredMotion();
     }
 }
+void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
+                               const smvk::FrameContext& fc,
+                               const smvk::PassData& pd) {
+    auto* self = const_cast<WorldRenderer*>(static_cast<const WorldRenderer*>(pd.config));
+    const MainFrame& f = fc.rg->FrameData().Get<MainFrame>(pd.frameSlot);
+
+    const smvk::DepthSettings opaqueDepth{
+        .depthFunc = smvk::CompareOp::GreaterEqual,
+        .writeEnable = f.useMsaa,
+        .depthTestEnable = true,
+    };
+    const smvk::DepthSettings transparentDepth{
+        .depthFunc = smvk::CompareOp::GreaterEqual,
+        .writeEnable = false,
+        .depthTestEnable = true,
+    };
+    const smvk::StencilSettings noStencil{};
+    const smvk::MSAASettings msaaSettings =
+        f.useMsaa ? smvk::MSAASettings::Count2() : smvk::MSAASettings::Count1();
+
+    auto wireframeRaster = [&](smvk::RasterSettings r) {
+        if (self->m_wireframe) {
+            r.polygonMode = smvk::PolygonMode::Line;
+            r.cullMode = smvk::CullMode::None;
+        }
+        return r;
+    };
+    auto wireTwinOf = [&](smvk::ShaderProgram& prog) -> smvk::ShaderProgram& {
+        if (!self->m_wireframe)
+            return prog;
+        if (&prog == &self->m_resources.mainProgram || &prog == &self->m_resources.mainProgramA2C ||
+            &prog == &self->m_resources.mainProjectProgram ||
+            &prog == &self->m_resources.mainProjectProgramA2C || self->IsFarSpecProgram(prog)) {
+            return self->m_resources.mainWireProgram.shaderCount == 2
+                       ? self->m_resources.mainWireProgram
+                       : prog;
+        }
+        if (self->m_gfxRenderer.IsFilteredLitProgram(prog)) {
+            return self->m_gfxRenderer.FilteredWireValid()
+                       ? self->m_gfxRenderer.FilteredWireProgram()
+                       : prog;
+        }
+        if (&prog == &self->m_resources.vertexLitProgram) {
+            return self->m_resources.vertexLitWireProgram.shaderCount == 2
+                       ? self->m_resources.vertexLitWireProgram
+                       : prog;
+        }
+        if (self->m_gfxRenderer.IsFilteredLitProgram(prog)) {
+            return self->m_gfxRenderer.FilteredWireValid()
+                       ? self->m_gfxRenderer.FilteredWireProgram()
+                       : prog;
+        }
+        return prog;
+    };
+    auto drawNode = [&](NodeId node, uint32_t meshId, uint32_t materialId, uint32_t userData = 0) {
+        auto& model = self->m_world->scene.globalTransform[node];
+        smvk::StaticMesh* meshDesc = self->LodMeshForNode(node, meshId);
+        if (!meshDesc)
+            return;
+        DepthSkinTail skinTail{};
+        if (meshDesc->skinned && f.mainSkinValid) {
+            skinTail.skinned = 1u;
+            skinTail.deformedBase = f.mainSkinBase;
+            skinTail.vsDeformed = f.mainSkinBda;
+        }
+        cmd.PushConstants(
+            kDepthSkinTailOffset, sizeof(DepthSkinTail), &skinTail, smvk::ShaderStage::All);
+        IRenderer::PushConstants pc{};
+        pc.materialId = materialId;
+        pc.padEnd_[0] = (DitherCloseupStateFor(self->m_world->scene,
+                                               int(node),
+                                               self->m_cameraPositioner.cameraPosition_) ==
+                         DitherCloseupState::Fade)
+                            ? 1u
+                            : 0u;
+        pc.padEnd_[1] = userData;
+        pc.padEnd_[2] = node < self->m_world->scene.metadata.size()
+                            ? self->m_world->scene.metadata[node].lightLayerMask
+                            : 0xffffffffu;
+        cmd.PushConstants(offsetof(IRenderer::PushConstants, padEnd_),
+                          sizeof(pc.padEnd_[0]) * 3,
+                          &pc.padEnd_[0],
+                          smvk::ShaderStage::All);
+        const float* modelData = glm::value_ptr(model);
+        std::copy_n(modelData, 16, pc.model);
+        cmd.PushConstants(offsetof(IRenderer::PushConstants, materialId),
+                          sizeof(pc.materialId),
+                          &pc.materialId,
+                          smvk::ShaderStage::All);
+        cmd.PushConstants(
+            0, offsetof(IRenderer::PushConstants, frameUniforms), &pc, smvk::ShaderStage::All);
+        for (auto& draw_set : meshDesc->geometry.surfaces) {
+            cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
+        }
+    };
+    smvk::ShaderProgram noA2CProgram{};
+    auto bindForMaterial = [&](uint32_t materialId,
+                               smvk::ShaderProgram& prog,
+                               smvk::ShaderProgram& progA2c,
+                               const smvk::DepthSettings& depth,
+                               bool writeStencilClass = true) -> smvk::ShaderProgram& {
+        smvk::BlendSettings blend = smvk::BlendSettings::Opaque();
+        smvk::RasterSettings raster{};
+        bool maskedCutout = false;
+        if (const smvk::Material* mat =
+                static_cast<const smvk::World&>(*self->m_world).GetMaterial(materialId)) {
+            blend = mat->pipeline.blend;
+            raster = mat->pipeline.raster;
+            maskedCutout = mat->shadingModel == smvk::ShadingModel::Masked;
+        }
+        {
+            static const bool noCull = [] {
+                const char* e = std::getenv("TOURMALINE_NOCULL");
+                return e && std::strcmp(e, "1") == 0;
+            }();
+            if (noCull)
+                raster.cullMode = smvk::CullMode::None;
+        }
+        const bool useA2c = !self->m_wireframe && f.useMsaa && self->m_msaaAlphaToCoverage &&
+                            maskedCutout && progA2c.shaderCount == 2;
+        smvk::ShaderProgram& bound = useA2c ? progA2c : prog;
+        (void)writeStencilClass;
+        cmd.BindRenderPipeline(wireTwinOf(bound),
+                               ::tour::vertex_layouts::Static,
+                               depth,
+                               noStencil,
+                               blend,
+                               useA2c ? smvk::MSAASettings::Count2A2C() : msaaSettings,
+                               wireframeRaster(raster));
+        return bound;
+    };
+
+    if (self->m_passes.skydome && self->m_skyEnabled && self->m_skydome.ShadersValid()) {
+        cmd.BindRenderPipeline(self->m_skydome.program,
+                               ::tour::vertex_layouts::Empty,
+                               smvk::DepthSettings::Disabled(),
+                               noStencil,
+                               smvk::BlendSettings::Opaque(),
+                               msaaSettings,
+                               smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+        cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &f.pc, smvk::ShaderStage::All);
+        cmd.Draw(3, 1, 0, 0);
+    }
+    const smvk::DepthSettings terrainDepth{
+        .depthFunc = smvk::CompareOp::GreaterEqual,
+        .writeEnable = true,
+        .depthTestEnable = true,
+    };
+    if (self->m_passes.terrain && self->m_terrainEnabled && self->m_terrain.valid) {
+        self->m_terrain.RecordBlocks(cmd,
+                                     f.frameViewProj,
+                                     self->m_cameraPositioner.cameraPosition_,
+                                     f.pc,
+                                     terrainDepth,
+                                     noStencil,
+                                     smvk::BlendSettings::Opaque(),
+                                     msaaSettings,
+                                     self->m_terrainHfShadow,
+                                     self->m_terrainHfSteps);
+    }
+    if (self->m_gpuPlacementReady && self->m_gpuPlacementRuntime && self->m_gpuPlacementDraw) {
+        auto& rt = *self->m_gpuPlacementRuntime;
+        cmd.BindStaticVertexFmt();
+        cmd.BindRenderPipeline(self->m_gpuPlacementDraw->program,
+                               ::tour::vertex_layouts::Static,
+                               opaqueDepth,
+                               noStencil,
+                               smvk::BlendSettings::Opaque(),
+                               msaaSettings,
+                               smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+        cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &f.pc, smvk::ShaderStage::All);
+        for (size_t s = 0; s < rt.active.size(); ++s) {
+            const auto* vs = rt.VisSet(int32_t(s), f.placementFlight);
+            if (!vs)
+                continue;
+            const tour::placement::PlacementVsPush tail{
+                vs->VisibleAddress(*self->m_context),
+                rt.pass.TileInstancesAddress(*self->m_context, uint32_t(s)),
+                f.renderViewsAddress,
+                f.mainRenderView,
+                0u};
+            cmd.PushConstants(tour::placement::kPlacementVsPushOffset,
+                              sizeof(tail),
+                              &tail,
+                              smvk::ShaderStage::All);
+            for (uint32_t proto = 0; proto < self->m_gpuPlacementSeedCount; ++proto)
+                cmd.DrawIndexedIndirect(vs->IndirectBuffer(),
+                                        uint64_t(proto) * tour::placement::kPlacementIndirectStride,
+                                        1,
+                                        tour::placement::kPlacementIndirectStride);
+        }
+    }
+    if (self->m_bakedPlacementReady && self->m_gpuPlacementDraw) {
+        cmd.BindStaticVertexFmt();
+        cmd.BindRenderPipeline(self->m_gpuPlacementDraw->program,
+                               ::tour::vertex_layouts::Static,
+                               opaqueDepth,
+                               noStencil,
+                               smvk::BlendSettings::Opaque(),
+                               msaaSettings,
+                               smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+        cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &f.pc, smvk::ShaderStage::All);
+        for (auto& inst : self->m_bakedPlacementInstances) {
+            auto& brt = *inst.runtime;
+            for (size_t s = 0; s < brt.active.size(); ++s) {
+                const auto* vs = brt.VisSet(int32_t(s), f.placementFlight);
+                if (!vs)
+                    continue;
+                const uint32_t protoCount = brt.TileProtoCount(int32_t(s));
+                if (protoCount == 0)
+                    continue;
+                const tour::placement::PlacementVsPush tail{
+                    vs->VisibleAddress(*self->m_context),
+                    brt.pass.TileInstancesAddress(*self->m_context, uint32_t(s)),
+                    f.renderViewsAddress,
+                    f.mainRenderView,
+                    0u};
+                cmd.PushConstants(tour::placement::kPlacementVsPushOffset,
+                                  sizeof(tail),
+                                  &tail,
+                                  smvk::ShaderStage::All);
+                for (uint32_t proto = 0; proto < protoCount; ++proto)
+                    cmd.DrawIndexedIndirect(vs->IndirectBuffer(),
+                                            uint64_t(proto) *
+                                                tour::placement::kPlacementIndirectStride,
+                                            1,
+                                            tour::placement::kPlacementIndirectStride);
+            }
+        }
+    }
+    if (self->m_meshParticlesReady && self->m_meshParticleDraw.Valid()) {
+        auto& mp = self->m_viewportResources.meshParticles;
+        cmd.BindStaticVertexFmt();
+        cmd.BindRenderPipeline(self->m_meshParticleDraw.program,
+                               ::tour::vertex_layouts::Static,
+                               opaqueDepth,
+                               noStencil,
+                               smvk::BlendSettings::Opaque(),
+                               msaaSettings,
+                               smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+        cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &f.pc, smvk::ShaderStage::All);
+        const smvk::MeshParticlesVsPush tail{mp.VisibleAddress(*self->m_context),
+                                             mp.ParticlesAddress(*self->m_context),
+                                             f.renderViewsAddress,
+                                             f.mainRenderView,
+                                             0u};
+        cmd.PushConstants(
+            smvk::kMeshParticlesVsPushOffset, sizeof(tail), &tail, smvk::ShaderStage::All);
+        for (uint32_t bin = 0; bin < mp.protoTableCount; ++bin)
+            cmd.DrawIndexedIndirect(mp.IndirectHandle(),
+                                    uint64_t(bin) * tour::placement::kPlacementIndirectStride,
+                                    1,
+                                    tour::placement::kPlacementIndirectStride);
+    }
+
+    cmd.BindRenderPipeline(wireTwinOf(self->m_resources.mainProgram),
+                           ::tour::vertex_layouts::Static,
+                           opaqueDepth,
+                           noStencil,
+                           smvk::BlendSettings::Opaque(),
+                           msaaSettings,
+                           wireframeRaster(smvk::RasterSettings{}));
+    cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &f.pc, smvk::ShaderStage::All);
+
+    if (f.sceneRasterActive && f.sceneTaskActive) {
+        cmd.BeginPrimitiveCount(0u);
+        cmd.WriteStageTimestamp(smvk::kGpuStageMainDraw, true);
+        const auto drawRecT0 = std::chrono::steady_clock::now();
+        const auto drawTaskBin = [&](uint32_t cls,
+                                     smvk::ShaderProgram& program,
+                                     smvk::CullMode cull,
+                                     const smvk::MSAASettings& msaa) {
+            cmd.BindRenderPipeline(program,
+                                   ::tour::vertex_layouts::Empty,
+                                   opaqueDepth,
+                                   noStencil,
+                                   smvk::BlendSettings::Opaque(),
+                                   msaa,
+                                   smvk::RasterSettings{.cullMode = cull});
+            cmd.PushConstants(0, sizeof(f.pc), &f.pc, smvk::ShaderStage::All);
+            auto push = f.sceneTaskPlan.graphics;
+            push.rasterClass = cls;
+            push.temporalPhase = f.sceneTaskTemporalActive ? 3u : 0u;
+            cmd.PushConstants(192u, sizeof(push), &push, smvk::ShaderStage::All);
+            cmd.DrawMeshTasksIndirect(f.sceneTaskPlan.indirectHandle,
+                                      uint64_t(cls) *
+                                          sizeof(tour::gpu_scene::TaskMeshIndirectCommand),
+                                      1u,
+                                      sizeof(tour::gpu_scene::TaskMeshIndirectCommand));
+        };
+        const std::optional<DebugFs> sceneTaskDbg = DebugFsForView(self->m_debugView);
+        const bool sceneTaskDbgValid =
+            sceneTaskDbg &&
+            self->m_gpuSceneTaskDebugPrograms[size_t(*sceneTaskDbg)].shaderCount == 3;
+        auto& sceneTaskLit =
+            (self->m_debugView == ViewMode::Meshlets || self->m_debugView == ViewMode::Lods)
+                ? self->m_gpuSceneTaskDebugProgram
+                : (sceneTaskDbgValid
+                       ? self->m_gpuSceneTaskDebugPrograms[size_t(*sceneTaskDbg)]
+                       : (f.sceneGiVariant == 0u
+                              ? self->m_gpuSceneTaskMainProgram
+                              : self->m_gpuSceneTaskGiPrograms[f.sceneGiVariant]));
+        drawTaskBin(0u, sceneTaskLit, smvk::CullMode::Back, msaaSettings);
+        if (f.sceneRasterTwoSided)
+            drawTaskBin(1u, sceneTaskLit, smvk::CullMode::None, msaaSettings);
+        const bool taskA2c =
+            !sceneTaskDbgValid && f.useMsaa && self->m_msaaAlphaToCoverage &&
+            (f.sceneGiVariant == 0u
+                 ? self->m_gpuSceneTaskMaskedA2cProgram.shaderCount == 3
+                 : self->m_gpuSceneTaskGiA2cPrograms[f.sceneGiVariant].shaderCount == 3);
+        auto& masked =
+            taskA2c ? (f.sceneGiVariant == 0u ? self->m_gpuSceneTaskMaskedA2cProgram
+                                              : self->m_gpuSceneTaskGiA2cPrograms[f.sceneGiVariant])
+                    : sceneTaskLit;
+        const auto taskMsaa = taskA2c ? smvk::MSAASettings::Count2A2C() : msaaSettings;
+        if (f.sceneRasterMasked)
+            drawTaskBin(2u, masked, smvk::CullMode::Back, taskMsaa);
+        if (f.sceneRasterMaskedTwoSided)
+            drawTaskBin(3u, masked, smvk::CullMode::None, taskMsaa);
+        cmd.EndPrimitiveCount(0u);
+        cmd.WriteStageTimestamp(smvk::kGpuStageMainDraw, false);
+        if (self->m_host.BenchMeasuring()) {
+            s_benchDrawRecord += std::chrono::duration<double, std::milli>(
+                                     std::chrono::steady_clock::now() - drawRecT0)
+                                     .count();
+        }
+    }
+    if (f.sceneRasterActive && f.sceneRasterCommandCount > 0 &&
+        (!f.sceneTaskActive || f.sceneNativeSuffix)) {
+        const std::optional<DebugFs> sceneRasterDbg = DebugFsForView(self->m_debugView);
+        const bool sceneRasterDbgValid =
+            sceneRasterDbg &&
+            self->m_resources.debugPrograms[size_t(*sceneRasterDbg)].filtered.shaderCount == 2;
+        auto& sceneIndexedLit =
+            sceneRasterDbgValid
+                ? self->m_resources.debugPrograms[size_t(*sceneRasterDbg)].filtered
+                : (f.sceneGiVariant == 0u ? self->m_gpuSceneRasterProgram
+                                          : self->m_gpuSceneRasterGiPrograms[f.sceneGiVariant]);
+        cmd.BindStaticVertexFmt();
+        cmd.BindRenderPipeline(sceneIndexedLit,
+                               ::tour::vertex_layouts::Static,
+                               opaqueDepth,
+                               noStencil,
+                               smvk::BlendSettings::Opaque(),
+                               msaaSettings,
+                               smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
+        cmd.PushConstants(0, sizeof(f.pc), &f.pc, smvk::ShaderStage::All);
+        cmd.PushConstants(tour::gpu_scene::kRasterVsPushOffset,
+                          sizeof(f.sceneRasterVsPush),
+                          &f.sceneRasterVsPush,
+                          smvk::ShaderStage::All);
+        constexpr uint32_t kChunk = 65535;
+        const bool sceneRasterCompact = self->m_gpuSceneMeshletCompactActive;
+        const uint32_t binStride =
+            f.sceneRasterCommandCount / tour::gpu_scene::kRasterPipelineClassCount;
+        const auto drawBin = [&](uint32_t bin) {
+            if (sceneRasterCompact) {
+                cmd.DrawIndexedIndirectCount(
+                    f.sceneRasterCommands,
+                    uint64_t(self->m_gpuSceneMeshletBinOffsets[bin]) *
+                        sizeof(tour::gpu_scene::RasterIndirectCommand),
+                    self->m_gpuSceneMeshletClassCounts,
+                    uint64_t(bin) * sizeof(uint32_t),
+                    self->m_gpuSceneMeshletBinCapacities[bin],
+                    sizeof(tour::gpu_scene::RasterIndirectCommand));
+                return;
+            }
+            const uint32_t base = bin * binStride;
+            for (uint32_t first = 0; first < binStride; first += kChunk) {
+                const uint32_t count = std::min(kChunk, binStride - first);
+                cmd.DrawIndexedIndirect(f.sceneRasterCommands,
+                                        uint64_t(base + first) *
+                                            sizeof(tour::gpu_scene::RasterIndirectCommand),
+                                        count,
+                                        sizeof(tour::gpu_scene::RasterIndirectCommand));
+            }
+        };
+        cmd.WriteStageTimestamp(smvk::kGpuStageMainDraw, true);
+        const auto drawRecT0 = std::chrono::steady_clock::now();
+        cmd.BeginPrimitiveCountRegular(0u);
+        drawBin(0u);
+        if (f.sceneRasterTwoSided) {
+            cmd.BindRenderPipeline(sceneIndexedLit,
+                                   ::tour::vertex_layouts::Static,
+                                   opaqueDepth,
+                                   noStencil,
+                                   smvk::BlendSettings::Opaque(),
+                                   msaaSettings,
+                                   smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+            drawBin(1u);
+        }
+        const bool sceneMaskedA2c =
+            !sceneRasterDbgValid && f.useMsaa && self->m_msaaAlphaToCoverage &&
+            (f.sceneGiVariant == 0u
+                 ? self->m_gpuSceneRasterMaskedA2cProgram.shaderCount == 2
+                 : self->m_gpuSceneRasterGiA2cPrograms[f.sceneGiVariant].shaderCount == 2);
+        auto& sceneMaskedProgram =
+            sceneMaskedA2c
+                ? (f.sceneGiVariant == 0u ? self->m_gpuSceneRasterMaskedA2cProgram
+                                          : self->m_gpuSceneRasterGiA2cPrograms[f.sceneGiVariant])
+                : sceneIndexedLit;
+        const auto sceneMaskedMsaa =
+            sceneMaskedA2c ? smvk::MSAASettings::Count2A2C() : msaaSettings;
+        if (f.sceneRasterMasked) {
+            cmd.BindRenderPipeline(sceneMaskedProgram,
+                                   ::tour::vertex_layouts::Static,
+                                   opaqueDepth,
+                                   noStencil,
+                                   smvk::BlendSettings::Opaque(),
+                                   sceneMaskedMsaa,
+                                   smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
+            drawBin(2u);
+        }
+        if (f.sceneRasterMaskedTwoSided) {
+            cmd.BindRenderPipeline(sceneMaskedProgram,
+                                   ::tour::vertex_layouts::Static,
+                                   opaqueDepth,
+                                   noStencil,
+                                   smvk::BlendSettings::Opaque(),
+                                   sceneMaskedMsaa,
+                                   smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+            drawBin(3u);
+        }
+        if (f.sceneRasterProjectLit) {
+            cmd.BindRenderPipeline(self->m_gpuSceneRasterProjectLitProgram,
+                                   ::tour::vertex_layouts::Static,
+                                   opaqueDepth,
+                                   noStencil,
+                                   smvk::BlendSettings::Opaque(),
+                                   msaaSettings,
+                                   smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
+            drawBin(4u);
+            if (f.sceneRasterTwoSided) {
+                cmd.BindRenderPipeline(self->m_gpuSceneRasterProjectLitProgram,
+                                       ::tour::vertex_layouts::Static,
+                                       opaqueDepth,
+                                       noStencil,
+                                       smvk::BlendSettings::Opaque(),
+                                       msaaSettings,
+                                       smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+                drawBin(5u);
+            }
+            if (f.sceneRasterMasked) {
+                cmd.BindRenderPipeline(self->m_gpuSceneRasterProjectLitProgram,
+                                       ::tour::vertex_layouts::Static,
+                                       opaqueDepth,
+                                       noStencil,
+                                       smvk::BlendSettings::Opaque(),
+                                       msaaSettings,
+                                       smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
+                drawBin(6u);
+            }
+            if (f.sceneRasterMaskedTwoSided) {
+                cmd.BindRenderPipeline(self->m_gpuSceneRasterProjectLitProgram,
+                                       ::tour::vertex_layouts::Static,
+                                       opaqueDepth,
+                                       noStencil,
+                                       smvk::BlendSettings::Opaque(),
+                                       msaaSettings,
+                                       smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+                drawBin(7u);
+            }
+        }
+        cmd.EndPrimitiveCountRegular(0u);
+        cmd.WriteStageTimestamp(smvk::kGpuStageMainDraw, false);
+        if (self->m_host.BenchMeasuring()) {
+            s_benchDrawRecord += std::chrono::duration<double, std::milli>(
+                                     std::chrono::steady_clock::now() - drawRecT0)
+                                     .count();
+        }
+    }
+
+    ViewMode effView = self->m_debugView;
+    if (effView == ViewMode::SsrContribution &&
+        self->m_resources.ssrContributionDebugProgram.shaderCount != 2)
+        effView = ViewMode::Lit;
+    std::optional<DebugFs> shadingDbgFs = DebugFsForView(effView);
+    if (shadingDbgFs) {
+        const auto& pair = self->m_resources.debugPrograms[size_t(*shadingDbgFs)];
+        if (pair.direct.shaderCount != 2) {
+            shadingDbgFs.reset();
+            effView = ViewMode::Lit;
+        }
+    }
+    const bool meshletDbg = (effView == ViewMode::Meshlets);
+    const bool lodDbg = (effView == ViewMode::Lods);
+    const bool shadingDbg = shadingDbgFs.has_value();
+    const bool bypassFilter = effView == ViewMode::SsrContribution;
+    static const float kLodPalette[8][3] = {
+        {0.20f, 0.90f, 0.30f}, {0.95f, 0.85f, 0.20f}, {1.00f, 0.55f, 0.15f},
+        {1.00f, 0.20f, 0.20f}, {1.00f, 0.20f, 1.00f}, {1.00f, 0.20f, 1.00f},
+        {1.00f, 0.20f, 1.00f}, {1.00f, 0.20f, 1.00f},
+    };
+    const float flatExposure = self->FrameExposure();
+    const float flatGain = (flatExposure > 1e-9f) ? 1.0f / flatExposure : 1.0f;
+    auto pushMeshDebugSkinTail = [&](uint32_t meshId, NodeId node) {
+        MeshDebugSkinTail tail{};
+        static const bool noskin = [] {
+            const char* e = std::getenv("TOURMALINE_KD_NOSKIN");
+            return e && std::strcmp(e, "1") == 0;
+        }();
+        const smvk::gfx::State& st = self->m_gfxRenderer.State();
+        if (!noskin && st.skinDeformedBda != 0 && st.skinDeformedBase != UINT32_MAX) {
+            if (const smvk::StaticMesh* sel = self->LodMeshForNode(node, meshId);
+                sel && sel->skinned) {
+                tail.deformed = st.skinDeformedBda;
+                tail.deformedBase = st.skinDeformedBase;
+                tail.skinned = 1;
+            }
+        }
+        cmd.PushConstants(
+            kMeshDebugSkinTailOffset, sizeof(tail), &tail, smvk::ShaderStage::All);
+    };
+    if (meshletDbg && (self->m_gpuSceneTaskDebugProgram.shaderCount != 3 ||
+                       self->m_gpuSceneRasterLegacyCount != 0)) {
+        cmd.BindRenderPipeline(self->m_gfxRenderer.MeshDebugProgram(),
+                               ::tour::vertex_layouts::Static,
+                               opaqueDepth,
+                               noStencil,
+                               smvk::BlendSettings::Opaque(),
+                               msaaSettings,
+                               wireframeRaster(smvk::RasterSettings{.cullMode = smvk::CullMode::None}));
+        cmd.BindStaticVertexFmt();
+        const smvk::gfx::State& dbgState = self->m_gfxRenderer.State();
+        MeshDebugPush dp{};
+        std::copy_n(glm::value_ptr(f.frameViewProj), 16, dp.viewProj);
+        const float dbgExposure = self->FrameExposure();
+        const float dbgGain = (dbgExposure > 1e-9f) ? 1.0f / dbgExposure : 1.0f;
+        self->m_world->forEachRenderItem(
+            smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
+                smvk::IteratorFlagBit_StaticVertexFmt,
+            [&](const smvk::World::RenderItem& item) {
+                if (f.sceneRasterActive &&
+                    self->m_gpuSceneRasterOwnership.OwnsGpu(
+                        self->m_gpuSceneSync.SourceForNode(item.node)))
+                    return;
+                if (item.material == smvk::World::kInvalidIndex)
+                    return;
+                const uint32_t worldMesh = item.mesh;
+                const glm::mat4& model = self->m_world->scene.globalTransform[item.node];
+                std::copy_n(glm::value_ptr(model), 16, dp.model);
+                pushMeshDebugSkinTail(worldMesh, item.node);
+                const smvk::gfx::State& stHeat = self->m_gfxRenderer.State();
+                const smvk::StaticMesh* heatMeshDesc = self->m_world->GetMesh(worldMesh);
+                const bool heatSkinned = heatMeshDesc && heatMeshDesc->skinned &&
+                                         stHeat.skinDeformedBda != 0 &&
+                                         stHeat.skinDeformedBase != UINT32_MAX;
+                const uint32_t gfxMesh = smvk::gfx::GfxMeshForLod(
+                    self->m_gfxRenderer.State(), worldMesh,
+                    self->LodIndexForNode(item.node, worldMesh));
+                if (gfxMesh == UINT32_MAX || gfxMesh >= dbgState.meshes.size()) {
+                    dp.color[0] = dp.color[1] = dp.color[2] = 0.9f * dbgGain;
+                    dp.color[3] = 1.0f;
+                    cmd.PushConstants(0, sizeof(dp), &dp, smvk::ShaderStage::All);
+                    if (smvk::StaticMesh* meshDesc = self->LodMeshForNode(item.node, worldMesh)) {
+                        for (auto& draw_set : meshDesc->geometry.surfaces) {
+                            cmd.DrawIndexed(
+                                draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
+                        }
+                    }
+                    return;
+                }
+                const smvk::gfx::Mesh& gm = dbgState.meshes[gfxMesh];
+                for (uint32_t ci = 0; ci < gm.clusterCount; ++ci) {
+                    const uint32_t gc = gm.clusterStart + ci;
+                    if (gc >= dbgState.clusters.size())
+                        continue;
+                    const smvk::gfx::Cluster& cl = dbgState.clusters[gc];
+                    if (cl.triCount == 0)
+                        continue;
+                    float coneCutoff = cl.coneCutoff;
+                    if (heatSkinned)
+                        coneCutoff = -2.0f;
+                    float rgba[4];
+                    GfxRenderer::DebugClusterColor(gc, coneCutoff, self->m_debugMeshletMode, rgba);
+                    dp.color[0] = rgba[0] * dbgGain;
+                    dp.color[1] = rgba[1] * dbgGain;
+                    dp.color[2] = rgba[2] * dbgGain;
+                    dp.color[3] = rgba[3];
+                    cmd.PushConstants(0, sizeof(dp), &dp, smvk::ShaderStage::All);
+                    const uint32_t firstIndex = smvk::gfx::ClusterIndexBase(dbgState) + cl.indexOffset;
+                    cmd.DrawIndexed(cl.triCount * 3, 1, firstIndex, 0);
+                }
+            });
+    }
+    if (lodDbg && (self->m_gpuSceneTaskDebugProgram.shaderCount != 3 ||
+                   self->m_gpuSceneRasterLegacyCount != 0)) {
+        cmd.BindRenderPipeline(self->m_gfxRenderer.MeshDebugProgram(),
+                               ::tour::vertex_layouts::Static,
+                               opaqueDepth,
+                               noStencil,
+                               smvk::BlendSettings::Opaque(),
+                               msaaSettings,
+                               wireframeRaster(smvk::RasterSettings{.cullMode = smvk::CullMode::None}));
+        cmd.BindStaticVertexFmt();
+        MeshDebugPush lp2{};
+        std::copy_n(glm::value_ptr(f.frameViewProj), 16, lp2.viewProj);
+        self->m_world->forEachRenderItem(
+            smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
+                smvk::IteratorFlagBit_StaticVertexFmt,
+            [&](const smvk::World::RenderItem& item) {
+                if (f.sceneRasterActive &&
+                    self->m_gpuSceneRasterOwnership.OwnsGpu(
+                        self->m_gpuSceneSync.SourceForNode(item.node)))
+                    return;
+                if (item.material == smvk::World::kInvalidIndex)
+                    return;
+                const glm::mat4& model = self->m_world->scene.globalTransform[item.node];
+                std::copy_n(glm::value_ptr(model), 16, lp2.model);
+                pushMeshDebugSkinTail(item.mesh, item.node);
+                uint32_t lod = 0;
+                smvk::StaticMesh* meshDesc = self->LodMeshForNode(item.node, item.mesh, &lod);
+                if (!meshDesc)
+                    return;
+                static const float kLodVertexLit[3] = {1.0f, 1.0f, 1.0f};
+                const bool vlitLevel = self->ShaderLodActive() && self->m_world &&
+                                       !self->m_world->FarShadingAt(item.mesh, lod, item.material)
+                                            .isDefault();
+                const float* pal = vlitLevel ? kLodVertexLit : kLodPalette[lod < 8 ? lod : 4];
+                lp2.color[0] = pal[0] * flatGain;
+                lp2.color[1] = pal[1] * flatGain;
+                lp2.color[2] = pal[2] * flatGain;
+                lp2.color[3] = 1.0f;
+                cmd.PushConstants(0, sizeof(lp2), &lp2, smvk::ShaderStage::All);
+                for (auto& draw_set : meshDesc->geometry.surfaces) {
+                    cmd.DrawIndexed(
+                        draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
+                }
+            });
+    }
+    if (!meshletDbg && !lodDbg && !bypassFilter &&
+        (!f.sceneRasterActive || self->m_gpuSceneRasterLegacyCount != 0)) {
+        const bool shaderLodOn = self->ShaderLodActive();
+        uint32_t boundMaterial = UINT32_MAX;
+        smvk::ShaderProgram* boundProgram = nullptr;
+        self->m_world->forEachRenderItem(
+            smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
+                smvk::IteratorFlagBit_StaticVertexFmt,
+            [&](const smvk::World::RenderItem& item) {
+                if (item.material == smvk::World::kInvalidIndex)
+                    return;
+                if (f.sceneRasterActive &&
+                    self->m_gpuSceneRasterOwnership.OwnsGpu(
+                        self->m_gpuSceneSync.SourceForNode(item.node)))
+                    return;
+                if (smvk::StaticMesh* cullBase = self->m_world->GetMesh(item.mesh)) {
+                    const glm::mat4& cullModel = self->m_world->scene.globalTransform[item.node];
+                    glm::vec3 c{0.0f};
+                    float r = 0.0f;
+                    smvk::MeshBoundsToWorld(
+                        cullModel, cullBase->geometry.aabbMin, cullBase->geometry.aabbMax, c, r);
+                    bool visible = smvk::RenderViewIntersectsSphere(f.liveMainCullView, c, r);
+                    const uint32_t cullLod = self->LodIndexForNode(item.node, item.mesh);
+                    if (smvk::StaticMesh* cullSel = self->m_world->GetLodMesh(item.mesh, cullLod);
+                        !visible && cullSel && cullSel != cullBase) {
+                        smvk::MeshBoundsToWorld(
+                            cullModel, cullSel->geometry.aabbMin, cullSel->geometry.aabbMax, c, r);
+                        visible = smvk::RenderViewIntersectsSphere(f.liveMainCullView, c, r);
+                    }
+                    if (!visible)
+                        return;
+                }
+                if (DitherCloseupStateFor(self->m_world->scene,
+                                          int(item.node),
+                                          self->m_cameraPositioner.cameraPosition_) ==
+                    DitherCloseupState::Hidden)
+                    return;
+                const smvk::World::FarShading farShading =
+                    shaderLodOn
+                        ? self->FarShadingForNode(item.node, item.mesh, item.material)
+                        : smvk::World::FarShading{};
+                const bool vertexLitLevel = farShading.vertexLit;
+                FarSpecPrograms* farSpec = (!vertexLitLevel && !farShading.isDefault())
+                                               ? self->FarSpecProgramsFor(farShading.quality)
+                                               : nullptr;
+                const uint32_t materialId = item.material;
+                const bool itemProjectLit = !shadingDbg && !vertexLitLevel &&
+                                            self->MaterialUsesProjectLit(materialId);
+                smvk::ShaderProgram& baseProg =
+                    shadingDbg
+                        ? self->m_resources.debugPrograms[size_t(*shadingDbgFs)].direct
+                        : vertexLitLevel
+                              ? self->m_resources.vertexLitProgram
+                              : (farSpec && farSpec->main.shaderCount == 2)
+                                    ? farSpec->main
+                                    : self->MainLitProgramFor(materialId);
+                smvk::ShaderProgram& baseA2c =
+                    (shadingDbg || vertexLitLevel)
+                        ? noA2CProgram
+                        : (farSpec && farSpec->a2c.shaderCount == 2)
+                              ? farSpec->a2c
+                              : itemProjectLit ? self->m_resources.mainProjectProgramA2C
+                                               : self->m_resources.mainProgramA2C;
+                smvk::ShaderProgram& prog = baseProg;
+                smvk::ShaderProgram& progA2c = baseA2c;
+                if (materialId != boundMaterial ||
+                    (&prog != boundProgram && &progA2c != boundProgram)) {
+                    smvk::ShaderProgram& bound =
+                        bindForMaterial(materialId, prog, progA2c, opaqueDepth);
+                    boundMaterial = materialId;
+                    boundProgram = &bound;
+                }
+                if (vertexLitLevel && !shadingDbg)
+                    ++self->m_lodShaderDraws;
+                drawNode(item.node, item.mesh, materialId,
+                         self->m_world->ResolvedItemUserData(item));
+            });
+    }
+
+    {
+        const bool ditheredTransp = (self->m_transparentMode == smvk::TransparentMode::Dithered);
+        auto draws = self->CollectGpuSceneTransparentDraws(
+            f.transparentCullView, !ditheredTransp, self->m_cameraPositioner.cameraPosition_);
+        auto legacyDraws = self->CollectTransparentDraws(
+            f.transparentCullView, !ditheredTransp, self->m_cameraPositioner.cameraPosition_);
+        if (!legacyDraws.empty()) {
+            draws.insert(draws.end(), legacyDraws.begin(), legacyDraws.end());
+            std::stable_sort(draws.begin(),
+                             draws.end(),
+                             [](const TransparentDrawItem& a, const TransparentDrawItem& b) {
+                                 return a.dist2 > b.dist2;
+                             });
+        }
+        {
+            static bool s_transparentReported = false;
+            if (!s_transparentReported && !self->m_hideTransparent) {
+                s_transparentReported = true;
+                std::fprintf(stderr,
+                             "[GpuSceneTransparent] gpu=%u legacy=%u (admitted=%u)\n",
+                             uint32_t(draws.size()) - uint32_t(legacyDraws.size()),
+                             uint32_t(legacyDraws.size()),
+                             self->m_gpuSceneTransparentCompatibleCount);
+            }
+        }
+        const bool lodDbg = (effView == ViewMode::Lods);
+        smvk::ShaderProgram* transProg = &self->m_resources.mainProgram;
+        if (shadingDbg)
+            transProg = &self->m_resources.debugPrograms[size_t(*shadingDbgFs)].direct;
+        auto litTransProg = [&](uint32_t materialId) -> smvk::ShaderProgram& {
+            return shadingDbg ? *transProg : self->MainLitProgramFor(materialId);
+        };
+        const bool transShaderLodOn = self->ShaderLodActive() && effView == ViewMode::Lit;
+        MeshDebugPush transLp{};
+        if (lodDbg)
+            std::copy_n(glm::value_ptr(f.frameViewProj), 16, transLp.viewProj);
+        if (effView == ViewMode::Meshlets)
+            cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &f.pc, smvk::ShaderStage::All);
+        uint32_t boundMaterial = UINT32_MAX;
+        smvk::ShaderProgram* boundProgram = nullptr;
+        for (const auto& d : draws) {
+            if (lodDbg) {
+                uint32_t lod = 0;
+                smvk::StaticMesh* meshDesc = self->LodMeshForNode(d.node, d.meshId, &lod);
+                if (!meshDesc)
+                    continue;
+                if (d.materialId != boundMaterial) {
+                    cmd.BindRenderPipeline(
+                        self->m_gfxRenderer.MeshDebugProgram(),
+                        ::tour::vertex_layouts::Static,
+                        opaqueDepth,
+                        noStencil,
+                        smvk::BlendSettings::Opaque(),
+                        msaaSettings,
+                        wireframeRaster(smvk::RasterSettings{
+                            .cullMode = (std::getenv("TOURMALINE_LODVIEW_CULLBACK") &&
+                                         std::strcmp(std::getenv("TOURMALINE_LODVIEW_CULLBACK"),
+                                                     "1") == 0)
+                                            ? smvk::CullMode::Back
+                                            : smvk::CullMode::None}));
+                    cmd.BindStaticVertexFmt();
+                    boundMaterial = d.materialId;
+                }
+                const glm::mat4& model = self->m_world->scene.globalTransform[d.node];
+                std::copy_n(glm::value_ptr(model), 16, transLp.model);
+                static const float kLodVertexLitTrans[3] = {1.0f, 1.0f, 1.0f};
+                const bool vlitLevelTrans =
+                    self->ShaderLodActive() && self->m_world &&
+                    !self->m_world->FarShadingAt(d.meshId, lod, d.materialId).isDefault();
+                const float* pal = vlitLevelTrans ? kLodVertexLitTrans
+                                                  : kLodPalette[lod < 8 ? lod : 4];
+                transLp.color[0] = pal[0] * flatGain;
+                transLp.color[1] = pal[1] * flatGain;
+                transLp.color[2] = pal[2] * flatGain;
+                transLp.color[3] = 1.0f;
+                cmd.PushConstants(0, sizeof(transLp), &transLp, smvk::ShaderStage::All);
+                pushMeshDebugSkinTail(d.meshId, d.node);
+                for (auto& draw_set : meshDesc->geometry.surfaces) {
+                    cmd.DrawIndexed(
+                        draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
+                }
+                continue;
+            }
+            const smvk::World::FarShading farShadingTrans =
+                transShaderLodOn
+                    ? self->FarShadingForNode(d.node, d.meshId, d.materialId)
+                    : smvk::World::FarShading{};
+            const bool vlitTrans = farShadingTrans.vertexLit;
+            FarSpecPrograms* farSpecTrans =
+                (!vlitTrans && !farShadingTrans.isDefault())
+                    ? self->FarSpecProgramsFor(farShadingTrans.quality)
+                    : nullptr;
+            const bool farSpecTransValid =
+                farSpecTrans && farSpecTrans->main.shaderCount == 2;
+            if (vlitTrans) {
+                if (d.materialId != boundMaterial ||
+                    boundProgram != &self->m_resources.vertexLitProgram) {
+                    if (ditheredTransp) {
+                        smvk::BlendSettings opaqueBlend = smvk::BlendSettings::Opaque();
+                        smvk::RasterSettings raster{};
+                        if (const smvk::Material* mat =
+                                static_cast<const smvk::World&>(*self->m_world).GetMaterial(
+                                    d.materialId)) {
+                            raster = mat->pipeline.raster;
+                        }
+                        cmd.BindRenderPipeline(wireTwinOf(self->m_resources.vertexLitProgram),
+                                               ::tour::vertex_layouts::Static,
+                                               opaqueDepth,
+                                               noStencil,
+                                               opaqueBlend,
+                                               msaaSettings,
+                                               wireframeRaster(raster));
+                    } else {
+                        bindForMaterial(d.materialId,
+                                        self->m_resources.vertexLitProgram,
+                                        noA2CProgram,
+                                        transparentDepth,
+                                        /*writeStencilClass=*/false);
+                    }
+                    boundMaterial = d.materialId;
+                    boundProgram = &self->m_resources.vertexLitProgram;
+                }
+                auto& model = self->m_world->scene.globalTransform[d.node];
+                smvk::StaticMesh* meshDesc = self->LodMeshForNode(d.node, d.meshId);
+                if (!meshDesc)
+                    continue;
+                IRenderer::PushConstants objPC = f.pc;
+                objPC.materialId = d.materialId;
+                std::copy_n(glm::value_ptr(model), 16, objPC.model);
+                cmd.PushConstants(
+                    0, sizeof(IRenderer::PushConstants), &objPC, smvk::ShaderStage::All);
+                for (auto& draw_set : meshDesc->geometry.surfaces) {
+                    cmd.DrawIndexed(
+                        draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
+                }
+                ++self->m_lodShaderDraws;
+                continue;
+            }
+            if (farSpecTransValid) {
+                if (d.materialId != boundMaterial || boundProgram != &farSpecTrans->main) {
+                    if (ditheredTransp) {
+                        smvk::BlendSettings opaqueBlend = smvk::BlendSettings::Opaque();
+                        smvk::RasterSettings raster{};
+                        if (const smvk::Material* mat =
+                                static_cast<const smvk::World&>(*self->m_world).GetMaterial(
+                                    d.materialId)) {
+                            raster = mat->pipeline.raster;
+                        }
+                        cmd.BindRenderPipeline(wireTwinOf(farSpecTrans->main),
+                                               ::tour::vertex_layouts::Static,
+                                               opaqueDepth,
+                                               noStencil,
+                                               opaqueBlend,
+                                               msaaSettings,
+                                               wireframeRaster(raster));
+                    } else {
+                        bindForMaterial(d.materialId,
+                                        farSpecTrans->main,
+                                        farSpecTrans->a2c.shaderCount == 2 ? farSpecTrans->a2c
+                                                                           : noA2CProgram,
+                                        transparentDepth,
+                                        /*writeStencilClass=*/false);
+                    }
+                    boundMaterial = d.materialId;
+                    boundProgram = &farSpecTrans->main;
+                }
+                auto& model = self->m_world->scene.globalTransform[d.node];
+                smvk::StaticMesh* meshDesc = self->LodMeshForNode(d.node, d.meshId);
+                if (!meshDesc)
+                    continue;
+                IRenderer::PushConstants objPC = f.pc;
+                objPC.materialId = d.materialId;
+                std::copy_n(glm::value_ptr(model), 16, objPC.model);
+                cmd.PushConstants(
+                    0, sizeof(IRenderer::PushConstants), &objPC, smvk::ShaderStage::All);
+                for (auto& draw_set : meshDesc->geometry.surfaces) {
+                    cmd.DrawIndexed(
+                        draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
+                }
+                ++self->m_lodShaderDraws;
+                continue;
+            }
+            smvk::ShaderProgram* const prog = &litTransProg(d.materialId);
+            if (d.materialId != boundMaterial || boundProgram != prog) {
+                if (ditheredTransp) {
+                    smvk::BlendSettings opaqueBlend = smvk::BlendSettings::Opaque();
+                    smvk::RasterSettings raster{};
+                    if (const smvk::Material* mat =
+                            static_cast<const smvk::World&>(*self->m_world).GetMaterial(
+                                d.materialId)) {
+                        raster = mat->pipeline.raster;
+                    }
+                    cmd.BindRenderPipeline(wireTwinOf(*prog),
+                                           ::tour::vertex_layouts::Static,
+                                           opaqueDepth,
+                                           noStencil,
+                                           opaqueBlend,
+                                           msaaSettings,
+                                           wireframeRaster(raster));
+                } else {
+                    bindForMaterial(d.materialId,
+                                    *prog,
+                                    noA2CProgram,
+                                    transparentDepth,
+                                    /*writeStencilClass=*/false);
+                }
+                boundMaterial = d.materialId;
+                boundProgram = prog;
+            }
+            drawNode(d.node, d.meshId, d.materialId,
+                     self->m_world->MaterialUserData(d.materialId));
+        }
+    }
+
+    if (!f.debugDrawRanges.empty() && f.debugDrawFlight < self->m_debugDrawGpuLines.size() &&
+        !self->m_debugDrawGpuLines[f.debugDrawFlight].empty()) {
+        cmd.BindVertexBuffer(self->m_debugDrawGpuLines[f.debugDrawFlight], 0, 0);
+        const float exposure = self->FrameExposure();
+        const float gain = exposure > 1e-9f ? 1.0f / exposure : 1.0f;
+        for (const auto& r : f.debugDrawRanges) {
+            const bool tested = r.depth == tour::DebugDepthMode::Tested;
+            cmd.BindRenderPipeline(
+                self->m_gfxRenderer.LineProgram(),
+                ::tour::vertex_layouts::DebugLine,
+                tested ? transparentDepth
+                       : smvk::DepthSettings{.depthFunc = smvk::CompareOp::Always,
+                                             .writeEnable = false,
+                                             .depthTestEnable = false},
+                noStencil,
+                smvk::BlendSettings::Opaque(),
+                msaaSettings,
+                smvk::RasterSettings{.cullMode = smvk::CullMode::None},
+                r.topology);
+            LineDebugPush lp{};
+            std::copy_n(glm::value_ptr(f.frameViewProj), 16, lp.viewProj);
+            lp.color[0] = r.color.x * gain;
+            lp.color[1] = r.color.y * gain;
+            lp.color[2] = r.color.z * gain;
+            lp.color[3] = 1.0f;
+            cmd.PushConstants(0, sizeof(lp), &lp, smvk::ShaderStage::All);
+            cmd.Draw(r.count, 1, r.first, 0);
+        }
+    }
+    if (f.selectionLineVerts && !self->m_selectionLineBuffer.empty()) {
+        cmd.BindRenderPipeline(self->m_gfxRenderer.LineProgram(),
+                               ::tour::vertex_layouts::DebugLine,
+                               smvk::DepthSettings{.depthFunc = smvk::CompareOp::Always,
+                                                   .writeEnable = false,
+                                                   .depthTestEnable = false},
+                               noStencil,
+                               smvk::BlendSettings::Opaque(),
+                               msaaSettings,
+                               smvk::RasterSettings{.cullMode = smvk::CullMode::None},
+                               smvk::PrimitiveTopology::LineList);
+        cmd.BindVertexBuffer(self->m_selectionLineBuffer, 0, 0);
+        LineDebugPush lp{};
+        std::copy_n(glm::value_ptr(f.frameViewProj), 16, lp.viewProj);
+        const float exposure = self->FrameExposure();
+        const float gain = exposure > 1e-9f ? 1.0f / exposure : 1.0f;
+        lp.color[0] = gain;
+        lp.color[1] = 0.9f * gain;
+        lp.color[2] = 0.2f * gain;
+        lp.color[3] = 1.0f;
+        cmd.PushConstants(0, sizeof(lp), &lp, smvk::ShaderStage::All);
+        cmd.Draw(f.selectionLineVerts, 1, 0, 0);
+    }
+}
 void WorldRenderer::AppendDeferredShadowPhases(uint32_t frameIndex,
                                                uint64_t frameUniformsAddress,
                                                uint64_t fpLightsAddress,
@@ -17896,12 +18872,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // after gameplay update. Immediate debug producers and renderer-
     // retained ShapeScene instances share the native point/line pass.
     // A buffer per flight slot avoids overwriting in-flight GPU reads.
-    struct DebugDrawRange {
-        uint32_t first, count;
-        glm::vec3 color;
-        tour::DebugDepthMode depth;
-        smvk::PrimitiveTopology topology;
-    };
     tour::mem::FrameVector<DebugDrawRange> debugDrawRanges{
         tour::mem::LinearAllocatorSTL<DebugDrawRange>{&tour::mem::FrameAllocator()}};
     uint32_t debugDrawFlight = 0;
@@ -18121,1444 +19091,37 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         mainSkinValid ? mainSkinBase : 0u,
         mainSkinValid ? 1u : 0u};
 
-    mainPass.SetRecordingFunc([this,
-                               pc,
-                               useMsaa,
-                               gfxSlot,
-                               sceneRasterActive,
-                               sceneTaskActive,
-                               sceneNativeSuffix,
-                               sceneGiVariant,
-                               sceneTaskTemporalActive,
-                               sceneTaskPlan,
-                               sceneRasterTwoSided,
-                               sceneRasterMasked,
-                               sceneRasterMaskedTwoSided,
-                               sceneRasterProjectLit,
-                               sceneRasterCommands,
-                               sceneRasterCommandCount,
-                               sceneRasterVsPush,
-                               renderViewsAddress,
-                               mainRenderView,
-                               selectionLineVerts,
-                               frameViewProj,
-                               debugDrawRanges,
-                               debugDrawFlight,
-                               transparentCullView,
-                               liveMainCullView,
-                               mainSkinBda,
-                               mainSkinBase,
-                               mainSkinValid,
-                               placementFlight = fb.frameIndex](smvk::CommandBuffer& cmd) {
-        // 1x: depth was filled by the Forward+ prepass, main is read-only.
-        // 2x: transient depth is cleared above, main writes it
-        // (GreaterEqual reversed-Z in both cases).
-        // Opaque writes depth in MSAA mode (transient target); transparent
-        // never writes depth in either mode.
-        const smvk::DepthSettings opaqueDepth{
-            .depthFunc = smvk::CompareOp::GreaterEqual,
-            .writeEnable = useMsaa,
-            .depthTestEnable = true,
-        };
-        const smvk::DepthSettings transparentDepth{
-            .depthFunc = smvk::CompareOp::GreaterEqual,
-            .writeEnable = false,
-            .depthTestEnable = true,
-        };
-        const smvk::StencilSettings noStencil{};
-        const smvk::MSAASettings msaaSettings =
-            useMsaa ? smvk::MSAASettings::Count2() : smvk::MSAASettings::Count1();
-
-        // NOTE: no stencil classification here - the SSSR-style thin
-        // G-buffer (receiver normals + roughness + metal) is written by
-        // the Forward+ depth PREPASS (see gbuffer.frag.hlsl), so Main
-        // binds no stencil write state at all (the old per-material
-        // REPLACE classification is gone with it).
-
-        // Wireframe (P): force Line polygon mode + no culling on every
-        // scene-triangle bind below (filtered ranges, direct draws, flat
-        // debug views, transparent leg) so back faces show too. The depth
-        // prepass stays Fill, so lines keep hidden-line removal against
-        // its depth; skydome (backdrop) and the line overlays stay as-is.
-        auto wireframeRaster = [&](smvk::RasterSettings r) {
-            if (m_wireframe) {
-                r.polygonMode = smvk::PolygonMode::Line;
-                r.cullMode = smvk::CullMode::None;
-            }
-            return r;
-        };
-
-        // Wireframe FS swap: line pixels are rare, so running the heavy lit
-        // FS (Forward+ loop, GI, texture feedback atomics) on them was the
-        // wireframe slowdown. While P is on, the lit/filtered/vertex-lit
-        // programs bind their flat-line twin (default_wire.frag + the SAME
-        // VS: a FS consuming only SV_Position links with any of them, no
-        // VS twins needed). The wire FS reads pc.frameUniforms, which every
-        // caller pushes (full push at pass start; filtered ranges push
-        // deltas on top). Debug-view FSs (unlit/cascade/vcolor/meshlet
-        // colors) have no twin: F2..F6 keep their own shading on the lines,
-        // so P keeps stacking. Missing twin (shader failed to load) returns
-        // the caller's program - the pre-swap shaded wireframe.
-        auto wireTwinOf = [&](smvk::ShaderProgram& prog) -> smvk::ShaderProgram& {
-            if (!m_wireframe)
-                return prog;
-            if (&prog == &m_resources.mainProgram ||
-                &prog == &m_resources.mainProgramA2C
-                // The project-lit family's direct twins shade through
-                // the same lit FS body — the same flat wire twin.
-                || &prog == &m_resources.mainProjectProgram ||
-                &prog == &m_resources.mainProjectProgramA2C || IsFarSpecProgram(prog)) {
-                return m_resources.mainWireProgram.shaderCount == 2 ? m_resources.mainWireProgram
-                                                                    : prog;
-            }
-            // Generic lit, A2C twin and every fixed-lobe twin all shade
-            // through the lit FS family -> the same flat twin.
-            if (m_gfxRenderer.IsFilteredLitProgram(prog)) {
-                return m_gfxRenderer.FilteredWireValid() ? m_gfxRenderer.FilteredWireProgram()
-                                                         : prog;
-            }
-            if (&prog == &m_resources.vertexLitProgram) {
-                return m_resources.vertexLitWireProgram.shaderCount == 2
-                           ? m_resources.vertexLitWireProgram
-                           : prog;
-            }
-            if (m_gfxRenderer.IsFilteredLitProgram(prog)) {
-                return m_gfxRenderer.FilteredWireValid() ? m_gfxRenderer.FilteredWireProgram()
-                                                         : prog;
-            }
-            return prog;
-        };
-
-        auto drawNode = [&](NodeId node,
-                            uint32_t meshId,
-                            uint32_t materialId,
-                            uint32_t userData = 0) {
-            auto& model = m_world->scene.globalTransform[node];
-            smvk::StaticMesh* meshDesc = LodMeshForNode(node, meshId);
-            if (!meshDesc)
-                return;
-            // Direct-path skin tail (default.vert.hlsl's 208..240
-            // overlay): a skinned draw swaps the bind-pose vertex
-            // inputs for the frame's deformed words. Always pushed
-            // (zeroed on non-skinned draws) so a stale tail never
-            // leaks into the next draw.
-            DepthSkinTail skinTail{};
-            if (meshDesc->skinned && mainSkinValid) {
-                skinTail.skinned = 1u;
-                skinTail.deformedBase = mainSkinBase;
-                skinTail.vsDeformed = mainSkinBda;
-            }
-            cmd.PushConstants(
-                kDepthSkinTailOffset, sizeof(DepthSkinTail), &skinTail, smvk::ShaderStage::All);
-            // Dither-on-closeup (TransformHierarchy::ditherCloseup; per frame, per
-            // draw): Hidden draws never reach here (the leg loops skip
-            // them below); Fade draws carry the per-draw flag
-            // (PushConstants::padEnd_[0] - default.vert forwards it flat
-            // to the FS family) so the lit leg screen-doors in step with
-            // the depth/shadow legs. Always pushed (0 or 1): the partial
-            // push range persists across draws, so a stale Fade flag must
-            // never leak into the next draw.
-            // padEnd_[1] = the RESOLVED material userdata (Phase A of
-            // docs/shader_library_design.md): default.vert forwards it
-            // flat at VS location 9 for the lit hooks; pushed in the
-            // SAME always-per-draw discipline (a stale word must never
-            // leak into the next lit draw).
-            IRenderer::PushConstants pc{};
-            pc.materialId = materialId;
-            pc.padEnd_[0] = (DitherCloseupStateFor(
-                                 m_world->scene, int(node), m_cameraPositioner.cameraPosition_) ==
-                             DitherCloseupState::Fade)
-                                ? 1u
-                                : 0u;
-            pc.padEnd_[1] = userData;
-            pc.padEnd_[2] = node < m_world->scene.metadata.size()
-                                ? m_world->scene.metadata[node].lightLayerMask
-                                : 0xffffffffu;
-            cmd.PushConstants(offsetof(IRenderer::PushConstants, padEnd_),
-                              sizeof(pc.padEnd_[0]) * 3,
-                              &pc.padEnd_[0],
-                              smvk::ShaderStage::All);
-            const float* modelData = glm::value_ptr(model);
-            std::copy_n(modelData, 16, pc.model);
-            cmd.PushConstants(offsetof(IRenderer::PushConstants, materialId),
-                              sizeof(pc.materialId),
-                              &pc.materialId,
-                              smvk::ShaderStage::All);
-            cmd.PushConstants(
-                0, offsetof(IRenderer::PushConstants, frameUniforms), &pc, smvk::ShaderStage::All);
-            for (auto& draw_set : meshDesc->geometry.surfaces) {
-                cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
-            }
-        };
-
-        // A2C fallback for program families without an alpha-to-coverage
-        // twin (debug views, vertex-lit LODs, transparents): shaderCount 0
-        // keeps them on the caller's classic program.
-        smvk::ShaderProgram noA2CProgram{};
-        auto bindForMaterial = [&](uint32_t materialId,
-                                   smvk::ShaderProgram& prog,
-                                   smvk::ShaderProgram& progA2c,
-                                   const smvk::DepthSettings& depth,
-                                   bool writeStencilClass = true) -> smvk::ShaderProgram& {
-            // Per-material blend (Opaque vs AlphaBlend); the raster is
-            // always back-face cull. Depth writes follow the caller: opaque
-            // writes in 2x MSAA mode, transparent never writes.
-            // writeStencilClass: kept for call-shape stability - the SSR
-            // receiver-material stencil classification is GONE (the thin
-            // G-buffer owns receiver normals + roughness + metal now, see
-            // gbuffer.frag.hlsl); every bind carries noStencil.
-            smvk::BlendSettings blend = smvk::BlendSettings::Opaque();
-            smvk::RasterSettings raster{};
-            bool maskedCutout = false;
-            if (const smvk::Material* mat =
-                    static_cast<const smvk::World&>(*m_world).GetMaterial(materialId)) {
-                blend = mat->pipeline.blend;
-                raster = mat->pipeline.raster;
-                maskedCutout = mat->shadingModel == smvk::ShadingModel::Masked;
-            }
-            // TMP-DIAG (TOURMALINE_NOCULL=1): force CullMode::None on every
-            // bindForMaterial bind — the facing proof for the distant-
-            // sibling draw-drop (the commands are written with real counts
-            // at CULLFLAGS=0x0 yet the pixels stay black; if the band
-            // appears with culling off, the filtered leg inverts facing
-            // vs the direct legs). Remove later.
-            {
-                static const bool noCull = [] {
-                    const char* e = std::getenv("TOURMALINE_NOCULL");
-                    return e && std::strcmp(e, "1") == 0;
-                }();
-                if (noCull)
-                    raster.cullMode = smvk::CullMode::None;
-            }
-            // Masked cutout in 2x MSAA + A2C opt-in (TOURMALINE_A2C):
-            // alpha-to-coverage program (coverage remap in the FS, zero
-            // discard) + A2C multisample state - foliage silhouettes
-            // resolve AA'd. Opt-in because A2C moves the per-sample depth
-            // test after the FS: overlapping layers lose early-reject
-            // (+6ms bistro foliage bench), so the default stays the
-            // demote-discard variant. Skipped while wireframed: the flat
-            // line FS writes alpha 1, so A2C coverage would be pointless.
-            const bool useA2c = !m_wireframe && useMsaa && m_msaaAlphaToCoverage && maskedCutout &&
-                                progA2c.shaderCount == 2;
-            smvk::ShaderProgram& bound = useA2c ? progA2c : prog;
-            (void)writeStencilClass;
-            // wireTwinOf swaps the lit/filtered/vertex-lit FS for the flat
-            // line FS while P is on (binds the twin, tracks the original).
-            cmd.BindRenderPipeline(wireTwinOf(bound),
-                                   ::tour::vertex_layouts::Static,
-                                   depth,
-                                   noStencil,
-                                   blend,
-                                   useA2c ? smvk::MSAASettings::Count2A2C() : msaaSettings,
-                                   wireframeRaster(raster));
-            return bound;
-        };
-
-        // Initial bind BEFORE the first push: PushConstants needs a bound
-        // pipeline layout. The opaque loop rebinds per material anyway
-        // (boundMaterial starts UINT32_MAX, so the first node always
-        // rebinds if it differs).
-        // ---- Skydome: fullscreen triangle first (depth Always, no writes) ----
-        // Opaque geometry draws over it via GreaterEqual; background pixels
-        // keep the sky HDR. Works for both 1x (HDR Load) and 2x MSAA
-        // (transient color Clear + resolve) because the sky is part of the
-        // same pass that resolves.
-        if (m_passes.skydome && m_skyEnabled && m_skydome.ShadersValid()) {
-            cmd.BindRenderPipeline(m_skydome.program,
-                                   ::tour::vertex_layouts::Empty,
-                                   smvk::DepthSettings::Disabled(),
-                                   noStencil,
-                                   smvk::BlendSettings::Opaque(),
-                                   msaaSettings,
-                                   smvk::RasterSettings{.cullMode = smvk::CullMode::None});
-            cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &pc, smvk::ShaderStage::All);
-            cmd.Draw(3, 1, 0, 0);
-        }
-        // ---- Terrain field (baked G-blocks from the pak's Terrain
-        // blobs): right after the sky, before the scene opaques - depth
-        // GreaterEqual against the prepass depth (1x) / the transient
-        // cleared depth (2x MSAA), so scene geometry occludes the field
-        // and the field composites over the sky background. NOT in the
-        // depth prepass / shadow passes in T2 (receive + raymarched
-        // distant shadows land in T3): in 1x the Main depth is
-        // read-only, so post-Main depth consumers (SSR/volumetric
-        // marching) see the prepass depth over terrain pixels.
-        // The terrain field is NOT in the Forward+ depth prepass, so in
-        // 1x the shared opaqueDepth (writeEnable = useMsaa = false) would
-        // leave it depth-invisible to the scene opaques that draw after it
-        // (they also test read-only against the prepass depth, which has no
-        // terrain) - meshlets occluded by the field would composite over
-        // it. Terrain draws FIRST here, so it may write depth unconditionally:
-        // it tests GreaterEqual against the prepass depth (so scene geometry
-        // in front still occludes it) and stamps its own depth for every
-        // later opaque draw + the post-Main depth consumers (SSR/volumetric).
-        const smvk::DepthSettings terrainDepth{
-            .depthFunc = smvk::CompareOp::GreaterEqual,
-            .writeEnable = true,
-            .depthTestEnable = true,
-        };
-        if (m_passes.terrain && m_terrainEnabled && m_terrain.valid) {
-            m_terrain.RecordBlocks(cmd,
-                                   frameViewProj,
-                                   m_cameraPositioner.cameraPosition_,
-                                   pc,
-                                   terrainDepth,
-                                   noStencil,
-                                   smvk::BlendSettings::Opaque(),
-                                   msaaSettings,
-                                   m_terrainHfShadow,
-                                   m_terrainHfSteps);
-        }
-        // GPU-PLACED WORLD VEGETATION: zero per-instance CPU work.
-        // GPU cull -> prefix -> visible compaction -> complete indirect
-        // commands are already ordered by graph buffer hints above.
-        // This opt-in path currently uses the diagnostic unlit FS;
-        // PBR materials/lighting and shadows are a subsequent step.
-        if (m_gpuPlacementReady && m_gpuPlacementRuntime && m_gpuPlacementDraw) {
-            auto& rt = *m_gpuPlacementRuntime;
-            cmd.BindStaticVertexFmt();
-            cmd.BindRenderPipeline(m_gpuPlacementDraw->program,
-                                   ::tour::vertex_layouts::Static,
-                                   opaqueDepth,
-                                   noStencil,
-                                   smvk::BlendSettings::Opaque(),
-                                   msaaSettings,
-                                   smvk::RasterSettings{.cullMode = smvk::CullMode::None});
-            cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &pc, smvk::ShaderStage::All);
-            for (size_t s = 0; s < rt.active.size(); ++s) {
-                const auto* vs = rt.VisSet(int32_t(s), placementFlight);
-                if (!vs)
-                    continue;
-                const tour::placement::PlacementVsPush tail{
-                    vs->VisibleAddress(*m_context),
-                    rt.pass.TileInstancesAddress(*m_context, uint32_t(s)),
-                    renderViewsAddress,
-                    mainRenderView,
-                    0u};
-                cmd.PushConstants(tour::placement::kPlacementVsPushOffset,
-                                  sizeof(tail),
-                                  &tail,
-                                  smvk::ShaderStage::All);
-                for (uint32_t proto = 0; proto < m_gpuPlacementSeedCount; ++proto)
-                    cmd.DrawIndexedIndirect(vs->IndirectBuffer(),
-                                            uint64_t(proto) *
-                                                tour::placement::kPlacementIndirectStride,
-                                            1,
-                                            tour::placement::kPlacementIndirectStride);
-            }
-        }
-
-        // Baked placement (the authored PointInstancer cloud): the same VS/FS
-        // + static heap as the procedural path, but per-tile LOCAL proto counts
-        // (the tile's palette, not the global prototype count). One draw set
-        // per prespecified cloud.
-        if (m_bakedPlacementReady && m_gpuPlacementDraw) {
-            cmd.BindStaticVertexFmt();
-            cmd.BindRenderPipeline(m_gpuPlacementDraw->program,
-                                   ::tour::vertex_layouts::Static,
-                                   opaqueDepth,
-                                   noStencil,
-                                   smvk::BlendSettings::Opaque(),
-                                   msaaSettings,
-                                   smvk::RasterSettings{.cullMode = smvk::CullMode::None});
-            cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &pc, smvk::ShaderStage::All);
-            for (auto& inst : m_bakedPlacementInstances) {
-                auto& brt = *inst.runtime;
-                for (size_t s = 0; s < brt.active.size(); ++s) {
-                    const auto* vs = brt.VisSet(int32_t(s), placementFlight);
-                    if (!vs)
-                        continue;
-                    const uint32_t protoCount = brt.TileProtoCount(int32_t(s));
-                    if (protoCount == 0)
-                        continue;
-                    const tour::placement::PlacementVsPush tail{
-                        vs->VisibleAddress(*m_context),
-                        brt.pass.TileInstancesAddress(*m_context, uint32_t(s)),
-                        renderViewsAddress,
-                        mainRenderView,
-                        0u};
-                    cmd.PushConstants(tour::placement::kPlacementVsPushOffset,
-                                      sizeof(tail),
-                                      &tail,
-                                      smvk::ShaderStage::All);
-                    for (uint32_t proto = 0; proto < protoCount; ++proto)
-                        cmd.DrawIndexedIndirect(vs->IndirectBuffer(),
-                                                uint64_t(proto) *
-                                                    tour::placement::kPlacementIndirectStride,
-                                                1,
-                                                tour::placement::kPlacementIndirectStride);
-                }
-            }
-        }
-
-        // GPU mesh particles: reuse the indexed prototype geometry and
-        // shared static vertex heap; SV_InstanceID indexes the compacted
-        // visible GPU particle list. No CPU per-instance draw/transform.
-        if (m_meshParticlesReady && m_meshParticleDraw.Valid()) {
-            auto& mp = m_viewportResources.meshParticles;
-            cmd.BindStaticVertexFmt();
-            cmd.BindRenderPipeline(m_meshParticleDraw.program,
-                                   ::tour::vertex_layouts::Static,
-                                   opaqueDepth,
-                                   noStencil,
-                                   smvk::BlendSettings::Opaque(),
-                                   msaaSettings,
-                                   smvk::RasterSettings{.cullMode = smvk::CullMode::None});
-            cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &pc, smvk::ShaderStage::All);
-            const smvk::MeshParticlesVsPush tail{mp.VisibleAddress(*m_context),
-                                                 mp.ParticlesAddress(*m_context),
-                                                 renderViewsAddress,
-                                                 mainRenderView,
-                                                 0u};
-            cmd.PushConstants(
-                smvk::kMeshParticlesVsPushOffset, sizeof(tail), &tail, smvk::ShaderStage::All);
-            for (uint32_t bin = 0; bin < mp.protoTableCount; ++bin)
-                cmd.DrawIndexedIndirect(mp.IndirectHandle(),
-                                        uint64_t(bin) * tour::placement::kPlacementIndirectStride,
-                                        1,
-                                        tour::placement::kPlacementIndirectStride);
-        }
-
-        cmd.BindRenderPipeline(
-            // Initial bind: the flat-line twin of main while P is on.
-            wireTwinOf(m_resources.mainProgram),
-            ::tour::vertex_layouts::Static,
-            opaqueDepth,
-            noStencil,
-            smvk::BlendSettings::Opaque(),
-            msaaSettings,
-            wireframeRaster(smvk::RasterSettings{}));
-        cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &pc, smvk::ShaderStage::All);
-
-        // GPU-scene indexed raster (static opaque subset). The vertex
-        // shader fetches work[SV_InstanceID] and the generation-checked
-        // persistent instance; zero-count commands do not rasterize.
-        // This path replaces the GfxFilter Main leg only when the
-        // eligibility gate proved every World draw belongs to it.
-        if (sceneRasterActive && sceneTaskActive) {
-            cmd.BeginPrimitiveCount(0u);
-            cmd.WriteStageTimestamp(smvk::kGpuStageMainDraw, true);
-            const auto drawRecT0 = std::chrono::steady_clock::now();
-            const auto drawTaskBin = [&](uint32_t cls,
-                                         smvk::ShaderProgram& program,
-                                         smvk::CullMode cull,
-                                         const smvk::MSAASettings& msaa) {
-                cmd.BindRenderPipeline(program,
-                                       ::tour::vertex_layouts::Empty,
-                                       opaqueDepth,
-                                       noStencil,
-                                       smvk::BlendSettings::Opaque(),
-                                       msaa,
-                                       smvk::RasterSettings{.cullMode = cull});
-                cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
-                auto push = sceneTaskPlan.graphics;
-                push.rasterClass = cls;
-                push.temporalPhase = sceneTaskTemporalActive ? 3u : 0u;
-                cmd.PushConstants(192u, sizeof(push), &push, smvk::ShaderStage::All);
-                cmd.DrawMeshTasksIndirect(sceneTaskPlan.indirectHandle,
-                                          uint64_t(cls) *
-                                              sizeof(tour::gpu_scene::TaskMeshIndirectCommand),
-                                          1u,
-                                          sizeof(tour::gpu_scene::TaskMeshIndirectCommand));
-            };
-            // Shading debug views (F2/F4/F6/F9/F10/F11 + normals/PBR/...)
-            // render their REAL debug FS on the canonical task/mesh path
-            // (per-DebugFs twin), not a silent lit downgrade; a missing twin
-            // keeps the lit program. Meshlets/Lods keep the flat-meshlet twin.
-            const std::optional<DebugFs> sceneTaskDbg = DebugFsForView(m_debugView);
-            const bool sceneTaskDbgValid =
-                sceneTaskDbg && m_gpuSceneTaskDebugPrograms[size_t(*sceneTaskDbg)].shaderCount == 3;
-            auto& sceneTaskLit =
-                (m_debugView == ViewMode::Meshlets || m_debugView == ViewMode::Lods)
-                    ? m_gpuSceneTaskDebugProgram
-                    : (sceneTaskDbgValid
-                           ? m_gpuSceneTaskDebugPrograms[size_t(*sceneTaskDbg)]
-                           : (sceneGiVariant == 0u ? m_gpuSceneTaskMainProgram
-                                                   : m_gpuSceneTaskGiPrograms[sceneGiVariant]));
-            drawTaskBin(0u, sceneTaskLit, smvk::CullMode::Back, msaaSettings);
-            if (sceneRasterTwoSided)
-                drawTaskBin(1u, sceneTaskLit, smvk::CullMode::None, msaaSettings);
-            // A2C is a lit-FS twin; a shading debug view shades the masked
-            // bin through its own FS (sceneTaskLit), so A2C never applies.
-            const bool taskA2c =
-                !sceneTaskDbgValid && useMsaa && m_msaaAlphaToCoverage &&
-                (sceneGiVariant == 0u
-                     ? m_gpuSceneTaskMaskedA2cProgram.shaderCount == 3
-                     : m_gpuSceneTaskGiA2cPrograms[sceneGiVariant].shaderCount == 3);
-            auto& masked =
-                taskA2c ? (sceneGiVariant == 0u ? m_gpuSceneTaskMaskedA2cProgram
-                                                : m_gpuSceneTaskGiA2cPrograms[sceneGiVariant])
-                        : sceneTaskLit;
-            const auto taskMsaa = taskA2c ? smvk::MSAASettings::Count2A2C() : msaaSettings;
-            if (sceneRasterMasked)
-                drawTaskBin(2u, masked, smvk::CullMode::Back, taskMsaa);
-            if (sceneRasterMaskedTwoSided)
-                drawTaskBin(3u, masked, smvk::CullMode::None, taskMsaa);
-            cmd.EndPrimitiveCount(0u);
-            cmd.WriteStageTimestamp(smvk::kGpuStageMainDraw, false);
-            if (m_host.BenchMeasuring()) {
-                s_benchDrawRecord += std::chrono::duration<double, std::milli>(
-                                         std::chrono::steady_clock::now() - drawRecT0)
-                                         .count();
-            }
-        }
-        if (sceneRasterActive && sceneRasterCommandCount > 0 &&
-            (!sceneTaskActive || sceneNativeSuffix)) {
-            // Shading debug views ride the indexed raster leg with their
-            // filtered twin (gpu_scene_raster.vert + the view's debug FS) —
-            // the SAME FS the task/mesh twin binds, so the two GPU Scene
-            // paths shade identically. Missing twin -> lit program.
-            const std::optional<DebugFs> sceneRasterDbg = DebugFsForView(m_debugView);
-            const bool sceneRasterDbgValid =
-                sceneRasterDbg &&
-                m_resources.debugPrograms[size_t(*sceneRasterDbg)].filtered.shaderCount == 2;
-            auto& sceneIndexedLit =
-                sceneRasterDbgValid
-                    ? m_resources.debugPrograms[size_t(*sceneRasterDbg)].filtered
-                    : (sceneGiVariant == 0u ? m_gpuSceneRasterProgram
-                                            : m_gpuSceneRasterGiPrograms[sceneGiVariant]);
-            cmd.BindStaticVertexFmt();
-            cmd.BindRenderPipeline(sceneIndexedLit,
-                                   ::tour::vertex_layouts::Static,
-                                   opaqueDepth,
-                                   noStencil,
-                                   smvk::BlendSettings::Opaque(),
-                                   msaaSettings,
-                                   smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
-            cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
-            cmd.PushConstants(tour::gpu_scene::kRasterVsPushOffset,
-                              sizeof(sceneRasterVsPush),
-                              &sceneRasterVsPush,
-                              smvk::ShaderStage::All);
-            // Bound CPU draw submissions by a small number of indirect
-            // chunks, not by instance count. 65,535 commands per call is
-            // the engine's partition convention (the retired gfx
-            // kMaxDraws happened to carry it; the dynamic-capacity
-            // cutover made it a plain local).
-            constexpr uint32_t kChunk = 65535;
-            // Compact-meshlet frames: four bins at binOffsets, each drawn
-            // with the EXACT GPU survivor count as the device-read draw
-            // count (DrawIndexedIndirectCount) — the reservation beyond
-            // the count is never read. Four-bin frames: the fixed
-            // contiguous class ranges below. firstInstance stays the
-            // original work index in both layouts.
-            const bool sceneRasterCompact = m_gpuSceneMeshletCompactActive;
-            const uint32_t binStride =
-                sceneRasterCommandCount / tour::gpu_scene::kRasterPipelineClassCount;
-            const auto drawBin = [&](uint32_t bin) {
-                if (sceneRasterCompact) {
-                    cmd.DrawIndexedIndirectCount(sceneRasterCommands,
-                                                 uint64_t(m_gpuSceneMeshletBinOffsets[bin]) *
-                                                     sizeof(tour::gpu_scene::RasterIndirectCommand),
-                                                 m_gpuSceneMeshletClassCounts,
-                                                 uint64_t(bin) * sizeof(uint32_t),
-                                                 m_gpuSceneMeshletBinCapacities[bin],
-                                                 sizeof(tour::gpu_scene::RasterIndirectCommand));
-                    return;
-                }
-                const uint32_t base = bin * binStride;
-                for (uint32_t first = 0; first < binStride; first += kChunk) {
-                    const uint32_t count = std::min(kChunk, binStride - first);
-                    cmd.DrawIndexedIndirect(sceneRasterCommands,
-                                            uint64_t(base + first) *
-                                                sizeof(tour::gpu_scene::RasterIndirectCommand),
-                                            count,
-                                            sizeof(tour::gpu_scene::RasterIndirectCommand));
-                }
-            };
-            cmd.WriteStageTimestamp(smvk::kGpuStageMainDraw, true);
-            const auto drawRecT0 = std::chrono::steady_clock::now();
-            cmd.BeginPrimitiveCountRegular(0u);
-            drawBin(0u);
-            if (sceneRasterTwoSided) {
-                // One extra PSO bind for the entire class, never per object.
-                cmd.BindRenderPipeline(sceneIndexedLit,
-                                       ::tour::vertex_layouts::Static,
-                                       opaqueDepth,
-                                       noStencil,
-                                       smvk::BlendSettings::Opaque(),
-                                       msaaSettings,
-                                       smvk::RasterSettings{.cullMode = smvk::CullMode::None});
-                drawBin(1u);
-            }
-            // The lit FS already applies the material's baseColor texture
-            // alpha cutoff, using the flat per-work material ID at location 7.
-            const bool sceneMaskedA2c =
-                !sceneRasterDbgValid && useMsaa && m_msaaAlphaToCoverage &&
-                (sceneGiVariant == 0u
-                     ? m_gpuSceneRasterMaskedA2cProgram.shaderCount == 2
-                     : m_gpuSceneRasterGiA2cPrograms[sceneGiVariant].shaderCount == 2);
-            auto& sceneMaskedProgram =
-                sceneMaskedA2c
-                    ? (sceneGiVariant == 0u ? m_gpuSceneRasterMaskedA2cProgram
-                                            : m_gpuSceneRasterGiA2cPrograms[sceneGiVariant])
-                    : sceneIndexedLit;
-            const auto sceneMaskedMsaa =
-                sceneMaskedA2c ? smvk::MSAASettings::Count2A2C() : msaaSettings;
-            if (sceneRasterMasked) {
-                cmd.BindRenderPipeline(sceneMaskedProgram,
-                                       ::tour::vertex_layouts::Static,
-                                       opaqueDepth,
-                                       noStencil,
-                                       smvk::BlendSettings::Opaque(),
-                                       sceneMaskedMsaa,
-                                       smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
-                drawBin(2u);
-            }
-            if (sceneRasterMaskedTwoSided) {
-                cmd.BindRenderPipeline(sceneMaskedProgram,
-                                       ::tour::vertex_layouts::Static,
-                                       opaqueDepth,
-                                       noStencil,
-                                       smvk::BlendSettings::Opaque(),
-                                       sceneMaskedMsaa,
-                                       smvk::RasterSettings{.cullMode = smvk::CullMode::None});
-                drawBin(3u);
-            }
-            // ProjectLit family (classes 4-7): the SAME coverage/culling matrix
-            // with the project-authored lit FS. Masked ProjectLit shades through
-            // the lit body alpha test (no A2C twin yet - step 4 follow-up).
-            if (sceneRasterProjectLit) {
-                cmd.BindRenderPipeline(m_gpuSceneRasterProjectLitProgram,
-                                       ::tour::vertex_layouts::Static,
-                                       opaqueDepth,
-                                       noStencil,
-                                       smvk::BlendSettings::Opaque(),
-                                       msaaSettings,
-                                       smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
-                drawBin(4u);
-                if (sceneRasterTwoSided) {
-                    cmd.BindRenderPipeline(m_gpuSceneRasterProjectLitProgram,
-                                           ::tour::vertex_layouts::Static,
-                                           opaqueDepth,
-                                           noStencil,
-                                           smvk::BlendSettings::Opaque(),
-                                           msaaSettings,
-                                           smvk::RasterSettings{.cullMode = smvk::CullMode::None});
-                    drawBin(5u);
-                }
-                if (sceneRasterMasked) {
-                    cmd.BindRenderPipeline(m_gpuSceneRasterProjectLitProgram,
-                                           ::tour::vertex_layouts::Static,
-                                           opaqueDepth,
-                                           noStencil,
-                                           smvk::BlendSettings::Opaque(),
-                                           msaaSettings,
-                                           smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
-                    drawBin(6u);
-                }
-                if (sceneRasterMaskedTwoSided) {
-                    cmd.BindRenderPipeline(m_gpuSceneRasterProjectLitProgram,
-                                           ::tour::vertex_layouts::Static,
-                                           opaqueDepth,
-                                           noStencil,
-                                           smvk::BlendSettings::Opaque(),
-                                           msaaSettings,
-                                           smvk::RasterSettings{.cullMode = smvk::CullMode::None});
-                    drawBin(7u);
-                }
-            }
-            cmd.EndPrimitiveCountRegular(0u);
-            cmd.WriteStageTimestamp(smvk::kGpuStageMainDraw, false);
-            if (m_host.BenchMeasuring()) {
-                s_benchDrawRecord += std::chrono::duration<double, std::milli>(
-                                         std::chrono::steady_clock::now() - drawRecT0)
-                                         .count();
-            }
-        }
-        // ---- Opaque + MASK cutout (alpha-tested in shader) ----
-        // Debug views replace the shaded opaque leg:
-        //   - The FLAT views (Meshlets F3 / LODs F5) ride the GPU Scene
-        //     chain for the GPU-owned survivors (per-meshlet / per-LOD flat
-        //     colors) AND draw every LEGACY source direct through the same
-        //     MeshDebugProgram (per-meshlet / per-LOD flat colors; skinned
-        //     meshes pose to the deformed heap via the skin tail below, so
-        //     their meshlets show ON the animated character, not the bind
-        //     pose).
-        //   - The SHADING views (Unlit F2 / Cascades F4 / VertexColors F6 /
-        //     UV F9/F10 / POM F11 / SsrMask) are ONE flat FS swapped over
-        //     the SAME vertex path: they ride the GPU-driven leg exactly
-        //     like Lit — same cull chain, same LOD selection, same skinned
-        //     fetch (they used to bypass with direct-only draws, which
-        //     rendered skinned meshes in the bind pose). The direct twin
-        //     binds only in the fallback leg (unfilterable /
-        //     shader-LOD-far instances).
-        //   - Cubemap: no FS swap — the filtered lit path stays, only the
-        //     frame's cubemapDebug pins to 1 (the env specular term
-        //     returns raw radiance; see the publish site).
-        //   - SsrContribution: stays a bypass view with NO opaque leg (its
-        //     FS declares its own push layout — see the program build).
-        // Missing programs fall back to Lit so a bad cook never blanks
-        // the frame.
-        ViewMode effView = m_debugView;
-        // Meshlets (F3) and Lods (F5) render the GPU Scene cull survivors
-        // through the task/mesh debug program (per-meshlet flat color /
-        // per-LOD palette). This is the CANONICAL GPU Scene path — no Lit
-        // fallback: when the task/mesh program is unavailable the
-        // compute-cull indexed raster (below) is the only admissible
-        // fallback, so the view keeps reflecting the real cull survivors.
-        if (effView == ViewMode::SsrContribution &&
-            m_resources.ssrContributionDebugProgram.shaderCount != 2)
-            effView = ViewMode::Lit;
-        // Shading views: one program PAIR per DebugFs slot; the direct +
-        // transparent legs bind pair.direct (the GPU Scene legs validate
-        // their own task/mesh + indexed-raster twins separately), so only
-        // the direct twin gates this fallback. A missing direct twin -> Lit.
-        std::optional<DebugFs> shadingDbgFs = DebugFsForView(effView);
-        if (shadingDbgFs) {
-            const auto& pair = m_resources.debugPrograms[size_t(*shadingDbgFs)];
-            if (pair.direct.shaderCount != 2) {
-                shadingDbgFs.reset();
-                effView = ViewMode::Lit;
-            }
-        }
-        const bool meshletDbg = (effView == ViewMode::Meshlets);
-        const bool lodDbg = (effView == ViewMode::Lods);
-        const bool shadingDbg = shadingDbgFs.has_value();
-        // Direct-only opaque: ONLY the flat views (culled content
-        // stays visible by design) + SsrContribution (no opaque leg,
-        // see above). The shading views keep the chain exactly like
-        // Lit; Cubemap never bypassed.
-        // Meshlets (F3) and Lods (F5) ride the GPU Scene chain (surviving
-        // meshlets), so neither bypasses; only SsrContribution does.
-        const bool bypassFilter = effView == ViewMode::SsrContribution;
-        // LOD palette (display colors; pre-scaled by dbgGain like meshlets
-        // so they survive the HDR -> tonemap path).
-        static const float kLodPalette[8][3] = {
-            {0.20f, 0.90f, 0.30f}, // LOD0 green
-            {0.95f, 0.85f, 0.20f}, // LOD1 yellow
-            {1.00f, 0.55f, 0.15f}, // LOD2 orange
-            {1.00f, 0.20f, 0.20f}, // LOD3 red
-            {1.00f, 0.20f, 1.00f}, // LOD4+ magenta
-            {1.00f, 0.20f, 1.00f},
-            {1.00f, 0.20f, 1.00f},
-            {1.00f, 0.20f, 1.00f},
-        };
-        // Exposure compensation shared by the flat debug views (meshlets +
-        // LODs): authored display colors travel through HDR + tonemap
-        // (hdr * exposure -> ACES); pre-scale by 1/exposure so the
-        // tonemapper reproduces them (ACES still shapes, hues stay
-        // distinct). The unlit/cascade shaders do this in-shader.
-        // FrameExposure: debug views run at the fixed reference exposure
-        // (see world_renderer.h), so the gain is a constant 1/0.001 and
-        // the flat colors are deterministic across runs/scenes.
-        const float flatExposure = FrameExposure();
-        const float flatGain = (flatExposure > 1e-9f) ? 1.0f / flatExposure : 1.0f;
-        // Flat-debug SKIN tail (meshdebug.vert.hlsl, bytes 192..208):
-        // SKINNED meshes pose to the frame's DEFORMED heap in the
-        // Meshlets/Lods views so the meshlet shapes are judged ON the
-        // animated character (the same Northlight swap the lit/depth
-        // legs run — the debug views used to show the bind pose, hiding
-        // exactly the deformation the debugging needs to see).
-        // TOURMALINE_KD_NOSKIN=1 pins the bind pose for A/B.
-        auto pushMeshDebugSkinTail = [&](uint32_t meshId, NodeId node) {
-            MeshDebugSkinTail tail{};
-            static const bool noskin = [] {
-                const char* e = std::getenv("TOURMALINE_KD_NOSKIN");
-                return e && std::strcmp(e, "1") == 0;
-            }();
-            const smvk::gfx::State& st = m_gfxRenderer.State();
-            if (!noskin && st.skinDeformedBda != 0 && st.skinDeformedBase != UINT32_MAX) {
-                // SELECTED-LOD admission (the same contract as the gfx draw
-                // push's DrawFlagBit_Skinned gate): the debug draws' vertex
-                // ids index the SELECTED sibling's heap range, so only the
-                // selected StaticMesh's skinned flag proves deformed-span
-                // coverage. The old base-mesh key enabled the swap for
-                // LOD-selected draws whose vertices sit OUTSIDE the span -
-                // (vertexID - deformedBase)*5 then read words past the
-                // heap: the broken, half-exploded poses the Meshlets/Lods
-                // views showed on LOD-switched skinned meshes.
-                if (const smvk::StaticMesh* sel = LodMeshForNode(node, meshId);
-                    sel && sel->skinned) {
-                    tail.deformed = st.skinDeformedBda;
-                    tail.deformedBase = st.skinDeformedBase;
-                    tail.skinned = 1;
-                }
-            }
-            cmd.PushConstants(
-                kMeshDebugSkinTailOffset, sizeof(tail), &tail, smvk::ShaderStage::All);
-        };
-        // Meshlets (F3) now rides the GPU Scene task/mesh chain (surviving
-        // meshlets, per-meshlet flat color via the debug program). This
-        // direct "draw every instance" path draws the LEGACY sources the GPU
-        // chain cannot own — skinned meshes (which pose to the deformed heap
-        // via the skin tail below) and every other direct-only instance. It
-        // fires when the GPU-scene debug program is missing OR any source is
-        // still legacy-owned (e.g. a skinned character whose meshlets would
-        // otherwise never appear in this view).
-        if (meshletDbg &&
-            (m_gpuSceneTaskDebugProgram.shaderCount != 3 || m_gpuSceneRasterLegacyCount != 0)) {
-            cmd.BindRenderPipeline(
-                m_gfxRenderer.MeshDebugProgram(),
-                ::tour::vertex_layouts::Static,
-                opaqueDepth,
-                noStencil,
-                smvk::BlendSettings::Opaque(),
-                msaaSettings,
-                wireframeRaster(smvk::RasterSettings{.cullMode = smvk::CullMode::None}));
-            cmd.BindStaticVertexFmt();
-            // No index bind: mesh, cluster-ordered and debug draws all address
-            // the static index monoblock absolutely (offset-0 binding above).
-            const smvk::gfx::State& dbgState = m_gfxRenderer.State();
-            MeshDebugPush dp{};
-            std::copy_n(glm::value_ptr(frameViewProj), 16, dp.viewProj);
-            // Debug colors are authored as display colors, but they travel
-            // through the HDR target + tonemap (hdr * exposure -> ACES). With
-            // physical light units the exposure is ~0.001, which crushes every
-            // flat color to black. Pre-scale by 1/exposure so hdr * exposure
-            // reproduces the authored color (ACES still shapes it, hues stay
-            // distinct); guards the divide for pathological exposures.
-            const float dbgExposure = FrameExposure();
-            const float dbgGain = (dbgExposure > 1e-9f) ? 1.0f / dbgExposure : 1.0f;
-            m_world->forEachRenderItem(
-                smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
-                    smvk::IteratorFlagBit_StaticVertexFmt,
-                [&](const smvk::World::RenderItem& item) {
-                    if (sceneRasterActive &&
-                        m_gpuSceneRasterOwnership.OwnsGpu(m_gpuSceneSync.SourceForNode(item.node)))
-                        return; // GPU task/indexed Main owns this exact source
-                    if (item.material == smvk::World::kInvalidIndex)
-                        return;
-                    const uint32_t worldMesh = item.mesh;
-                    const glm::mat4& model = m_world->scene.globalTransform[item.node];
-                    std::copy_n(glm::value_ptr(model), 16, dp.model);
-                    // Per-item skin tail: the animated pose for SKINNED items
-                    // (covers the filterable + white-fallback branches below).
-                    pushMeshDebugSkinTail(worldMesh, item.node);
-                    // Heat-mode cone source: SKINNED items have no CPU-visible
-                    // deformed cutoffs (the skinBounds table is GPU-resident;
-                    // this per-cluster CPU-recorded color loop cannot read it
-                    // without a readback, which the retired overlay path proved
-                    // too fragile to keep). They draw the sentinel deep-blue
-                    // "no deformed data" instead of the bind-pose cutoff — the
-                    // exact lie the heat mode exists to expose. Static items
-                    // keep the baked cutoffs — their actual cull input.
-                    // (Skinned-heat-from-GPU: the F4 todo.)
-                    const smvk::gfx::State& stHeat = m_gfxRenderer.State();
-                    const smvk::StaticMesh* heatMeshDesc = m_world->GetMesh(worldMesh);
-                    const bool heatSkinned = heatMeshDesc && heatMeshDesc->skinned &&
-                                             stHeat.skinDeformedBda != 0 &&
-                                             stHeat.skinDeformedBase != UINT32_MAX;
-                    // Debug the SELECTED sibling: every registered LOD has its
-                    // own gfx mesh (see RegisterWorldMeshes), so the overlay
-                    // shows what the filter actually culled for this instance.
-                    const uint32_t gfxMesh = smvk::gfx::GfxMeshForLod(
-                        m_gfxRenderer.State(), worldMesh, LodIndexForNode(item.node, worldMesh));
-                    if (gfxMesh == UINT32_MAX || gfxMesh >= dbgState.meshes.size()) {
-                        // Not filterable: white direct fallback (nothing vanishes).
-                        // Mesh-local surfaces address the same index monoblock.
-                        dp.color[0] = dp.color[1] = dp.color[2] = 0.9f * dbgGain;
-                        dp.color[3] = 1.0f;
-                        cmd.PushConstants(0, sizeof(dp), &dp, smvk::ShaderStage::All);
-                        if (smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, worldMesh)) {
-                            for (auto& draw_set : meshDesc->geometry.surfaces) {
-                                cmd.DrawIndexed(draw_set.indexCount,
-                                                1,
-                                                draw_set.firstIndex,
-                                                draw_set.baseVertex);
-                            }
-                        }
-                        return;
-                    }
-                    const smvk::gfx::Mesh& gm = dbgState.meshes[gfxMesh];
-                    for (uint32_t ci = 0; ci < gm.clusterCount; ++ci) {
-                        const uint32_t gc = gm.clusterStart + ci;
-                        if (gc >= dbgState.clusters.size())
-                            continue;
-                        const smvk::gfx::Cluster& cl = dbgState.clusters[gc];
-                        if (cl.triCount == 0)
-                            continue;
-                        float coneCutoff = cl.coneCutoff;
-                        if (heatSkinned)
-                            coneCutoff = -2.0f; // "no deformed data" blue (see above)
-                        float rgba[4];
-                        GfxRenderer::DebugClusterColor(gc, coneCutoff, m_debugMeshletMode, rgba);
-                        dp.color[0] = rgba[0] * dbgGain;
-                        dp.color[1] = rgba[1] * dbgGain;
-                        dp.color[2] = rgba[2] * dbgGain;
-                        dp.color[3] = rgba[3];
-                        cmd.PushConstants(0, sizeof(dp), &dp, smvk::ShaderStage::All);
-                        // Absolute into the static index monoblock (region base).
-                        const uint32_t firstIndex =
-                            smvk::gfx::ClusterIndexBase(dbgState) + cl.indexOffset;
-                        cmd.DrawIndexed(cl.triCount * 3, 1, firstIndex, 0);
-                    }
-                });
-        }
-        // LOD debug view (F5): now rides the GPU Scene task/mesh chain too
-        // (surviving meshlets colored by their selected LOD). This direct
-        // "draw every instance" path draws the LEGACY sources (skinned meshes
-        // posing to the deformed heap) alongside that chain, so a skinned
-        // character still shows up here.
-        if (lodDbg &&
-            (m_gpuSceneTaskDebugProgram.shaderCount != 3 || m_gpuSceneRasterLegacyCount != 0)) {
-            cmd.BindRenderPipeline(
-                m_gfxRenderer.MeshDebugProgram(),
-                ::tour::vertex_layouts::Static,
-                opaqueDepth,
-                noStencil,
-                smvk::BlendSettings::Opaque(),
-                msaaSettings,
-                wireframeRaster(smvk::RasterSettings{.cullMode = smvk::CullMode::None}));
-            cmd.BindStaticVertexFmt();
-            MeshDebugPush lp2{};
-            std::copy_n(glm::value_ptr(frameViewProj), 16, lp2.viewProj);
-            m_world->forEachRenderItem(
-                smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
-                    smvk::IteratorFlagBit_StaticVertexFmt,
-                [&](const smvk::World::RenderItem& item) {
-                    if (sceneRasterActive &&
-                        m_gpuSceneRasterOwnership.OwnsGpu(m_gpuSceneSync.SourceForNode(item.node)))
-                        return; // GPU task/indexed Main owns this exact source
-                    if (item.material == smvk::World::kInvalidIndex)
-                        return;
-                    const glm::mat4& model = m_world->scene.globalTransform[item.node];
-                    std::copy_n(glm::value_ptr(model), 16, lp2.model);
-                    // Per-item skin tail (the LODs view shares the meshdebug
-                    // VS: skinned items pose to the deformed heap too).
-                    pushMeshDebugSkinTail(item.mesh, item.node);
-                    uint32_t lod = 0;
-                    smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh, &lod);
-                    if (!meshDesc)
-                        return;
-                    // Shader-LOD overlay: when the subsystem is on, instances
-                    // with non-default far shading (quality specialization;
-                    // vertex-lit substitution is killed) report WHITE instead
-                    // of their LOD palette color, so shading downgrades are
-                    // visible next to geometry ones.
-                    static const float kLodVertexLit[3] = {1.0f, 1.0f, 1.0f};
-                    const bool vlitLevel =
-                        ShaderLodActive() && m_world &&
-                        !m_world->FarShadingAt(item.mesh, lod, item.material).isDefault();
-                    const float* pal = vlitLevel ? kLodVertexLit : kLodPalette[lod < 8 ? lod : 4];
-                    lp2.color[0] = pal[0] * flatGain;
-                    lp2.color[1] = pal[1] * flatGain;
-                    lp2.color[2] = pal[2] * flatGain;
-                    lp2.color[3] = 1.0f;
-                    cmd.PushConstants(0, sizeof(lp2), &lp2, smvk::ShaderStage::All);
-                    for (auto& draw_set : meshDesc->geometry.surfaces) {
-                        cmd.DrawIndexed(
-                            draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
-                    }
-                });
-        }
-        // The flat debug views (Meshlets F3 / LODs F5) skip this lit leg:
-        // every opaque source is already drawn exactly once flat — the GPU
-        // task/indexed chains drew the GPU-owned survivors and the direct
-        // meshdebug legs above drew the LEGACY (skinned) sources — so a lit
-        // redraw here would double-draw and overwrite the flat colors.
-        if (!meshletDbg && !lodDbg && !bypassFilter &&
-            (!sceneRasterActive || m_gpuSceneRasterLegacyCount != 0)) {
-            // UINT32_MAX forces a bind check on the first node; an
-            // identical state is deduped by the CommandBuffer's
-            // current-pipeline check, so this costs nothing.
-            // Shader LODs: the far-shading program is tracked alongside the
-            // material because the same material can shade lit (near level)
-            // and quality-specialized (farthest level) in one material-sorted
-            // walk (vertex-lit substitution is killed, so farSpec is the only
-            // non-default far program).
-            const bool shaderLodOn = ShaderLodActive();
-            uint32_t boundMaterial = UINT32_MAX;
-            smvk::ShaderProgram* boundProgram = nullptr;
-            m_world->forEachRenderItem(
-                smvk::IteratorFlagBit_Renderable |
-                    smvk::IteratorFlagBit_Opaque
-                    //| smvk::IteratorFlagBit_PassedCullTest
-                    | smvk::IteratorFlagBit_StaticVertexFmt,
-                [&](const smvk::World::RenderItem& item) {
-                    if (item.material == smvk::World::kInvalidIndex)
-                        return;
-                    // GPU-scene-owned static opaque + MASK sources are
-                    // submitted by the task/indexed raster leg above; skip
-                    // them here so Main is drawn exactly once. Skinned/
-                    // legacy/transparent sources stay direct.
-                    if (sceneRasterActive &&
-                        m_gpuSceneRasterOwnership.OwnsGpu(m_gpuSceneSync.SourceForNode(item.node)))
-                        return;
-                    // CPU frustum cull (the direct leg has no GPU cull when U
-                    // toggles the raster off): conservative LOD-union sphere
-                    // test against the live main view, matching the prepass and
-                    // motion dynamic-cull convention.
-                    if (smvk::StaticMesh* cullBase = m_world->GetMesh(item.mesh)) {
-                        const glm::mat4& cullModel = m_world->scene.globalTransform[item.node];
-                        glm::vec3 c{0.0f};
-                        float r = 0.0f;
-                        smvk::MeshBoundsToWorld(cullModel,
-                                                cullBase->geometry.aabbMin,
-                                                cullBase->geometry.aabbMax,
-                                                c,
-                                                r);
-                        bool visible = smvk::RenderViewIntersectsSphere(liveMainCullView, c, r);
-                        const uint32_t cullLod = LodIndexForNode(item.node, item.mesh);
-                        if (smvk::StaticMesh* cullSel = m_world->GetLodMesh(item.mesh, cullLod);
-                            !visible && cullSel && cullSel != cullBase) {
-                            smvk::MeshBoundsToWorld(cullModel,
-                                                    cullSel->geometry.aabbMin,
-                                                    cullSel->geometry.aabbMax,
-                                                    c,
-                                                    r);
-                            visible = smvk::RenderViewIntersectsSphere(liveMainCullView, c, r);
-                        }
-                        if (!visible)
-                            return;
-                    }
-#if 0 // TMP-DIAG scanlands hunt (disabled): TOURMALINE_SHOWGROUP="n"
-      // shows ONLY LOD group n (mirrors the FilterMainView hack).
-      // Remove later.
-					{
-						static int kShow = INT_MAX;
-						static bool kInit = false;
-						if (!kInit) {
-							kInit = true;
-							if (const char* r = std::getenv("TOURMALINE_SHOWGROUP")) {
-								int n = INT_MAX;
-								if (std::sscanf(r, "%d", &n) == 1)
-									kShow = n;
-							}
-						}
-						if (kShow != INT_MAX && item.mesh < m_world->meshLodInfos.size()
-							&& (int)m_world->meshLodInfos[item.mesh].groupId != kShow)
-							return;
-					}
-#endif
-                    // Dither-on-closeup (TransformHierarchy::ditherCloseup; per frame, per
-                    // draw): Hidden draws drop out of the direct leg entirely
-                    // (the CPU cull - no leg sees them this frame; the filter
-                    // makes the same call at registration, so both paths
-                    // agree). Fade draws pass through drawNode, which pushes
-                    // the per-draw flag (padEnd_[0]) for the lit FS family.
-                    if (DitherCloseupStateFor(
-                            m_world->scene, int(item.node), m_cameraPositioner.cameraPosition_) ==
-                        DitherCloseupState::Hidden)
-                        return;
-                    // Shader LODs: instances whose selected level is the farthest
-                    // one draw HERE - vertex-lit substitution, or the lit
-                    // program with the material's quality specialization -
-                    // FilterMainView skipped them at registration for the
-                    // same reason (the filtered VS is lit-only), so this is
-                    // the exactly-once draw.
-                    const smvk::World::FarShading farShading =
-                        shaderLodOn ? FarShadingForNode(item.node, item.mesh, item.material)
-                                    : smvk::World::FarShading{};
-                    const bool vertexLitLevel = farShading.vertexLit;
-                    // Specialized far shading: the cached twin pair for the
-                    // material's quality (falls back to the plain twins when
-                    // the base programs are missing - never binds empty).
-                    FarSpecPrograms* farSpec = (!vertexLitLevel && !farShading.isDefault())
-                                                   ? FarSpecProgramsFor(farShading.quality)
-                                                   : nullptr;
-                    // Shading debug views bind the view's direct twin here
-                    // (the same flat FS the GPU-driven ranges shade with); the
-                    // shader-LOD substitution is Lit-only, so far-level
-                    // instances keep drawing direct — just debug-shaded.
-                    // ProjectLit materials (never vertex-lit, never farSpec —
-                    // FarShadingAt opts them out) bind the family's base
-                    // program: monolith-level parity with the stock direct
-                    // pick (this leg's GI/std refinement is the transparent
-                    // leg's MainLitProgramFor, unchanged shape).
-                    const uint32_t materialId = item.material;
-                    const bool itemProjectLit =
-                        !shadingDbg && !vertexLitLevel && MaterialUsesProjectLit(materialId);
-                    // The GI-aware pick (ProjectLit family + the GI/std
-                    // twins) is MainLitProgramFor; the direct leg must NOT
-                    // hardcode the base mainProgram or it silently drops the
-                    // baked convex-volume GI the transparent leg already
-                    // honors (Sponza parity bug: GI_VOLUMES vs no-GI define).
-                    smvk::ShaderProgram& baseProg =
-                        shadingDbg       ? m_resources.debugPrograms[size_t(*shadingDbgFs)].direct
-                        : vertexLitLevel ? m_resources.vertexLitProgram
-                        : (farSpec && farSpec->main.shaderCount == 2)
-                            ? farSpec->main
-                            : MainLitProgramFor(materialId);
-                    smvk::ShaderProgram& baseA2c =
-                        (shadingDbg || vertexLitLevel)               ? noA2CProgram
-                        : (farSpec && farSpec->a2c.shaderCount == 2) ? farSpec->a2c
-                        : itemProjectLit ? m_resources.mainProjectProgramA2C
-                                         : m_resources.mainProgramA2C;
-                    smvk::ShaderProgram& prog = baseProg;
-                    smvk::ShaderProgram& progA2c = baseA2c;
-                    if (materialId != boundMaterial ||
-                        (&prog != boundProgram && &progA2c != boundProgram)) {
-                        smvk::ShaderProgram& bound =
-                            bindForMaterial(materialId, prog, progA2c, opaqueDepth);
-                        boundMaterial = materialId;
-                        boundProgram = &bound;
-                    }
-                    if (vertexLitLevel && !shadingDbg)
-                        ++m_lodShaderDraws;
-                    drawNode(item.node,
-                             item.mesh,
-                             materialId,
-                             // The resolved material userdata (instance override
-                             // or base default — the lit hooks' runtime input).
-                             m_world->ResolvedItemUserData(item));
-                });
-        }
-
-        // ---- Transparent (AlphaMode::Blend): dithered (default) or alpha blend ----
-        // Dithered: screen-door discard in shader, opaque pipeline state
-        // (blend off, depth test follows the opaque path). Depth holds
-        // opaque only (transparent excluded from the prepass by design),
-        // so transparents test against it read-only in 1x; in MSAA they
-        // write the transient target inline like opaque, so no sorting is
-        // needed - order-independent like opaque.
-        // Blended: classic back-to-front AlphaBlend, depth test on, no
-        // depth writes, sorted by distance-to-camera.
-        // m_hideTransparent (debug) skips the whole leg to bisect blending
-        // artifacts out of hole reports. The list itself is shared with
-        // the SSR PaneMask redraw (CollectTransparentDraws).
-        {
-            const bool ditheredTransp = (m_transparentMode == smvk::TransparentMode::Dithered);
-            // GPU Scene-owned transparents (the sorted BLEND backend) plus
-            // the legacy leftover (non-admitted transparents, empty for a
-            // fully-admitted scene). Both are individually back-to-front;
-            // merge for a correct global order (stable sort preserves the
-            // deterministic equal-depth tie-break).
-            auto draws = CollectGpuSceneTransparentDraws(
-                transparentCullView, !ditheredTransp, m_cameraPositioner.cameraPosition_);
-            auto legacyDraws = CollectTransparentDraws(
-                transparentCullView, !ditheredTransp, m_cameraPositioner.cameraPosition_);
-            if (!legacyDraws.empty()) {
-                draws.insert(draws.end(), legacyDraws.begin(), legacyDraws.end());
-                std::stable_sort(draws.begin(),
-                                 draws.end(),
-                                 [](const TransparentDrawItem& a, const TransparentDrawItem& b) {
-                                     return a.dist2 > b.dist2;
-                                 });
-            }
-            {
-                // One-time coverage report: the sorted BLEND backend must
-                // account for every admitted transparent source exactly once
-                // (legacy leftover = 0 for a fully-admitted scene).
-                static bool s_transparentReported = false;
-                if (!s_transparentReported && !m_hideTransparent) {
-                    s_transparentReported = true;
-                    std::fprintf(stderr,
-                                 "[GpuSceneTransparent] gpu=%u legacy=%u (admitted=%u)\n",
-                                 uint32_t(draws.size()) - uint32_t(legacyDraws.size()),
-                                 uint32_t(legacyDraws.size()),
-                                 m_gpuSceneTransparentCompatibleCount);
-                }
-            }
-            const bool lodDbg = (effView == ViewMode::Lods);
-
-            // Transparent follows the opaque debug view: the shading
-            // views bind the view's direct twin (the same flat FS the
-            // opaque legs shade with; via drawNode's delta pushes —
-            // the legs above left a valid push range exactly like the
-            // Lit view, so no full pushes are needed); LODs draws it
-            // flat in the instance LOD color. The flat views keep the
-            // legacy look (transparent stays lit).
-            smvk::ShaderProgram* transProg = &m_resources.mainProgram;
-            if (shadingDbg)
-                transProg = &m_resources.debugPrograms[size_t(*shadingDbgFs)].direct;
-            // Lit-view program: the SAME std/gi twin selection as every
-            // other lit leg (MainLitProgramFor) - this leg used to hardcode
-            // the monolith mainProgram, making it the ONLY lit leg still
-            // binding the full layered-machinery FS for non-layered
-            // materials (parity gap; the App path picked the std twin).
-            auto litTransProg = [&](uint32_t materialId) -> smvk::ShaderProgram& {
-                return shadingDbg ? *transProg : MainLitProgramFor(materialId);
-            };
-            // Shader LODs apply to transparent too, but only in the Lit view
-            // (debug views replace shading wholesale, see above).
-            const bool transShaderLodOn = ShaderLodActive() && effView == ViewMode::Lit;
-            MeshDebugPush transLp{};
-            if (lodDbg)
-                std::copy_n(glm::value_ptr(frameViewProj), 16, transLp.viewProj);
-
-            // Meshlets (F3) frame-push restore: the opaque meshlet pass above
-            // full-pushed MeshDebugPush (model/viewProj/color) over the shared
-            // [0,256) push range, clobbering every PushConstants frame field -
-            // bytes 64..135 (frameUniforms/lightsBuffer/materialsBuffer/
-            // cascadeBuffer/fpLights/fpTileCounts/fpTileIndices) now hold
-            // viewProj/color float bits, while drawNode below re-pushes only
-            // model (bytes 0..63) + materialId. Meshlets is the ONLY debug
-            // view whose transparent leg still delta-pushes a shaded program
-            // over that garbage (LODs pushes its flat MeshDebugPush per
-            // draw), so the FS
-            // dereferences garbage BDAs - pc.bLights.Get().lights[0] is the
-            // lit FS's first read - and the device dies on the first
-            // transparent draw (headless repro: VK_ERROR_DEVICE_LOST +
-            // [DeviceFault] on frame 0; the wild BDA read kills the context
-            // instantly, no TDR). The Meshlets debug view hits the same\r
-            // leg (its flat MeshDebugPush per draw is self-contained).
-            // the same clobbered BDAs). Restore the frame push once, before
-            // the loop; every other view needs nothing (the filtered/direct
-            // legs left a valid range in it — the shading views ride the
-            // SAME legs as Lit, so their drawNode delta pushes below read
-            // live frame fields, no full pushes needed).
-            if (effView == ViewMode::Meshlets)
-                cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &pc, smvk::ShaderStage::All);
-
-            uint32_t boundMaterial = UINT32_MAX;
-            smvk::ShaderProgram* boundProgram = nullptr;
-            for (const auto& d : draws) {
-                if (lodDbg) {
-                    // Flat LOD color (self-contained push; ignores material).
-                    uint32_t lod = 0;
-                    smvk::StaticMesh* meshDesc = LodMeshForNode(d.node, d.meshId, &lod);
-                    if (!meshDesc)
-                        continue;
-                    if (d.materialId != boundMaterial) {
-                        cmd.BindRenderPipeline(
-                            m_gfxRenderer.MeshDebugProgram(),
-                            ::tour::vertex_layouts::Static,
-                            opaqueDepth,
-                            noStencil,
-                            smvk::BlendSettings::Opaque(),
-                            msaaSettings,
-                            // TMP-DIAG (TOURMALINE_LODVIEW_CULLBACK=1): bind Back instead
-                            // of None in the LODs flat view — the winding-flip proof
-                            // for the distant-sibling draw-drop (every winding-
-                            // sensitive stage kills them; the winding-agnostic views
-                            // draw them). With Back bound, LOD3 instances whose
-                            // decimated triangles are inverted vanish here too while
-                            // LOD0 stays. Remove later.
-                            wireframeRaster(smvk::RasterSettings{
-                                .cullMode = (std::getenv("TOURMALINE_LODVIEW_CULLBACK") &&
-                                             std::strcmp(std::getenv("TOURMALINE_LODVIEW_CULLBACK"),
-                                                         "1") == 0)
-                                                ? smvk::CullMode::Back
-                                                : smvk::CullMode::None}));
-                        cmd.BindStaticVertexFmt();
-                        boundMaterial = d.materialId;
-                    }
-                    const glm::mat4& model = m_world->scene.globalTransform[d.node];
-                    std::copy_n(glm::value_ptr(model), 16, transLp.model);
-                    static const float kLodVertexLitTrans[3] = {1.0f, 1.0f, 1.0f};
-                    const bool vlitLevelTrans =
-                        ShaderLodActive() && m_world &&
-                        !m_world->FarShadingAt(d.meshId, lod, d.materialId).isDefault();
-                    const float* pal =
-                        vlitLevelTrans ? kLodVertexLitTrans : kLodPalette[lod < 8 ? lod : 4];
-                    transLp.color[0] = pal[0] * flatGain;
-                    transLp.color[1] = pal[1] * flatGain;
-                    transLp.color[2] = pal[2] * flatGain;
-                    transLp.color[3] = 1.0f;
-                    cmd.PushConstants(0, sizeof(transLp), &transLp, smvk::ShaderStage::All);
-                    // Per-draw skin tail (the meshdebug VS shared with the
-                    // opaque LODs view: skinned transparents pose too).
-                    pushMeshDebugSkinTail(d.meshId, d.node);
-                    for (auto& draw_set : meshDesc->geometry.surfaces) {
-                        cmd.DrawIndexed(
-                            draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
-                    }
-                    continue;
-                }
-                // Shader LODs: farthest-level transparents shade the
-                // quality-specialized lit program (vertex-lit substitution
-                // is killed) with a full push (the per-material delta push
-                // below feeds the lit program only). Same coarsest geometry.
-                const smvk::World::FarShading farShadingTrans =
-                    transShaderLodOn ? FarShadingForNode(d.node, d.meshId, d.materialId)
-                                     : smvk::World::FarShading{};
-                const bool vlitTrans = farShadingTrans.vertexLit;
-                // Specialized far shading (see the opaque leg): the
-                // cached twin pair for the material's quality. Plain
-                // mainProgram-based (like the opaque direct leg), not
-                // the std/gi twin selection - correct everywhere, and
-                // far + transparent + specialized is rare enough that
-                // the twin-selection parity gap doesn't matter.
-                FarSpecPrograms* farSpecTrans = (!vlitTrans && !farShadingTrans.isDefault())
-                                                    ? FarSpecProgramsFor(farShadingTrans.quality)
-                                                    : nullptr;
-                const bool farSpecTransValid = farSpecTrans && farSpecTrans->main.shaderCount == 2;
-                if (vlitTrans) {
-                    if (d.materialId != boundMaterial ||
-                        boundProgram != &m_resources.vertexLitProgram) {
-                        if (ditheredTransp) {
-                            // Opaque state: the FS discard does the work.
-                            smvk::BlendSettings opaqueBlend = smvk::BlendSettings::Opaque();
-                            smvk::RasterSettings raster{};
-                            if (const smvk::Material* mat =
-                                    static_cast<const smvk::World&>(*m_world).GetMaterial(
-                                        d.materialId)) {
-                                raster = mat->pipeline.raster;
-                            }
-                            cmd.BindRenderPipeline(wireTwinOf(m_resources.vertexLitProgram),
-                                                   ::tour::vertex_layouts::Static,
-                                                   opaqueDepth,
-                                                   noStencil,
-                                                   opaqueBlend,
-                                                   msaaSettings,
-                                                   wireframeRaster(raster));
-                        } else {
-                            bindForMaterial(d.materialId,
-                                            m_resources.vertexLitProgram,
-                                            noA2CProgram,
-                                            transparentDepth,
-                                            /*writeStencilClass=*/false);
-                        }
-                        boundMaterial = d.materialId;
-                        boundProgram = &m_resources.vertexLitProgram;
-                    }
-                    auto& model = m_world->scene.globalTransform[d.node];
-                    smvk::StaticMesh* meshDesc = LodMeshForNode(d.node, d.meshId);
-                    if (!meshDesc)
-                        continue;
-                    IRenderer::PushConstants objPC = pc;
-                    objPC.materialId = d.materialId;
-                    std::copy_n(glm::value_ptr(model), 16, objPC.model);
-                    cmd.PushConstants(
-                        0, sizeof(IRenderer::PushConstants), &objPC, smvk::ShaderStage::All);
-                    for (auto& draw_set : meshDesc->geometry.surfaces) {
-                        cmd.DrawIndexed(
-                            draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
-                    }
-                    ++m_lodShaderDraws;
-                    continue;
-                }
-                // Specialized transparent far leg (mirrors the vertex-lit
-                // leg's full-push shape above, but binds the
-                // quality-specialized twin): same coarsest geometry, same
-                // dithered/blended handling, cheaper shading.
-                if (farSpecTransValid) {
-                    if (d.materialId != boundMaterial || boundProgram != &farSpecTrans->main) {
-                        if (ditheredTransp) {
-                            smvk::BlendSettings opaqueBlend = smvk::BlendSettings::Opaque();
-                            smvk::RasterSettings raster{};
-                            if (const smvk::Material* mat =
-                                    static_cast<const smvk::World&>(*m_world).GetMaterial(
-                                        d.materialId)) {
-                                raster = mat->pipeline.raster;
-                            }
-                            cmd.BindRenderPipeline(wireTwinOf(farSpecTrans->main),
-                                                   ::tour::vertex_layouts::Static,
-                                                   opaqueDepth,
-                                                   noStencil,
-                                                   opaqueBlend,
-                                                   msaaSettings,
-                                                   wireframeRaster(raster));
-                        } else {
-                            bindForMaterial(d.materialId,
-                                            farSpecTrans->main,
-                                            farSpecTrans->a2c.shaderCount == 2 ? farSpecTrans->a2c
-                                                                               : noA2CProgram,
-                                            transparentDepth,
-                                            /*writeStencilClass=*/false);
-                        }
-                        boundMaterial = d.materialId;
-                        boundProgram = &farSpecTrans->main;
-                    }
-                    auto& model = m_world->scene.globalTransform[d.node];
-                    smvk::StaticMesh* meshDesc = LodMeshForNode(d.node, d.meshId);
-                    if (!meshDesc)
-                        continue;
-                    IRenderer::PushConstants objPC = pc;
-                    objPC.materialId = d.materialId;
-                    std::copy_n(glm::value_ptr(model), 16, objPC.model);
-                    cmd.PushConstants(
-                        0, sizeof(IRenderer::PushConstants), &objPC, smvk::ShaderStage::All);
-                    for (auto& draw_set : meshDesc->geometry.surfaces) {
-                        cmd.DrawIndexed(
-                            draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
-                    }
-                    ++m_lodShaderDraws;
-                    continue;
-                }
-                // Ordinary transparent direct materials.
-                // Vertex-lit and far-quality branches remain unchanged.
-                smvk::ShaderProgram* const prog = &litTransProg(d.materialId);
-                if (d.materialId != boundMaterial || boundProgram != prog) {
-                    if (ditheredTransp) {
-                        // Opaque state: the shader discard did the work.
-                        // Blend off (bindForMaterial would return AlphaBlend
-                        // from material.pipeline); depth follows opaque.
-                        smvk::BlendSettings opaqueBlend = smvk::BlendSettings::Opaque();
-                        smvk::RasterSettings raster{};
-                        if (const smvk::Material* mat =
-                                static_cast<const smvk::World&>(*m_world).GetMaterial(
-                                    d.materialId)) {
-                            raster = mat->pipeline.raster;
-                        }
-                        cmd.BindRenderPipeline(wireTwinOf(*prog),
-                                               ::tour::vertex_layouts::Static,
-                                               opaqueDepth,
-                                               noStencil,
-                                               opaqueBlend,
-                                               msaaSettings,
-                                               wireframeRaster(raster));
-                    } else {
-                        bindForMaterial(d.materialId,
-                                        *prog,
-                                        noA2CProgram,
-                                        transparentDepth,
-                                        /*writeStencilClass=*/false);
-                    }
-                    boundMaterial = d.materialId;
-                    boundProgram = prog;
-                }
-                drawNode(d.node,
-                         d.meshId,
-                         d.materialId,
-                         // Transparent list draws have no RenderItem; the
-                         // material default is the resolved value
-                         // (instances bind to mesh entities, which ride
-                         // the opaque paths in v1).
-                         m_world->MaterialUserData(d.materialId));
-            }
-        }
-
-        // CPU-authored immediate debug lines: same HDR target, depth,
-        // camera and exposure path as the other Main line overlays.
-        if (!debugDrawRanges.empty() && debugDrawFlight < m_debugDrawGpuLines.size() &&
-            !m_debugDrawGpuLines[debugDrawFlight].empty()) {
-            cmd.BindVertexBuffer(m_debugDrawGpuLines[debugDrawFlight], 0, 0);
-            const float exposure = FrameExposure();
-            const float gain = exposure > 1e-9f ? 1.0f / exposure : 1.0f;
-            for (const auto& r : debugDrawRanges) {
-                const bool tested = r.depth == tour::DebugDepthMode::Tested;
-                cmd.BindRenderPipeline(
-                    m_gfxRenderer.LineProgram(),
-                    ::tour::vertex_layouts::DebugLine,
-                    tested ? transparentDepth
-                           : smvk::DepthSettings{.depthFunc = smvk::CompareOp::Always,
-                                                 .writeEnable = false,
-                                                 .depthTestEnable = false},
-                    noStencil,
-                    smvk::BlendSettings::Opaque(),
-                    msaaSettings,
-                    smvk::RasterSettings{.cullMode = smvk::CullMode::None},
-                    r.topology);
-                LineDebugPush lp{};
-                std::copy_n(glm::value_ptr(frameViewProj), 16, lp.viewProj);
-                lp.color[0] = r.color.x * gain;
-                lp.color[1] = r.color.y * gain;
-                lp.color[2] = r.color.z * gain;
-                lp.color[3] = 1.0f;
-                cmd.PushConstants(0, sizeof(lp), &lp, smvk::ShaderStage::All);
-                cmd.Draw(r.count, 1, r.first, 0);
-            }
-        }
-        // The selection box shares the live renderer's matrix/target
-        // (HDR gain compensated like the cone overlay). It draws last
-        // and depth-disabled: an editor outline must remain visible
-        // even when the selected mesh is behind other geometry.
-        if (selectionLineVerts && !m_selectionLineBuffer.empty()) {
-            cmd.BindRenderPipeline(m_gfxRenderer.LineProgram(),
-                                   ::tour::vertex_layouts::DebugLine,
-                                   smvk::DepthSettings{.depthFunc = smvk::CompareOp::Always,
-                                                       .writeEnable = false,
-                                                       .depthTestEnable = false},
-                                   noStencil,
-                                   smvk::BlendSettings::Opaque(),
-                                   msaaSettings,
-                                   smvk::RasterSettings{.cullMode = smvk::CullMode::None},
-                                   smvk::PrimitiveTopology::LineList);
-            cmd.BindVertexBuffer(m_selectionLineBuffer, 0, 0);
-            LineDebugPush lp{};
-            std::copy_n(glm::value_ptr(frameViewProj), 16, lp.viewProj);
-            const float exposure = FrameExposure();
-            const float gain = exposure > 1e-9f ? 1.0f / exposure : 1.0f;
-            lp.color[0] = gain;
-            lp.color[1] = 0.9f * gain;
-            lp.color[2] = 0.2f * gain;
-            lp.color[3] = 1.0f;
-            cmd.PushConstants(0, sizeof(lp), &lp, smvk::ShaderStage::All);
-            cmd.Draw(selectionLineVerts, 1, 0, 0);
-        }
-    });
+    MainFrame& mainFrame = m_rendergraph->PassFrameData<MainFrame>(mainPass);
+    mainFrame.pc = pc;
+    mainFrame.useMsaa = useMsaa;
+    mainFrame.gfxSlot = gfxSlot;
+    mainFrame.sceneRasterActive = sceneRasterActive;
+    mainFrame.sceneTaskActive = sceneTaskActive;
+    mainFrame.sceneNativeSuffix = sceneNativeSuffix;
+    mainFrame.sceneGiVariant = sceneGiVariant;
+    mainFrame.sceneTaskTemporalActive = sceneTaskTemporalActive;
+    mainFrame.sceneTaskPlan = sceneTaskPlan;
+    mainFrame.sceneRasterTwoSided = sceneRasterTwoSided;
+    mainFrame.sceneRasterMasked = sceneRasterMasked;
+    mainFrame.sceneRasterMaskedTwoSided = sceneRasterMaskedTwoSided;
+    mainFrame.sceneRasterProjectLit = sceneRasterProjectLit;
+    mainFrame.sceneRasterCommands = sceneRasterCommands;
+    mainFrame.sceneRasterCommandCount = sceneRasterCommandCount;
+    mainFrame.sceneRasterVsPush = sceneRasterVsPush;
+    mainFrame.renderViewsAddress = renderViewsAddress;
+    mainFrame.mainRenderView = mainRenderView;
+    mainFrame.selectionLineVerts = selectionLineVerts;
+    mainFrame.frameViewProj = frameViewProj;
+    mainFrame.debugDrawRanges = std::span<const WorldRenderer::DebugDrawRange>(
+        debugDrawRanges.data(), debugDrawRanges.size());
+    mainFrame.debugDrawFlight = debugDrawFlight;
+    mainFrame.transparentCullView = transparentCullView;
+    mainFrame.liveMainCullView = liveMainCullView;
+    mainFrame.mainSkinBda = mainSkinBda;
+    mainFrame.mainSkinBase = mainSkinBase;
+    mainFrame.mainSkinValid = mainSkinValid;
+    mainFrame.placementFlight = fb.frameIndex;
+    mainPass.SetRecordFn(&WorldRenderer::RecordMain, this);
     // Forward+ tile lists are device-written by the cull pass and
     // device-read here: explicit read hints order cull -> main and emit
     // the compute->fragment buffer barriers. With deferred shadows ON the

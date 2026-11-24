@@ -3829,6 +3829,45 @@ class WorldRenderer : public IRenderer {
         bool motionRasterMaskedTwoSided = false;
     };
     static void RecordMotion(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
+    // CPU-authored debug line range (hoisted from RenderFrame so the Main
+    // record function can carry it as an arena span).
+    struct DebugDrawRange {
+        uint32_t first = 0, count = 0;
+        glm::vec3 color{1.0f};
+        tour::DebugDepthMode depth = tour::DebugDepthMode::Tested;
+        smvk::PrimitiveTopology topology = smvk::PrimitiveTopology::LineList;
+    };
+    struct MainFrame {
+        IRenderer::PushConstants pc{};
+        bool useMsaa = false;
+        uint32_t gfxSlot = UINT32_MAX;
+        bool sceneRasterActive = false;
+        bool sceneTaskActive = false;
+        bool sceneNativeSuffix = false;
+        uint32_t sceneGiVariant = 0;
+        bool sceneTaskTemporalActive = false;
+        tour::gpu_scene::TaskMeshDispatchPlan sceneTaskPlan{};
+        bool sceneRasterTwoSided = false;
+        bool sceneRasterMasked = false;
+        bool sceneRasterMaskedTwoSided = false;
+        bool sceneRasterProjectLit = false;
+        smvk::BufferHandle sceneRasterCommands{};
+        uint32_t sceneRasterCommandCount = 0;
+        tour::gpu_scene::RasterVsPush sceneRasterVsPush{};
+        uint64_t renderViewsAddress = 0;
+        uint32_t mainRenderView = 0;
+        uint32_t selectionLineVerts = 0;
+        glm::mat4 frameViewProj{1.0f};
+        std::span<const DebugDrawRange> debugDrawRanges;
+        uint32_t debugDrawFlight = 0;
+        smvk::RenderView transparentCullView{};
+        smvk::RenderView liveMainCullView{};
+        uint64_t mainSkinBda = 0;
+        uint32_t mainSkinBase = UINT32_MAX;
+        bool mainSkinValid = false;
+        uint32_t placementFlight = 0;
+    };
+    static void RecordMain(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
     // Must mirror the HLSL SdsmGroupStats (264 bytes).
     struct SdsmGroupStats {
         float minV = 0.0f;
