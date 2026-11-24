@@ -8733,6 +8733,48 @@ void RecordSeed(smvk::CommandBuffer& cmd, const smvk::FrameContext& fc, const sm
     cmd.Dispatch((f.push.commandCapacity + 127u) / 128u, 1, 1);
 }
 } // namespace
+void WorldRenderer::RecordMeshParticlesCull(smvk::CommandBuffer& cmd,
+                                            const smvk::FrameContext& fc,
+                                            const smvk::PassData& pd) {
+    auto* self = const_cast<WorldRenderer*>(static_cast<const WorldRenderer*>(pd.config));
+    const MeshParticlesCullFrame& f = fc.rg->FrameData().Get<MeshParticlesCullFrame>(pd.frameSlot);
+    smvk::MeshParticles::PushAndDispatchCull(
+        cmd, self->m_viewportResources.meshParticles.cullProgram, f.push);
+}
+void WorldRenderer::RecordMeshParticlesPrefix(smvk::CommandBuffer& cmd,
+                                              const smvk::FrameContext& fc,
+                                              const smvk::PassData& pd) {
+    auto* self = const_cast<WorldRenderer*>(static_cast<const WorldRenderer*>(pd.config));
+    const MeshParticlesPrefixFrame& f =
+        fc.rg->FrameData().Get<MeshParticlesPrefixFrame>(pd.frameSlot);
+    smvk::MeshParticles::PushAndDispatchPrefix(
+        cmd, self->m_viewportResources.meshParticles.prefixProgram, f.push);
+}
+void WorldRenderer::RecordMeshParticlesScatter(smvk::CommandBuffer& cmd,
+                                               const smvk::FrameContext& fc,
+                                               const smvk::PassData& pd) {
+    auto* self = const_cast<WorldRenderer*>(static_cast<const WorldRenderer*>(pd.config));
+    const MeshParticlesScatterFrame& f =
+        fc.rg->FrameData().Get<MeshParticlesScatterFrame>(pd.frameSlot);
+    smvk::MeshParticles::PushAndDispatchScatter(
+        cmd, self->m_viewportResources.meshParticles.scatterProgram, f.push);
+}
+void WorldRenderer::RecordMeshParticlesBuild(smvk::CommandBuffer& cmd,
+                                             const smvk::FrameContext& fc,
+                                             const smvk::PassData& pd) {
+    auto* self = const_cast<WorldRenderer*>(static_cast<const WorldRenderer*>(pd.config));
+    const MeshParticlesBuildFrame& f = fc.rg->FrameData().Get<MeshParticlesBuildFrame>(pd.frameSlot);
+    smvk::MeshParticles::PushAndDispatchDrawBuild(
+        cmd, self->m_viewportResources.meshParticles.buildProgram, f.push);
+}
+void WorldRenderer::RecordSdsm(smvk::CommandBuffer& cmd,
+                               const smvk::FrameContext& fc,
+                               const smvk::PassData& pd) {
+    const SdsmFrame& f = fc.rg->FrameData().Get<SdsmFrame>(pd.frameSlot);
+    cmd.BindComputePipeline(*f.program);
+    cmd.PushConstants(0, sizeof(f.push), &f.push, smvk::ShaderStage::Compute);
+    cmd.Dispatch(kSdsmGroups, 1, 1);
+}
 void WorldRenderer::AppendDeferredShadowPhases(uint32_t frameIndex,
                                                uint64_t frameUniformsAddress,
                                                uint64_t fpLightsAddress,
@@ -15074,18 +15116,18 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 }
             }
             auto& cullPass = meshPs.AddCullPass(*m_rendergraph, m_gpuPlacementViewLogical);
-            cullPass.SetRecordingFunc([this, cull](smvk::CommandBuffer& cmd) {
-                smvk::MeshParticles::PushAndDispatchCull(
-                    cmd, m_viewportResources.meshParticles.cullProgram, cull);
-            });
+            MeshParticlesCullFrame& cullFrame =
+                m_rendergraph->PassFrameData<MeshParticlesCullFrame>(cullPass);
+            cullFrame.push = cull;
+            cullPass.SetRecordFn(&WorldRenderer::RecordMeshParticlesCull, this);
             smvk::MeshParticlesPrefixPush prefix{};
             prefix.bins = cull.bins;
             prefix.binCount = cull.binCount;
             auto& prefixPass = meshPs.AddPrefixPass(*m_rendergraph);
-            prefixPass.SetRecordingFunc([this, prefix](smvk::CommandBuffer& cmd) {
-                smvk::MeshParticles::PushAndDispatchPrefix(
-                    cmd, m_viewportResources.meshParticles.prefixProgram, prefix);
-            });
+            MeshParticlesPrefixFrame& prefixFrame =
+                m_rendergraph->PassFrameData<MeshParticlesPrefixFrame>(prefixPass);
+            prefixFrame.push = prefix;
+            prefixPass.SetRecordFn(&WorldRenderer::RecordMeshParticlesPrefix, this);
             smvk::MeshParticlesScatterPush scatter{};
             scatter.particles = cull.particles;
             scatter.mask = cull.mask;
@@ -15094,20 +15136,20 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             scatter.binCount = cull.binCount;
             scatter.maxParticles = cull.maxParticles;
             auto& scatterPass = meshPs.AddScatterPass(*m_rendergraph);
-            scatterPass.SetRecordingFunc([this, scatter](smvk::CommandBuffer& cmd) {
-                smvk::MeshParticles::PushAndDispatchScatter(
-                    cmd, m_viewportResources.meshParticles.scatterProgram, scatter);
-            });
+            MeshParticlesScatterFrame& scatterFrame =
+                m_rendergraph->PassFrameData<MeshParticlesScatterFrame>(scatterPass);
+            scatterFrame.push = scatter;
+            scatterPass.SetRecordFn(&WorldRenderer::RecordMeshParticlesScatter, this);
             tour::placement::PlacementDrawBuildPush build{};
             build.bins = cull.bins;
             build.indirect = meshPs.IndirectAddress(*m_context);
             build.protoTable = m_context->GetBufferDeviceAddress(meshPs.protoTableBuffer);
             build.protoCount = meshPs.protoTableCount;
             auto& buildPass = meshPs.AddDrawBuildPass(*m_rendergraph);
-            buildPass.SetRecordingFunc([this, build](smvk::CommandBuffer& cmd) {
-                smvk::MeshParticles::PushAndDispatchDrawBuild(
-                    cmd, m_viewportResources.meshParticles.buildProgram, build);
-            });
+            MeshParticlesBuildFrame& buildFrame =
+                m_rendergraph->PassFrameData<MeshParticlesBuildFrame>(buildPass);
+            buildFrame.push = build;
+            buildPass.SetRecordFn(&WorldRenderer::RecordMeshParticlesBuild, this);
             m_meshParticlesReady = true;
         }
     }
@@ -15875,12 +15917,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // addressing (gid joins the walk; groups PARTITION the samples).
         sdsmPush.stride = (renderExtent.width * renderExtent.height + 65535u) / 65536u;
         sdsmPush.pad0 = 0;
-        smvk::ShaderProgram* sdsmProg = &m_resources.sdsmStatsProgram;
-        sdsmPass.SetRecordingFunc([sdsmProg, sdsmPush](smvk::CommandBuffer& cmd) {
-            cmd.BindComputePipeline(*sdsmProg);
-            cmd.PushConstants(0, sizeof(sdsmPush), &sdsmPush, smvk::ShaderStage::Compute);
-            cmd.Dispatch(kSdsmGroups, 1, 1);
-        });
+        SdsmFrame& sdsmFrame = m_rendergraph->PassFrameData<SdsmFrame>(sdsmPass);
+        sdsmFrame.program = &m_resources.sdsmStatsProgram;
+        sdsmFrame.push = sdsmPush;
+        sdsmPass.SetRecordFn(&WorldRenderer::RecordSdsm, this);
         m_sdsmStatsArmed = true;
     }
 

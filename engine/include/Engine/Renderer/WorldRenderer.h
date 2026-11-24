@@ -3736,6 +3736,33 @@ class WorldRenderer : public IRenderer {
     };
     static_assert(sizeof(SdsmStatsPush) == 40,
                   "SDSM stats push must mirror the HLSL SdsmStatsPush (40 bytes)");
+
+    // ---------------------------------------------------------------
+    // Static record functions (compiled render graph ABI). Non-capturing
+    // RecordFns: the immutable config is the WorldRenderer (PassData::config
+    // = this); per-frame data rides a per-flight slot (PassFrameData<T>).
+    // ---------------------------------------------------------------
+    struct MeshParticlesCullFrame { smvk::MeshParticlesCullPush push{}; };
+    struct MeshParticlesPrefixFrame { smvk::MeshParticlesPrefixPush push{}; };
+    struct MeshParticlesScatterFrame { smvk::MeshParticlesScatterPush push{}; };
+    struct MeshParticlesBuildFrame { tour::placement::PlacementDrawBuildPush push{}; };
+    struct SdsmFrame {
+        smvk::ShaderProgram* program = nullptr;
+        SdsmStatsPush push{};
+    };
+    static void RecordMeshParticlesCull(smvk::CommandBuffer&,
+                                        const smvk::FrameContext&,
+                                        const smvk::PassData&);
+    static void RecordMeshParticlesPrefix(smvk::CommandBuffer&,
+                                          const smvk::FrameContext&,
+                                          const smvk::PassData&);
+    static void RecordMeshParticlesScatter(smvk::CommandBuffer&,
+                                           const smvk::FrameContext&,
+                                           const smvk::PassData&);
+    static void RecordMeshParticlesBuild(smvk::CommandBuffer&,
+                                         const smvk::FrameContext&,
+                                         const smvk::PassData&);
+    static void RecordSdsm(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
     // Must mirror the HLSL SdsmGroupStats (264 bytes).
     struct SdsmGroupStats {
         float minV = 0.0f;
