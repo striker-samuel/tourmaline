@@ -13734,7 +13734,108 @@ std::vector<smvk::PassUsage> smvk::RenderGraph::CollectPassUsages() const {
     return out;
 }
 
-smvk::rg::CompiledGraph smvk::RenderGraph::CompileGraph(const std::vector<size_t>& order) const {
+// ---------------------------------------------------------------------------
+// Compiled executor — per-flight resource binding (checkpoint B, piece 1).
+// Resolves each compiled resource id to its physical backing (VkImage/VkBuffer
+// + image format/aspect) so the barrier templates fill the per-frame handle
+// fields without re-canonicalizing.
+// ---------------------------------------------------------------------------
+namespace {
+struct BoundResource {
+    VkImage image = VK_NULL_HANDLE;
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkFormat format = VK_FORMAT_UNDEFINED; // images only
+    VkImageAspectFlags aspect = 0;         // images only
+};
+
+// Handle is two uint32s (index low, gen high), trivially copyable; the compiled
+// graph stores it as its raw key ((gen<<32)|index). Reconstruct the typed
+// handle from those bits to dereference the pool.
+inline smvk::ImageHandle RebuildImageHandle(uint64_t key) {
+    static_assert(sizeof(smvk::ImageHandle) == sizeof(uint64_t));
+    smvk::ImageHandle h{};
+    std::memcpy(&h, &key, sizeof(key));
+    return h;
+}
+inline smvk::BufferHandle RebuildBufferHandle(uint64_t key) {
+    static_assert(sizeof(smvk::BufferHandle) == sizeof(uint64_t));
+    smvk::BufferHandle h{};
+    std::memcpy(&h, &key, sizeof(key));
+    return h;
+}
+
+inline std::vector<BoundResource> ResolveResourceBindings(
+    const smvk::rg::CompiledGraph& compiled,
+    VulkanResourceManager& vctx) {
+    std::vector<BoundResource> out(compiled.resourceIdentities.size());
+    for (size_t id = 0; id < compiled.resourceIdentities.size(); ++id) {
+        const uint64_t key = compiled.resourceHandles[id];
+        if ((compiled.resourceIdentities[id] >> 32) == 0) { // image
+            auto* img = vctx.images_.get(RebuildImageHandle(key));
+            if (img && img->vkImage != VK_NULL_HANDLE) {
+                out[id].image = img->vkImage;
+                out[id].format = toVkFormat(img->format);
+                const VkFormat fmt = out[id].format;
+                if (fmt == VK_FORMAT_D16_UNORM || fmt == VK_FORMAT_D32_SFLOAT)
+                    out[id].aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
+                else if (fmt == VK_FORMAT_D24_UNORM_S8_UINT ||
+                         fmt == VK_FORMAT_D32_SFLOAT_S8_UINT)
+                    out[id].aspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
+                else if (fmt == VK_FORMAT_S8_UINT)
+                    out[id].aspect = VK_IMAGE_ASPECT_STENCIL_BIT;
+                else
+                    out[id].aspect = VK_IMAGE_ASPECT_COLOR_BIT;
+            }
+        } else { // buffer
+            auto* buf = vctx.buffers_.get(RebuildBufferHandle(key));
+            if (buf && buf->vkBuffer != VK_NULL_HANDLE)
+                out[id].buffer = buf->vkBuffer;
+        }
+    }
+    return out;
+}
+
+// Precompiled barrier template: the compile-time before/after access of one
+// Plan barrier, converted to Vulkan scope/layout tokens. The per-frame
+// VkImage/VkBuffer comes from the binding table at emit time.
+struct BarrierTemplate {
+    smvk::rg::Id resource;
+    VkPipelineStageFlags2 srcStage = 0, dstStage = 0;
+    VkAccessFlags2 srcAccess = 0, dstAccess = 0;
+    VkImageLayout oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, newLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+};
+
+inline std::vector<BarrierTemplate> BuildBarrierTemplates(const smvk::rg::Plan& plan) {
+    std::vector<BarrierTemplate> out;
+    out.reserve(plan.barriers.size());
+    for (const auto& b : plan.barriers) {
+        BarrierTemplate t{};
+        t.resource = b.resource;
+        const smvk::ImageLayout srcLayout = static_cast<smvk::ImageLayout>(b.before.layout);
+        const smvk::ImageLayout dstLayout = static_cast<smvk::ImageLayout>(b.after.layout);
+        t.srcStage = ToVkStage(static_cast<smvk::PipelineStage>(b.before.stages));
+        t.srcAccess = ToVkAccessLocal(static_cast<smvk::AccessFlags>(b.before.mask));
+        if (srcLayout == smvk::ImageLayout::Undefined) {
+            t.srcStage = VK_PIPELINE_STAGE_2_NONE;
+            t.srcAccess = VK_ACCESS_2_NONE;
+        }
+        t.oldLayout = ToVkImageLayout(srcLayout);
+        t.dstStage = ToVkStage(static_cast<smvk::PipelineStage>(b.after.stages));
+        if (dstLayout == smvk::ImageLayout::ColorAttachmentOptimal)
+            t.dstStage = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+        else if (dstLayout == smvk::ImageLayout::DepthStencilAttachmentOptimal)
+            t.dstStage = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                         VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+        t.dstAccess = ToVkAccessLocal(static_cast<smvk::AccessFlags>(b.after.mask));
+        t.newLayout = ToVkImageLayout(dstLayout);
+        out.push_back(t);
+    }
+    return out;
+}
+} // namespace
+
+smvk::rg::CompiledGraph smvk::RenderGraph::CompileGraph(const std::vector<size_t>& order,
+                                                        bool useAsync) const {
     const std::vector<PassUsage> usages = CollectPassUsages();
     assert(order.size() == usages.size());
 
@@ -13743,18 +13844,23 @@ smvk::rg::CompiledGraph smvk::RenderGraph::CompileGraph(const std::vector<size_t
     // identity (kind<<32 | index) lets the executor resolve per-flight handles.
     std::unordered_map<uint64_t, smvk::rg::Id> imageIds, bufferIds;
     std::vector<uint64_t> identities;
+    std::vector<uint64_t> handleKeys;
     auto internImage = [&](ImageHandle h) -> smvk::rg::Id {
         const uint64_t k = (uint64_t(h.gen()) << 32) | uint64_t(h.index());
         auto [it, ins] = imageIds.emplace(k, (smvk::rg::Id)identities.size());
-        if (ins)
+        if (ins) {
             identities.push_back(uint64_t(h.index()));
+            handleKeys.push_back(k);
+        }
         return it->second;
     };
     auto internBuffer = [&](BufferHandle h) -> smvk::rg::Id {
         const uint64_t k = (uint64_t(h.gen()) << 32) | uint64_t(h.index());
         auto [it, ins] = bufferIds.emplace(k, (smvk::rg::Id)identities.size());
-        if (ins)
+        if (ins) {
             identities.push_back((1ull << 32) | uint64_t(h.index()));
+            handleKeys.push_back(k);
+        }
         return it->second;
     };
 
@@ -13780,8 +13886,8 @@ smvk::rg::CompiledGraph smvk::RenderGraph::CompileGraph(const std::vector<size_t
         const RenderPass& rp = passes_[p];
         const PassUsage& pu = usages[p];
         smvk::rg::Pass gp{};
-        gp.queue =
-            rp.IsAsyncCompute() ? smvk::rg::Queue::Compute : smvk::rg::Queue::Graphics;
+        gp.queue = (useAsync && rp.IsAsyncCompute()) ? smvk::rg::Queue::Compute
+                                                     : smvk::rg::Queue::Graphics;
         if (gp.queue != currentQueue) {
             currentQueue = gp.queue;
             ++section;
@@ -13821,6 +13927,7 @@ smvk::rg::CompiledGraph smvk::RenderGraph::CompileGraph(const std::vector<size_t
     out.key.resourceStructure = (uint64_t)identities.size();
     out.key.accessStructure = accessHash;
     out.resourceIdentities = std::move(identities);
+    out.resourceHandles = std::move(handleKeys);
     out.plan = smvk::rg::Compile(rgPasses, (smvk::rg::Id)out.resourceIdentities.size(), sectionCount);
     return out;
 }
@@ -14404,6 +14511,29 @@ void smvk::RenderGraph::Execute(Framebuffer& fb, const FrameContext* fc) {
         vkSwap = nullptr;
         useAsyncCompute = false;
     }
+
+    // ---- Compiled plan + per-flight resource bindings (checkpoint B) ----
+    // Compiled AFTER the async-split decision so the plan's queue sections
+    // mirror the actual execution (single-stream when emulated). The walk
+    // emits barriers at batch boundaries from these instead of the per-pass
+    // dynamic state comparison.
+    const smvk::rg::CompiledGraph compiledGraph = CompileGraph(sorted, useAsyncCompute);
+    const smvk::rg::Plan& plan = compiledGraph.plan;
+    const std::vector<BoundResource> resourceBindings =
+        ResolveResourceBindings(compiledGraph, vctx);
+    const std::vector<BarrierTemplate> barrierTemplates = BuildBarrierTemplates(plan);
+    // Imported boundary barriers: resource -> (section, queue, batch) of its
+    // FIRST group, emitted once from the frame-start imported sync state.
+    std::unordered_map<uint64_t, std::vector<smvk::rg::Id>> importedByBatch;
+    for (smvk::rg::Id id = 0; id < plan.timelines.size(); ++id) {
+        const auto& tl = plan.timelines[id];
+        if (tl.empty())
+            continue;
+        const uint64_t key = (uint64_t(tl[0].section) << 40) |
+                             (uint64_t(tl[0].queue) << 32) | uint64_t(tl[0].firstBatch);
+        importedByBatch[key].push_back(id);
+    }
+
     // ---- Barrier debug tracing (TOURMALINE_BARRIER_TRACE, see helpers) ----
     const bool traceRg = RgTraceEnabled(fb.frameIndex);
     if (traceRg) {
@@ -14451,6 +14581,9 @@ void smvk::RenderGraph::Execute(Framebuffer& fb, const FrameContext* fc) {
         // into the already-submitted G1 CB.
     }
 
+    // Batch-boundary bookkeeping for Plan-driven barrier emission.
+    smvk::rg::Id prevSection = smvk::rg::Invalid;
+    smvk::rg::Id prevBatch = smvk::rg::Invalid;
     for (size_t pos = 0; pos < sorted.size(); ++pos) {
         const size_t sIdx = sorted[pos];
         // Split routing (computed before the profiler scope: Optick GPU
@@ -14622,282 +14755,188 @@ void smvk::RenderGraph::Execute(Framebuffer& fb, const FrameContext* fc) {
                              (unsigned long long)g2cVal);
             RgSerializeGate(RgSerializeMode().split, graphicsQueue_, GetQueueMutex(graphicsQueue_));
         }
-        // Per-pass barriers (fix #1) – update imageStates/bufferStates as we go
+        // Plan-driven barriers (checkpoint B): emit at batch boundaries the
+        // precompiled inter-group barriers + the per-frame imported boundary
+        // barriers, then hand off to recording. The final sync state is set
+        // once at the end from each resource's last group.
         {
-            // Optick: barrier generation + the pass's attachment-info prep,
-            // split from the pass scope so a graph-heavy frame shows how
-            // much of each pass's CPU cost is sync-state bookkeeping vs
-            // the recording callback itself.
             SMVK_PROFILE_RENDER("RG_Barriers");
-            if (traceRg) {
-                const char* streamName =
-                    !useAsyncCompute ? "MAIN"
-                                     : (passIsAsync ? "C" : (dstCmd == splitCB ? "G2" : "G1"));
-                std::fprintf(stderr,
-                             "[RG] pass pos=%zu idx=%zu '%s' stream=%s%s%s\n",
-                             pos,
-                             sIdx,
-                             RgTracePassName(passes_[sIdx].name_),
-                             streamName,
-                             passes_[sIdx].IsCompute() ? " compute" : "",
-                             pos != sIdx ? " MOVED" : "");
-            }
-            const auto& pu = usages[sIdx];
-            auto imgBarriers = MakeFrameScratchVec<VkImageMemoryBarrier2>();
-            auto bufBarriers = MakeFrameScratchVec<VkBufferMemoryBarrier2>();
-            auto imgBarrierSrcQ = MakeFrameScratchVec<uint32_t>();
-            auto bufBarrierSrcQ = MakeFrameScratchVec<uint32_t>();
-            imgBarriers.reserve(4);
-            bufBarriers.reserve(4);
-            imgBarrierSrcQ.reserve(4);
-            bufBarrierSrcQ.reserve(4);
-            auto keyFor = [](auto h) {
-                return (static_cast<uint64_t>(h.index()) | (static_cast<uint64_t>(h.gen()) << 32));
-            };
-            for (auto& pr : pu.images) {
-                ImageHandle h = pr.first;
-                ImageSyncRequest req = pr.second;
-                uint64_t k = keyFor(h);
-                auto it = imageStates.find(k);
-                VulkanResourceManager::ImageGlobalSyncState src{};
-                if (it != imageStates.end())
-                    src = it->second;
-                else {
-                    src.masks = {AccessFlags::None, PipelineStageBit_None};
-                    src.layout = ImageLayout::Undefined;
-                }
-                bool srcIsWrite = IsWriteAccess(src.masks.accessMask);
-                bool dstIsWrite = IsWriteAccess(req.barrierMasks.accessMask);
-                bool needBarrier = false;
-                if (src.layout != req.layout)
-                    needBarrier = true;
-                else if (src.masks.accessMask != req.barrierMasks.accessMask ||
-                         src.masks.stageMask != req.barrierMasks.stageMask) {
-                    if (!(!srcIsWrite && !dstIsWrite))
-                        needBarrier = true;
-                } else if (srcIsWrite && dstIsWrite)
-                    needBarrier = true;
-                if (src.layout == ImageLayout::Undefined && req.layout != ImageLayout::Undefined)
-                    needBarrier = true;
-                if (traceRg) {
-                    auto* dbgImg = vctx.images_.get(h);
-                    std::fprintf(stderr,
-                                 "[RG]   img '%s' need=%d src[%s acc=%06x stage=%06x qfam=%u] "
-                                 "dst[%s acc=%06x stage=%06x]\n",
-                                 (dbgImg && dbgImg->name.valid()) ? dbgImg->name.data() : "<anon>",
-                                 needBarrier ? 1 : 0,
-                                 RgTraceImageLayoutName(src.layout),
-                                 static_cast<uint32_t>(src.masks.accessMask),
-                                 static_cast<uint32_t>(src.masks.stageMask),
-                                 src.queueFamily,
-                                 RgTraceImageLayoutName(req.layout),
-                                 static_cast<uint32_t>(req.barrierMasks.accessMask),
-                                 static_cast<uint32_t>(req.barrierMasks.stageMask));
-                }
-                if (needBarrier) {
-                    auto* img = vctx.images_.get(h);
-                    if (!img || img->vkImage == VK_NULL_HANDLE) {
-                        if (traceRg)
-                            std::fprintf(stderr,
-                                         "[RG]   img '%s' SKIPPED-BARRIER (no VkImage backing)\n",
-                                         (img && img->name.valid()) ? img->name.data() : "<anon>");
-                        continue;
-                    }
-                    VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-                    b.srcStageMask = ToVkStage(src.masks.stageMask);
-                    if (src.layout == ImageLayout::Undefined)
-                        b.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
-                    b.srcAccessMask = ToVkAccessLocal(src.masks.accessMask);
-                    if (src.layout == ImageLayout::Undefined)
-                        b.srcAccessMask = VK_ACCESS_2_NONE;
-                    b.dstStageMask = ToVkStage(req.barrierMasks.stageMask);
-                    if (req.layout == ImageLayout::ColorAttachmentOptimal)
-                        b.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
-                    else if (req.layout == ImageLayout::DepthStencilAttachmentOptimal)
-                        b.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
-                                         VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
-                    b.dstAccessMask = ToVkAccessLocal(req.barrierMasks.accessMask);
-                    b.oldLayout = ToVkImageLayout(src.layout);
-                    b.newLayout = ToVkImageLayout(req.layout);
-                    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                    b.image = img->vkImage;
-                    VkFormat fmt = toVkFormat(img->format);
-                    VkImageAspectFlags aspect = VK_IMAGE_ASPECT_COLOR_BIT;
-                    if (fmt == VK_FORMAT_D16_UNORM || fmt == VK_FORMAT_D32_SFLOAT)
-                        aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
-                    else if (fmt == VK_FORMAT_D24_UNORM_S8_UINT ||
-                             fmt == VK_FORMAT_D32_SFLOAT_S8_UINT)
-                        aspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
-                    else if (fmt == VK_FORMAT_S8_UINT)
-                        aspect = VK_IMAGE_ASPECT_STENCIL_BIT;
-                    b.subresourceRange = {
-                        aspect, 0, VK_REMAINING_MIP_LEVELS, 0, VK_REMAINING_ARRAY_LAYERS};
-                    imgBarriers.push_back(b);
-                    if (useAsyncCompute) {
-                        const uint32_t srcQ =
-                            (src.queueFamily == UINT32_MAX) ? graphicsFam : src.queueFamily;
-                        imgBarrierSrcQ.push_back(srcQ);
-                    }
-                    if (traceRg) {
-                        const uint32_t traceSrcQ =
-                            (src.queueFamily == UINT32_MAX) ? graphicsFam : src.queueFamily;
-                        const bool crossQ = useAsyncCompute && traceSrcQ != passQFam;
-                        std::fprintf(
-                            stderr,
-                            "[RG]     barrier img '%s' old=%s new=%s srcStage=%llx srcAcc=%llx "
-                            "dstStage=%llx dstAcc=%llx%s\n",
-                            img->name.valid() ? img->name.data() : "<anon>",
-                            RgTraceVkImageLayoutName(b.oldLayout),
-                            RgTraceVkImageLayoutName(b.newLayout),
-                            (unsigned long long)b.srcStageMask,
-                            (unsigned long long)b.srcAccessMask,
-                            (unsigned long long)b.dstStageMask,
-                            (unsigned long long)b.dstAccessMask,
-                            crossQ ? " (crossQ: srcStage rewritten to ALL_COMMANDS at emit)" : "");
-                    }
-                }
-                VulkanResourceManager::ImageGlobalSyncState dstState{};
-                dstState.masks = req.barrierMasks;
-                dstState.layout = req.layout;
-                dstState.queueFamily = passQFam;
-                imageStates[k] = dstState;
-            }
-            for (auto& pr : pu.buffers) {
-                BufferHandle h = pr.first;
-                BufferSyncRequest req = pr.second;
-                uint64_t k = keyFor(h);
-                auto it = bufferStates.find(k);
-                VulkanResourceManager::BufferGlobalSyncState src{};
-                if (it != bufferStates.end())
-                    src = it->second;
-                bool srcIsWrite = IsWriteAccess(src.masks.accessMask);
-                bool dstIsWrite = IsWriteAccess(req.barrierMasks.accessMask);
-                bool needBarrier = false;
-                if (src.masks.accessMask != req.barrierMasks.accessMask ||
-                    src.masks.stageMask != req.barrierMasks.stageMask) {
-                    if (!(!srcIsWrite && !dstIsWrite))
-                        needBarrier = true;
-                }
-                // Same-mask WAW still needs a barrier (see EmitBarriers
-                // above: HZB mip chain reuses ShaderRead|ShaderWrite
-                // @Compute on one buffer; mip N+1 must see mip N).
-                else if (srcIsWrite && dstIsWrite) {
-                    needBarrier = true;
-                }
-                if (src.masks.accessMask == AccessFlags::None &&
-                    req.barrierMasks.accessMask != AccessFlags::None)
-                    needBarrier = true;
-                if (traceRg)
-                    std::fprintf(stderr,
-                                 "[RG]   buf h=%u:%u need=%d src[acc=%06x stage=%06x] dst[acc=%06x "
-                                 "stage=%06x]\n",
-                                 h.index(),
-                                 h.gen(),
-                                 needBarrier ? 1 : 0,
-                                 static_cast<uint32_t>(src.masks.accessMask),
-                                 static_cast<uint32_t>(src.masks.stageMask),
-                                 static_cast<uint32_t>(req.barrierMasks.accessMask),
-                                 static_cast<uint32_t>(req.barrierMasks.stageMask));
-                if (needBarrier) {
-                    auto* buf = vctx.buffers_.get(h);
-                    if (!buf || buf->vkBuffer == VK_NULL_HANDLE) {
-                        if (traceRg)
-                            std::fprintf(
-                                stderr,
-                                "[RG]   buf h=%u:%u SKIPPED-BARRIER (no VkBuffer backing)\n",
-                                h.index(),
-                                h.gen());
-                        continue;
-                    }
-                    VkBufferMemoryBarrier2 b{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
-                    b.srcStageMask = ToVkStage(src.masks.stageMask);
-                    b.srcAccessMask = ToVkAccessLocal(src.masks.accessMask);
-                    b.dstStageMask = ToVkStage(req.barrierMasks.stageMask);
-                    b.dstAccessMask = ToVkAccessLocal(req.barrierMasks.accessMask);
-                    b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                    b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-                    b.buffer = buf->vkBuffer;
-                    b.offset = 0;
-                    b.size = VK_WHOLE_SIZE;
-                    bufBarriers.push_back(b);
-                    if (useAsyncCompute) {
-                        const uint32_t srcQ =
-                            (src.queueFamily == UINT32_MAX) ? graphicsFam : src.queueFamily;
-                        bufBarrierSrcQ.push_back(srcQ);
-                    }
-                    if (traceRg)
-                        std::fprintf(stderr,
-                                     "[RG]     barrier buf h=%u:%u srcStage=%llx srcAcc=%llx "
-                                     "dstStage=%llx dstAcc=%llx\n",
-                                     h.index(),
-                                     h.gen(),
-                                     (unsigned long long)b.srcStageMask,
-                                     (unsigned long long)b.srcAccessMask,
-                                     (unsigned long long)b.dstStageMask,
-                                     (unsigned long long)b.dstAccessMask);
-                }
-                VulkanResourceManager::BufferGlobalSyncState dstState{};
-                dstState.masks = req.barrierMasks;
-                dstState.queueFamily = passQFam;
-                bufferStates[k] = dstState;
-            }
-            if (!imgBarriers.empty() || !bufBarriers.empty()) {
-                // Cross-CB ordering comes from the submit chain
-                // (G1 -> C -> G2 timeline semaphores); each CB needs only
-                // its plain same-stream barriers here, with src scopes
-                // matching the chained signal stages for visibility.
-                // Cross-queue legality, BOTH directions: a barrier handed
-                // off between queues carries the writer's src stages
-                // (fragment/attachment output from graphics; compute shader
-                // from the async family) in the reader's command buffer.
-                // Those stage bits may be unsupported by the reading queue's
-                // family, and the writer's commands are not in this CB
-                // anyway — the cross-queue semaphore wait already ordered
-                // execution and made the writes available, so such barriers
-                // degrade to availability-free acquires: srcStage=
-                // ALL_COMMANDS, srcAccess=NONE, dst = consumer scope.
-                // Same-stream barriers (G2 compute->G2 fragment chains like
-                // the HZB mips, or async-pass internal chains) keep their
-                // precise scopes.
-                if (useAsyncCompute) {
-                    assert(imgBarrierSrcQ.size() == imgBarriers.size());
-                    for (size_t bi = 0; bi < imgBarriers.size(); ++bi) {
-                        if (imgBarrierSrcQ[bi] != passQFam) {
-                            imgBarriers[bi].srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-                            imgBarriers[bi].srcAccessMask = VK_ACCESS_2_NONE;
-                            if (traceRg)
-                                std::fprintf(
-                                    stderr,
-                                    "[RG]     rewrite img barrier[%zu]: srcStage->ALL_COMMANDS "
-                                    "srcAcc->NONE (qfam %u -> %u handoff)\n",
-                                    bi,
-                                    imgBarrierSrcQ[bi],
-                                    passQFam);
-                        }
-                    }
-                    assert(bufBarrierSrcQ.size() == bufBarriers.size());
-                    for (size_t bi = 0; bi < bufBarriers.size(); ++bi) {
-                        if (bufBarrierSrcQ[bi] != passQFam) {
-                            bufBarriers[bi].srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
-                            bufBarriers[bi].srcAccessMask = VK_ACCESS_2_NONE;
-                            if (traceRg)
-                                std::fprintf(
-                                    stderr,
-                                    "[RG]     rewrite buf barrier[%zu]: srcStage->ALL_COMMANDS "
-                                    "srcAcc->NONE (qfam %u -> %u handoff)\n",
-                                    bi,
-                                    bufBarrierSrcQ[bi],
-                                    passQFam);
+            const smvk::rg::Id section = plan.passSection[pos];
+            const smvk::rg::Id batch = plan.passBatch[pos];
+            if (pos == 0 || section != prevSection || batch != prevBatch) {
+                prevSection = section;
+                prevBatch = batch;
+                auto imgBarriers = MakeFrameScratchVec<VkImageMemoryBarrier2>();
+                auto bufBarriers = MakeFrameScratchVec<VkBufferMemoryBarrier2>();
+                auto imgBarrierSrcQ = MakeFrameScratchVec<uint32_t>();
+                auto bufBarrierSrcQ = MakeFrameScratchVec<uint32_t>();
+                imgBarriers.reserve(4);
+                bufBarriers.reserve(4);
+                imgBarrierSrcQ.reserve(4);
+                bufBarrierSrcQ.reserve(4);
+
+                // (a) Imported boundary barriers (frame-start state -> first group).
+                const uint64_t ikey = (uint64_t(section) << 40) |
+                                      (uint64_t(passIsAsync ? 1u : 0u) << 32) | uint64_t(batch);
+                auto iit = importedByBatch.find(ikey);
+                if (iit != importedByBatch.end()) {
+                    for (smvk::rg::Id id : iit->second) {
+                        const smvk::rg::Access& after = plan.timelines[id][0].access;
+                        const BoundResource& br = resourceBindings[id];
+                        const bool isImage = (compiledGraph.resourceIdentities[id] >> 32) == 0;
+                        if (isImage) {
+                            if (br.image == VK_NULL_HANDLE)
+                                continue;
+                            const uint64_t hk = compiledGraph.resourceHandles[id];
+                            auto st = imageStates.find(hk);
+                            VulkanResourceManager::ImageGlobalSyncState src{};
+                            if (st != imageStates.end())
+                                src = st->second;
+                            else {
+                                src.masks = {AccessFlags::None, PipelineStageBit_None};
+                                src.layout = ImageLayout::Undefined;
+                            }
+                            const smvk::ImageLayout dstLayout =
+                                static_cast<smvk::ImageLayout>(after.layout);
+                            VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+                            b.srcStageMask = ToVkStage(src.masks.stageMask);
+                            b.srcAccessMask = ToVkAccessLocal(src.masks.accessMask);
+                            if (src.layout == ImageLayout::Undefined) {
+                                b.srcStageMask = VK_PIPELINE_STAGE_2_NONE;
+                                b.srcAccessMask = VK_ACCESS_2_NONE;
+                            }
+                            b.dstStageMask =
+                                ToVkStage(static_cast<smvk::PipelineStage>(after.stages));
+                            if (dstLayout == ImageLayout::ColorAttachmentOptimal)
+                                b.dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+                            else if (dstLayout == ImageLayout::DepthStencilAttachmentOptimal)
+                                b.dstStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                                                 VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+                            b.dstAccessMask =
+                                ToVkAccessLocal(static_cast<smvk::AccessFlags>(after.mask));
+                            b.oldLayout = ToVkImageLayout(src.layout);
+                            b.newLayout = ToVkImageLayout(dstLayout);
+                            b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                            b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                            b.image = br.image;
+                            b.subresourceRange = {br.aspect,
+                                                  0,
+                                                  VK_REMAINING_MIP_LEVELS,
+                                                  0,
+                                                  VK_REMAINING_ARRAY_LAYERS};
+                            imgBarriers.push_back(b);
+                            if (useAsyncCompute)
+                                imgBarrierSrcQ.push_back(src.queueFamily == UINT32_MAX
+                                                             ? graphicsFam
+                                                             : src.queueFamily);
+                        } else {
+                            if (br.buffer == VK_NULL_HANDLE)
+                                continue;
+                            const uint64_t hk = compiledGraph.resourceHandles[id];
+                            auto st = bufferStates.find(hk);
+                            VulkanResourceManager::BufferGlobalSyncState src{};
+                            if (st != bufferStates.end())
+                                src = st->second;
+                            VkBufferMemoryBarrier2 b{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+                            b.srcStageMask = ToVkStage(src.masks.stageMask);
+                            b.srcAccessMask = ToVkAccessLocal(src.masks.accessMask);
+                            b.dstStageMask =
+                                ToVkStage(static_cast<smvk::PipelineStage>(after.stages));
+                            b.dstAccessMask =
+                                ToVkAccessLocal(static_cast<smvk::AccessFlags>(after.mask));
+                            b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                            b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                            b.buffer = br.buffer;
+                            b.offset = 0;
+                            b.size = VK_WHOLE_SIZE;
+                            bufBarriers.push_back(b);
+                            if (useAsyncCompute)
+                                bufBarrierSrcQ.push_back(src.queueFamily == UINT32_MAX
+                                                             ? graphicsFam
+                                                             : src.queueFamily);
                         }
                     }
                 }
-                VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
-                dep.imageMemoryBarrierCount = static_cast<uint32_t>(imgBarriers.size());
-                dep.pImageMemoryBarriers = imgBarriers.empty() ? nullptr : imgBarriers.data();
-                dep.bufferMemoryBarrierCount = static_cast<uint32_t>(bufBarriers.size());
-                dep.pBufferMemoryBarriers = bufBarriers.empty() ? nullptr : bufBarriers.data();
-                vkCmdPipelineBarrier2(dstCmd, &dep);
+
+                // (b) Plan inter-group barriers for this batch.
+                const auto& sec = plan.sections[section];
+                const auto& batches = passIsAsync ? sec.compute : sec.graphics;
+                if (batch < batches.size()) {
+                    for (smvk::rg::Id bidx : batches[batch].barriers) {
+                        const BarrierTemplate& t = barrierTemplates[bidx];
+                        const BoundResource& br = resourceBindings[t.resource];
+                        const bool isImage =
+                            (compiledGraph.resourceIdentities[t.resource] >> 32) == 0;
+                        if (isImage) {
+                            if (br.image == VK_NULL_HANDLE)
+                                continue;
+                            VkImageMemoryBarrier2 b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+                            b.srcStageMask = t.srcStage;
+                            b.srcAccessMask = t.srcAccess;
+                            b.dstStageMask = t.dstStage;
+                            b.dstAccessMask = t.dstAccess;
+                            b.oldLayout = t.oldLayout;
+                            b.newLayout = t.newLayout;
+                            b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                            b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                            b.image = br.image;
+                            b.subresourceRange = {br.aspect,
+                                                  0,
+                                                  VK_REMAINING_MIP_LEVELS,
+                                                  0,
+                                                  VK_REMAINING_ARRAY_LAYERS};
+                            imgBarriers.push_back(b);
+                            if (useAsyncCompute)
+                                imgBarrierSrcQ.push_back(
+                                    plan.barriers[bidx].sourceQueue == smvk::rg::Queue::Compute
+                                        ? computeFam
+                                        : graphicsFam);
+                        } else {
+                            if (br.buffer == VK_NULL_HANDLE)
+                                continue;
+                            VkBufferMemoryBarrier2 b{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
+                            b.srcStageMask = t.srcStage;
+                            b.srcAccessMask = t.srcAccess;
+                            b.dstStageMask = t.dstStage;
+                            b.dstAccessMask = t.dstAccess;
+                            b.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                            b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+                            b.buffer = br.buffer;
+                            b.offset = 0;
+                            b.size = VK_WHOLE_SIZE;
+                            bufBarriers.push_back(b);
+                            if (useAsyncCompute)
+                                bufBarrierSrcQ.push_back(
+                                    plan.barriers[bidx].sourceQueue == smvk::rg::Queue::Compute
+                                        ? computeFam
+                                        : graphicsFam);
+                        }
+                    }
+                }
+
+                // (c) Cross-queue rewrite + emit.
+                if (!imgBarriers.empty() || !bufBarriers.empty()) {
+                    if (useAsyncCompute) {
+                        assert(imgBarrierSrcQ.size() == imgBarriers.size());
+                        for (size_t bi = 0; bi < imgBarriers.size(); ++bi)
+                            if (imgBarrierSrcQ[bi] != passQFam) {
+                                imgBarriers[bi].srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                                imgBarriers[bi].srcAccessMask = VK_ACCESS_2_NONE;
+                            }
+                        assert(bufBarrierSrcQ.size() == bufBarriers.size());
+                        for (size_t bi = 0; bi < bufBarriers.size(); ++bi)
+                            if (bufBarrierSrcQ[bi] != passQFam) {
+                                bufBarriers[bi].srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+                                bufBarriers[bi].srcAccessMask = VK_ACCESS_2_NONE;
+                            }
+                    }
+                    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+                    dep.imageMemoryBarrierCount = static_cast<uint32_t>(imgBarriers.size());
+                    dep.pImageMemoryBarriers = imgBarriers.empty() ? nullptr : imgBarriers.data();
+                    dep.bufferMemoryBarrierCount = static_cast<uint32_t>(bufBarriers.size());
+                    dep.pBufferMemoryBarriers = bufBarriers.empty() ? nullptr : bufBarriers.data();
+                    vkCmdPipelineBarrier2(dstCmd, &dep);
+                }
             }
         }
         auto& pass = passes_[sIdx];
@@ -15176,6 +15215,33 @@ void smvk::RenderGraph::Execute(Framebuffer& fb, const FrameContext* fc) {
         // semaphore at its own value, which is legal.
         fb.splitWaitSemaphore2Opaque = reinterpret_cast<void*>(vkSwap->asyncG2C_[flight]);
         fb.splitWaitValue2 = g2cVal;
+    }
+
+    // Plan-driven final state: set each resource's committed sync state from
+    // its last group (replacing the old per-pass in-place mutation).
+    for (smvk::rg::Id id = 0; id < plan.timelines.size(); ++id) {
+        const auto& tl = plan.timelines[id];
+        if (tl.empty())
+            continue;
+        const smvk::rg::Access& last = tl.back().access;
+        const uint64_t hk = compiledGraph.resourceHandles[id];
+        const bool isImage = (compiledGraph.resourceIdentities[id] >> 32) == 0;
+        if (isImage) {
+            VulkanResourceManager::ImageGlobalSyncState st{};
+            st.masks = {static_cast<smvk::AccessFlags>(last.mask),
+                        static_cast<smvk::PipelineStage>(last.stages)};
+            st.layout = static_cast<smvk::ImageLayout>(last.layout);
+            st.queueFamily =
+                (tl.back().queue == smvk::rg::Queue::Compute) ? computeFam : graphicsFam;
+            imageStates[hk] = st;
+        } else {
+            VulkanResourceManager::BufferGlobalSyncState st{};
+            st.masks = {static_cast<smvk::AccessFlags>(last.mask),
+                        static_cast<smvk::PipelineStage>(last.stages)};
+            st.queueFamily =
+                (tl.back().queue == smvk::rg::Queue::Compute) ? computeFam : graphicsFam;
+            bufferStates[hk] = st;
+        }
     }
 
     vctx.CommitImageSyncStates(imageStates);

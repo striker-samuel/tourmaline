@@ -62,7 +62,8 @@ struct Plan {
     std::vector<std::vector<Group>> timelines;
     std::vector<Barrier> barriers;
     std::vector<Lifetime> lifetimes;
-    std::vector<Id> passBatch;
+    std::vector<Id> passBatch;   // per pass (compile order) -> queue-local batch
+    std::vector<Id> passSection; // per pass (compile order) -> section
 };
 
 inline bool Writes(Mode mode) { return mode != Mode::Read; }
@@ -79,6 +80,7 @@ inline Plan Compile(const std::vector<Pass>& passes, Id resourceCount,
     plan.timelines.resize(resourceCount);
     plan.lifetimes.resize(resourceCount);
     plan.passBatch.resize(passes.size());
+    plan.passSection.resize(passes.size());
     Id previousSection = 0;
     // Each pass is normalized first so duplicate declarations cannot
     // create intra-pass dependencies.
@@ -125,6 +127,7 @@ inline Plan Compile(const std::vector<Pass>& passes, Id resourceCount,
                 batch = std::max(batch, timeline[prior - 1].lastBatch + 1);
         }
         plan.passBatch[p] = batch;
+        plan.passSection[p] = pass.section;
         auto& section = plan.sections[pass.section];
         auto& batches = pass.queue == Queue::Graphics ? section.graphics : section.compute;
         if (batches.size() <= batch) batches.resize(static_cast<size_t>(batch) + 1);
@@ -220,5 +223,9 @@ struct CompiledGraph {
     // per-flight image/buffer handles and patch imported boundary states
     // without re-canonicalizing.
     std::vector<uint64_t> resourceIdentities;
+    // Dense resource id -> raw handle key ((gen<<32) | index), parallel to
+    // resourceIdentities. The executor reconstructs the Handle from these bits
+    // (Handle is two uint32s, trivially copyable) to dereference the pool.
+    std::vector<uint64_t> resourceHandles;
 };
 } // namespace smvk::rg
