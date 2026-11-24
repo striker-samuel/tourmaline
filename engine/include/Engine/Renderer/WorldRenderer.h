@@ -3815,6 +3815,20 @@ class WorldRenderer : public IRenderer {
         bool evsm = false;
     };
     static void RecordShadowCaster(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
+    struct MotionFrame {
+        IRenderer::PushConstants motionPC{};
+        bool gpuSceneMotionActive = false;
+        tour::gpu_scene::TaskMeshGpuPush taskMeshPush{};
+        smvk::BufferHandle taskMeshIndirect{};
+        uint64_t renderViewsAddress = 0;
+        uint32_t mainRenderView = 0;
+        uint64_t frameUniformsAddress = 0;
+        smvk::RenderView liveMainCullView{};
+        bool motionRasterTwoSided = false;
+        bool motionRasterMasked = false;
+        bool motionRasterMaskedTwoSided = false;
+    };
+    static void RecordMotion(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
     // Must mirror the HLSL SdsmGroupStats (264 bytes).
     struct SdsmGroupStats {
         float minV = 0.0f;

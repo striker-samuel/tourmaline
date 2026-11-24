@@ -9385,6 +9385,199 @@ void WorldRenderer::RecordShadowCaster(smvk::CommandBuffer& cmd,
     if (f.tsEnd)
         cmd.WriteStageTimestamp(stage, /*begin=*/false);
 }
+void WorldRenderer::RecordMotion(smvk::CommandBuffer& cmd,
+                                 const smvk::FrameContext& fc,
+                                 const smvk::PassData& pd) {
+    auto* self = const_cast<WorldRenderer*>(static_cast<const WorldRenderer*>(pd.config));
+    const MotionFrame& f = fc.rg->FrameData().Get<MotionFrame>(pd.frameSlot);
+    const smvk::DepthSettings motionDepth{
+        .depthFunc = smvk::CompareOp::GreaterEqual,
+        .writeEnable = false,
+        .depthTestEnable = true,
+    };
+    if (f.gpuSceneMotionActive) {
+        const auto drawBin = [&](uint32_t cls, smvk::CullMode cull) {
+            cmd.BindRenderPipeline(self->m_gpuSceneMotionMeshProgram,
+                                   ::tour::vertex_layouts::Empty,
+                                   motionDepth,
+                                   smvk::StencilSettings{},
+                                   smvk::BlendSettings::Opaque(),
+                                   smvk::MSAASettings::Count1(),
+                                   smvk::RasterSettings{.cullMode = cull});
+            cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &f.motionPC, smvk::ShaderStage::All);
+            auto push = f.taskMeshPush;
+            push.rasterClass = cls;
+            cmd.PushConstants(192u, sizeof(push), &push, smvk::ShaderStage::All);
+            cmd.DrawMeshTasksIndirect(f.taskMeshIndirect,
+                                      uint64_t(cls) *
+                                          sizeof(tour::gpu_scene::TaskMeshIndirectCommand),
+                                      1u,
+                                      sizeof(tour::gpu_scene::TaskMeshIndirectCommand));
+        };
+        drawBin(0u, smvk::CullMode::Back);
+        if (f.motionRasterTwoSided)
+            drawBin(1u, smvk::CullMode::None);
+        if (f.motionRasterMasked)
+            drawBin(2u, smvk::CullMode::Back);
+        if (f.motionRasterMaskedTwoSided)
+            drawBin(3u, smvk::CullMode::None);
+    }
+    smvk::CullMode boundMotionMaskedCull = smvk::CullMode::FrontAndBack;
+    auto ensureMotionMaskedPipeline = [&](smvk::CullMode cull) {
+        if (cull == boundMotionMaskedCull)
+            return;
+        cmd.BindRenderPipeline(self->m_viewportResources.motionVectors.program,
+                               ::tour::vertex_layouts::Static,
+                               motionDepth,
+                               smvk::StencilSettings{},
+                               smvk::BlendSettings::Opaque(),
+                               smvk::MSAASettings::Count1(),
+                               smvk::RasterSettings{.cullMode = cull});
+        cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &f.motionPC, smvk::ShaderStage::All);
+        boundMotionMaskedCull = cull;
+    };
+    smvk::CullMode boundMotionSolidCull = smvk::CullMode::FrontAndBack;
+    auto ensureMotionSolidPipeline = [&](smvk::CullMode cull) {
+        if (cull == boundMotionSolidCull)
+            return;
+        cmd.BindRenderPipeline(self->m_viewportResources.motionVectors.program,
+                               ::tour::vertex_layouts::Static,
+                               motionDepth,
+                               smvk::StencilSettings{},
+                               smvk::BlendSettings::Opaque(),
+                               smvk::MSAASettings::Count1(),
+                               smvk::RasterSettings{.cullMode = cull});
+        cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &f.motionPC, smvk::ShaderStage::All);
+        boundMotionSolidCull = cull;
+    };
+    auto drawMotionNode = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
+        if (item.material == smvk::World::kInvalidIndex)
+            return;
+        if (f.gpuSceneMotionActive &&
+            self->m_gpuSceneRasterOwnership.OwnsGpu(self->m_gpuSceneSync.SourceForNode(item.node)))
+            return;
+        if (((item.flags & smvk::IteratorFlagBit_Masked) != 0) != maskedPhase)
+            return;
+        if (maskedPhase) {
+            smvk::CullMode cull = smvk::CullMode::None;
+            if (const smvk::Material* mat =
+                    static_cast<const smvk::World&>(*self->m_world).GetMaterial(item.material))
+                cull = mat->pipeline.raster.cullMode;
+            ensureMotionMaskedPipeline(cull);
+        } else {
+            smvk::CullMode cull = smvk::CullMode::Back;
+            if (const smvk::Material* mat =
+                    static_cast<const smvk::World&>(*self->m_world).GetMaterial(item.material))
+                cull = mat->pipeline.raster.cullMode;
+            ensureMotionSolidPipeline(cull);
+        }
+        auto& model = self->m_world->scene.globalTransform[item.node];
+        smvk::StaticMesh* meshDesc = self->LodMeshForNode(item.node, item.mesh);
+        if (!meshDesc)
+            return;
+        DepthSkinTail skinTail{};
+        if (meshDesc->skinned && self->m_gfxRenderer.State().skinDeformedBda != 0 &&
+            self->m_gfxRenderer.State().skinDeformedBase != UINT32_MAX &&
+            !std::getenv("TOURMALINE_KD_NOSKIN")) {
+            skinTail.skinned = 1u;
+            skinTail.deformedBase = self->m_gfxRenderer.State().skinDeformedBase;
+            skinTail.vsDeformed = self->m_gfxRenderer.State().skinDeformedBda;
+        }
+        cmd.PushConstants(
+            kDepthSkinTailOffset, sizeof(DepthSkinTail), &skinTail, smvk::ShaderStage::All);
+        IRenderer::PushConstants objectPC{};
+        std::copy_n(glm::value_ptr(model), 16, objectPC.model);
+        const bool prevValid =
+            !self->m_cameraCutThisFrame &&
+            self->m_prevGlobalTransforms.size() == self->m_world->scene.globalTransform.size();
+        const glm::mat4 prevModel = prevValid ? self->m_prevGlobalTransforms[item.node] : model;
+        smvk::PackPushPrevModel(glm::value_ptr(prevModel), objectPC.prevModel);
+        objectPC.materialId = item.material;
+        cmd.PushConstants(offsetof(IRenderer::PushConstants, materialId),
+                          sizeof(objectPC.materialId),
+                          &objectPC.materialId,
+                          smvk::ShaderStage::All);
+        cmd.PushConstants(offsetof(IRenderer::PushConstants, model),
+                          sizeof(objectPC.model),
+                          objectPC.model,
+                          smvk::ShaderStage::All);
+        cmd.PushConstants(offsetof(IRenderer::PushConstants, prevModel),
+                          sizeof(objectPC.prevModel),
+                          objectPC.prevModel,
+                          smvk::ShaderStage::All);
+        for (auto& draw_set : meshDesc->geometry.surfaces) {
+            cmd.DrawIndexed(draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
+        };
+    };
+    if (!f.gpuSceneMotionActive || self->m_gpuSceneRasterLegacyCount != 0) {
+        cmd.BindRenderPipeline(self->m_viewportResources.motionVectors.program,
+                               ::tour::vertex_layouts::Static,
+                               motionDepth,
+                               smvk::StencilSettings{},
+                               smvk::BlendSettings::Opaque(),
+                               smvk::MSAASettings::Count1(),
+                               smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
+        cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &f.motionPC, smvk::ShaderStage::All);
+        for (uint32_t bin : {0u, 1u, 4u, 5u, 8u, 9u, 12u, 13u})
+            self->m_world->forEachPsoBin(bin, [&](const smvk::World::RenderItem& item) {
+                drawMotionNode(item, false);
+            });
+        for (uint32_t bin : {2u, 3u, 6u, 7u, 10u, 11u, 14u, 15u})
+            self->m_world->forEachPsoBin(bin, [&](const smvk::World::RenderItem& item) {
+                drawMotionNode(item, true);
+            });
+    }
+    if (self->m_transparentMode == smvk::TransparentMode::Dithered && !self->m_hideTransparent) {
+        auto drawDitheredMotion = [&]() {
+            self->m_world->forEachRenderItem(
+                smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Transparent |
+                    smvk::IteratorFlagBit_StaticVertexFmt,
+                [&](const smvk::World::RenderItem& item) {
+                    if (item.material == smvk::World::kInvalidIndex)
+                        return;
+                    {
+                        const glm::mat4& model =
+                            self->m_world->scene.globalTransform[item.node];
+                        const uint32_t lodIdx = self->LodIndexForNode(item.node, item.mesh);
+                        smvk::StaticMesh* baseDesc = self->m_world->GetMesh(item.mesh);
+                        smvk::StaticMesh* selDesc = self->m_world->GetLodMesh(item.mesh, lodIdx);
+                        if (baseDesc) {
+                            glm::vec3 c{0.0f};
+                            float r = 0.0f;
+                            smvk::MeshBoundsToWorld(model,
+                                                    baseDesc->geometry.aabbMin,
+                                                    baseDesc->geometry.aabbMax,
+                                                    c,
+                                                    r);
+                            bool visible =
+                                smvk::RenderViewIntersectsSphere(f.liveMainCullView, c, r);
+                            if (!visible && selDesc && selDesc != baseDesc) {
+                                smvk::MeshBoundsToWorld(model,
+                                                        selDesc->geometry.aabbMin,
+                                                        selDesc->geometry.aabbMax,
+                                                        c,
+                                                        r);
+                                visible = smvk::RenderViewIntersectsSphere(
+                                    f.liveMainCullView, c, r);
+                            }
+                            if (!visible)
+                                return;
+                        }
+                    }
+                    drawMotionNode(item, false);
+                });
+        };
+        cmd.BindRenderPipeline(self->m_viewportResources.motionVectors.program,
+                               ::tour::vertex_layouts::Static,
+                               motionDepth,
+                               smvk::StencilSettings{},
+                               smvk::BlendSettings::Opaque(),
+                               smvk::MSAASettings::Count1(),
+                               smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
+        cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &f.motionPC, smvk::ShaderStage::All);
+        drawDitheredMotion();
+    }
+}
 void WorldRenderer::AppendDeferredShadowPhases(uint32_t frameIndex,
                                                uint64_t frameUniformsAddress,
                                                uint64_t fpLightsAddress,
@@ -17416,276 +17609,19 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             motionPass.AddBufferHint(m_gpuSceneTaskMeshPlan.offsetLogical, taskRead);
             motionPass.AddBufferHint(m_gpuSceneRasterWorkLogical[fb.frameIndex], taskRead);
         }
-        motionPass.SetRecordingFunc([this,
-                                     motionPC,
-                                     gpuSceneMotionActive,
-                                     taskMeshPush = m_gpuSceneTaskMeshPlan.graphics,
-                                     taskMeshIndirect = m_gpuSceneTaskMeshPlan.indirectHandle,
-                                     renderViewsAddress,
-                                     mainRenderView,
-                                     frameUniformsAddress,
-                                     liveMainCullView,
-                                     motionRasterTwoSided = m_gpuSceneRasterDoubleSidedCount != 0,
-                                     motionRasterMasked = m_gpuSceneRasterMaskedBackCount != 0,
-                                     motionRasterMaskedTwoSided =
-                                         m_gpuSceneRasterMaskedDoubleSidedCount !=
-                                         0](smvk::CommandBuffer& cmd) {
-            SMVK_PROFILE_CATEGORY("GpuSceneMotion", Optick::Category::Rendering);
-            // GPU context + pass scope come from RenderGraph::Execute.
-            // 1x depth stays read-only in both phases (prepass owns it).
-            const smvk::DepthSettings motionDepth{
-                .depthFunc = smvk::CompareOp::GreaterEqual,
-                .writeEnable = false,
-                .depthTestEnable = true,
-            };
-            // ---- Batched GPU-scene motion via task/mesh: DrawMeshTasksIndirect
-            // over the admitted set, depth-tested read-only against the prepass.
-            // MASK alpha-test rides the motion FS via the per-instance material
-            // id varying, so no separate masked program is needed.
-            if (gpuSceneMotionActive) {
-                const auto drawBin = [&](uint32_t cls, smvk::CullMode cull) {
-                    cmd.BindRenderPipeline(m_gpuSceneMotionMeshProgram,
-                                           ::tour::vertex_layouts::Empty,
-                                           motionDepth,
-                                           smvk::StencilSettings{},
-                                           smvk::BlendSettings::Opaque(),
-                                           smvk::MSAASettings::Count1(),
-                                           smvk::RasterSettings{.cullMode = cull});
-                    cmd.PushConstants(
-                        0, sizeof(IRenderer::PushConstants), &motionPC, smvk::ShaderStage::All);
-                    auto push = taskMeshPush;
-                    push.rasterClass = cls;
-                    cmd.PushConstants(192u, sizeof(push), &push, smvk::ShaderStage::All);
-                    cmd.DrawMeshTasksIndirect(taskMeshIndirect,
-                                              uint64_t(cls) *
-                                                  sizeof(tour::gpu_scene::TaskMeshIndirectCommand),
-                                              1u,
-                                              sizeof(tour::gpu_scene::TaskMeshIndirectCommand));
-                };
-                drawBin(0u, smvk::CullMode::Back);
-                if (motionRasterTwoSided)
-                    drawBin(1u, smvk::CullMode::None);
-                if (motionRasterMasked)
-                    drawBin(2u, smvk::CullMode::Back);
-                if (motionRasterMaskedTwoSided)
-                    drawBin(3u, smvk::CullMode::None);
-            }
-            // Phase 2 masked pipeline: cull follows the material raster so
-            // motion coverage matches Main (double-sided materials carry
-            // Cull None — the material pipeline's; cutout backface cull
-            // stays). Rebinds only on cull
-            // changes (the CommandBuffer dedupes identical states).
-            smvk::CullMode boundMotionMaskedCull = smvk::CullMode::FrontAndBack;
-            auto ensureMotionMaskedPipeline = [&](smvk::CullMode cull) {
-                if (cull == boundMotionMaskedCull)
-                    return;
-                cmd.BindRenderPipeline(m_viewportResources.motionVectors.program,
-                                       ::tour::vertex_layouts::Static,
-                                       motionDepth,
-                                       smvk::StencilSettings{},
-                                       smvk::BlendSettings::Opaque(),
-                                       smvk::MSAASettings::Count1(),
-                                       smvk::RasterSettings{.cullMode = cull});
-                cmd.PushConstants(
-                    0, sizeof(IRenderer::PushConstants), &motionPC, smvk::ShaderStage::All);
-                boundMotionMaskedCull = cull;
-            };
-            // Phase 1 solid pipeline: the SAME per-material cull rule (the
-            // phase-1 bind at the walk below is only the first bind —
-            // double-sided solids rebind to the material's Cull None so
-            // motion coverage matches Main exactly on both faces).
-            smvk::CullMode boundMotionSolidCull = smvk::CullMode::FrontAndBack;
-            auto ensureMotionSolidPipeline = [&](smvk::CullMode cull) {
-                if (cull == boundMotionSolidCull)
-                    return;
-                cmd.BindRenderPipeline(m_viewportResources.motionVectors.program,
-                                       ::tour::vertex_layouts::Static,
-                                       motionDepth,
-                                       smvk::StencilSettings{},
-                                       smvk::BlendSettings::Opaque(),
-                                       smvk::MSAASettings::Count1(),
-                                       smvk::RasterSettings{.cullMode = cull});
-                cmd.PushConstants(
-                    0, sizeof(IRenderer::PushConstants), &motionPC, smvk::ShaderStage::All);
-                boundMotionSolidCull = cull;
-            };
-            auto drawMotionNode = [&](const smvk::World::RenderItem& item, bool maskedPhase) {
-                if (item.material == smvk::World::kInvalidIndex)
-                    return;
-                // GPU-owned static opaque + MASK sources are submitted by the
-                // batched indirect leg above; skip them here so motion is
-                // drawn exactly once. Skinned/legacy/transparent stay direct.
-                if (gpuSceneMotionActive &&
-                    m_gpuSceneRasterOwnership.OwnsGpu(m_gpuSceneSync.SourceForNode(item.node)))
-                    return;
-                if (((item.flags & smvk::IteratorFlagBit_Masked) != 0) != maskedPhase)
-                    return;
-                if (maskedPhase) {
-                    smvk::CullMode cull = smvk::CullMode::None;
-                    if (const smvk::Material* mat =
-                            static_cast<const smvk::World&>(*m_world).GetMaterial(item.material))
-                        cull = mat->pipeline.raster.cullMode;
-                    ensureMotionMaskedPipeline(cull);
-                } else {
-                    // Solid phase: follow the material raster too
-                    // (double-sided solids need Cull None here, or their
-                    // backfaces would carry zero motion and ghost under
-                    // the T2x resolve).
-                    smvk::CullMode cull = smvk::CullMode::Back;
-                    if (const smvk::Material* mat =
-                            static_cast<const smvk::World&>(*m_world).GetMaterial(item.material))
-                        cull = mat->pipeline.raster.cullMode;
-                    ensureMotionSolidPipeline(cull);
-                }
-                auto& model = m_world->scene.globalTransform[item.node];
-                smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh);
-                if (!meshDesc)
-                    return;
-                // Direct-path skin tail (shadow.vert's 208..240 overlay): a
-                // skinned caster fetches the ANIMATED position from the frame's
-                // deformed heap instead of the bind-pose vertex input. Always
-                // pushed (zeroed on static draws) so a stale tail never leaks
-                // into the next caster.
-                DepthSkinTail skinTail{};
-                if (meshDesc->skinned && m_gfxRenderer.State().skinDeformedBda != 0 &&
-                    m_gfxRenderer.State().skinDeformedBase != UINT32_MAX &&
-                    !std::getenv("TOURMALINE_KD_NOSKIN")) {
-                    skinTail.skinned = 1u;
-                    skinTail.deformedBase = m_gfxRenderer.State().skinDeformedBase;
-                    skinTail.vsDeformed = m_gfxRenderer.State().skinDeformedBda;
-                }
-                cmd.PushConstants(
-                    kDepthSkinTailOffset, sizeof(DepthSkinTail), &skinTail, smvk::ShaderStage::All);
-                IRenderer::PushConstants objectPC{};
-
-                std::copy_n(glm::value_ptr(model), 16, objectPC.model);
-                // Previous frame's transform: zero motion on the first
-                // frame or after the node count changed (scene rebuild).
-                const bool prevValid =
-                    !m_cameraCutThisFrame &&
-                    m_prevGlobalTransforms.size() == m_world->scene.globalTransform.size();
-                const glm::mat4 prevModel = prevValid ? m_prevGlobalTransforms[item.node] : model;
-                // Pack as three float4 ROWS (smvk::PackPushPrevModel): a
-                // flat 12-float copy is wrong (drops translation, leaks
-                // the projection row - see the helper's comment).
-                smvk::PackPushPrevModel(glm::value_ptr(prevModel), objectPC.prevModel);
-                objectPC.materialId = item.material; // FS alpha test
-                cmd.PushConstants(offsetof(IRenderer::PushConstants, materialId),
-                                  sizeof(objectPC.materialId),
-                                  &objectPC.materialId,
-                                  smvk::ShaderStage::All);
-                cmd.PushConstants(offsetof(IRenderer::PushConstants, model),
-                                  sizeof(objectPC.model),
-                                  objectPC.model,
-                                  smvk::ShaderStage::All);
-                cmd.PushConstants(offsetof(IRenderer::PushConstants, prevModel),
-                                  sizeof(objectPC.prevModel),
-                                  objectPC.prevModel,
-                                  smvk::ShaderStage::All);
-                for (auto& draw_set : meshDesc->geometry.surfaces) {
-                    cmd.DrawIndexed(
-                        draw_set.indexCount, 1, draw_set.firstIndex, draw_set.baseVertex);
-                };
-            };
-            // Filtered static path: one HZB-culled multi-draw per
-            // material over the compacted index list (model matrices
-            // come from the draws buffer via SV_InstanceID; materialId
-            // is pushed per range for the FS alpha test). Cull follows
-            // the material raster so motion coverage matches Main.
-            // (retired) filtered-motion multi-draw leg removed.
-            // Phase 1: solid geometry, back-culled like the prepass (the
-            // per-item solid ensure inside drawMotionNode switches to the
-            // material's raster — Cull None for double-sided — so motion
-            // coverage matches Main exactly; this bind is just the
-            // pre-walk state, the first item rebinds through the tracker).
-            // The per-item direct fallback runs only when the batched
-            // indirect leg is OFF or some caster spilled to legacy — with
-            // full GPU ownership it is pure O(total) walk overhead.
-            if (!gpuSceneMotionActive || m_gpuSceneRasterLegacyCount != 0) {
-                cmd.BindRenderPipeline(m_viewportResources.motionVectors.program,
-                                       ::tour::vertex_layouts::Static,
-                                       motionDepth,
-                                       smvk::StencilSettings{},
-                                       smvk::BlendSettings::Opaque(),
-                                       smvk::MSAASettings::Count1(),
-                                       smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
-                cmd.PushConstants(
-                    0, sizeof(IRenderer::PushConstants), &motionPC, smvk::ShaderStage::All);
-                // Opaque phase (opaque + double-sided + project-lit bins) and
-                // masked phase (masked bins), over contiguous ranges instead of
-                // the ItemIndicesFor flag scan. The CastShadow bit (bit 3)
-                // splits each raster bin into a non-caster (0-7) and caster
-                // (8-15) half, so BOTH halves are walked - motion vectors are
-                // drawn for casters and non-casters alike.
-                for (uint32_t bin : {0u, 1u, 4u, 5u, 8u, 9u, 12u, 13u})
-                    m_world->forEachPsoBin(bin, [&](const smvk::World::RenderItem& item) {
-                        drawMotionNode(item, false);
-                    });
-                for (uint32_t bin : {2u, 3u, 6u, 7u, 10u, 11u, 14u, 15u})
-                    m_world->forEachPsoBin(bin, [&](const smvk::World::RenderItem& item) {
-                        drawMotionNode(item, true);
-                    });
-            }
-            // Phase 3: dithered transparent (screen-door, opaque state).
-            // The FS dithers with the same pattern as the main view, and
-            // culling follows the material so motion exists exactly for
-            // the pixels the color pass kept. Skipped in blend mode
-            // (transparent has no motion vectors there, as before).
-            if (m_transparentMode == smvk::TransparentMode::Dithered && !m_hideTransparent) {
-                auto drawDitheredMotion = [&]() {
-                    m_world->forEachRenderItem(
-                        smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Transparent |
-                            smvk::IteratorFlagBit_StaticVertexFmt,
-                        [&](const smvk::World::RenderItem& item) {
-                            if (item.material == smvk::World::kInvalidIndex)
-                                return;
-                            // Frustum cull: transparent never enters the gfx
-                            // filter, so test the conservative LOD union here
-                            // (keep when either sibling intersects, matching
-                            // FilterMainView) to skip off-screen instances.
-                            {
-                                const glm::mat4& model = m_world->scene.globalTransform[item.node];
-                                const uint32_t lodIdx = LodIndexForNode(item.node, item.mesh);
-                                smvk::StaticMesh* baseDesc = m_world->GetMesh(item.mesh);
-                                smvk::StaticMesh* selDesc = m_world->GetLodMesh(item.mesh, lodIdx);
-                                if (baseDesc) {
-                                    glm::vec3 c{0.0f};
-                                    float r = 0.0f;
-                                    smvk::MeshBoundsToWorld(model,
-                                                            baseDesc->geometry.aabbMin,
-                                                            baseDesc->geometry.aabbMax,
-                                                            c,
-                                                            r);
-                                    bool visible =
-                                        smvk::RenderViewIntersectsSphere(liveMainCullView, c, r);
-                                    if (!visible && selDesc && selDesc != baseDesc) {
-                                        smvk::MeshBoundsToWorld(model,
-                                                                selDesc->geometry.aabbMin,
-                                                                selDesc->geometry.aabbMax,
-                                                                c,
-                                                                r);
-                                        visible = smvk::RenderViewIntersectsSphere(
-                                            liveMainCullView, c, r);
-                                    }
-                                    if (!visible)
-                                        return;
-                                }
-                            }
-                            drawMotionNode(item, false);
-                        });
-                };
-                cmd.BindRenderPipeline(m_viewportResources.motionVectors.program,
-                                       ::tour::vertex_layouts::Static,
-                                       motionDepth,
-                                       smvk::StencilSettings{},
-                                       smvk::BlendSettings::Opaque(),
-                                       smvk::MSAASettings::Count1(),
-                                       smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
-                cmd.PushConstants(
-                    0, sizeof(IRenderer::PushConstants), &motionPC, smvk::ShaderStage::All);
-                drawDitheredMotion();
-            }
-        });
+        MotionFrame& motionFrame = m_rendergraph->PassFrameData<MotionFrame>(motionPass);
+        motionFrame.motionPC = motionPC;
+        motionFrame.gpuSceneMotionActive = gpuSceneMotionActive;
+        motionFrame.taskMeshPush = m_gpuSceneTaskMeshPlan.graphics;
+        motionFrame.taskMeshIndirect = m_gpuSceneTaskMeshPlan.indirectHandle;
+        motionFrame.renderViewsAddress = renderViewsAddress;
+        motionFrame.mainRenderView = mainRenderView;
+        motionFrame.frameUniformsAddress = frameUniformsAddress;
+        motionFrame.liveMainCullView = liveMainCullView;
+        motionFrame.motionRasterTwoSided = m_gpuSceneRasterDoubleSidedCount != 0;
+        motionFrame.motionRasterMasked = m_gpuSceneRasterMaskedBackCount != 0;
+        motionFrame.motionRasterMaskedTwoSided = m_gpuSceneRasterMaskedDoubleSidedCount != 0;
+        motionPass.SetRecordFn(&WorldRenderer::RecordMotion, this);
         (void)motionPass;
     }
 
