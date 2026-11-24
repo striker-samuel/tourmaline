@@ -21236,6 +21236,16 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         SMVK_PROFILE_RENDER("UpdateDescriptors");
         m_context->UpdateDescriptors();
     }
+    // Load-time precompile (checkpoint E prewarm): on the first rendered
+    // frame, precompile the launch permutation into the bounded cache. Both
+    // async-split variants are warmed so a later async toggle never compiles
+    // on a live frame (the second is a no-op when the graph has no async
+    // passes - same key). Agnostic to the load phase: a level load can call
+    // PrewarmCompiledGraph the same way for its own permutations.
+    if (m_frameCounter == 1) {
+        m_rendergraph->PrewarmCompiledGraph(false);
+        m_rendergraph->PrewarmCompiledGraph(true);
+    }
     m_rendergraph->Execute(fb, &fc);
     // TOURMALINE_FOG_TILE_DUMP=<frame>: one-shot post-Execute
     // download of the DEDICATED volumetric shadow atlas (the coarse

@@ -193,6 +193,13 @@ inline bool CanAlias(const Lifetime& a, const Lifetime& b) {
            (a.lastBatch < b.firstBatch || b.lastBatch < a.firstBatch);
 }
 
+// FNV-1a hash mix (deterministic across builds; the key is a compile-time
+// identity, never persisted).
+inline uint64_t GraphHash(uint64_t h, uint64_t v) {
+    h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+    return h;
+}
+
 // Structural identity of one compiled permutation: everything that changes
 // the compiled plan (pass structure, resource shapes, access patterns, queue
 // sections). Camera matrices, draw counts and swapchain image indices are
@@ -202,14 +209,22 @@ struct GraphKey {
     uint64_t resourceStructure = 0; // resource shapes / formats / usage
     uint64_t accessStructure = 0;   // access modes, stages, masks, layouts
     bool operator==(const GraphKey&) const = default;
+
+    [[nodiscard]] uint64_t Hash() const {
+        uint64_t h = 1469598103934665603ull;
+        h = GraphHash(h, passStructure);
+        h = GraphHash(h, resourceStructure);
+        h = GraphHash(h, accessStructure);
+        return h;
+    }
 };
 
-// FNV-1a hash mix (deterministic across builds; the key is a compile-time
-// identity, never persisted).
-inline uint64_t GraphHash(uint64_t h, uint64_t v) {
-    h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
-    return h;
-}
+// Bucket hash for the compiled-permutation cache (unordered_map key).
+struct GraphKeyHash {
+    size_t operator()(const GraphKey& k) const {
+        return static_cast<size_t>(k.Hash());
+    }
+};
 
 // The immutable result of compiling one permutation: the dependency/timeline
 // plan plus the flattened, canonical resource order the executor binds

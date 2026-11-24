@@ -13765,12 +13765,13 @@ inline smvk::BufferHandle RebuildBufferHandle(uint64_t key) {
 }
 
 inline std::vector<BoundResource> ResolveResourceBindings(
-    const smvk::rg::CompiledGraph& compiled,
+    const std::vector<uint64_t>& identities,
+    const std::vector<uint64_t>& handles,
     VulkanResourceManager& vctx) {
-    std::vector<BoundResource> out(compiled.resourceIdentities.size());
-    for (size_t id = 0; id < compiled.resourceIdentities.size(); ++id) {
-        const uint64_t key = compiled.resourceHandles[id];
-        if ((compiled.resourceIdentities[id] >> 32) == 0) { // image
+    std::vector<BoundResource> out(identities.size());
+    for (size_t id = 0; id < identities.size(); ++id) {
+        const uint64_t key = handles[id];
+        if ((identities[id] >> 32) == 0) { // image
             auto* img = vctx.images_.get(RebuildImageHandle(key));
             if (img && img->vkImage != VK_NULL_HANDLE) {
                 out[id].image = img->vkImage;
@@ -13834,17 +13835,19 @@ inline std::vector<BarrierTemplate> BuildBarrierTemplates(const smvk::rg::Plan& 
 }
 } // namespace
 
-smvk::rg::CompiledGraph smvk::RenderGraph::CompileGraph(const std::vector<size_t>& order,
-                                                        bool useAsync) const {
-    const std::vector<PassUsage> usages = CollectPassUsages();
+smvk::RenderGraph::GraphPrepare smvk::RenderGraph::PrepareGraph(
+    const std::vector<PassUsage>& usages,
+    const std::vector<size_t>& order,
+    bool useAsync) const {
+    GraphPrepare prep;
     assert(order.size() == usages.size());
 
     // Canonicalize physical resources (images + buffers) into dense ids over a
     // SHARED whole-resource space (the compiler's granularity). The packed
     // identity (kind<<32 | index) lets the executor resolve per-flight handles.
     std::unordered_map<uint64_t, smvk::rg::Id> imageIds, bufferIds;
-    std::vector<uint64_t> identities;
-    std::vector<uint64_t> handleKeys;
+    auto& identities = prep.identities;
+    auto& handleKeys = prep.handles;
     auto internImage = [&](ImageHandle h) -> smvk::rg::Id {
         const uint64_t k = (uint64_t(h.gen()) << 32) | uint64_t(h.index());
         auto [it, ins] = imageIds.emplace(k, (smvk::rg::Id)identities.size());
@@ -13864,7 +13867,7 @@ smvk::rg::CompiledGraph smvk::RenderGraph::CompileGraph(const std::vector<size_t
         return it->second;
     };
 
-    std::vector<smvk::rg::Pass> rgPasses;
+    std::vector<smvk::rg::Pass>& rgPasses = prep.passes;
     rgPasses.reserve(usages.size());
     uint64_t passHash = 1469598103934665603ull;
     uint64_t accessHash = 1469598103934665603ull;
@@ -13922,14 +13925,37 @@ smvk::rg::CompiledGraph smvk::RenderGraph::CompileGraph(const std::vector<size_t
         rgPasses.push_back(std::move(gp));
     }
 
+    prep.key.passStructure = passHash;
+    prep.key.resourceStructure = (uint64_t)identities.size();
+    prep.key.accessStructure = accessHash;
+    prep.sectionCount = sectionCount;
+    return prep;
+}
+
+smvk::rg::CompiledGraph smvk::RenderGraph::CompileGraph(const std::vector<PassUsage>& usages,
+                                                        const std::vector<size_t>& order,
+                                                        bool useAsync) const {
+    GraphPrepare prep = PrepareGraph(usages, order, useAsync);
     smvk::rg::CompiledGraph out;
-    out.key.passStructure = passHash;
-    out.key.resourceStructure = (uint64_t)identities.size();
-    out.key.accessStructure = accessHash;
-    out.resourceIdentities = std::move(identities);
-    out.resourceHandles = std::move(handleKeys);
-    out.plan = smvk::rg::Compile(rgPasses, (smvk::rg::Id)out.resourceIdentities.size(), sectionCount);
+    out.key = prep.key;
+    out.resourceIdentities = std::move(prep.identities);
+    out.resourceHandles = std::move(prep.handles);
+    out.plan = smvk::rg::Compile(prep.passes, (smvk::rg::Id)out.resourceIdentities.size(),
+                                 prep.sectionCount);
     return out;
+}
+
+void smvk::RenderGraph::PrewarmCompiledGraph(bool useAsync) {
+    const std::vector<PassUsage> usages = CollectPassUsages();
+    const std::vector<size_t>& sorted = TopologicalSort(usages);
+    GraphPrepare prep = PrepareGraph(usages, sorted, useAsync);
+    if (planCache_.count(prep.key))
+        return; // already cached
+    auto plan = std::make_shared<smvk::rg::Plan>(
+        smvk::rg::Compile(prep.passes, (smvk::rg::Id)prep.identities.size(), prep.sectionCount));
+    if (planCache_.size() >= kMaxCompiledPermutations)
+        planCache_.erase(planCache_.begin()); // bounded: drop one arbitrary entry
+    planCache_.emplace(prep.key, std::move(plan));
 }
 
 const std::vector<size_t>& smvk::TopologicalSortUsages(const std::vector<PassUsage>& usages,
@@ -14512,15 +14538,27 @@ void smvk::RenderGraph::Execute(Framebuffer& fb, const FrameContext* fc) {
         useAsyncCompute = false;
     }
 
-    // ---- Compiled plan + per-flight resource bindings (checkpoint B) ----
-    // Compiled AFTER the async-split decision so the plan's queue sections
-    // mirror the actual execution (single-stream when emulated). The walk
-    // emits barriers at batch boundaries from these instead of the per-pass
-    // dynamic state comparison.
-    const smvk::rg::CompiledGraph compiledGraph = CompileGraph(sorted, useAsyncCompute);
-    const smvk::rg::Plan& plan = compiledGraph.plan;
+    // ---- Compiled plan + per-flight resource bindings (checkpoint B/E) ----
+    // Prepared AFTER the async-split decision so the plan's queue sections
+    // mirror the actual execution (single-stream when emulated). The plan (the
+    // expensive timeline compile) is cached under its GraphKey; the per-flight
+    // handles are refreshed every frame from `prep`, so a transient-heap
+    // relayout never serves a stale handle.
+    const GraphPrepare prep = PrepareGraph(usages, sorted, useAsyncCompute);
+    std::shared_ptr<const smvk::rg::Plan> planPtr;
+    auto planIt = planCache_.find(prep.key);
+    if (planIt != planCache_.end())
+        planPtr = planIt->second;
+    else {
+        planPtr = std::make_shared<smvk::rg::Plan>(smvk::rg::Compile(
+            prep.passes, (smvk::rg::Id)prep.identities.size(), prep.sectionCount));
+        if (planCache_.size() >= kMaxCompiledPermutations)
+            planCache_.erase(planCache_.begin()); // bounded: drop one arbitrary entry
+        planCache_.emplace(prep.key, planPtr);
+    }
+    const smvk::rg::Plan& plan = *planPtr;
     const std::vector<BoundResource> resourceBindings =
-        ResolveResourceBindings(compiledGraph, vctx);
+        ResolveResourceBindings(prep.identities, prep.handles, vctx);
     const std::vector<BarrierTemplate> barrierTemplates = BuildBarrierTemplates(plan);
     // Imported boundary barriers: resource -> (section, queue, batch) of its
     // FIRST group, emitted once from the frame-start imported sync state.
@@ -14783,11 +14821,11 @@ void smvk::RenderGraph::Execute(Framebuffer& fb, const FrameContext* fc) {
                     for (smvk::rg::Id id : iit->second) {
                         const smvk::rg::Access& after = plan.timelines[id][0].access;
                         const BoundResource& br = resourceBindings[id];
-                        const bool isImage = (compiledGraph.resourceIdentities[id] >> 32) == 0;
+                        const bool isImage = (prep.identities[id] >> 32) == 0;
                         if (isImage) {
                             if (br.image == VK_NULL_HANDLE)
                                 continue;
-                            const uint64_t hk = compiledGraph.resourceHandles[id];
+                            const uint64_t hk = prep.handles[id];
                             auto st = imageStates.find(hk);
                             VulkanResourceManager::ImageGlobalSyncState src{};
                             if (st != imageStates.end())
@@ -14832,7 +14870,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb, const FrameContext* fc) {
                         } else {
                             if (br.buffer == VK_NULL_HANDLE)
                                 continue;
-                            const uint64_t hk = compiledGraph.resourceHandles[id];
+                            const uint64_t hk = prep.handles[id];
                             auto st = bufferStates.find(hk);
                             VulkanResourceManager::BufferGlobalSyncState src{};
                             if (st != bufferStates.end())
@@ -14866,7 +14904,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb, const FrameContext* fc) {
                         const BarrierTemplate& t = barrierTemplates[bidx];
                         const BoundResource& br = resourceBindings[t.resource];
                         const bool isImage =
-                            (compiledGraph.resourceIdentities[t.resource] >> 32) == 0;
+                            (prep.identities[t.resource] >> 32) == 0;
                         if (isImage) {
                             if (br.image == VK_NULL_HANDLE)
                                 continue;
@@ -15224,8 +15262,8 @@ void smvk::RenderGraph::Execute(Framebuffer& fb, const FrameContext* fc) {
         if (tl.empty())
             continue;
         const smvk::rg::Access& last = tl.back().access;
-        const uint64_t hk = compiledGraph.resourceHandles[id];
-        const bool isImage = (compiledGraph.resourceIdentities[id] >> 32) == 0;
+        const uint64_t hk = prep.handles[id];
+        const bool isImage = (prep.identities[id] >> 32) == 0;
         if (isImage) {
             VulkanResourceManager::ImageGlobalSyncState st{};
             st.masks = {static_cast<smvk::AccessFlags>(last.mask),

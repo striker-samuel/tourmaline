@@ -1062,8 +1062,21 @@ struct RenderGraph final {
     // pass is compiled as Graphics so the plan's single-stream sections/batches
     // mirror the emulated (inline) execution. The returned GraphKey is the
     // structural permutation identity the executor caches on.
-    [[nodiscard]] smvk::rg::CompiledGraph CompileGraph(const std::vector<size_t>& order,
+    [[nodiscard]] smvk::rg::CompiledGraph CompileGraph(const std::vector<PassUsage>& usages,
+                                                       const std::vector<size_t>& order,
                                                        bool useAsync) const;
+
+    // Precompile the CURRENT declaration set (passes_ as built this instant)
+    // into the bounded permutation cache. Agnostic to the caller: app load can
+    // prewarm the launch-time permutations, and level load can prewarm
+    // level-specific ones later, both through this same entry point. The plan
+    // (the expensive part) is cached under its GraphKey; per-flight handles are
+    // still resolved each frame in Execute, so a later transient-heap relayout
+    // never serves a stale handle.
+    void PrewarmCompiledGraph(bool useAsync);
+
+    // Number of distinct permutations currently cached.
+    [[nodiscard]] size_t CompiledGraphCacheSize() const { return planCache_.size(); }
 
     // --------------------------------------------------------
     // Resource resolution
@@ -1087,6 +1100,30 @@ struct RenderGraph final {
     // flight's set (BindRenderPipeline / BindComputePipeline read this), so
     // sibling in-flight flights never see each other's descriptor rewrites.
     uint32_t flightSlot_ = 0;
+
+    // The cheap half of compilation: canonicalize resources (dense ids +
+    // per-flight handle keys) and build the per-pass access lists + the
+    // structural GraphKey, WITHOUT running the timeline compiler. Execute
+    // uses this every frame (it is cheap and also refreshes the per-flight
+    // handles), then only runs smvk::rg::Compile on a cache miss.
+    struct GraphPrepare {
+        smvk::rg::GraphKey key;
+        std::vector<uint64_t> identities; // kind<<32 | index
+        std::vector<uint64_t> handles;    // (gen<<32) | index, per-flight
+        std::vector<smvk::rg::Pass> passes;
+        smvk::rg::Id sectionCount = 0;
+    };
+    GraphPrepare PrepareGraph(const std::vector<PassUsage>& usages,
+                              const std::vector<size_t>& order,
+                              bool useAsync) const;
+
+    // Bounded compiled-permutation cache (checkpoint E): GraphKey -> Plan.
+    // The plan is structure-stable; handles are resolved per frame, so a
+    // transient-heap relayout does not invalidate cached plans.
+    mutable std::unordered_map<smvk::rg::GraphKey, std::shared_ptr<const smvk::rg::Plan>,
+                               smvk::rg::GraphKeyHash>
+        planCache_;
+    static constexpr size_t kMaxCompiledPermutations = 16;
 
     // Collect per-pass physical image/buffer usage with derived layout/access
     // (the NAMESPACE-LEVEL smvk::PassUsage - hoisted for testability).
