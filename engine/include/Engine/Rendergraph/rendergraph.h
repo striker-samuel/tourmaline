@@ -1145,6 +1145,11 @@ struct RenderGraph final {
     mutable uint64_t prepRevision_ = 0;
     mutable bool prepUseAsync_ = false;
 
+    // Cached per-flight barrier tokens + resource bindings (Vulkan-typed;
+    // defined in the impl to keep the public header backend-neutral).
+    struct CompiledBarrierCache;
+    mutable std::shared_ptr<CompiledBarrierCache> barrierCache_;
+
     // Collect per-pass physical image/buffer usage with derived layout/access
     // (the NAMESPACE-LEVEL smvk::PassUsage - hoisted for testability).
     std::vector<PassUsage> CollectPassUsages() const;

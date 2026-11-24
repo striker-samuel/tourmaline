@@ -13741,7 +13741,7 @@ std::vector<smvk::PassUsage> smvk::RenderGraph::CollectPassUsages() const {
 // + image format/aspect) so the barrier templates fill the per-frame handle
 // fields without re-canonicalizing.
 // ---------------------------------------------------------------------------
-namespace {
+namespace smvk {
 struct BoundResource {
     VkImage image = VK_NULL_HANDLE;
     VkBuffer buffer = VK_NULL_HANDLE;
@@ -13834,7 +13834,15 @@ inline std::vector<BarrierTemplate> BuildBarrierTemplates(const smvk::rg::Plan& 
     }
     return out;
 }
-} // namespace
+
+// Cached barrier tokens + resource bindings (the per-frame Vulkan lowering of
+// the cached plan + prep). Reused across frames on a compiled-state hit.
+struct RenderGraph::CompiledBarrierCache {
+    std::vector<BoundResource> bindings;
+    std::vector<BarrierTemplate> templates;
+    std::unordered_map<uint64_t, std::vector<smvk::rg::Id>> importedByBatch;
+};
+} // namespace smvk
 
 uint64_t smvk::RenderGraph::StructureHash() const {
     uint64_t h = 1469598103934665603ull;
@@ -14612,8 +14620,10 @@ void smvk::RenderGraph::Execute(Framebuffer& fb, const FrameContext* fc) {
     // relayout never serves a stale handle.
     // Cache the prepare result (skip the interning + hashing on a steady-state
     // hit). Invalidated on relayout (handles change) or async-split change.
-    if (!(prepValid_ && prepHash_ == structureHash && prepRevision_ == resourceRevision_ &&
-          prepUseAsync_ == useAsyncCompute && !relayout)) {
+    const bool prepRecomputed =
+        !(prepValid_ && prepHash_ == structureHash && prepRevision_ == resourceRevision_ &&
+          prepUseAsync_ == useAsyncCompute && !relayout);
+    if (prepRecomputed) {
         cachedPrep_ = PrepareGraph(usages, sorted, useAsyncCompute);
         prepHash_ = structureHash;
         prepRevision_ = resourceRevision_;
@@ -14633,20 +14643,30 @@ void smvk::RenderGraph::Execute(Framebuffer& fb, const FrameContext* fc) {
         planCache_.emplace(prep.key, planPtr);
     }
     const smvk::rg::Plan& plan = *planPtr;
-    const std::vector<BoundResource> resourceBindings =
-        ResolveResourceBindings(prep.identities, prep.handles, vctx);
-    const std::vector<BarrierTemplate> barrierTemplates = BuildBarrierTemplates(plan);
-    // Imported boundary barriers: resource -> (section, queue, batch) of its
-    // FIRST group, emitted once from the frame-start imported sync state.
-    std::unordered_map<uint64_t, std::vector<smvk::rg::Id>> importedByBatch;
-    for (smvk::rg::Id id = 0; id < plan.timelines.size(); ++id) {
-        const auto& tl = plan.timelines[id];
-        if (tl.empty())
-            continue;
-        const uint64_t key = (uint64_t(tl[0].section) << 40) |
-                             (uint64_t(tl[0].queue) << 32) | uint64_t(tl[0].firstBatch);
-        importedByBatch[key].push_back(id);
+    // Cache the per-flight bindings + barrier templates + imported-boundary map
+    // (the Vulkan lowering of the cached plan + prep); recompute only when the
+    // compiled state changed.
+    std::shared_ptr<CompiledBarrierCache> barriers = barrierCache_;
+    if (!barriers || prepRecomputed) {
+        barriers = std::make_shared<CompiledBarrierCache>();
+        barriers->bindings = ResolveResourceBindings(prep.identities, prep.handles, vctx);
+        barriers->templates = BuildBarrierTemplates(plan);
+        // Imported boundary barriers: resource -> (section, queue, batch) of its
+        // FIRST group, emitted once from the frame-start imported sync state.
+        for (smvk::rg::Id id = 0; id < plan.timelines.size(); ++id) {
+            const auto& tl = plan.timelines[id];
+            if (tl.empty())
+                continue;
+            const uint64_t key = (uint64_t(tl[0].section) << 40) |
+                                 (uint64_t(tl[0].queue) << 32) | uint64_t(tl[0].firstBatch);
+            barriers->importedByBatch[key].push_back(id);
+        }
+        barrierCache_ = barriers;
     }
+    const std::vector<BoundResource>& resourceBindings = barriers->bindings;
+    const std::vector<BarrierTemplate>& barrierTemplates = barriers->templates;
+    const std::unordered_map<uint64_t, std::vector<smvk::rg::Id>>& importedByBatch =
+        barriers->importedByBatch;
 
     // ---- Barrier debug tracing (TOURMALINE_BARRIER_TRACE, see helpers) ----
     const bool traceRg = RgTraceEnabled(fb.frameIndex);
