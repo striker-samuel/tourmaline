@@ -93,7 +93,7 @@ struct ForwardPlusRenderer : public smvk::IFrameRenderer {
     // VS+G-buffer FS program when the thin receiver attachments are used.
     // Missing shader variants must fall back to AppendPrepass.
     [[nodiscard]] bool AppendGpuScenePrepass(smvk::FrameContext& fc,
-                                             smvk::ShaderProgram rasterDepth,
+                                             const smvk::ShaderProgram& rasterDepth,
                                              smvk::BufferHandle indirect,
                                              smvk::LogicalBufferHandle indirectLogical,
                                              smvk::LogicalBufferHandle workLogical,
@@ -101,8 +101,8 @@ struct ForwardPlusRenderer : public smvk::IFrameRenderer {
                                              const tour::gpu_scene::RasterVsPush& vertexPush,
                                              bool hizOccluder,
                                              bool hasDoubleSided,
-                                             smvk::ShaderProgram maskedDepth,
-                                             smvk::ShaderProgram maskedGbuffer,
+                                             const smvk::ShaderProgram& maskedDepth,
+                                             const smvk::ShaderProgram& maskedGbuffer,
                                              bool hasMasked,
                                              bool hasMaskedDoubleSided,
                                              bool hasProjectLit);
@@ -113,7 +113,7 @@ struct ForwardPlusRenderer : public smvk::IFrameRenderer {
     // validation only); the logical hints must cover BOTH the command
     // buffer and the device-read count buffer.
     [[nodiscard]] bool AppendGpuSceneCompactPrepass(smvk::FrameContext& fc,
-                                                    smvk::ShaderProgram rasterDepth,
+                                                    const smvk::ShaderProgram& rasterDepth,
                                                     smvk::BufferHandle indirect,
                                                     smvk::LogicalBufferHandle indirectLogical,
                                                     smvk::LogicalBufferHandle countLogical,
@@ -124,8 +124,8 @@ struct ForwardPlusRenderer : public smvk::IFrameRenderer {
                                                     uint32_t commandCount,
                                                     const tour::gpu_scene::RasterVsPush& vertexPush,
                                                     bool hasDoubleSided,
-                                                    smvk::ShaderProgram maskedDepth,
-                                                    smvk::ShaderProgram maskedGbuffer,
+                                                    const smvk::ShaderProgram& maskedDepth,
+                                                    const smvk::ShaderProgram& maskedGbuffer,
                                                     bool hasMasked,
                                                     bool hasMaskedDoubleSided,
                                                     bool hizOccluder = false);
@@ -133,10 +133,10 @@ struct ForwardPlusRenderer : public smvk::IFrameRenderer {
     // dispatch per PSO class. Task stage performs local meshlet visibility
     // and forwards surviving cluster IDs to mesh stage.
     [[nodiscard]] bool AppendGpuSceneTaskPrepass(smvk::FrameContext& fc,
-                                                 smvk::ShaderProgram taskDepth,
-                                                 smvk::ShaderProgram taskGbuffer,
-                                                 smvk::ShaderProgram maskedDepth,
-                                                 smvk::ShaderProgram maskedGbuffer,
+                                                 const smvk::ShaderProgram& taskDepth,
+                                                 const smvk::ShaderProgram& taskGbuffer,
+                                                 const smvk::ShaderProgram& maskedDepth,
+                                                 const smvk::ShaderProgram& maskedGbuffer,
                                                  smvk::BufferHandle indirect,
                                                  smvk::LogicalBufferHandle indirectLogical,
                                                  smvk::LogicalBufferHandle groupsLogical,
