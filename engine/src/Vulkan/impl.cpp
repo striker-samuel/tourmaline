@@ -13003,7 +13003,7 @@ struct smvk::RenderGraph::TransientHeapOpaque {
 };
 
 smvk::RenderGraph::RenderGraph(ResourceManager& ctx)
-    : frameData_(FrameArena()),
+    : frameData_(AppArena()),
       ctx_(ctx),
       pipelineCacheOpaque_(smvk::mem::ProcessAllocator().Create<PipelineCacheOpaque>(
           static_cast<VulkanResourceManager*>(ctx.GetVulkanOpaque()))),
@@ -14385,6 +14385,9 @@ void smvk::RenderGraph::Execute(Framebuffer& fb, const FrameContext* fc) {
     // permanently pointing at its own EngineGlobals slice).
     const uint32_t flight = fb.frameIndex % smvk::limits::MaxFramesInFlight;
     flightSlot_ = flight;
+    // Build-once: truncate any pass the renderers stopped emitting this frame
+    // (a feature toggled off) BEFORE the analysis reads passes_.
+    EndFrameDeclaration();
     auto* passTimingSwap =
         fb.swapchain ? static_cast<VulkanSwapchain*>(fb.swapchain->GetVulkanOpaque()) : nullptr;
     if (passTimingSwap)

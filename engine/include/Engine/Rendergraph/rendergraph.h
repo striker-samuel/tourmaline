@@ -421,6 +421,33 @@ class FrameDataTable {
 struct RenderPass final {
     explicit RenderPass(const char* name = nullptr) : name_(name) {}
 
+    // Resets a REUSED pass back to the default declaration before the renderer
+    // re-applies this frame's fields. frameSlot_ is preserved when the pass
+    // identity (its name) is unchanged, so the per-flight slot is stable across
+    // frames; a renamed/removed pass re-allocates its slot (the Frame<T> type
+    // may have changed with the declaration).
+    void Reset(const char* name) {
+        const bool sameName = (name_ == name) || (name_ && name && std::strcmp(name_, name) == 0);
+        if (!sameName)
+            frameSlot_ = UINT32_MAX;
+        name_ = name;
+        inputImages_.clear();
+        storageImages_.clear();
+        storageBuffers_.clear();
+        imageHints_.clear();
+        bufferHints_.clear();
+        colorAttachments_.clear();
+        depthAttachment_ = {};
+        hasDepthAttachment_ = false;
+        extent_ = {};
+        offsetX_ = 0;
+        offsetY_ = 0;
+        recordFn_ = nullptr;
+        passDataConfig_ = nullptr;
+        isCompute_ = false;
+        queueHint_ = QueueHint::Graphics;
+    }
+
     // --------------------------------------------------------
     // Attachments
     // --------------------------------------------------------
@@ -849,16 +876,32 @@ struct RenderGraph final {
     // Frame
     // --------------------------------------------------------
 
+    // Build-once declaration lifecycle (checkpoint C): the pass list persists
+    // across frames. NewFrame resets the declaration cursor; renderers re-add
+    // passes through AddPass/AddComputePass, which REUSE the pass at the cursor
+    // (resetting its declaration, keeping its frame slot) when one exists.
+    // EndFrameDeclaration truncates any pass the renderers stopped emitting
+    // (a feature toggled off).
     void NewFrame() {
-        passes_.clear();
-        // Migration phase: the declaration set is rebuilt each frame, so the
-        // per-flight table rewinds its cursor alongside (the FrameArena reset
-        // reclaims the storage). The build-once executor (checkpoint B/C) will
-        // stop rebuilding and the table rides a stable arena instead.
-        frameData_.Reset();
+        declarationCursor_ = 0;
+    }
+
+    // Truncate the pass list to the declaration cursor (called once at the end
+    // of a frame so a feature that stopped emitting passes doesn't leave stale
+    // passes behind).
+    void EndFrameDeclaration() {
+        if (declarationCursor_ < passes_.size())
+            passes_.resize(declarationCursor_);
     }
 
     RenderPass& AddPass(const char* name = nullptr) {
+        if (declarationCursor_ < passes_.size()) {
+            RenderPass& pass = passes_[declarationCursor_];
+            pass.Reset(name);
+            ++declarationCursor_;
+            return pass;
+        }
+        ++declarationCursor_;
         return passes_.emplace_back(name);
     }
 
@@ -874,6 +917,14 @@ struct RenderGraph final {
     }
 
     RenderPass& AddComputePass(const char* name = nullptr) {
+        if (declarationCursor_ < passes_.size()) {
+            RenderPass& pass = passes_[declarationCursor_];
+            pass.Reset(name);
+            pass.MarkAsCompute();
+            ++declarationCursor_;
+            return pass;
+        }
+        ++declarationCursor_;
         RenderPass& pass = passes_.emplace_back(name);
         pass.MarkAsCompute();
         return pass;
@@ -1183,6 +1234,9 @@ struct RenderGraph final {
     Pool<LogicalBuffer, LogicalBuffer> buffers_;
     std::vector<RenderPass> passes_;
     FrameDataTable frameData_;
+    // Build-once declaration cursor: the next AddPass/AddComputePass reuses
+    // passes_[declarationCursor_] (reset) when it exists, else appends.
+    size_t declarationCursor_ = 0;
 
     ResourceManager& ctx_;
     struct PipelineCacheOpaque;
