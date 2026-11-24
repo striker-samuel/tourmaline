@@ -21,23 +21,25 @@ Not merged to master yet. LANDED on the branch so far: the full
 recording-function migration (every pass is a non-capturing `SetRecordFn`
 over per-flight slots; the legacy `SetRecordingFunc` path is removed), the
 Plan-driven executor (checkpoint B — `Execute` emits barriers from the
-compiled timeline at batch boundaries), and the bounded compiled-permutation
-cache + load prewarm (checkpoint E's prewarm half — `planCache_` keyed by
-`GraphKey`, `RenderGraph::PrewarmCompiledGraph(bool)`, wired to the
-WorldRenderer's first rendered frame). **The way forward, in order:**
+compiled timeline at batch boundaries), the bounded compiled-permutation
+cache + load prewarm (`planCache_` keyed by `GraphKey`,
+`RenderGraph::PrewarmCompiledGraph(bool)`, wired to the WorldRenderer's first
+rendered frame), the build-once analysis/prepare/barrier caches, and the
+build-once declaration reuse (checkpoint C — `NewFrame` no longer clears the
+pass list; `AddPass` reuses the pass at the declaration cursor, and the
+`FrameDataTable` rides `AppArena`). **The way forward, in order:**
 
-1. **Checkpoint C — build-once restructure (the unlock for real precompile).**
-   Renderers rebuild the declaration set (`NewFrame` + `AddPass` +
-   `SetRecordFn`) EVERY frame; `Execute` only skips the timeline compile
-   because the per-frame rebuild reproduces the same `GraphKey`. To
-   precompile *multiple distinct* permutations at app load, split each
-   renderer's `AppendPasses` into a **build declaration** phase (`AddPass` +
-   `SetRecordFn`, run once / on config change) and an **update per-frame
-   data** phase (`PassFrameData<T>(pass)` fill, run every frame). The
-   arena-backed `FrameDataTable` already supports this; flip its arena from
-   `FrameArena()` to `AppArena()` once the declaration set stops being
-   rebuilt. This is what makes "precompile N permutations at appload" fully
-   real (today only the launch permutation + its async twin are warmed).
+1. **Checkpoint C — renderer split for "zero builds" (remaining half).**
+   The pass list + per-flight slots are now stable, but renderers still call
+   `AddPass` + re-apply the declaration every frame (the graph reuses them).
+   The RFC acceptance ("zero graph builds/sorts/heap packs on a cache hit")
+   additionally wants the renderers to skip declaration re-application
+   entirely: split each renderer's `AppendPasses` into a **build declaration**
+   phase (`AddPass` + `SetRecordFn`, run once / on config change) and an
+   **update per-frame data** phase (`PassFrameData<T>(pass)` fill, run every
+   frame). The arena-backed `FrameDataTable` (now `AppArena`) already
+   supports this. This is what makes "precompile N permutations at appload"
+   fully real (today only the launch permutation + its async twin are warmed).
 2. **Checkpoint D — ASAP reordering.** Compile the timeline over the ASAP /
    schedule-aware order (currently the topological order feeds `CompileGraph`).
 3. **Checkpoint E — bounded permutation caching/prewarm (remaining).** The
@@ -47,8 +49,10 @@ WorldRenderer's first rendered frame). **The way forward, in order:**
    each config before compiling it.
 4. **Checkpoint F — validation + benchmark.** Run the full GPU test matrix and
    bench the compiled executor against the pre-change (dynamic per-pass
-   barrier) baseline; the executor is correct (RHI upload 17/17, placement
-   GPU 190/0) but the *speedup* vs. the old path is not yet measured.
+   barrier) baseline. DONE so far: ~950 checks green across 8 GPU suites +
+   8 more executables, and A/B benches on sponza + bistro show GPU parity with
+   a constant ~0.07 ms CPU execute overhead (the Plan-driven emission), ~1% of
+   a GPU-bound frame.
 
 ### P0 — production correctness and architecture cutover
 
