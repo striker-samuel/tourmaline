@@ -328,12 +328,15 @@ using RecordingFunction = std::function<void(CommandBuffer&)>;
 // Renderers extend it (App/frame_context.h) with pass-specific addresses and
 // static_cast back to what they need.
 
-// Immutable per-pass configuration. `config` points to a typed, caller-owned
-// POD that is stable for the lifetime of the compiled graph (typically a
-// renderer member or a value stashed alongside the renderer). A record
-// function that needs no per-pass config leaves it null.
+// Immutable per-pass configuration + per-flight slot reference. `config`
+// points to a typed, caller-owned POD that is stable for the lifetime of the
+// compiled graph (typically the owner renderer or a value stashed beside it);
+// `frameSlot` is this pass's slot in the graph's FrameDataTable (allocated via
+// RenderGraph::PassFrameData). A record function that needs no per-pass config
+// or frame data leaves them null / UINT32_MAX.
 struct PassData {
     const void* config = nullptr;
+    uint32_t frameSlot = UINT32_MAX;
 };
 
 using RecordFn = void (*)(CommandBuffer&, const FrameContext&, const PassData&);
@@ -663,6 +666,8 @@ struct RenderPass final {
     // Stable record-function ABI (static compiled graph): a non-capturing
     // function pointer plus an immutable, caller-owned configuration block.
     // `config` must outlive the compiled graph (typically a renderer member).
+    // The per-flight frame slot is allocated via RenderGraph::PassFrameData and
+    // carried to the record function through PassData::frameSlot.
     RenderPass& SetRecordFn(RecordFn fn, const void* config = nullptr) {
         recordFn_ = fn;
         passDataConfig_ = config;
@@ -745,6 +750,9 @@ struct RenderPass final {
 
     RecordFn recordFn_ = nullptr;
     const void* passDataConfig_ = nullptr;
+    // This pass's slot in the graph's per-flight FrameDataTable (allocated
+    // lazily by RenderGraph::PassFrameData). UINT32_MAX = no frame data.
+    uint32_t frameSlot_ = UINT32_MAX;
 
     bool isCompute_ = false;
     QueueHint queueHint_ = QueueHint::Graphics;
@@ -821,10 +829,25 @@ struct RenderGraph final {
 
     void NewFrame() {
         passes_.clear();
+        // Migration phase: the declaration set is rebuilt each frame, so the
+        // per-flight table is re-allocated alongside it. The build-once
+        // executor (checkpoint B/C) will stop clearing here and reuse slots.
+        frameData_.Clear();
     }
 
     RenderPass& AddPass(const char* name = nullptr) {
         return passes_.emplace_back(name);
+    }
+
+    // Allocate (once) and refresh (each frame) the per-flight frame slot for
+    // a pass. The slot is typed; the record function reads the same type back
+    // through PassData::frameSlot. Returns a writable reference the caller
+    // fills with this frame's values.
+    template <typename T>
+    T& PassFrameData(RenderPass& pass) {
+        if (pass.frameSlot_ == UINT32_MAX)
+            pass.frameSlot_ = frameData_.Allocate<T>();
+        return frameData_.Get<T>(pass.frameSlot_);
     }
 
     RenderPass& AddComputePass(const char* name = nullptr) {

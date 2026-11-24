@@ -185,10 +185,6 @@ struct EvsmAtlas {
     float exponent = kEvsmExponent;
     uint32_t blurRadius = kEvsmBlurRadius;
     uint32_t writeSlot = 0; // flight slot moments were last resolved into
-    // Per-flight data slot (graph-owned FrameDataTable) for the resolve
-    // record function. Allocated lazily on the first AddResolvePass; the
-    // RecordFn reads the resolve push through it each frame.
-    uint32_t resolveSlotId = UINT32_MAX;
 
     [[nodiscard]] bool Valid() const {
         return !msaaDepth.empty() && tileCount != 0 && !moments[0].empty() &&
@@ -503,13 +499,33 @@ struct EvsmAsyncPrefilter {
     static void RecordEvsmResolve(CommandBuffer& cmd,
                                   const FrameContext& fc,
                                   const PassData& pd) {
-        const uint32_t slot = *static_cast<const uint32_t*>(pd.config);
-        const ResolveFrame& f = fc.rg->FrameData().Get<ResolveFrame>(slot);
+        const ResolveFrame& f = fc.rg->FrameData().Get<ResolveFrame>(pd.frameSlot);
         cmd.WriteStageTimestamp(kGpuStageEvsmResolve, /*begin=*/true);
         cmd.BindComputePipeline(*f.program);
         cmd.PushConstants(0, sizeof(f.push), &f.push, ShaderStage::Compute);
         cmd.Dispatch((f.aw + 7) / 8, (f.ah + 7) / 8, 1);
         cmd.WriteStageTimestamp(kGpuStageEvsmResolve, /*begin=*/false);
+    }
+
+    // Per-flight slot payload for one blur leg (H or V): program + baked push
+    // + tile extent. Each tile's H and V passes own their own slot.
+    struct BlurFrame {
+        ShaderProgram* program = nullptr;
+        EvsmBlurPush push{};
+        uint32_t tw = 0;
+        uint32_t th = 0;
+    };
+
+    // Non-capturing record function shared by both blur legs.
+    static void RecordEvsmBlur(CommandBuffer& cmd,
+                               const FrameContext& fc,
+                               const PassData& pd) {
+        const BlurFrame& f = fc.rg->FrameData().Get<BlurFrame>(pd.frameSlot);
+        cmd.BindComputePipeline(*f.program);
+        cmd.PushConstants(0, sizeof(f.push), &f.push, ShaderStage::Compute);
+        cmd.Dispatch((f.tw + kEvsmBlurBlock - 1) / kEvsmBlurBlock,
+                     (f.th + kEvsmBlurBlock - 1) / kEvsmBlurBlock,
+                     1);
     }
 
     // Moment (caster) pass for one tile: DEPTH ONLY at 2x MSAA — the PCF
@@ -551,7 +567,7 @@ struct EvsmAsyncPrefilter {
     // blur (writes every slot texel), keeping the async blur window
     // free of graphics passes exactly as before.
     static void AddResolvePass(RenderGraph& rg,
-                               EvsmAtlas& atlas,
+                               const EvsmAtlas& atlas,
                                ResourceManager& ctx,
                                uint32_t flight,
                                const char* name = nullptr) {
@@ -579,16 +595,14 @@ struct EvsmAsyncPrefilter {
         RenderPass& pass = rg.AddComputePass(name ? name : "EvsmResolve");
         pass.AddImageHint(atlas.msaaDepthLogical, depthRead);
         pass.AddImageHint(atlas.momentsLogical[slot], slotWrite);
-        // Stable record ABI: allocate the per-flight slot once, refresh it
-        // each frame, and hand the non-capturing record function the slot id.
-        if (atlas.resolveSlotId == UINT32_MAX)
-            atlas.resolveSlotId = rg.FrameData().Allocate<ResolveFrame>();
-        ResolveFrame& frame = rg.FrameData().Get<ResolveFrame>(atlas.resolveSlotId);
-        frame.program = &atlas.resolveProgram;
+        // Stable record ABI: refresh this pass's per-flight slot and hand the
+        // non-capturing record function the pass (slot travels in PassData).
+        ResolveFrame& frame = rg.PassFrameData<ResolveFrame>(pass);
+        frame.program = const_cast<ShaderProgram*>(&atlas.resolveProgram);
         frame.push = push;
         frame.aw = atlas.atlasExtent.width;
         frame.ah = atlas.atlasExtent.height;
-        pass.SetRecordFn(&RecordEvsmResolve, &atlas.resolveSlotId);
+        pass.SetRecordFn(&RecordEvsmResolve);
     }
 
     // Builds the blur push for one tile/leg. Edge clamping lives in TEXEL
@@ -667,17 +681,12 @@ struct EvsmAsyncPrefilter {
         hPass.MarkAsAsyncCompute();
         hPass.AddImageHint(atlas.momentsLogical[slot], srcR);
         hPass.AddImageHint(atlas.blurTempLogical[slot], dstW);
-        // Capture the program pointer + push by value: Execute() runs the
-        // lambda after this function returns (per-frame record).
-        ShaderProgram* blurHProg = const_cast<ShaderProgram*>(&atlas.blurHProgram);
-        const uint32_t tw = atlas.tileExtent.width, th = atlas.tileExtent.height;
-        hPass.SetRecordingFunc([blurHProg, pushH, tw, th](CommandBuffer& cmd) {
-            cmd.BindComputePipeline(*blurHProg);
-            cmd.PushConstants(0, sizeof(pushH), &pushH, ShaderStage::Compute);
-            cmd.Dispatch((tw + kEvsmBlurBlock - 1) / kEvsmBlurBlock,
-                         (th + kEvsmBlurBlock - 1) / kEvsmBlurBlock,
-                         1);
-        });
+        BlurFrame& hFrame = rg.PassFrameData<BlurFrame>(hPass);
+        hFrame.program = const_cast<ShaderProgram*>(&atlas.blurHProgram);
+        hFrame.push = pushH;
+        hFrame.tw = atlas.tileExtent.width;
+        hFrame.th = atlas.tileExtent.height;
+        hPass.SetRecordFn(&RecordEvsmBlur);
 
         const EvsmBlurPush pushV = MakeBlurPush(
             atlas, tileIndex, static_cast<uint32_t>(tmpIdx), static_cast<uint32_t>(dstIdx));
@@ -685,14 +694,12 @@ struct EvsmAsyncPrefilter {
         vPass.MarkAsAsyncCompute();
         vPass.AddImageHint(atlas.blurTempLogical[slot], srcR);
         vPass.AddImageHint(atlas.blurredLogical[slot], dstW);
-        ShaderProgram* blurVProg = const_cast<ShaderProgram*>(&atlas.blurVProgram);
-        vPass.SetRecordingFunc([blurVProg, pushV, tw, th](CommandBuffer& cmd) {
-            cmd.BindComputePipeline(*blurVProg);
-            cmd.PushConstants(0, sizeof(pushV), &pushV, ShaderStage::Compute);
-            cmd.Dispatch((tw + kEvsmBlurBlock - 1) / kEvsmBlurBlock,
-                         (th + kEvsmBlurBlock - 1) / kEvsmBlurBlock,
-                         1);
-        });
+        BlurFrame& vFrame = rg.PassFrameData<BlurFrame>(vPass);
+        vFrame.program = const_cast<ShaderProgram*>(&atlas.blurVProgram);
+        vFrame.push = pushV;
+        vFrame.tw = atlas.tileExtent.width;
+        vFrame.th = atlas.tileExtent.height;
+        vPass.SetRecordFn(&RecordEvsmBlur);
     }
 };
 
