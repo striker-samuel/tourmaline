@@ -3,6 +3,7 @@
 
 #include <Engine/Renderer/World2DRenderer.h>
 #include <Engine/Renderer/vertex_layouts.h>
+#include <Engine/Rendergraph/renderer.h>
 #include <Engine/Utils/shader_library.h>
 
 #include <algorithm>
@@ -251,7 +252,6 @@ bool World2DRenderer::AppendPass(smvk::ResourceManager& ctx,
     pages.reserve(m_pages.size());
     for (const auto& p : m_pages)
         pages.push_back(p.bindless);
-    auto program = m_program;
     auto& pass = rg.AddPass("World2D");
     pass.SetExtent(extent).SetColor({colorTarget},
                                     clear ? smvk::AttachmentLoadOp::Clear
@@ -262,23 +262,32 @@ bool World2DRenderer::AppendPass(smvk::ResourceManager& ctx,
     read.barrierMasks.stageMask = smvk::PipelineStageBit_Vertex;
     read.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
     pass.AddBufferHint(flight.logical, read);
-    pass.SetRecordingFunc([runs = std::move(runs), pages = std::move(pages), push, program](
-                              smvk::CommandBuffer& cmd) mutable {
-        cmd.BindRenderPipeline(program,
-                               ::tour::vertex_layouts::Empty,
-                               smvk::DepthSettings::Disabled(),
-                               smvk::StencilSettings::DefaultDisabled(),
-                               smvk::BlendSettings::AlphaBlend(),
-                               smvk::MSAASettings::Count1(),
-                               smvk::RasterSettings{.cullMode = smvk::CullMode::None});
-        for (const auto& run : runs) {
-            Push batchPush = push;
-            batchPush.textureIndex = pages[run.page];
-            cmd.PushConstants(0, sizeof(Push), &batchPush, smvk::ShaderStage::AllGraphics);
-            cmd.Draw(6, run.count, 0, run.firstInstance);
-        }
-    });
+    Frame& frame = rg.PassFrameData<Frame>(pass);
+    frame.program = &m_program;
+    frame.push = push;
+    frame.runs = std::move(runs);
+    frame.pages = std::move(pages);
+    pass.SetRecordFn(&World2DRenderer::RecordDraw);
     return true;
+}
+
+void World2DRenderer::RecordDraw(smvk::CommandBuffer& cmd,
+                                 const smvk::FrameContext& fc,
+                                 const smvk::PassData& pd) {
+    const Frame& f = fc.rg->FrameData().Get<Frame>(pd.frameSlot);
+    cmd.BindRenderPipeline(*f.program,
+                           ::tour::vertex_layouts::Empty,
+                           smvk::DepthSettings::Disabled(),
+                           smvk::StencilSettings::DefaultDisabled(),
+                           smvk::BlendSettings::AlphaBlend(),
+                           smvk::MSAASettings::Count1(),
+                           smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+    for (const auto& run : f.runs) {
+        Push batchPush = f.push;
+        batchPush.textureIndex = f.pages[run.page];
+        cmd.PushConstants(0, sizeof(Push), &batchPush, smvk::ShaderStage::AllGraphics);
+        cmd.Draw(6, run.count, 0, run.firstInstance);
+    }
 }
 
 void World2DRenderer::Destroy(smvk::RenderGraph& rg) {

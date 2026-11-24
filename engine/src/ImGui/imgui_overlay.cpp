@@ -20,6 +20,18 @@
 
 namespace smvk {
 
+namespace {
+
+// Non-capturing record function for the ImGui overlay pass (static compiled
+// ABI). The ImGuiOverlay (config) owns the draw-data + backend; Render records
+// the draw calls against the current frame's ImGui context.
+void RecordImGuiOverlay(CommandBuffer& cmd, const FrameContext&, const PassData& pd) {
+    auto* self = const_cast<ImGuiOverlay*>(static_cast<const ImGuiOverlay*>(pd.config));
+    self->Render(cmd);
+}
+
+} // namespace
+
 ImGuiOverlay::~ImGuiOverlay() {
     if (initialized_)
         Shutdown();
@@ -252,7 +264,7 @@ void ImGuiOverlay::AddPass(RenderGraph& rg,
 
     // No depth for UI overlay. If caller needs depth-testing UI (rare), they can
     // use SetDepth() manually via Render() path instead of AddPass().
-    pass.SetRecordingFunc([this](CommandBuffer& cmd) { this->Render(cmd); });
+    pass.SetRecordFn(&RecordImGuiOverlay, this);
 }
 
 bool ImGuiOverlay::WantsCaptureMouse() const {

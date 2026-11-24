@@ -3,6 +3,7 @@
 
 #include <Engine/Renderer/GameUiRenderer.h>
 #include <Engine/Renderer/vertex_layouts.h>
+#include <Engine/Rendergraph/renderer.h>
 #include <Engine/Utils/shader_library.h>
 
 #include <algorithm>
@@ -292,7 +293,6 @@ bool GameUiRenderer::AppendPass(smvk::ResourceManager& ctx,
     push.viewport[1] = float(viewport.height);
     push.samplerIndex = m_sampler;
 
-    auto program = m_program;
     auto& pass = rg.AddPass("GameUI");
     pass.SetExtent(viewport).SetColor({colorTarget},
                                       clear ? smvk::AttachmentLoadOp::Clear
@@ -304,18 +304,27 @@ bool GameUiRenderer::AppendPass(smvk::ResourceManager& ctx,
     read.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
     pass.AddBufferHint(flight.logical, read);
     const auto instanceCount = static_cast<uint32_t>(packed.size());
-    pass.SetRecordingFunc([program, push, instanceCount](smvk::CommandBuffer& cmd) mutable {
-        cmd.BindRenderPipeline(program,
-                               ::tour::vertex_layouts::Empty,
-                               smvk::DepthSettings::Disabled(),
-                               smvk::StencilSettings::DefaultDisabled(),
-                               smvk::BlendSettings::AlphaBlend(),
-                               smvk::MSAASettings::Count1(),
-                               smvk::RasterSettings{.cullMode = smvk::CullMode::None});
-        cmd.PushConstants(0, sizeof(Push), &push, smvk::ShaderStage::AllGraphics);
-        cmd.Draw(6, instanceCount, 0, 0);
-    });
+    Frame& frame = rg.PassFrameData<Frame>(pass);
+    frame.program = &m_program;
+    frame.push = push;
+    frame.instanceCount = instanceCount;
+    pass.SetRecordFn(&GameUiRenderer::RecordDraw);
     return true;
+}
+
+void GameUiRenderer::RecordDraw(smvk::CommandBuffer& cmd,
+                                const smvk::FrameContext& fc,
+                                const smvk::PassData& pd) {
+    const Frame& f = fc.rg->FrameData().Get<Frame>(pd.frameSlot);
+    cmd.BindRenderPipeline(*f.program,
+                           ::tour::vertex_layouts::Empty,
+                           smvk::DepthSettings::Disabled(),
+                           smvk::StencilSettings::DefaultDisabled(),
+                           smvk::BlendSettings::AlphaBlend(),
+                           smvk::MSAASettings::Count1(),
+                           smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+    cmd.PushConstants(0, sizeof(Push), &f.push, smvk::ShaderStage::AllGraphics);
+    cmd.Draw(6, f.instanceCount, 0, 0);
 }
 
 void GameUiRenderer::Destroy(smvk::RenderGraph& rg) {

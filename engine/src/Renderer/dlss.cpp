@@ -12,6 +12,7 @@
 // proxies keep SL informed and manage tagged-resource states for us.
 
 #include <Engine/Rendergraph/dlss.h>
+#include <Engine/Rendergraph/renderer.h>
 
 #include <cstdio>
 #include <cstring>
@@ -733,6 +734,25 @@ bool DlssEvaluate(ResourceManager& ctx,
 } // namespace
 #endif // _WIN32 (DlssEvaluate + the tagged-resource plumbing)
 
+#ifdef _WIN32
+namespace {
+// Per-flight slot payload + non-capturing record function for the DLSS
+// evaluate dispatch (static compiled ABI). The SL call is an opaque callback
+// (slEvaluateFeature records its own barriers/dispatches), so the frame slot
+// just carries the context + tagged inputs + frame index.
+struct DlssEvalFrame {
+    ResourceManager* ctx = nullptr;
+    DlssFrameInputs inputs{};
+    uint32_t frameIndex = 0;
+};
+void RecordDlssEvaluate(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+    const DlssEvalFrame& f = fc.rg->FrameData().Get<DlssEvalFrame>(pd.frameSlot);
+    void* vkCmd = cmd.GetNativeHandle();
+    DlssEvaluate(*f.ctx, vkCmd, f.frameIndex, f.inputs);
+}
+} // namespace
+#endif // _WIN32 (RecordDlssEvaluate)
+
 bool AddDlssPasses(RenderGraph& rg,
                    ResourceManager& ctx,
                    Dlss& dlss,
@@ -806,13 +826,11 @@ bool AddDlssPasses(RenderGraph& rg,
 
         DlssFrameInputs captured = inputs; // handles are copyable PODs
         ResourceManager* ctxPtr = &ctx;
-        pass.SetRecordingFunc([ctxPtr, captured, frameIndex](CommandBuffer& cmd) {
-            // Runs after the barrier batch the hints above produced;
-            // slEvaluateFeature records its own barriers + dispatches and
-            // restores tagged resources to their tagged layouts.
-            void* vkCmd = cmd.GetNativeHandle();
-            DlssEvaluate(*ctxPtr, vkCmd, frameIndex, captured);
-        });
+        DlssEvalFrame& frame = rg.PassFrameData<DlssEvalFrame>(pass);
+        frame.ctx = ctxPtr;
+        frame.inputs = captured;
+        frame.frameIndex = frameIndex;
+        pass.SetRecordFn(&RecordDlssEvaluate);
     }
     return true;
 #endif // _WIN32 (AddDlssPasses)

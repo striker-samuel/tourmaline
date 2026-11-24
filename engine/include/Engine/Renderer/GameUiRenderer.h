@@ -159,6 +159,18 @@ class GameUiRenderer final : public engine::IRenderer {
     };
     static_assert(sizeof(Push) == 24);
 
+    // Per-flight slot payload + non-capturing record function (static
+    // compiled graph ABI). AppendPass writes Frame into the graph's
+    // per-flight table; RecordDraw reads it through PassData::frameSlot.
+    struct Frame {
+        smvk::ShaderProgram* program = nullptr;
+        Push push{};
+        uint32_t instanceCount = 0;
+    };
+    static void RecordDraw(smvk::CommandBuffer& cmd,
+                           const smvk::FrameContext& fc,
+                           const smvk::PassData& pd);
+
     std::vector<UiDrawRect2D> m_rects;
     bool m_overflowLogged = false;
     std::array<Flight, smvk::limits::MaxFramesInFlight> m_flights{};
