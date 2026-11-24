@@ -2848,6 +2848,21 @@ int Run(const PakArgs& c) {
     }
 
     const auto serializeStageStart = std::chrono::steady_clock::now();
+    // Declared BEFORE the writer so it is destroyed AFTER it: the streaming
+    // writer opens the output file eagerly, so a failure on any path below
+    // leaves a half-written pak. This guard removes it unless the cook commits
+    // (the corrupt-source tests assert a failed cook writes NOTHING) — and it
+    // must run only after the writer has closed the file handle.
+    struct OutPakCleanup {
+        std::string path;
+        bool committed = false;
+        ~OutPakCleanup() {
+            if (committed || path.empty())
+                return;
+            std::error_code ec;
+            std::filesystem::remove(path, ec);
+        }
+    } outPakCleanup{args.outPak};
     smvk::PakWriter writer;
     writer.SetCompression(args.compress ? smvk::PakCompression::Lz4 : smvk::PakCompression::None,
                           args.lz4Accel);
@@ -3540,6 +3555,7 @@ int Run(const PakArgs& c) {
         DumpManifestFromPak(*verifyReader);
     }
 
+    outPakCleanup.committed = true;
     return 0;
 }
 
