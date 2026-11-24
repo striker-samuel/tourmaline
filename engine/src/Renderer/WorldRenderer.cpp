@@ -8705,6 +8705,24 @@ void WorldRenderer::SpawnDecalAtCrosshair() {
 // (seed + prepass + remainder). Each phase is its own compute pass so
 // the rendergraph emits the RAW/WAW buffer barriers between them.
 // ---------------------------------------------------------------------
+namespace {
+// Per-flight slot payload + non-capturing record function for the deferred-
+// shadow compute phases (static compiled ABI). The program is a caller-owned
+// stable member (ds.phasePrograms / phaseVizPrograms), so the slot stores a
+// const pointer.
+struct DsPhaseFrame {
+    const smvk::ShaderProgram* program = nullptr;
+    smvk::DsPhasePush push{};
+    uint32_t x = 0;
+    uint32_t y = 0;
+};
+void RecordDsPhase(smvk::CommandBuffer& cmd, const smvk::FrameContext& fc, const smvk::PassData& pd) {
+    const DsPhaseFrame& f = fc.rg->FrameData().Get<DsPhaseFrame>(pd.frameSlot);
+    cmd.BindComputePipeline(*const_cast<smvk::ShaderProgram*>(f.program));
+    cmd.PushConstants(0, sizeof(f.push), &f.push, smvk::ShaderStage::All);
+    cmd.Dispatch(f.x, f.y, 1);
+}
+} // namespace
 void WorldRenderer::AppendDeferredShadowPhases(uint32_t frameIndex,
                                                uint64_t frameUniformsAddress,
                                                uint64_t fpLightsAddress,
@@ -8751,34 +8769,36 @@ void WorldRenderer::AppendDeferredShadowPhases(uint32_t frameIndex,
     // Phase 2 - Find Lights Approximate (one TileGroup per work unit).
     {
         auto& pass = ds.AddPhase2Pass(*m_rendergraph, depthView, fpLightsLogical, frameIndex);
-        auto program = ds.phasePrograms[0];
+        const smvk::ShaderProgram* program = &ds.phasePrograms[0];
 #if defined(DS_DEBUG_VIZ)
         if (m_dsDebugMode != DsDebugViz::Off)
-            program = ds.phaseVizPrograms[0];
+            program = &ds.phaseVizPrograms[0];
 #endif
         const uint32_t gx = ds.groupCountX;
         const uint32_t gy = ds.groupCountY;
-        pass.SetRecordingFunc([program, push, gx, gy](smvk::CommandBuffer& cmd) mutable {
-            cmd.BindComputePipeline(program);
-            cmd.PushConstants(0, sizeof(push), &push, smvk::ShaderStage::All);
-            cmd.Dispatch(gx, gy, 1);
-        });
+        DsPhaseFrame& frame = m_rendergraph->PassFrameData<DsPhaseFrame>(pass);
+        frame.program = program;
+        frame.push = push;
+        frame.x = gx;
+        frame.y = gy;
+        pass.SetRecordFn(&RecordDsPhase);
     }
     // Phase 3 - Find Lights Accurate (one Shadow Tile per work unit).
     {
         auto& pass = ds.AddPhase3Pass(*m_rendergraph, depthView, fpLightsLogical, frameIndex);
-        auto program = ds.phasePrograms[1];
+        const smvk::ShaderProgram* program = &ds.phasePrograms[1];
 #if defined(DS_DEBUG_VIZ)
         if (m_dsDebugMode != DsDebugViz::Off)
-            program = ds.phaseVizPrograms[1];
+            program = &ds.phaseVizPrograms[1];
 #endif
         const uint32_t tx = ds.tileCountX;
         const uint32_t ty = ds.tileCountY;
-        pass.SetRecordingFunc([program, push, tx, ty](smvk::CommandBuffer& cmd) mutable {
-            cmd.BindComputePipeline(program);
-            cmd.PushConstants(0, sizeof(push), &push, smvk::ShaderStage::All);
-            cmd.Dispatch(tx, ty, 1);
-        });
+        DsPhaseFrame& frame = m_rendergraph->PassFrameData<DsPhaseFrame>(pass);
+        frame.program = program;
+        frame.push = push;
+        frame.x = tx;
+        frame.y = ty;
+        pass.SetRecordFn(&RecordDsPhase);
     }
     // Phase 4 - Generate Deferred Shadows (samples the local-light
     // atlas: spot tiles + point cube faces).
@@ -8805,14 +8825,15 @@ void WorldRenderer::AppendDeferredShadowPhases(uint32_t frameIndex,
                     .blurredLogical[m_viewportResources.evsmSpot.SampleSlot(frameIndex)],
                 evsmRead);
         }
-        auto program = ds.phasePrograms[2];
+        auto program = &ds.phasePrograms[2];
         const uint32_t tx = ds.tileCountX;
         const uint32_t ty = ds.tileCountY;
-        pass.SetRecordingFunc([program, push, tx, ty](smvk::CommandBuffer& cmd) mutable {
-            cmd.BindComputePipeline(program);
-            cmd.PushConstants(0, sizeof(push), &push, smvk::ShaderStage::All);
-            cmd.Dispatch(tx, ty, 1);
-        });
+        DsPhaseFrame& frame = m_rendergraph->PassFrameData<DsPhaseFrame>(pass);
+        frame.program = program;
+        frame.push = push;
+        frame.x = tx;
+        frame.y = ty;
+        pass.SetRecordFn(&RecordDsPhase);
     }
 }
 
