@@ -189,4 +189,36 @@ inline bool CanAlias(const Lifetime& a, const Lifetime& b) {
            a.queue == b.queue &&
            (a.lastBatch < b.firstBatch || b.lastBatch < a.firstBatch);
 }
+
+// Structural identity of one compiled permutation: everything that changes
+// the compiled plan (pass structure, resource shapes, access patterns, queue
+// sections). Camera matrices, draw counts and swapchain image indices are
+// deliberately NOT part of the key (they only patch per-flight bindings).
+struct GraphKey {
+    uint64_t passStructure = 0;     // pass names, queue, compute, section
+    uint64_t resourceStructure = 0; // resource shapes / formats / usage
+    uint64_t accessStructure = 0;   // access modes, stages, masks, layouts
+    bool operator==(const GraphKey&) const = default;
+};
+
+// FNV-1a hash mix (deterministic across builds; the key is a compile-time
+// identity, never persisted).
+inline uint64_t GraphHash(uint64_t h, uint64_t v) {
+    h ^= v + 0x9e3779b97f4a7c15ull + (h << 6) + (h >> 2);
+    return h;
+}
+
+// The immutable result of compiling one permutation: the dependency/timeline
+// plan plus the flattened, canonical resource order the executor binds
+// per-flight handles into. Recording functions and barrier templates are
+// layered by the Vulkan lowering (they need backend types), not here.
+struct CompiledGraph {
+    GraphKey key;
+    Plan plan;
+    // Dense resource id -> packed declaration-side identity (kind<<32 | index,
+    // kind 0 = image, 1 = buffer), so the executor can resolve the actual
+    // per-flight image/buffer handles and patch imported boundary states
+    // without re-canonicalizing.
+    std::vector<uint64_t> resourceIdentities;
+};
 } // namespace smvk::rg

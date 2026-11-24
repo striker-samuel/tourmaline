@@ -13732,6 +13732,78 @@ std::vector<smvk::PassUsage> smvk::RenderGraph::CollectPassUsages() const {
     return out;
 }
 
+smvk::rg::CompiledGraph smvk::RenderGraph::CompileGraph() const {
+    const std::vector<PassUsage> usages = CollectPassUsages();
+
+    // Canonicalize physical resources (images + buffers) into dense ids over a
+    // SHARED whole-resource space (the compiler's granularity). The packed
+    // identity (kind<<32 | index) lets the executor resolve per-flight handles.
+    std::unordered_map<uint64_t, smvk::rg::Id> imageIds, bufferIds;
+    std::vector<uint64_t> identities;
+    auto internImage = [&](ImageHandle h) -> smvk::rg::Id {
+        const uint64_t k = (uint64_t(h.gen()) << 32) | uint64_t(h.index());
+        auto [it, ins] = imageIds.emplace(k, (smvk::rg::Id)identities.size());
+        if (ins)
+            identities.push_back(uint64_t(h.index()));
+        return it->second;
+    };
+    auto internBuffer = [&](BufferHandle h) -> smvk::rg::Id {
+        const uint64_t k = (uint64_t(h.gen()) << 32) | uint64_t(h.index());
+        auto [it, ins] = bufferIds.emplace(k, (smvk::rg::Id)identities.size());
+        if (ins)
+            identities.push_back((1ull << 32) | uint64_t(h.index()));
+        return it->second;
+    };
+
+    std::vector<smvk::rg::Pass> rgPasses;
+    rgPasses.reserve(usages.size());
+    uint64_t passHash = 1469598103934665603ull;
+    uint64_t accessHash = 1469598103934665603ull;
+
+    for (size_t p = 0; p < usages.size(); ++p) {
+        const RenderPass& rp = passes_[p];
+        const PassUsage& pu = usages[p];
+        smvk::rg::Pass gp{};
+        // Single section until the async submit split is authored into the
+        // declarations; compute/graphics still split into queue-local batches.
+        gp.section = 0;
+        gp.queue = rp.IsCompute() ? smvk::rg::Queue::Compute : smvk::rg::Queue::Graphics;
+        passHash = smvk::rg::GraphHash(passHash, (uint64_t)gp.queue);
+        const auto addAccess = [&](smvk::rg::Id id,
+                                   AccessFlags a,
+                                   PipelineStage st,
+                                   uint32_t layout) {
+            const smvk::rg::Mode mode =
+                IsWriteAccess(a) ? smvk::rg::Mode::Write : smvk::rg::Mode::Read;
+            gp.accesses.push_back({id, mode, (uint64_t)st, (uint64_t)a, layout});
+            accessHash = smvk::rg::GraphHash(accessHash, (uint64_t)id);
+            accessHash = smvk::rg::GraphHash(accessHash, (uint64_t)mode);
+            accessHash = smvk::rg::GraphHash(accessHash, (uint64_t)st);
+            accessHash = smvk::rg::GraphHash(accessHash, (uint64_t)a);
+            accessHash = smvk::rg::GraphHash(accessHash, (uint64_t)layout);
+        };
+        for (const auto& [img, req] : pu.images)
+            addAccess(internImage(img),
+                      req.barrierMasks.accessMask,
+                      req.barrierMasks.stageMask,
+                      (uint32_t)req.layout);
+        for (const auto& [buf, req] : pu.buffers)
+            addAccess(internBuffer(buf),
+                      req.barrierMasks.accessMask,
+                      req.barrierMasks.stageMask,
+                      0u); // buffers carry no layout
+        rgPasses.push_back(std::move(gp));
+    }
+
+    smvk::rg::CompiledGraph out;
+    out.key.passStructure = passHash;
+    out.key.resourceStructure = (uint64_t)identities.size();
+    out.key.accessStructure = accessHash;
+    out.resourceIdentities = std::move(identities);
+    out.plan = smvk::rg::Compile(rgPasses, (smvk::rg::Id)out.resourceIdentities.size(), 1u);
+    return out;
+}
+
 const std::vector<size_t>& smvk::TopologicalSortUsages(const std::vector<PassUsage>& usages,
                                                        TopoSortScratch& s) {
     const size_t n = usages.size();

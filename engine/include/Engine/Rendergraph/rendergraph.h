@@ -12,6 +12,7 @@
 // rendergraph builder includes this header, so the consumer leg's
 // ReloadShaders implementations share one exact module-swap recipe.
 #include <Engine/Rendergraph/ShaderSwap.h>
+#include <Engine/Rendergraph/static_graph_compiler.h>
 
 #include <cassert>
 #include <cstddef>
@@ -911,6 +912,13 @@ struct RenderGraph final {
     // ========================================================
 
     void Execute(Framebuffer& fb);
+
+    // Compile the current declaration set into an immutable plan (checkpoint B
+    // foundation): canonicalizes the physical resources into dense ids,
+    // extracts the per-pass access modes/stages/masks/layouts, and runs the
+    // static timeline compiler. The returned GraphKey is the structural
+    // permutation identity the executor caches on.
+    [[nodiscard]] smvk::rg::CompiledGraph CompileGraph() const;
 
     // --------------------------------------------------------
     // Resource resolution
