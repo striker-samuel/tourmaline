@@ -130,6 +130,19 @@ void mainMS(uint3 gid : SV_GroupID,
                 asfloat(pc.skinDeformed.Get().word[d + 1u]),
                 asfloat(pc.skinDeformed.Get().word[d + 2u]));
         }
+        // Previous deformed position (skeletal motion): the previous parity
+        // half of the SAME heap/base when valid. Otherwise fall back to `local`
+        // (the current deformed pose, or bind pose when the frame skinned
+        // nothing) — this preserves rigid + camera motion while suppressing
+        // unavailable skeletal motion instead of ghosting it.
+        float3 prevLocal = local;
+        if (skinned && pc.skinPrevValid != 0u) {
+            const uint pd = (globalId - pc.skinDeformedBase) * 5u;
+            prevLocal = float3(
+                asfloat(pc.skinDeformedPrev.Get().word[pd + 0u]),
+                asfloat(pc.skinDeformedPrev.Get().word[pd + 1u]),
+                asfloat(pc.skinDeformedPrev.Get().word[pd + 2u]));
+        }
         const uint uvword = p.shading.Get().word[sb + 1u];
         const float2 uv = float2(f16tof32(uvword & 65535u), f16tof32(uvword >> 16u));
 
@@ -140,7 +153,7 @@ void mainMS(uint3 gid : SV_GroupID,
         verts[v].materialId = materialId;
         if (f.hasPrev) {
             const float3 prevRelative = f.prevOriginRelative +
-                f.pa * local.x + f.pb * local.y + f.pc * local.z;
+                f.pa * prevLocal.x + f.pb * prevLocal.y + f.pc * prevLocal.z;
             verts[v].prevClip = mul(f.prevViewProj, float4(prevRelative, 1.0f));
         } else {
             // First frame / camera cut: zero motion.
