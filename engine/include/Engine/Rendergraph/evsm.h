@@ -42,6 +42,7 @@
 
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/renderer.h>
 #include <Engine/platform.h>
 #include <Engine/smvk.h>
 
@@ -184,6 +185,10 @@ struct EvsmAtlas {
     float exponent = kEvsmExponent;
     uint32_t blurRadius = kEvsmBlurRadius;
     uint32_t writeSlot = 0; // flight slot moments were last resolved into
+    // Per-flight data slot (graph-owned FrameDataTable) for the resolve
+    // record function. Allocated lazily on the first AddResolvePass; the
+    // RecordFn reads the resolve push through it each frame.
+    uint32_t resolveSlotId = UINT32_MAX;
 
     [[nodiscard]] bool Valid() const {
         return !msaaDepth.empty() && tileCount != 0 && !moments[0].empty() &&
@@ -484,6 +489,29 @@ struct EvsmAtlas {
 // the blur reads the just-resolved current slot and lighting samples the
 // previous slot; SameFrame collapses both.
 struct EvsmAsyncPrefilter {
+    // Per-flight slot payload for the resolve record function: the resolve
+    // push + program + dispatch extent, refreshed every frame into the
+    // graph's FrameDataTable and read back by RecordEvsmResolve.
+    struct ResolveFrame {
+        ShaderProgram* program = nullptr;
+        EvsmResolvePush push{};
+        uint32_t aw = 0;
+        uint32_t ah = 0;
+    };
+
+    // Non-capturing record function for AddResolvePass (static compiled ABI).
+    static void RecordEvsmResolve(CommandBuffer& cmd,
+                                  const FrameContext& fc,
+                                  const PassData& pd) {
+        const uint32_t slot = *static_cast<const uint32_t*>(pd.config);
+        const ResolveFrame& f = fc.rg->FrameData().Get<ResolveFrame>(slot);
+        cmd.WriteStageTimestamp(kGpuStageEvsmResolve, /*begin=*/true);
+        cmd.BindComputePipeline(*f.program);
+        cmd.PushConstants(0, sizeof(f.push), &f.push, ShaderStage::Compute);
+        cmd.Dispatch((f.aw + 7) / 8, (f.ah + 7) / 8, 1);
+        cmd.WriteStageTimestamp(kGpuStageEvsmResolve, /*begin=*/false);
+    }
+
     // Moment (caster) pass for one tile: DEPTH ONLY at 2x MSAA — the PCF
     // depth-only shadow programs (the caller's recording func binds them
     // with 2x MSAA + draws casters; see RecordShadowCastersDirect). Every
@@ -523,7 +551,7 @@ struct EvsmAsyncPrefilter {
     // blur (writes every slot texel), keeping the async blur window
     // free of graphics passes exactly as before.
     static void AddResolvePass(RenderGraph& rg,
-                               const EvsmAtlas& atlas,
+                               EvsmAtlas& atlas,
                                ResourceManager& ctx,
                                uint32_t flight,
                                const char* name = nullptr) {
@@ -551,20 +579,16 @@ struct EvsmAsyncPrefilter {
         RenderPass& pass = rg.AddComputePass(name ? name : "EvsmResolve");
         pass.AddImageHint(atlas.msaaDepthLogical, depthRead);
         pass.AddImageHint(atlas.momentsLogical[slot], slotWrite);
-        ShaderProgram* resolveProg = const_cast<ShaderProgram*>(&atlas.resolveProgram);
-        const uint32_t aw = atlas.atlasExtent.width, ah = atlas.atlasExtent.height;
-        pass.SetRecordingFunc([resolveProg, push, aw, ah](CommandBuffer& cmd) {
-            // GPU stage timer (kGpuStageEvsmResolve): begin before the
-            // dispatch, end after. One resolve per atlas per frame: with
-            // BOTH atlases active the SECOND resolve's pair overwrites
-            // the first's (identical-cost dispatches; the report shows
-            // one resolve's cost, not their sum).
-            cmd.WriteStageTimestamp(kGpuStageEvsmResolve, /*begin=*/true);
-            cmd.BindComputePipeline(*resolveProg);
-            cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
-            cmd.Dispatch((aw + 7) / 8, (ah + 7) / 8, 1);
-            cmd.WriteStageTimestamp(kGpuStageEvsmResolve, /*begin=*/false);
-        });
+        // Stable record ABI: allocate the per-flight slot once, refresh it
+        // each frame, and hand the non-capturing record function the slot id.
+        if (atlas.resolveSlotId == UINT32_MAX)
+            atlas.resolveSlotId = rg.FrameData().Allocate<ResolveFrame>();
+        ResolveFrame& frame = rg.FrameData().Get<ResolveFrame>(atlas.resolveSlotId);
+        frame.program = &atlas.resolveProgram;
+        frame.push = push;
+        frame.aw = atlas.atlasExtent.width;
+        frame.ah = atlas.atlasExtent.height;
+        pass.SetRecordFn(&RecordEvsmResolve, &atlas.resolveSlotId);
     }
 
     // Builds the blur push for one tile/leg. Edge clamping lives in TEXEL

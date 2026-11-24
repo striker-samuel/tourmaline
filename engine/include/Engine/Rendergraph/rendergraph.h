@@ -338,6 +338,53 @@ struct PassData {
 
 using RecordFn = void (*)(CommandBuffer&, const FrameContext&, const PassData&);
 
+// Per-flight data table owned by the graph (RFC "per-flight binding tables").
+// Renderers allocate a typed slot once at build time and refresh it every
+// frame; RecordFn reads it by index. Slots hold record-time constants (push
+// blocks, dispatch counts, derived flags) consumed synchronously during
+// recording, so single-buffered overwrite is safe — GPU-visible per-frame data
+// (BDAs, indirect buffers) stays in the renderer's frameIndex-ringed buffers.
+class FrameDataTable {
+  public:
+    FrameDataTable() = default;
+    ~FrameDataTable() { Clear(); }
+    FrameDataTable(const FrameDataTable&) = delete;
+    FrameDataTable& operator=(const FrameDataTable&) = delete;
+
+    // Allocate a default-constructed slot of type T; returns its stable index.
+    template <typename T>
+    uint32_t Allocate() {
+        const uint32_t id = static_cast<uint32_t>(slots_.size());
+        slots_.push_back(Slot{new T{}, +[](void* p) { delete static_cast<T*>(p); }});
+        return id;
+    }
+
+    template <typename T>
+    T& Get(uint32_t id) {
+        return *static_cast<T*>(slots_[id].data);
+    }
+    template <typename T>
+    const T& Get(uint32_t id) const {
+        return *static_cast<const T*>(slots_[id].data);
+    }
+
+    [[nodiscard]] uint32_t Size() const { return static_cast<uint32_t>(slots_.size()); }
+
+    void Clear() {
+        for (Slot& s : slots_)
+            if (s.destroy)
+                s.destroy(s.data);
+        slots_.clear();
+    }
+
+  private:
+    struct Slot {
+        void* data = nullptr;
+        void (*destroy)(void*) = nullptr;
+    };
+    std::vector<Slot> slots_;
+};
+
 struct RenderPass final {
     explicit RenderPass(const char* name = nullptr) : name_(name) {}
 
@@ -616,9 +663,9 @@ struct RenderPass final {
     // Stable record-function ABI (static compiled graph): a non-capturing
     // function pointer plus an immutable, caller-owned configuration block.
     // `config` must outlive the compiled graph (typically a renderer member).
-    RenderPass& SetRecordFn(RecordFn fn, const PassData* config = nullptr) {
+    RenderPass& SetRecordFn(RecordFn fn, const void* config = nullptr) {
         recordFn_ = fn;
-        passData_ = config;
+        passDataConfig_ = config;
         return *this;
     }
 
@@ -697,7 +744,7 @@ struct RenderPass final {
     RecordingFunction recordingFunction_{};
 
     RecordFn recordFn_ = nullptr;
-    const PassData* passData_ = nullptr;
+    const void* passDataConfig_ = nullptr;
 
     bool isCompute_ = false;
     QueueHint queueHint_ = QueueHint::Graphics;
@@ -785,6 +832,12 @@ struct RenderGraph final {
         pass.MarkAsCompute();
         return pass;
     }
+
+    // The graph's per-flight data table (RFC "per-flight binding tables").
+    // Renderers allocate a typed slot once and refresh it each frame; record
+    // functions read it by index through the FrameContext's graph pointer.
+    [[nodiscard]] FrameDataTable& FrameData() { return frameData_; }
+    [[nodiscard]] const FrameDataTable& FrameData() const { return frameData_; }
 
     // ========================================================
     // Images
@@ -1017,6 +1070,7 @@ struct RenderGraph final {
     Pool<LogicalImageView, LogicalImageView> imageViews_;
     Pool<LogicalBuffer, LogicalBuffer> buffers_;
     std::vector<RenderPass> passes_;
+    FrameDataTable frameData_;
 
     ResourceManager& ctx_;
     struct PipelineCacheOpaque;
