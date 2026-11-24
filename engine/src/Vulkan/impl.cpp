@@ -6900,8 +6900,38 @@ void smvk::VulkanResourceManager::UploadDataToImage3DRegion(ImageHandle image,
     // Allocation ledger: capture the EXACT committed bytes (the out-info
     // vmaCreateImage already writes; one extra stack struct, no query).
     VmaAllocationInfo allocInfo{};
-    VK_CHECK(vmaCreateImage(
-        m_allocator, &vkCI, &allocCI, &image.vkImage, &image.allocation, &allocInfo));
+    const VkResult allocRes = vmaCreateImage(
+        m_allocator, &vkCI, &allocCI, &image.vkImage, &image.allocation, &allocInfo);
+    if (allocRes != VK_SUCCESS) {
+        if (allocRes == VK_ERROR_OUT_OF_DEVICE_MEMORY) {
+            // A friendly, actionable OOM instead of a bare VkResult: report the
+            // offending image (name, dimensions, format, samples, layers) and an
+            // approximate byte size, plus the usual remedy. The common cause is
+            // an over-large shadow/EVSM cascade atlas or render scale.
+            const FormatInfo fmt = getFormatInfo(vkCI.format);
+            const VkDeviceSize blocksX =
+                (vkCI.extent.width + fmt.blockWidth - 1) / fmt.blockWidth;
+            const VkDeviceSize blocksY =
+                (vkCI.extent.height + fmt.blockHeight - 1) / fmt.blockHeight;
+            const VkDeviceSize approxBytes = blocksX * blocksY * vkCI.extent.depth *
+                                             fmt.bytesPerBlock * vkCI.arrayLayers *
+                                             static_cast<VkDeviceSize>(vkCI.samples);
+            std::fprintf(stderr,
+                         "[Vulkan OOM] out of device memory allocating image '%s' "
+                         "(%ux%ux%u format=%d samples=%u layers=%u, ~%.1f MiB). "
+                         "Reduce shadow/EVSM cascade resolution, render scale, or close "
+                         "other GPU work.\n",
+                         ci.name ? ci.name : "<unnamed>",
+                         vkCI.extent.width,
+                         vkCI.extent.height,
+                         vkCI.extent.depth,
+                         static_cast<int>(vkCI.format),
+                         static_cast<uint32_t>(vkCI.samples),
+                         vkCI.arrayLayers,
+                         static_cast<double>(approxBytes) / (1024.0 * 1024.0));
+        }
+        VK_CHECK(allocRes);
+    }
     image.allocBytes = allocInfo.size;
 
 #if defined(_DEBUG)
