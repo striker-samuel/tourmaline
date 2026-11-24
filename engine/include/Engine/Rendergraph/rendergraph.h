@@ -1125,6 +1125,18 @@ struct RenderGraph final {
         planCache_;
     static constexpr size_t kMaxCompiledPermutations = 16;
 
+    // Build-once analysis cache (checkpoint C): keyed by a structural
+    // fingerprint of the declaration set + the resource revision (bumped when
+    // a logical resource resolves to NEW physical backing — resize/reload).
+    // On a hit Execute skips CollectPassUsages + TopologicalSort entirely.
+    [[nodiscard]] uint64_t StructureHash() const;
+    mutable uint64_t resourceRevision_ = 0;
+    mutable uint64_t analysisHash_ = 0;
+    mutable uint64_t analysisRevision_ = 0;
+    mutable std::vector<PassUsage> analysisUsages_;
+    mutable std::vector<size_t> analysisSorted_;
+    mutable bool analysisValid_ = false;
+
     // Collect per-pass physical image/buffer usage with derived layout/access
     // (the NAMESPACE-LEVEL smvk::PassUsage - hoisted for testability).
     std::vector<PassUsage> CollectPassUsages() const;

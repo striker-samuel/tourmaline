@@ -13204,6 +13204,7 @@ void smvk::RenderGraph::ResolveImages() {
                     vctx.CreateImage(logicalImage.key, nullptr).release();
             else
                 logicalImage.resolvedImageHandle = vctx.CreateHeapImage(logicalImage.key).release();
+            ++resourceRevision_; // new physical backing -> invalidate the analysis cache
         };
     });
 };
@@ -13835,6 +13836,59 @@ inline std::vector<BarrierTemplate> BuildBarrierTemplates(const smvk::rg::Plan& 
 }
 } // namespace
 
+uint64_t smvk::RenderGraph::StructureHash() const {
+    uint64_t h = 1469598103934665603ull;
+    const auto mixU64 = [&](uint64_t v) { h = smvk::rg::GraphHash(h, v); };
+    const auto mixName = [&](const char* s) {
+        mixU64(s ? static_cast<uint64_t>(std::strlen(s)) : 0ull);
+        if (s)
+            for (const char* p = s; *p; ++p)
+                h = smvk::rg::GraphHash(h, static_cast<uint64_t>(static_cast<uint8_t>(*p)));
+    };
+    const auto mixHandle = [&](const auto& hnd) {
+        mixU64((static_cast<uint64_t>(hnd.gen()) << 32) | static_cast<uint64_t>(hnd.index()));
+    };
+    for (const RenderPass& pass : passes_) {
+        mixName(pass.name_);
+        mixU64(pass.isCompute_ ? 1u : 0u);
+        mixU64(static_cast<uint64_t>(pass.queueHint_));
+        mixU64(static_cast<uint64_t>(static_cast<uint32_t>(pass.offsetX_)));
+        mixU64(static_cast<uint64_t>(static_cast<uint32_t>(pass.offsetY_)));
+        mixU64(static_cast<uint64_t>(pass.extent_.width));
+        mixU64(static_cast<uint64_t>(pass.extent_.height));
+        for (const auto& att : pass.colorAttachments_) {
+            mixHandle(att.view);
+            mixU64(static_cast<uint64_t>(att.loadOp));
+            mixU64(static_cast<uint64_t>(att.storeOp));
+            if (!att.resolveView.empty())
+                mixHandle(att.resolveView);
+        }
+        if (pass.hasDepthAttachment_) {
+            mixHandle(pass.depthAttachment_.view);
+            mixU64(static_cast<uint64_t>(pass.depthAttachment_.loadOp));
+            mixU64(static_cast<uint64_t>(pass.depthAttachment_.storeOp));
+        }
+        for (const auto& v : pass.inputImages_)
+            mixHandle(v);
+        for (const auto& v : pass.storageImages_)
+            mixHandle(v);
+        for (const auto& v : pass.storageBuffers_)
+            mixHandle(v);
+        for (const auto& hint : pass.imageHints_) {
+            mixHandle(hint.view);
+            mixU64(static_cast<uint64_t>(hint.request.barrierMasks.accessMask));
+            mixU64(static_cast<uint64_t>(hint.request.barrierMasks.stageMask));
+            mixU64(static_cast<uint64_t>(hint.request.layout));
+        }
+        for (const auto& hint : pass.bufferHints_) {
+            mixHandle(hint.buffer);
+            mixU64(static_cast<uint64_t>(hint.request.barrierMasks.accessMask));
+            mixU64(static_cast<uint64_t>(hint.request.barrierMasks.stageMask));
+        }
+    }
+    return h;
+}
+
 smvk::RenderGraph::GraphPrepare smvk::RenderGraph::PrepareGraph(
     const std::vector<PassUsage>& usages,
     const std::vector<size_t>& order,
@@ -14347,29 +14401,40 @@ void smvk::RenderGraph::Execute(Framebuffer& fb, const FrameContext* fc) {
     // usages/sort/snapshot the frame proceeds on are recomputed after.
     // Steady state (unchanged fingerprint): the analysis pass only - the
     // second collect+sort is skipped.
-    std::vector<smvk::PassUsage> usages;
-    const std::vector<size_t>* sortedPtr = nullptr;
-    {
+    // Build-once analysis (checkpoint C): reuse the previous frame's usages +
+    // sort when the declaration structure + resource revision are unchanged.
+    // CompileTransientHeap still runs (it owns the shape-sensitive pack); a
+    // detonation (relayout) forces a fresh re-collect below.
+    const uint64_t structureHash = StructureHash();
+    const bool analysisHit =
+        analysisValid_ && analysisHash_ == structureHash && analysisRevision_ == resourceRevision_;
+    if (!analysisHit) {
         SMVK_PROFILE_RENDER("RG_CollectUsages");
-        usages = CollectPassUsages();
-    }
-    {
+        analysisUsages_ = CollectPassUsages();
         SMVK_PROFILE_RENDER("RG_TopologicalSort");
-        sortedPtr = &TopologicalSort(usages);
+        TopologicalSort(analysisUsages_);
+        analysisHash_ = structureHash;
+        analysisRevision_ = resourceRevision_;
+        analysisValid_ = true;
     }
+    const std::vector<PassUsage>& usages = analysisUsages_;
+    const std::vector<size_t>& sorted = topo_.sorted;
     {
         // CompileTransientHeap owns the packed-target memory analysis;
         // the relayout tag marks the frames it detonated + recreated the
         // packed set (the expensive, churn-driven outcome).
         SMVK_PROFILE_RENDER("RG_CompileTransientHeap");
-        const bool relayout = CompileTransientHeap(usages, *sortedPtr);
+        const bool relayout = CompileTransientHeap(usages, sorted);
         SMVK_PROFILE_TAG("relayout", relayout ? 1u : 0u);
         if (relayout) {
-            usages = CollectPassUsages();
-            sortedPtr = &TopologicalSort(usages);
+            SMVK_PROFILE_RENDER("RG_CollectUsages");
+            analysisUsages_ = CollectPassUsages();
+            SMVK_PROFILE_RENDER("RG_TopologicalSort");
+            TopologicalSort(analysisUsages_);
+            analysisHash_ = structureHash;
+            analysisRevision_ = resourceRevision_;
         }
     }
-    const std::vector<size_t>& sorted = *sortedPtr;
     SMVK_PROFILE_TAG("passes", sorted.size());
 
     // Views resolve AFTER the transient pack (the 03_fuzz DEVICE_LOST
