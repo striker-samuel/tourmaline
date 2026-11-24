@@ -567,7 +567,7 @@ void TestWorldManifestBlob() {
         memcpy(&magic, blob.data(), 4);
         memcpy(&version, blob.data() + 4, 4);
         memcpy(&count, blob.data() + 8, 4);
-        Check(magic == 0x4E414D57u /* "WMAN" LE */ && version == 1 && count == 2,
+        Check(magic == 0x4E414D57u /* "WMAN" LE */ && version == 2 && count == 2,
               "worldman.header");
         // The directly-addressable view: O(1) offset arithmetic, no copy.
         ::tour::asset::WorldManifestView view;
@@ -3287,12 +3287,13 @@ void TestClusterSerializeCook() {
         Check(posOff == ((header + 36 + 15) & ~size_t(15)), "cook.pak.mesh.v4.posoff");
         Check(lmOff == 0 && shadeOff == posOff + posBytes && idxOff == shadeOff + shadeBytes,
               "cook.pak.mesh.v4.streamoffs");
-        Check(posOff + posBytes + shadeBytes + idxBytes + 12 + 4 == pay.size(),
+        Check(posOff + posBytes + shadeBytes + idxBytes + 16 + 4 == pay.size(),
               "cook.pak.mesh.v4.exactend");
         // The trailing skin-stream section (the Northlight data path):
-        // the meshlet trailer (12 bytes, count 0) + the skin count (4
-        // bytes, count 0 here - the quad is static). A present skin
-        // section must end the blob exactly (see the loader).
+        // the meshlet trailer (16 bytes at count 0: meshlet count +
+        // vertex count + triangle count + maxLocalVertex, the SMP9 layout)
+        // + the skin count (4 bytes, count 0 here - the quad is static).
+        // A present skin section must end the blob exactly (see the loader).
         // Stream content: the shared pack helper's output for the quad's
         // vertices + the raw index buffer.
         bool streamsOk = true;

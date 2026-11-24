@@ -743,6 +743,7 @@ int main() {
             {"GI/bake_inputs.h", 18, 0},
             {"GI/bc6h.h", 2, 0},
             {"GI/cubemap_volume.h", 17, 0},
+            {"GI/light_cookie_bake.h", 2, 0}, // BakeSpotLightCookie + LightCookieBakeResult
             {"GI/lightmap.h", 37, 0},
             {"GI/regular_volume.h", 6, 0},
             {"GI/sg.h", 21, 0},
@@ -751,6 +752,9 @@ int main() {
             // shims over Core/Memory in the frame-arena extraction
             // (#251): zero compat aliases remain, so their R7 rows are
             // deleted rather than shrunk.)
+            {"Placement/baked_placement.h", 6, 0},
+            {"Placement/baked_placement_pak.h", 2, 0},
+            {"Placement/baked_placement_runtime.h", 13, 0},
             {"Placement/placement_cache.h", 7, 0},
             {"Placement/placement_domain.h",
              11,
@@ -759,14 +763,14 @@ int main() {
                  // deliberate smvk::placement compat growth, review at gate.
             {"Placement/placement_draw.h", 7, 0},
             {"Placement/placement_eval.h", 6, 0},
-            {"Placement/placement_gpu.h", 37, 0}, // +2 (#126): paint-mask
+            {"Placement/placement_gpu.h", 38, 0}, // +2 (#126): paint-mask
                                                   // + PointCloud GPU surface inputs — deliberate
                                                   // compat growth, review at gate.
             {"Placement/placement_ids.h", 12, 0},
             {"Placement/placement_ir.h", 9, 0},
             {"Placement/placement_override.h", 7, 0},
             {"Placement/placement_physics.h", 7, 0},
-            {"Placement/placement_point.h", 3, 0},
+            {"Placement/placement_point.h", 4, 0},
             {"Placement/placement_prototype.h", 3, 0},
             {"Placement/placement_terrain.h", 21, 0},
             {"Placement/placement_tile.h", 14, 0},
@@ -881,7 +885,11 @@ int main() {
             {"ImGui/imgui_overlay.h", 7, 1},
             {"ImGui/imgui_overlay.h", 8, 1},
             {"Memory/pool.h", 7, 8}, // RHI pools (shared infra, smvk-scope)
+            {"Renderer/CpuIndirectBackend.h", 7, 1}, // ResourceManager*
+            {"Renderer/GeometryBackendTypes.h", 7, 1}, // ResourceManager*
+            {"Renderer/GeometryBackendTypes.h", 9, 1}, // RenderGraph*
             {"Renderer/geometry_upload.h", 7, 1},
+            {"Renderer/WorldRenderer.h", 6, 1}, // gfx::State (material table)
             {"Renderer/WorldRenderer.h", 7, 1},
             {"Renderer/WorldRenderer.h", 8, 6},
             // DebugUiFrame (the host-owned UI service seam, #248): the

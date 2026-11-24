@@ -2073,7 +2073,7 @@ bool LoadTourFromString(const std::string& text,
                 } else if (field == "-resolution" || field == "-samples") {
                     char* end = nullptr;
                     const auto number = std::strtoul(value.c_str(), &end, 10);
-                    if (end == value.c_str() || *end != '\\0' || number > 4096) {
+                    if (end == value.c_str() || *end != '\0' || number > 4096) {
                         err = "line " + std::to_string(lineNo) + ": invalid lightCookieBake integer";
                         return false;
                     }
@@ -2082,7 +2082,7 @@ bool LoadTourFromString(const std::string& text,
                 } else if (field == "-radius" || field == "-distance") {
                     char* end = nullptr;
                     const float number = std::strtof(value.c_str(), &end);
-                    if (end == value.c_str() || *end != '\\0' || !std::isfinite(number)) {
+                    if (end == value.c_str() || *end != '\0' || !std::isfinite(number)) {
                         err = "line " + std::to_string(lineNo) + ": invalid lightCookieBake float";
                         return false;
                     }
