@@ -865,6 +865,22 @@ int main() {
     markAsChanged(scene, parent);
     CHECK(recalculateGlobalTransforms(scene));
     CHECK(scene.gpuSceneGlobalChanges.size() == pendingBefore);
+    // Mutable material access is conservatively journaled; duplicate
+    // marks coalesce and the renderer consumes the list only once.
+    smvk::World dirtyWorld;
+    dirtyWorld.materialLocations.resize(3);
+    dirtyWorld.MarkMaterialDirty(2);
+    dirtyWorld.MarkMaterialDirty(2);
+    dirtyWorld.MarkMaterialDirty(0);
+    auto dirty = dirtyWorld.TakeMaterialDirtySlots();
+    CHECK(dirty.size() == 2 && dirty[0] == 2u && dirty[1] == 0u);
+    CHECK(dirtyWorld.TakeMaterialDirtySlots().empty());
+    dirtyWorld.MarkMaterialDirty(1);
+    dirty = dirtyWorld.TakeMaterialDirtySlots();
+    CHECK(dirty.size() == 1 && dirty[0] == 1u);
+    dirtyWorld.MarkMaterialDirty(400);
+    CHECK(dirtyWorld.TakeMaterialDirtySlots().empty());
+
     std::printf("checks=%d failures=%d\n", g_checks, g_failures);
     return g_failures == 0 ? 0 : 1;
 }

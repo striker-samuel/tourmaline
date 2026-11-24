@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <Engine/App/cluster.h>
+#include <Engine/App/world.h>
 #include <Engine/Asset/asset_registry.h>
 // GetMeshHeapVertexBase reads StaticMeshAllocation::vertexBase through the
 // forward-declared pointer — the heap header carries the full definition.
@@ -191,6 +192,7 @@ bool WorldPage::RegisterTextureUri(StringViewT uri, TextureHandle handle) {
     if (n.empty() || !handle.valid())
         return false;
     textureByUri_.Insert(uriArena_.AllocateString(n), handle);
+    if (world) ++world->materialTextureRegistryRevision;
     return true;
 }
 
@@ -204,6 +206,7 @@ void WorldPage::UnregisterUri(StringViewT uri) {
     cameraByUri_.Erase(n);
     decalByUri_.Erase(n);
     textureByUri_.Erase(n);
+    if (world) ++world->materialTextureRegistryRevision;
     textureSamplers_.Erase(n);
     textureSources_.Erase(n);
     meshLods_.Erase(n);

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #include <Engine/RHI/resource_manager.h>
+#include <atomic>
 #include <Engine/Renderer/spirv_reflection.h>
 #include <Engine/smvk.h>
 #include <array>
@@ -36,6 +37,7 @@ bool DebugImageDumpArmed() {
 }
 
 struct ResourceManager::Impl {
+    std::atomic<uint64_t> textureBindingRevision{1};
     VulkanResourceManager vulkan;
     Impl(SDL_Window* w) : vulkan({}, w) {}
     VulkanResourceManager* getVulkan() {
@@ -124,6 +126,8 @@ Holder<ImageHandle> ResourceManager::CreateImage(const ImageCreateInfo& ci, cons
 Holder<TextureHandle> ResourceManager::CreateTexture(const ImageCreateInfo& ci, const void* data) {
     auto h = impl_->vulkan.CreateTexture(ci, data);
     TextureHandle raw = h.release();
+    if (raw.valid())
+        impl_->textureBindingRevision.fetch_add(1, std::memory_order_release);
     return Holder<TextureHandle>{this, raw};
 }
 Holder<TextureHandle> ResourceManager::CreateTexture(ktxTexture2& texture,
@@ -131,6 +135,8 @@ Holder<TextureHandle> ResourceManager::CreateTexture(ktxTexture2& texture,
                                                      ImageCreateInfo imageCreateInfo) {
     auto h = impl_->vulkan.CreateTexture(texture, debugName, imageCreateInfo);
     TextureHandle raw = h.release();
+    if (raw.valid())
+        impl_->textureBindingRevision.fetch_add(1, std::memory_order_release);
     return Holder<TextureHandle>{this, raw};
 }
 Holder<TextureHandle> ResourceManager::CreateStreamingTexture(ktxTexture2& texture,
@@ -141,6 +147,8 @@ Holder<TextureHandle> ResourceManager::CreateStreamingTexture(ktxTexture2& textu
     auto h = impl_->vulkan.CreateStreamingTexture(
         texture, firstMip, mipCount, debugName, imageCreateInfo);
     TextureHandle raw = h.release();
+    if (raw.valid())
+        impl_->textureBindingRevision.fetch_add(1, std::memory_order_release);
     return Holder<TextureHandle>{this, raw};
 }
 void ResourceManager::RetargetStreamingTexture(TextureHandle handle,
@@ -149,6 +157,7 @@ void ResourceManager::RetargetStreamingTexture(TextureHandle handle,
                                                uint32_t mipCount,
                                                const char* debugName) {
     impl_->vulkan.RetargetStreamingTexture(handle, texture, firstMip, mipCount, debugName);
+    impl_->textureBindingRevision.fetch_add(1, std::memory_order_release);
 }
 Holder<BindlessImageHandle> ResourceManager::CreateBindlessImage(ImageViewHandle viewHandle,
                                                                  ImageLayout readLayout) {
@@ -229,6 +238,16 @@ void* ResourceManager::MapBuffer(BufferHandle handle) {
 }
 void ResourceManager::UnmapBuffer(BufferHandle handle) {
     impl_->vulkan.UnmapBuffer(handle);
+}
+UploadRequest ResourceManager::RequestBufferUpload(
+    BufferHandle dst, const void* data, size_t bytes,
+    PipelineStage stages, AccessFlags access, size_t dstOffset) {
+    return impl_->vulkan.RequestBufferUpload(
+        dst, data, bytes, toVkPipelineStage(stages),
+        toVkAccess(access), dstOffset);
+}
+UploadStatus ResourceManager::PollUpload(UploadTicket ticket) const noexcept {
+    return impl_->vulkan.PollUpload(ticket);
 }
 void ResourceManager::UploadDataToBuffer(BufferHandle buffer,
                                          const void* data,
@@ -341,6 +360,9 @@ void ResourceManager::UpdateDescriptors(uint32_t frameIndex) {
 }
 uint32_t ResourceManager::GetBindlessIndex(BindlessImageHandle handle) const {
     return impl_->vulkan.GetBindlessIndex(handle);
+}
+uint64_t ResourceManager::TextureBindingRevision() const noexcept {
+    return impl_->textureBindingRevision.load(std::memory_order_acquire);
 }
 uint32_t ResourceManager::GetTextureBindlessIndex(TextureHandle handle) const {
     return impl_->vulkan.GetTextureBindlessIndex(handle);
@@ -577,6 +599,7 @@ void ResourceManager::DestroyBuffer(BufferHandle h) {
 }
 void ResourceManager::DestroyTexture(TextureHandle h) {
     destroy(&impl_->vulkan, h);
+    impl_->textureBindingRevision.fetch_add(1, std::memory_order_release);
 }
 void ResourceManager::DestroyBindlessImage(BindlessImageHandle h) {
     destroy(&impl_->vulkan, h);

@@ -1024,6 +1024,13 @@ set_target_properties(WorldPartitionTests PROPERTIES
 
 add_test(NAME world_partition_tests COMMAND WorldPartitionTests)
 
+# WorldChannels: independent heightfield/biome data and world-scoped registry.
+add_executable(WorldChannelsTests test_world_channels.cpp)
+target_link_libraries(WorldChannelsTests PRIVATE engine)
+set_target_properties(WorldChannelsTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME world_channels_tests COMMAND WorldChannelsTests)
+
 # The cooked-brick asset form (milestone 4): BC4 codec error bounds, the
 # .wfb builder/reader roundtrip, sqrt-density fidelity vs a dense
 # reference, and the CookedBrickSource through the paging system.
@@ -1726,6 +1733,7 @@ target_include_directories(SmvkRawTableTests PRIVATE
     ${CMAKE_SOURCE_DIR}/engine/include
     ${CMAKE_SOURCE_DIR}/core/include
     ${CMAKE_SOURCE_DIR}/external/glm)
+target_link_libraries(SmvkRawTableTests PRIVATE engine)
 add_test(NAME smvk_raw_table_tests COMMAND SmvkRawTableTests)
 
 # Experimental descriptor-storage table publisher: CPU-only byte mirrors.
@@ -1734,7 +1742,22 @@ target_include_directories(SmvkDescriptorTableTests PRIVATE
     ${CMAKE_SOURCE_DIR}/engine/include
     ${CMAKE_SOURCE_DIR}/core/include
     ${CMAKE_SOURCE_DIR}/external/glm)
+target_link_libraries(SmvkDescriptorTableTests PRIVATE engine)
 add_test(NAME smvk_descriptor_table_tests COMMAND SmvkDescriptorTableTests)
+
+# Material world-slot indexed GPU table: all-flight dirty publication.
+add_executable(SmvkIndexedRawTableTests test_smvk_indexed_raw_table.cpp)
+target_include_directories(SmvkIndexedRawTableTests PRIVATE
+    ${CMAKE_SOURCE_DIR}/engine/include
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/external/glm)
+target_link_libraries(SmvkIndexedRawTableTests PRIVATE engine)
+add_test(NAME smvk_indexed_raw_table_tests COMMAND SmvkIndexedRawTableTests)
+
+# Backend-independent upload request sequence and batch ticket semantics.
+add_executable(SmvkUploadTicketTests test_smvk_upload_ticket.cpp)
+target_include_directories(SmvkUploadTicketTests PRIVATE ${CMAKE_SOURCE_DIR}/engine/include)
+add_test(NAME smvk_upload_ticket_tests COMMAND SmvkUploadTicketTests)
 
 # Device-free contract for proposed interchangeable world geometry backends.
 add_executable(GeometryBackendContractTests test_geometry_backend_contract.cpp)

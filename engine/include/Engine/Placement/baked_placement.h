@@ -27,6 +27,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <string>
 #include <vector>
 
 #include <glm/glm.hpp>

@@ -111,6 +111,7 @@
 #include <Engine/Renderer/GfxRenderer.h>
 #include <Engine/Renderer/Renderer.h>
 #include <Engine/Renderer/WorldRendererConfig.h>
+#include <Engine/Renderer/material_gpu_records.h>
 #include <Engine/Rendergraph/ForwardPlusRenderer.h>
 #include <Engine/Rendergraph/FrameContext.h>
 #include <Engine/Rendergraph/contact_shadow.h>
@@ -3273,6 +3274,28 @@ class WorldRenderer : public IRenderer {
 
     // The control element owns the overlay; this pointer is borrowed.
     UiTextureService m_uiTextureService{};
+    // GPU material publication: world slot is the shader's raw material index.
+    // smvk owns the per-flight dirty journal; the existing RHI buffer owns
+    // physical storage and retains its BDA and fixed MaxMaterials stride.
+    tour::gpu_records::Materials m_materialRows;
+    const smvk::World* m_materialObservedWorld = nullptr;
+    uint64_t m_materialObservedTopology = ~uint64_t(0);
+    uint64_t m_materialObservedTextureEpoch = ~uint64_t(0);
+    uint64_t m_materialObservedRegistryEpoch = ~uint64_t(0);
+    bool m_materialObservedOverride = false;
+    float m_materialObservedMetallic = 0.0f;
+    float m_materialObservedRoughness = 0.5f;
+    uint32_t m_materialLogicalCount = 0;
+    std::unordered_map<uint32_t, uint32_t> m_materialCachedBindless;
+    std::vector<uint32_t> m_materialTexturedSlots;
+    std::vector<uint8_t> m_materialHasTextures;
+    // Append each index at most once until world topology is rebuilt.
+    std::vector<uint8_t> m_materialTextureListed;
+    std::array<bool, smvk::limits::MaxFramesInFlight> m_materialForceFull{};
+    // Latest ticket per flight covers earlier uploads on the same ordered
+    // queue timeline; one status query per fenced flight reuse.
+    std::array<smvk::UploadTicket, smvk::limits::MaxFramesInFlight>
+        m_materialUploadTickets{};
     AppResources m_resources{};
     ViewportResources m_viewportResources{};
     // Resolved KHR_lights_punctual set for the loaded scene (snapshotted

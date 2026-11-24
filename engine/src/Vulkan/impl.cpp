@@ -4277,6 +4277,10 @@ void smvk::UploadStreamer::submitState(ThreadUploadState& ust, bool waitOldestIf
     if (!ust.hasPending || ust.curCmd == VK_NULL_HANDLE) {
         if (ust.curCmd != VK_NULL_HANDLE) {
             auto tp = submitTransfer(ust.curHandle);
+            if (tp.valid())
+                ust.ticketSequence.Submitted(ust.ticketRecordedThrough, tp.value);
+            else
+                ust.ticketSequence.Failed(1);
             recordSubmittedRange(ust);
             for (auto& task : ust.pendingCleanups)
                 m_rm->AddDeferredTask(std::move(task), tp);
@@ -4291,6 +4295,10 @@ void smvk::UploadStreamer::submitState(ThreadUploadState& ust, bool waitOldestIf
         return;
     }
     auto tp = submitTransfer(ust.curHandle);
+    if (tp.valid())
+        ust.ticketSequence.Submitted(ust.ticketRecordedThrough, tp.value);
+    else
+        ust.ticketSequence.Failed(1);
     recordSubmittedRange(ust);
     for (auto& task : ust.pendingCleanups)
         m_rm->AddDeferredTask(std::move(task), tp);
@@ -4346,14 +4354,75 @@ struct UploadShardActiveGuard {
         a.store(false, std::memory_order_release);
     }
 };
-void smvk::UploadStreamer::uploadBuffer(BufferHandle dst,
+
+smvk::UploadRequest smvk::UploadStreamer::requestBuffer(
+    BufferHandle dst, const void* data, size_t size, size_t dstOffset,
+    VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess) {
+    if (!data || size == 0 || dst.empty())
+        return {};
+    const Buffer* dstBuf = m_rm->buffers_.get(dst);
+    if (!dstBuf || dstBuf->vkBuffer == VK_NULL_HANDLE ||
+        !(dstBuf->usage & VK_BUFFER_USAGE_TRANSFER_DST_BIT) ||
+        dstOffset > dstBuf->size || size > dstBuf->size - dstOffset)
+        return {};
+    const uint32_t shard = CurrentPoolShard();
+    if (shard >= kNumPoolShards)
+        return {};
+    ThreadUploadState& st = states_[shard];
+    if (dstBuf->isMappable()) {
+        const uint64_t seq = st.hostTicketSequence.Issue();
+        TimelinePoint submitted{};
+        if (!uploadBuffer(dst, data, size, dstOffset, dstStages, dstAccess, &submitted) ||
+            !submitted.valid()) {
+            // No ticket escapes: a rejected request must not poison later
+            // accepted requests from this shard.
+            return {UploadStatus::Rejected, {}};
+        }
+        st.hostTicketSequence.Submitted(seq, submitted.value);
+        return {UploadStatus::Submitted, {shard, seq, 1}};
+    }
+    const uint64_t seq = st.ticketSequence.Issue();
+    if (!uploadBuffer(dst, data, size, dstOffset, dstStages, dstAccess)) {
+        // No public ticket on rejection. Keep future sequences usable.
+        return {UploadStatus::Rejected, {}};
+    }
+    const bool alreadySubmitted =
+        st.ticketSequence.submitted.load(std::memory_order_acquire) >= seq;
+    return {alreadySubmitted ? UploadStatus::Submitted : UploadStatus::Recorded,
+            {shard, seq, 0}};
+}
+smvk::UploadStatus smvk::UploadStreamer::pollUpload(UploadTicket ticket) const noexcept {
+    if (!ticket || ticket.shard >= kNumPoolShards)
+        return UploadStatus::Invalid;
+    if (ticket.queue > 1)
+        return UploadStatus::Invalid;
+    const bool hostVisible = ticket.queue == 1;
+    const auto& state = hostVisible ? states_[ticket.shard].hostTicketSequence
+                                    : states_[ticket.shard].ticketSequence;
+    const uint64_t submitted = state.submitted.load(std::memory_order_acquire);
+    if (ticket.sequence > submitted)
+        return state.Poll(ticket.sequence, 0);
+    const TimelinePoint point =
+        hostVisible ? m_graphics->nextSignalPoint() : lastTransferPoint();
+    if (!point.valid())
+        return UploadStatus::Submitted;
+    uint64_t completed = 0;
+    const VkResult r = vkGetSemaphoreCounterValue(m_rm->VkDeviceHandle(),
+                                                  point.semaphore, &completed);
+    if (r != VK_SUCCESS)
+        return UploadStatus::Failed;
+    return state.Poll(ticket.sequence, completed);
+}
+
+bool smvk::UploadStreamer::uploadBuffer(BufferHandle dst,
                                         const void* data,
                                         size_t size,
                                         size_t dstOffset,
                                         VkPipelineStageFlags2 dstStages,
-                                        VkAccessFlags2 dstAccess) {
+                                        VkAccessFlags2 dstAccess,
+                                        TimelinePoint* immediatePoint) {
     if (!data || size == 0 || dst.empty())
-        return;
+        return false;
     // fast path for host-visible buffers: direct write + barrier on graphics queue
     {
         Buffer* b = m_rm->buffers_.get(dst);
@@ -4372,21 +4441,25 @@ void smvk::UploadStreamer::uploadBuffer(BufferHandle dst,
                           VK_ACCESS_2_HOST_WRITE_BIT,
                           dstStages,
                           dstAccess);
-            m_graphics->submit(han);
+            const TimelinePoint tp = m_graphics->submit(han);
+            if (!tp.valid())
+                return false;
+            if (immediatePoint)
+                *immediatePoint = tp;
             VulkanResourceManager::BufferGlobalSyncState st{};
             st.masks.stageMask = FromVkPipelineStage(dstStages);
             if (st.masks.stageMask == PipelineStageBit_None && dstAccess != VK_ACCESS_2_NONE)
                 st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess));
             st.masks.accessMask = FromVkAccess(dstAccess);
             m_rm->SetBufferSyncState(dst, st);
-            return;
+            return true;
         }
     }
     ThreadUploadState& ust = states_[CurrentPoolShard()];
     UploadShardActiveGuard shardGuard{ust.active};
     Buffer* dstBuf = m_rm->buffers_.get(dst);
     if (!dstBuf)
-        return;
+        return false;
     // allocate from ring
     VkDeviceSize ringOff = allocFromRing(ust, size, 16);
     if (ringOff == VK_WHOLE_SIZE) {
@@ -4466,11 +4539,13 @@ void smvk::UploadStreamer::uploadBuffer(BufferHandle dst,
             st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess));
         st.masks.accessMask = FromVkAccess(dstAccess);
         m_rm->SetBufferSyncState(dst, st);
+        ust.ticketRecordedThrough =
+            ust.ticketSequence.issued.load(std::memory_order_relaxed);
         ust.stagedBytesSinceFlush += size;
         if (ust.stagedBytesSinceFlush >= flushThreshold_) {
             submitState(ust, false);
         }
-        return;
+        return true;
     }
     // normal ring path
     memcpy(static_cast<char*>(ust.ring.mapped) + ringOff, data, size);
@@ -4531,11 +4606,14 @@ void smvk::UploadStreamer::uploadBuffer(BufferHandle dst,
         st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess));
     st.masks.accessMask = FromVkAccess(dstAccess);
     m_rm->SetBufferSyncState(dst, st);
+    ust.ticketRecordedThrough =
+        ust.ticketSequence.issued.load(std::memory_order_relaxed);
     ust.stagedBytesSinceFlush += size;
     if (ust.stagedBytesSinceFlush >= flushThreshold_) {
         submitState(ust, false);
     }
     // if we are batching many small uploads, don't submit yet – caller will flush
+    return true;
 }
 void smvk::UploadStreamer::uploadBufferBulk(BufferHandle dst,
                                             const void* content,
@@ -5786,6 +5864,17 @@ void smvk::VulkanResourceManager::WaitForUploads() {
 void smvk::VulkanResourceManager::WaitForUploadsLocal() {
     if (m_streamer)
         m_streamer->waitLocal();
+}
+smvk::UploadRequest smvk::VulkanResourceManager::RequestBufferUpload(
+    BufferHandle buffer, const void* data, size_t dataSize,
+    VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t destOffset) {
+    if (!m_streamer) return {};
+    return m_streamer->requestBuffer(buffer, data, dataSize, destOffset,
+                                     dstStages, dstAccess);
+}
+smvk::UploadStatus smvk::VulkanResourceManager::PollUpload(
+    UploadTicket ticket) const noexcept {
+    return m_streamer ? m_streamer->pollUpload(ticket) : UploadStatus::Invalid;
 }
 void smvk::VulkanResourceManager::UploadDataToBuffer(BufferHandle buffer,
                                                      const void* data,
@@ -8531,6 +8620,7 @@ smvk::ImageHandle smvk::VulkanResourceManager::RecreateImage(ImageHandle handle,
     VmaAllocationCreateFlags vmaAllocFlags,
     bool gpuScenePool) {
     Buffer desc{};
+    desc.size = size;
     VkBufferCreateInfo ci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     ci.size = size;
     ci.usage = bufferTypeToUsageFlags[static_cast<size_t>(bufferType)];

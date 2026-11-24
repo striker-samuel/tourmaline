@@ -174,7 +174,7 @@ class HarnessTests(unittest.TestCase):
             import benchmark_environment as guard
         sample = """# gpu        pid  type    sm   mem   enc   dec   command
     0       123    G     18     2     -     -   chrome
-    0       456    C      7     1     -     -   blender
+    0       456    C     16     1     -     -   blender
     0       789    G      1     0     -     -   desktop
 """
         processes, uncertain = guard.parse_nvidia_pmon(sample)
@@ -185,7 +185,7 @@ class HarnessTests(unittest.TestCase):
         self.assertFalse(guard.parse_nvidia_pmon(sample.splitlines()[0])[1])
         self.assertTrue(guard.parse_nvidia_pmon("driver unavailable")[1])
         rows = [{"path": r"\\host\\gpu engine(pid_42_luid_0x0_0x0_phys_0_eng_0_engtype_3D)",
-                 "value": 12.0},
+                 "value": 18.0},
                 {"path": r"\\host\\gpu engine(pid_43_luid_0x0_0x0_phys_0_eng_0_engtype_Copy)",
                  "value": 90.0}]
         self.assertEqual([p["pid"] for p in guard.parse_windows_gpu(json.dumps(rows))], [42])

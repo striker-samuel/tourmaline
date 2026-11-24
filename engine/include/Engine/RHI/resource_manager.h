@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
+#include <Engine/RHI/upload_ticket.h>
 #include <Engine/RHI/gpu_memory_spill.h>
 #include <Engine/smvk.h>
 // Windowing is SDL3 (see App/app.h). Forward-declared so RHI headers stay
@@ -164,6 +165,14 @@ class ResourceManager {
     void* MapBuffer(BufferHandle handle);
     void UnmapBuffer(BufferHandle handle);
 
+    // Opt-in upload tickets: admission checked before returning.
+    // Poll is nonblocking and does not flush. Device-local destination
+    // buffers only in v1; host-visible uploads use the legacy path.
+    [[nodiscard]] UploadRequest RequestBufferUpload(
+        BufferHandle dst, const void* data, size_t bytes,
+        PipelineStage stages, AccessFlags access, size_t dstOffset = 0);
+    [[nodiscard]] UploadStatus PollUpload(UploadTicket ticket) const noexcept;
+
     // RHI barrier enums (no Vk)
     void UploadDataToBuffer(BufferHandle buffer,
                             const void* data,
@@ -270,6 +279,9 @@ class ResourceManager {
     uint32_t GetBindlessIndex(BindlessImageHandle handle) const;
     // Bindless descriptor-array slot of a TextureHandle (its sampled view).
     uint32_t GetTextureBindlessIndex(TextureHandle handle) const;
+    // Monotonic descriptor-mapping revision. Read once per render frame;
+    // a change invalidates cached pool-index -> bindless-slot resolution.
+    [[nodiscard]] uint64_t TextureBindingRevision() const noexcept;
     // Live-texture listing for debug UIs (the texture inspector): one row
     // per live texture, pool order, NO content filter. RENDER THREAD ONLY —
     // the pool walk is unsynchronized (the ShardedPool forEach contract).
