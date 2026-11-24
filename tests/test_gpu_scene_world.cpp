@@ -245,27 +245,32 @@ int main() {
     {
         std::vector<tour::gfx::IndexedRange> native(2);
         std::vector<uint8_t> conflicts(2, 0u);
-        bool taskCompatible = true;
+        // `hasNativeSuffix` reports whether a World-only surface (no Gfx
+        // meshlet id) was admitted to the suffix — the "native-only" tail the
+        // frame submits alongside the task/mesh prepass. It is NOT the inverse
+        // of task/mesh compatibility (a native-suffix id does NOT disable the
+        // task/mesh path), so keep the polarity on the native-suffix fact.
+        bool hasNativeSuffix = false;
         const tour::gfx::IndexedRange first{40u, 9u, 64};
         const tour::gfx::IndexedRange different{80u, 6u, 96};
-        CHECK(RegisterNativeIndexedRange(native, conflicts, first, 0u, taskCompatible) == 0u);
-        CHECK(RegisterNativeIndexedRange(native, conflicts, first, 0u, taskCompatible) == 0u);
-        CHECK(taskCompatible);
-        CHECK(RegisterNativeIndexedRange(native, conflicts, different, 0u, taskCompatible) ==
+        CHECK(RegisterNativeIndexedRange(native, conflicts, first, 0u, hasNativeSuffix) == 0u);
+        CHECK(RegisterNativeIndexedRange(native, conflicts, first, 0u, hasNativeSuffix) == 0u);
+        CHECK(!hasNativeSuffix);
+        CHECK(RegisterNativeIndexedRange(native, conflicts, different, 0u, hasNativeSuffix) ==
               InvalidIndex);
         CHECK(native[0].indexCount == 0u && conflicts[0] != 0u);
-        CHECK(RegisterNativeIndexedRange(native, conflicts, first, 0u, taskCompatible) ==
+        CHECK(RegisterNativeIndexedRange(native, conflicts, first, 0u, hasNativeSuffix) ==
               InvalidIndex);
         const uint32_t nativeOnly =
-            RegisterNativeIndexedRange(native, conflicts, first, InvalidIndex, taskCompatible);
-        CHECK(nativeOnly == 2u && native.size() == 3u && !taskCompatible);
+            RegisterNativeIndexedRange(native, conflicts, first, InvalidIndex, hasNativeSuffix);
+        CHECK(nativeOnly == 2u && native.size() == 3u && hasNativeSuffix);
         CHECK(native[nativeOnly].vertexOffset == 64);
         CHECK(RegisterNativeIndexedRange(
-                  native, conflicts, tour::gfx::IndexedRange{}, InvalidIndex, taskCompatible) ==
+                  native, conflicts, tour::gfx::IndexedRange{}, InvalidIndex, hasNativeSuffix) ==
               InvalidIndex);
         native.resize(kMaxRasterDrawGroups);
-        CHECK(RegisterNativeIndexedRange(native, conflicts, first, InvalidIndex, taskCompatible) ==
-              InvalidIndex);
+        CHECK(RegisterNativeIndexedRange(
+                  native, conflicts, first, InvalidIndex, hasNativeSuffix) == InvalidIndex);
     }
     // Indexed geometry is keyed by persistent mesh slot + generation + LOD,
     // not by a transient filter mesh number. Re-registration must not

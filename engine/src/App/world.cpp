@@ -2257,6 +2257,32 @@ void World::RefreshRuntimeSceneCaches() {
         }
         drawItems.insert(drawItems.end(), chunk.items.begin(), chunk.items.end());
     }
+    // Gameplay-owned nodes are NOT page-merged (their mesh rows live on the
+    // merged scene directly via NodeRef::SetMesh), so the page loop above
+    // misses them. Append them so the renderer and the GPU-scene synchronizer
+    // reconcile them under their stable World-owned identities.
+    for (NodeHandle handle : gameNodes_) {
+        if (!IsGameNode(handle))
+            continue;
+        const NodeId node = NodeHandleSlot(handle);
+        if (node >= flags.size() || !(flags[node] & IteratorFlagBit_Renderable))
+            continue;
+        const MeshRow* wrow = FindMesh(scene, node);
+        if (!wrow)
+            continue;
+        const MaterialRow* matRow = FindMaterial(scene, node);
+        uint64_t instanceLink = 0;
+        if (const auto it = entityInstanceByNode.find(node); it != entityInstanceByNode.end())
+            instanceLink = it->second;
+        RenderItem item{};
+        item.node = node;
+        item.mesh = wrow->mesh;
+        item.material = matRow ? matRow->material : defaultMaterialIndex;
+        item.flags = flags[node];
+        item.materialInstance = instanceLink;
+        item.psoClass = PsoClassFor(item);
+        drawItems.push_back(item);
+    }
     // Global sort by (psoClass, material) so each pipeline class is one
     // CONTIGUOUS range (the per-frame iterator walks a range, never a
     // flag-scan index list). The chunks are already (psoClass, material)-
