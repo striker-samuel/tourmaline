@@ -9170,6 +9170,24 @@ void RecordGpuSceneCascadeBuildFused(smvk::CommandBuffer& cmd,
     cmd.PushConstants(0, sizeof(f.rasterPush), &f.rasterPush, smvk::ShaderStage::Compute);
     cmd.Dispatch((f.rasterPush.commandCapacity + 127u) / 128u, 1, 1);
 }
+struct SsrDebugViewFrame {
+    smvk::ShaderProgram* program = nullptr;
+    uint32_t push[4] = {};
+};
+void RecordSsrDebugView(smvk::CommandBuffer& cmd,
+                        const smvk::FrameContext& fc,
+                        const smvk::PassData& pd) {
+    const SsrDebugViewFrame& f = fc.rg->FrameData().Get<SsrDebugViewFrame>(pd.frameSlot);
+    cmd.BindRenderPipeline(*f.program,
+                           ::tour::vertex_layouts::Empty,
+                           smvk::DepthSettings::Disabled(),
+                           smvk::StencilSettings::DefaultDisabled(),
+                           smvk::BlendSettings::Opaque(),
+                           smvk::MSAASettings::Count1(),
+                           smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+    cmd.PushConstants(0, sizeof(f.push), &f.push, smvk::ShaderStage::All);
+    cmd.Draw(3, 1, 0, 0);
+}
 } // namespace
 void WorldRenderer::RecordMeshParticlesCull(smvk::CommandBuffer& cmd,
                                             const smvk::FrameContext& fc,
@@ -20014,7 +20032,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         static_assert(sizeof(SsrDepthViewPush) == 16);
                         SsrDepthViewPush push{};
                         push.depthTextureIndex = m_viewportResources.renderDepth.bindlessIndex;
-                        smvk::ShaderProgram progCopy = m_ssrDepthViewProgram;
                         smvk::RenderPass& depthViewPass = m_rendergraph->AddPass("SsrDepthView");
                         depthViewPass.SetOffset(0, 0)
                             .SetExtent(m_viewportResources.ssr.halfExtent)
@@ -20022,20 +20039,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                             .SetColor({m_viewportResources.ssr.raw.logical},
                                       smvk::AttachmentLoadOp::DontCare,
                                       smvk::AttachmentStoreOp::Store);
-                        depthViewPass.SetRecordingFunc(
-                            [progCopy, push](smvk::CommandBuffer& cmd) mutable {
-                                cmd.BindRenderPipeline(
-                                    progCopy,
-                                    ::tour::vertex_layouts::Empty,
-                                    smvk::DepthSettings::Disabled(),
-                                    smvk::StencilSettings::DefaultDisabled(),
-                                    smvk::BlendSettings::Opaque(),
-                                    smvk::MSAASettings::Count1(),
-                                    smvk::RasterSettings{.cullMode = smvk::CullMode::None});
-                                cmd.PushConstants(
-                                    0, sizeof(SsrDepthViewPush), &push, smvk::ShaderStage::All);
-                                cmd.Draw(3, 1, 0, 0);
-                            });
+                        SsrDebugViewFrame& depthViewFrame =
+                            m_rendergraph->PassFrameData<SsrDebugViewFrame>(depthViewPass);
+                        depthViewFrame.program = &m_ssrDepthViewProgram;
+                        std::memcpy(depthViewFrame.push, &push, sizeof(push));
+                        depthViewPass.SetRecordFn(&RecordSsrDebugView);
                         std::fprintf(stderr,
                                      "[SSR-dump] depth-view pass armed: ssr_raw will hold the "
                                      "sampled depth\n");
@@ -20105,7 +20113,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                             push.stencilTextureIndex =
                                 m_viewportResources.renderDepth.stencilBindlessIndex;
                             push.depthTextureIndex = m_viewportResources.renderDepth.bindlessIndex;
-                            smvk::ShaderProgram progCopy = m_ssrStencilViewProgram;
                             smvk::RenderPass& stencilViewPass =
                                 m_rendergraph->AddPass("SsrStencilView");
                             stencilViewPass.SetOffset(0, 0)
@@ -20115,20 +20122,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                 .SetColor({m_viewportResources.ssr.blurred.logical},
                                           smvk::AttachmentLoadOp::DontCare,
                                           smvk::AttachmentStoreOp::Store);
-                            stencilViewPass.SetRecordingFunc([progCopy, push](
-                                                                 smvk::CommandBuffer& cmd) mutable {
-                                cmd.BindRenderPipeline(
-                                    progCopy,
-                                    ::tour::vertex_layouts::Empty,
-                                    smvk::DepthSettings::Disabled(),
-                                    smvk::StencilSettings::DefaultDisabled(),
-                                    smvk::BlendSettings::Opaque(),
-                                    smvk::MSAASettings::Count1(),
-                                    smvk::RasterSettings{.cullMode = smvk::CullMode::None});
-                                cmd.PushConstants(
-                                    0, sizeof(SsrStencilViewPush), &push, smvk::ShaderStage::All);
-                                cmd.Draw(3, 1, 0, 0);
-                            });
+                            SsrDebugViewFrame& stencilViewFrame =
+                                m_rendergraph->PassFrameData<SsrDebugViewFrame>(stencilViewPass);
+                            stencilViewFrame.program = &m_ssrStencilViewProgram;
+                            std::memcpy(stencilViewFrame.push, &push, sizeof(push));
+                            stencilViewPass.SetRecordFn(&RecordSsrDebugView);
                             std::fprintf(stderr,
                                          "[SSR-dump] stencil-view pass armed: ssr_blur will hold "
                                          "the sampled stencil\n");
