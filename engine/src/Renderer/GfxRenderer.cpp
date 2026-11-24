@@ -33,6 +33,51 @@ static constexpr const char* kMeshDebugFragPath = "content/shaders/meshdebug.fra
 static constexpr const char* kLineVsPath = "content/shaders/debugline.vert.hlsl.spv";
 static constexpr const char* kLineFragPath = "content/shaders/debugline.frag.hlsl.spv";
 
+namespace {
+
+// Per-flight slot payload + non-capturing record functions for the HZB pass
+// family (static compiled ABI). `config` points to the GfxRenderer (its `gfx`
+// state is the stable side); the frame slot carries the per-frame view/ctx +
+// per-mip / SPD-shadow routing.
+struct GfxHizFrame {
+    smvk::ResourceManager* ctx = nullptr;
+    uint32_t slot = UINT32_MAX;
+    uint32_t depthBindlessIndex = UINT32_MAX;
+    uint32_t m = 0;
+    bool fromDepth = false;
+    bool shadow = false; // SPD verify twin
+};
+
+void RecordGfxHizSpd(smvk::CommandBuffer& cmd, const smvk::FrameContext& fc, const smvk::PassData& pd) {
+    auto* self = const_cast<GfxRenderer*>(static_cast<const GfxRenderer*>(pd.config));
+    const GfxHizFrame& f = fc.rg->FrameData().Get<GfxHizFrame>(pd.frameSlot);
+    ::smvk::profiler::GpuPassScope scope(f.shadow ? "GfxHizSpdVerify" : "GfxHizSpd",
+                                         __FILE__,
+                                         __LINE__);
+    SMVK_PROFILE_TAG("spd", 1);
+    smvk::gfx::PushAndDispatchHizSpd(self->gfx, cmd, *f.ctx, f.slot, f.depthBindlessIndex, f.shadow);
+}
+
+void RecordGfxHizMip(smvk::CommandBuffer& cmd, const smvk::FrameContext& fc, const smvk::PassData& pd) {
+    auto* self = const_cast<GfxRenderer*>(static_cast<const GfxRenderer*>(pd.config));
+    const GfxHizFrame& f = fc.rg->FrameData().Get<GfxHizFrame>(pd.frameSlot);
+    // Per-mip GPU scope (the pass-level scope uses the shared "GfxHiz" name).
+    // Static literals: Optick stores the name pointer, so run-time names must
+    // have static storage.
+    static const char* const kHizMipGpuNames[16] = {
+        "GfxHizMip0",  "GfxHizMip1",  "GfxHizMip2",  "GfxHizMip3",
+        "GfxHizMip4",  "GfxHizMip5",  "GfxHizMip6",  "GfxHizMip7",
+        "GfxHizMip8",  "GfxHizMip9",  "GfxHizMip10", "GfxHizMip11",
+        "GfxHizMip12", "GfxHizMip13", "GfxHizMip14", "GfxHizMip15",
+    };
+    ::smvk::profiler::GpuPassScope scope(kHizMipGpuNames[f.m < 16 ? f.m : 15], __FILE__, __LINE__);
+    SMVK_PROFILE_TAG("mip", f.m);
+    smvk::gfx::PushAndDispatchHiz(
+        self->gfx, cmd, *f.ctx, f.slot, f.m, f.fromDepth ? f.depthBindlessIndex : UINT32_MAX);
+}
+
+} // namespace
+
 void GfxRenderer::DebugClusterColor(uint32_t cluster,
                                     float coneCutoff,
                                     int mode,
@@ -395,12 +440,12 @@ void GfxRenderer::AppendHizPasses(smvk::FrameContext& base,
         // the A/B signal in framegraph timings.
         smvk::RenderPass& spdPass = smvk::gfx::AddHizSpdPass(
             gfx, *fc.rg, slot, depthLogical, passName ? passName : "GfxHiz");
-        spdPass.SetRecordingFunc([self, ctx, slot, depthBindlessIndex](smvk::CommandBuffer& cmd) {
-            ::smvk::profiler::GpuPassScope hizSpdScope("GfxHizSpd", __FILE__, __LINE__);
-            SMVK_PROFILE_TAG("spd", 1);
-            smvk::gfx::PushAndDispatchHizSpd(
-                self->gfx, cmd, *ctx, slot, depthBindlessIndex, /*shadow=*/false);
-        });
+        GfxHizFrame& spdFrame = fc.rg->PassFrameData<GfxHizFrame>(spdPass);
+        spdFrame.ctx = ctx;
+        spdFrame.slot = slot;
+        spdFrame.depthBindlessIndex = depthBindlessIndex;
+        spdFrame.shadow = false;
+        spdPass.SetRecordFn(&RecordGfxHizSpd, self);
     } else {
         for (uint32_t m = 0; m < t.hiz[fc.frameIndex].mipCount; ++m) {
             const bool fromDepth = (m == 0);
@@ -411,35 +456,13 @@ void GfxRenderer::AppendHizPasses(smvk::FrameContext& base,
                                       m,
                                       fromDepth ? depthLogical : smvk::LogicalImageViewHandle{},
                                       passName ? passName : "GfxHiz");
-            hizPass.SetRecordingFunc(
-                [self, ctx, slot, m, depthBindlessIndex, fromDepth](smvk::CommandBuffer& cmd) {
-                    // Per-mip GPU scope (the pass-level scope uses the shared
-                    // "GfxHiz" name). Static literals: Optick stores the name
-                    // pointer, so run-time names must have static storage.
-                    static const char* const kHizMipGpuNames[16] = {
-                        "GfxHizMip0",
-                        "GfxHizMip1",
-                        "GfxHizMip2",
-                        "GfxHizMip3",
-                        "GfxHizMip4",
-                        "GfxHizMip5",
-                        "GfxHizMip6",
-                        "GfxHizMip7",
-                        "GfxHizMip8",
-                        "GfxHizMip9",
-                        "GfxHizMip10",
-                        "GfxHizMip11",
-                        "GfxHizMip12",
-                        "GfxHizMip13",
-                        "GfxHizMip14",
-                        "GfxHizMip15",
-                    };
-                    ::smvk::profiler::GpuPassScope hizMipScope(
-                        kHizMipGpuNames[m < 16 ? m : 15], __FILE__, __LINE__);
-                    SMVK_PROFILE_TAG("mip", m);
-                    smvk::gfx::PushAndDispatchHiz(
-                        self->gfx, cmd, *ctx, slot, m, fromDepth ? depthBindlessIndex : UINT32_MAX);
-                });
+            GfxHizFrame& mipFrame = fc.rg->PassFrameData<GfxHizFrame>(hizPass);
+            mipFrame.ctx = ctx;
+            mipFrame.slot = slot;
+            mipFrame.depthBindlessIndex = depthBindlessIndex;
+            mipFrame.m = m;
+            mipFrame.fromDepth = fromDepth;
+            hizPass.SetRecordFn(&RecordGfxHizMip, self);
         }
     }
     // Verify shadow (TOURMALINE_HIZ_SPD_VERIFY): the SPD twin into
@@ -451,11 +474,12 @@ void GfxRenderer::AppendHizPasses(smvk::FrameContext& base,
         t.hizVerify[fc.frameIndex].mipCount != 0) {
         smvk::RenderPass& vPass = smvk::gfx::AddHizSpdPass(
             gfx, *fc.rg, slot, depthLogical, "GfxHizSpdVerify", /*shadow=*/true);
-        vPass.SetRecordingFunc([self, ctx, slot, depthBindlessIndex](smvk::CommandBuffer& cmd) {
-            ::smvk::profiler::GpuPassScope hizSpdVScope("GfxHizSpdVerify", __FILE__, __LINE__);
-            smvk::gfx::PushAndDispatchHizSpd(
-                self->gfx, cmd, *ctx, slot, depthBindlessIndex, /*shadow=*/true);
-        });
+        GfxHizFrame& vFrame = fc.rg->PassFrameData<GfxHizFrame>(vPass);
+        vFrame.ctx = ctx;
+        vFrame.slot = slot;
+        vFrame.depthBindlessIndex = depthBindlessIndex;
+        vFrame.shadow = true;
+        vPass.SetRecordFn(&RecordGfxHizSpd, self);
         gfx.hizSpdVerifyArmed = true;
     }
 }
