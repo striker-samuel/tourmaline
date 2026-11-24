@@ -8732,6 +8732,49 @@ void RecordSeed(smvk::CommandBuffer& cmd, const smvk::FrameContext& fc, const sm
     cmd.PushConstants(0, sizeof(f.push), &f.push, smvk::ShaderStage::Compute);
     cmd.Dispatch((f.push.commandCapacity + 127u) / 128u, 1, 1);
 }
+struct TaskTemporalClearFrame {
+    smvk::ShaderProgram* program = nullptr;
+    tour::gpu_scene::TaskMeshTemporalFrame temporal{};
+};
+void RecordTaskTemporalClear(smvk::CommandBuffer& cmd,
+                             const smvk::FrameContext& fc,
+                             const smvk::PassData& pd) {
+    const TaskTemporalClearFrame& f = fc.rg->FrameData().Get<TaskTemporalClearFrame>(pd.frameSlot);
+    cmd.BindComputePipeline(*f.program);
+    cmd.PushConstants(0, sizeof(f.temporal.clear), &f.temporal.clear, smvk::ShaderStage::Compute);
+    cmd.Dispatch((f.temporal.capacity + 255u) / 256u, 1u, 1u);
+}
+struct HizGateFrame {
+    smvk::ShaderProgram* program = nullptr;
+    tour::gpu_scene::RasterHizCullPush push{};
+};
+void RecordHizGate(smvk::CommandBuffer& cmd, const smvk::FrameContext& fc, const smvk::PassData& pd) {
+    const HizGateFrame& f = fc.rg->FrameData().Get<HizGateFrame>(pd.frameSlot);
+    cmd.WriteStageTimestamp(smvk::kGpuStageSceneCull, true);
+    cmd.BindComputePipeline(*f.program);
+    cmd.PushConstants(0, sizeof(f.push), &f.push, smvk::ShaderStage::Compute);
+    cmd.Dispatch((f.push.commandCapacity + 127u) / 128u, 1, 1);
+}
+struct HistoryFrame {
+    smvk::ShaderProgram* program = nullptr;
+    tour::gpu_scene::RasterHistoryPush push{};
+};
+void RecordHistory(smvk::CommandBuffer& cmd, const smvk::FrameContext& fc, const smvk::PassData& pd) {
+    const HistoryFrame& f = fc.rg->FrameData().Get<HistoryFrame>(pd.frameSlot);
+    // Same pipeline, two legs: clear (mode 0) zeroes the flight's snapshot,
+    // the barrier orders it before the atomic commit writes (mode 1).
+    tour::gpu_scene::RasterHistoryPush clearPush = f.push;
+    clearPush.mode = 0u;
+    cmd.BindComputePipeline(*f.program);
+    cmd.PushConstants(0, sizeof(clearPush), &clearPush, smvk::ShaderStage::Compute);
+    cmd.Dispatch((f.push.historySlots + 127u) / 128u, 1, 1);
+    cmd.EmitGlobalMemoryBarrier();
+    tour::gpu_scene::RasterHistoryPush commitPush = f.push;
+    commitPush.mode = 1u;
+    cmd.PushConstants(0, sizeof(commitPush), &commitPush, smvk::ShaderStage::Compute);
+    cmd.Dispatch((f.push.commandCapacity + 127u) / 128u, 1, 1);
+    cmd.WriteStageTimestamp(smvk::kGpuStageSceneCull, false);
+}
 } // namespace
 void WorldRenderer::RecordMeshParticlesCull(smvk::CommandBuffer& cmd,
                                             const smvk::FrameContext& fc,
@@ -16481,13 +16524,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         currentWrite.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
         currentWrite.barrierMasks.accessMask = smvk::AccessFlags::ShaderWrite;
         clear.AddBufferHint(temporal.currentLogical, currentWrite);
-        auto clearProgram = m_gpuSceneTaskTemporalClearProgram;
-        clear.SetRecordingFunc([clearProgram, temporal](smvk::CommandBuffer& cmd) mutable {
-            cmd.BindComputePipeline(clearProgram);
-            cmd.PushConstants(
-                0, sizeof(temporal.clear), &temporal.clear, smvk::ShaderStage::Compute);
-            cmd.Dispatch((temporal.capacity + 255u) / 256u, 1u, 1u);
-        });
+        TaskTemporalClearFrame& clearFrame =
+            m_rendergraph->PassFrameData<TaskTemporalClearFrame>(clear);
+        clearFrame.program = &m_gpuSceneTaskTemporalClearProgram;
+        clearFrame.temporal = temporal;
+        clear.SetRecordFn(&RecordTaskTemporalClear);
         const uint32_t flight = fb.frameIndex;
         auto seed = m_gpuSceneTaskMeshPlan.graphics;
         seed.temporalPhase = 1u;
@@ -16661,13 +16702,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             if (gpuHistoryValid)
                 gate.AddBufferHint(
                     m_gpuSceneRasterHistoryLogicals[m_gpuSceneRasterLastHistoryFlight], hizRead);
-            auto hizProgram = m_gpuSceneRasterHizCullProgram;
-            gate.SetRecordingFunc([hizProgram, hizPush](smvk::CommandBuffer& cmd) mutable {
-                cmd.WriteStageTimestamp(smvk::kGpuStageSceneCull, true);
-                cmd.BindComputePipeline(hizProgram);
-                cmd.PushConstants(0, sizeof(hizPush), &hizPush, smvk::ShaderStage::Compute);
-                cmd.Dispatch((hizPush.commandCapacity + 127u) / 128u, 1, 1);
-            });
+            HizGateFrame& gateFrame = m_rendergraph->PassFrameData<HizGateFrame>(gate);
+            gateFrame.program = &m_gpuSceneRasterHizCullProgram;
+            gateFrame.push = hizPush;
+            gate.SetRecordFn(&RecordHizGate);
             // Publish only actually surviving GPU work, never stale work
             // slots or CPU draw IDs. A strict shader barrier separates
             // clearing from atomic per-instance generation publication.
@@ -16687,24 +16725,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             historyRW.barrierMasks.accessMask =
                 smvk::AccessFlags::ShaderRead | smvk::AccessFlags::ShaderWrite;
             history.AddBufferHint(m_gpuSceneRasterHistoryLogicals[temporalFlight], historyRW);
-            auto historyProgram = m_gpuSceneRasterHistoryProgram;
-            history.SetRecordingFunc([historyProgram,
-                                      historyPush](smvk::CommandBuffer& cmd) mutable {
-                // Same pipeline, two legs: clear (mode 0) zeroes the
-                // flight's snapshot, the barrier orders it before the
-                // atomic commit writes (mode 1).
-                tour::gpu_scene::RasterHistoryPush clearPush = historyPush;
-                clearPush.mode = 0u;
-                cmd.BindComputePipeline(historyProgram);
-                cmd.PushConstants(0, sizeof(clearPush), &clearPush, smvk::ShaderStage::Compute);
-                cmd.Dispatch((historyPush.historySlots + 127u) / 128u, 1, 1);
-                cmd.EmitGlobalMemoryBarrier();
-                tour::gpu_scene::RasterHistoryPush commitPush = historyPush;
-                commitPush.mode = 1u;
-                cmd.PushConstants(0, sizeof(commitPush), &commitPush, smvk::ShaderStage::Compute);
-                cmd.Dispatch((historyPush.commandCapacity + 127u) / 128u, 1, 1);
-                cmd.WriteStageTimestamp(smvk::kGpuStageSceneCull, false);
-            });
+            HistoryFrame& historyFrame = m_rendergraph->PassFrameData<HistoryFrame>(history);
+            historyFrame.program = &m_gpuSceneRasterHistoryProgram;
+            historyFrame.push = historyPush;
+            history.SetRecordFn(&RecordHistory);
             m_gpuSceneRasterLastHistoryFlight = temporalFlight;
             m_gpuSceneRasterHistoryWorld = m_world;
             m_gpuSceneRasterHistoryTopologyRevision = m_world->gpuSceneTopologyRevision;
