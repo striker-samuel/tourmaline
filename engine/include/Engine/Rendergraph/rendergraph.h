@@ -27,6 +27,7 @@ namespace smvk {
 
 struct RenderGraph;
 struct RenderPass;
+struct FrameContext; // defined in Rendergraph/renderer.h (per-frame input)
 
 struct CommandBuffer final {
     CommandBuffer(void* cmdOpaque,
@@ -313,6 +314,30 @@ struct BufferHint {
 
 using RecordingFunction = std::function<void(CommandBuffer&)>;
 
+// ------------------------------------------------------------
+// Stable record-function ABI (static compiled render graph)
+// ------------------------------------------------------------
+// The compiled graph is retained across frames, so a pass's record function
+// must be a NON-CAPTURING function pointer: it reads every frame-dependent
+// value through FrameContext (never through a captured frame-local). The
+// immutable per-pass configuration lives in a stable, caller-owned block the
+// record function downcasts through PassData::config.
+//
+// FrameContext (Rendergraph/renderer.h) is the per-frame input: the resource
+// manager, graph, world, views, camera eye, render extent and frame index.
+// Renderers extend it (App/frame_context.h) with pass-specific addresses and
+// static_cast back to what they need.
+
+// Immutable per-pass configuration. `config` points to a typed, caller-owned
+// POD that is stable for the lifetime of the compiled graph (typically a
+// renderer member or a value stashed alongside the renderer). A record
+// function that needs no per-pass config leaves it null.
+struct PassData {
+    const void* config = nullptr;
+};
+
+using RecordFn = void (*)(CommandBuffer&, const FrameContext&, const PassData&);
+
 struct RenderPass final {
     explicit RenderPass(const char* name = nullptr) : name_(name) {}
 
@@ -588,6 +613,17 @@ struct RenderPass final {
         return *this;
     }
 
+    // Stable record-function ABI (static compiled graph): a non-capturing
+    // function pointer plus an immutable, caller-owned configuration block.
+    // `config` must outlive the compiled graph (typically a renderer member).
+    RenderPass& SetRecordFn(RecordFn fn, const PassData* config = nullptr) {
+        recordFn_ = fn;
+        passData_ = config;
+        return *this;
+    }
+
+    [[nodiscard]] bool HasRecordFn() const { return recordFn_ != nullptr; }
+
     // --------------------------------------------------------
     // Compute support (Forward+ light culling, etc.)
     // --------------------------------------------------------
@@ -659,6 +695,9 @@ struct RenderPass final {
     int32_t offsetY_ = 0;
 
     RecordingFunction recordingFunction_{};
+
+    RecordFn recordFn_ = nullptr;
+    const PassData* passData_ = nullptr;
 
     bool isCompute_ = false;
     QueueHint queueHint_ = QueueHint::Graphics;
