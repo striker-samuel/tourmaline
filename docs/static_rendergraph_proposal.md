@@ -78,3 +78,59 @@ CPU tests deterministic and device-independent; existing test_rendergraph_contra
 - Whole-resource tracking first; extend to subresources later.
 
 This RFC is a documentation review checkpoint; the implementation must be separately reviewed before merge.
+
+## Universal indexed BDA push ABI (maintainer decision)
+
+Use option B: four generic, pass-defined buffer device addresses, not four
+globally semantic addresses. The universal push range is exactly 32 bytes.
+
+```cpp
+struct alignas(8) PassPushConstants {
+    uint64_t bda[4]{};
+};
+static_assert(sizeof(PassPushConstants) == 32);
+static_assert(alignof(PassPushConstants) == 8);
+```
+
+Each pass/shader family defines the interpretation of slots 0..3, preferably
+through named compile-time indices shared with or checked against HLSL.
+No mandatory globals/view/resources/parameters partition. A slot can point
+directly to a typed parameter record, a buffer, or an address table for passes
+that need more than four buffers. Unused slots are zero and never dereferenced.
+Do not require an extra level of indirection for simple passes.
+
+### Bindings and compilation
+
+- CPU resource IDs remain necessary for timelines, hazards and aliasing.
+  Do not expose them as a redundant GPU binding namespace.
+- Pass declarations optionally associate shader-visible buffers with a slot
+  (0..3) or a field of a typed record. The compiler validates slot uniqueness,
+  buffer address capability and declared usage, and compiles a patch list.
+  Fixed-function attachments, vertex/index/indirect buffers need no shader slot
+  unless also accessed by a shader.
+- Use BDAs directly for buffers; index a BDA table only where the workload needs
+  additional addresses or GPU-selected records. Images and samplers still use
+  bindless descriptor indices, stored in typed records as needed.
+- Static addresses are resolved after resource allocation; patch dynamic
+  addresses and descriptor indices per flight. No per-frame name lookup or
+  binding-index allocation. Preserve backing allocation lifetimes, alignment,
+  and upload visibility. Explicitly declare backing buffer handles for
+  transitive BDA accesses; the address itself does not express a dependency.
+- All migrated pipelines use a compatible 32-byte push range and stage flags.
+  Push after binding a compatible layout; push once when values are constant
+  for a pass, or update a changed 8-byte slot for subsequent draws/dispatches.
+  GPU-driven draw IDs may index records without changing push constants.
+  Never overwrite a record still in use by the GPU.
+
+### Migration and validation
+
+Audit the existing 256-byte IRenderer::PushConstants and all C++/HLSL
+push layouts, pipeline range creation, filtered/motion VS overlays, mesh/task,
+placement, skinning, compute and postprocess paths. Replace the ABI and
+affected callers together; do not ship a permanent second ABI. Validate
+SPIR-V physical storage buffer support, offsets and array stride, push range
+compatibility, slot bounds, per-flight record lifetime, hot reload and GPU
+synchronization. Compare shader reflection, golden captures and CPU/GPU
+performance against the old ABI; the smaller block is not by itself proof of
+a performance improvement. This is an extension of the accepted static graph
+architecture, not yet a runtime implementation.
