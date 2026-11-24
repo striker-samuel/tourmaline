@@ -150,6 +150,12 @@ struct GsTaskMeshPush {
     GPU_PTR_READ(GsSkinDeformedHeap) skinDeformed;
     uint skinDeformedBase;
     uint skinValid;
+    // Previous parity half + validity (skeletal motion vectors): last frame's
+    // pose, same base, gated by skinPrevValid (1 while consecutive frames
+    // skinned the same heap). The motion mesh shader reads it for the previous
+    // projection so a moving limb contributes velocity instead of ghosting.
+    GPU_PTR_READ(GsSkinDeformedHeap) skinDeformedPrev;
+    uint skinPrevValid;
 };
 
 // Workgroup-local payload. Each mesh workgroup reads its own compact slot.

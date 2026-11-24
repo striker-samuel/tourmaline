@@ -115,6 +115,13 @@ struct AppFrameContext : public smvk::FrameContext {
     uint64_t skinDeformedBda = 0;
     uint32_t skinDeformedBase = 0xFFFFFFFFu;
     bool skinDeformedValid = false;
+    // The PREVIOUS parity half of the deformed heap (last frame's pose) +
+    // its validity. skinPrevValid is 1 only while consecutive frames ran the
+    // skinning pass on the SAME heap + span + base — the motion leg reads the
+    // previous pose for skinned motion vectors, and a stale/foreign prev
+    // (rebuild, cluster swap, skinning gap) falls back to zero mesh motion.
+    uint64_t skinDeformedPrevBda = 0;
+    uint32_t skinPrevValid = 0;
 };
 
 } // namespace engine

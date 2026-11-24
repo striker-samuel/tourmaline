@@ -53,6 +53,14 @@ struct TaskMeshGpuPush {
     uint64_t skinDeformed = 0;
     uint32_t skinDeformedBase = 0;
     uint32_t skinValid = 0;
+    // Previous parity half + validity (skeletal motion vectors). skinDeformedPrev
+    // is last frame's cur half of the SAME heap; skinPrevValid gates it (1 only
+    // while consecutive frames skinned the same heap + span + base — a rebuild
+    // or skinning gap leaves 0 and the motion shader falls back to zero mesh
+    // motion). The base is SHARED with the current half (parity flip only
+    // changes the half offset, never the vertex addressing).
+    uint64_t skinDeformedPrev = 0;
+    uint32_t skinPrevValid = 0;
 };
 struct TaskMeshIndirectCommand {
     uint32_t groupCountX;
@@ -68,7 +76,10 @@ static_assert(offsetof(TaskMeshGpuParams, hizValid) == 164);
 static_assert(offsetof(TaskMeshGpuParams, meshletVertices) == 168);
 static_assert(offsetof(TaskMeshGpuParams, historyPrevious) == 184);
 static_assert(offsetof(TaskMeshGpuParams, historyCapacity) == 200);
-static_assert(sizeof(TaskMeshGpuPush) == 48);
+static_assert(sizeof(TaskMeshGpuPush) == 64);
+static_assert(offsetof(TaskMeshGpuPush, skinDeformed) == 32);
+static_assert(offsetof(TaskMeshGpuPush, skinDeformedPrev) == 48);
+static_assert(offsetof(TaskMeshGpuPush, skinPrevValid) == 56);
 static_assert(sizeof(TaskMeshIndirectCommand) == 12);
 static_assert(std::is_trivially_copyable_v<TaskMeshGpuParams>);
 } // namespace tour::gpu_scene

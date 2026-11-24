@@ -15425,6 +15425,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         fc.skinDeformedBda = gfx.skinDeformedBda;
         fc.skinDeformedBase = gfx.skinDeformedBase;
         fc.skinDeformedValid = (gfx.skinDeformedBda != 0 && gfx.skinDeformedBase != UINT32_MAX);
+        // The PREVIOUS parity half rides the same heap + base (the parity flip
+        // only changes the half offset), so the motion shaders fetch last
+        // frame's pose from skinDeformedPrev at the SAME skinDeformedBase.
+        fc.skinDeformedPrevBda = gfx.skinDeformedPrevBda;
+        fc.skinPrevValid = gfx.skinPrevValid;
         // The task/mesh push is baked BEFORE the skinning pass (its params
         // buffer cannot carry the parity-flipped deformed BDA), so stamp the
         // skin tail onto the push value NOW — every later dispatch (prepass +
@@ -15434,6 +15439,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         m_gpuSceneTaskMeshPlan.graphics.skinDeformedBase =
             fc.skinDeformedValid ? fc.skinDeformedBase : 0u;
         m_gpuSceneTaskMeshPlan.graphics.skinValid = fc.skinDeformedValid ? 1u : 0u;
+        m_gpuSceneTaskMeshPlan.graphics.skinDeformedPrev =
+            fc.skinPrevValid ? fc.skinDeformedPrevBda : 0;
+        m_gpuSceneTaskMeshPlan.graphics.skinPrevValid = fc.skinPrevValid ? 1u : 0u;
     }
 
 #include "WorldRendererGpuSceneCascades.inl"
