@@ -523,20 +523,20 @@ int main() {
                 s.aabbMax = glm::vec3(1.f);
             }
             const auto hs = cluster->UploadStaticMeshesDirect(blob.data(), srcs);
-            if (withDegenerate) {
-                if (!hs.empty())
-                    Fail("uploadDirect all-or-nothing",
-                         iter,
-                         op,
-                         "degenerate batch returned handles");
-            } else {
-                if (hs.size() != n)
-                    Fail("uploadDirect all-or-nothing",
-                         iter,
-                         op,
-                         "clean batch returned a short handle list");
-                for (size_t i = 0; i < n; ++i)
-                    addMesh(hs[i], srcs[i].vertexCount, srcs[i].indexCount);
+            // Zero-vertex sources are TOLERATED (an importer that dropped
+            // every face yields an empty mesh that draws nothing), NOT a
+            // batch failure — the batch path's all-or-nothing rollback is
+            // for heap-exhaustion, not for empty primitives (see the
+            // degenerate handling in geometry_upload.cpp, 4aed2052).
+            if (hs.size() != n)
+                Fail("uploadDirect batch size",
+                     iter,
+                     op,
+                     "batch returned a short handle list");
+            for (size_t i = 0; i < n; ++i) {
+                if (srcs[i].vertexCount == 0)
+                    continue; // degenerate empty mesh: valid handle, no surface
+                addMesh(hs[i], srcs[i].vertexCount, srcs[i].indexCount);
             }
         } else if (kind < 72 && !m.entries.empty()) {
             op = "destroyMesh";
