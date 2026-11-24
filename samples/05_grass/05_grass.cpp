@@ -18,6 +18,7 @@
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Renderer/renderview.h>
 #include <Engine/Renderer/vertex_layouts.h>
+#include <Engine/Rendergraph/renderer.h>
 #include <Engine/Rendergraph/placement_pass.h>
 #include <Engine/Rendergraph/terrain_pack.h>
 #include <Engine/Utils/shader_library.h>
@@ -399,52 +400,14 @@ class GrassApp final : public smvk::App {
             pass.AddBufferHint(vis->visibleL, vertexRead);
             pass.AddBufferHint(vis->indirectL, indirectRead);
         }
-        pass.SetRecordingFunc(
-            [this, mainView, vp, frameIndex = fb.frameIndex](smvk::CommandBuffer& cmd) {
-                cmd.BindStaticVertexFmt();
-                const smvk::DepthSettings depth{.depthFunc = smvk::CompareOp::LessEqual,
-                                                .writeEnable = true,
-                                                .depthTestEnable = true};
-                cmd.BindRenderPipeline(m_groundProgram,
-                                       ::tour::vertex_layouts::Static,
-                                       depth,
-                                       smvk::StencilSettings{},
-                                       smvk::BlendSettings::Opaque(),
-                                       smvk::MSAASettings::Count1(),
-                                       smvk::RasterSettings{.cullMode = smvk::CullMode::None});
-                cmd.PushConstants(0, sizeof(vp), &vp, smvk::ShaderStage::All);
-                cmd.DrawIndexed(m_groundSurface.indexCount,
-                                1,
-                                m_groundSurface.firstIndex,
-                                m_groundSurface.baseVertex);
-                cmd.BindRenderPipeline(m_draw.program,
-                                       ::tour::vertex_layouts::Static,
-                                       smvk::DepthSettings{.depthFunc = smvk::CompareOp::LessEqual,
-                                                           .writeEnable = true,
-                                                           .depthTestEnable = true},
-                                       smvk::StencilSettings{},
-                                       smvk::BlendSettings::Opaque(),
-                                       smvk::MSAASettings::Count1(),
-                                       smvk::RasterSettings{.cullMode = smvk::CullMode::None});
-                for (uint32_t i = 0; i < kSlotCount; ++i) {
-                    const auto* vis = m_runtime->VisSet(int32_t(i), frameIndex);
-                    if (!vis)
-                        continue;
-                    const tour::placement::PlacementVsPush push{
-                        vis->VisibleAddress(*m_context),
-                        m_runtime->pass.TileInstancesAddress(*m_context, i),
-                        m_views.DeviceAddress(*m_context, frameIndex),
-                        mainView,
-                        0u};
-                    cmd.PushConstants(tour::placement::kPlacementVsPushOffset,
-                                      sizeof(push),
-                                      &push,
-                                      smvk::ShaderStage::All);
-                    cmd.DrawIndexedIndirect(
-                        vis->IndirectBuffer(), 0, 1, tour::placement::kPlacementIndirectStride);
-                }
-            });
-        m_rendergraph->Execute(fb);
+        GrassFrame& frame = m_rendergraph->PassFrameData<GrassFrame>(pass);
+        frame.vp = vp;
+        frame.mainView = mainView;
+        frame.frameIndex = fb.frameIndex;
+        pass.SetRecordFn(&GrassApp::RecordGrass, this);
+        smvk::FrameContext fc{};
+        fc.rg = m_rendergraph.get();
+        m_rendergraph->Execute(fb, &fc);
         m_swapchain->EndAndPresentFramebuffer(fb);
         m_context->ProcessDeferrredTasks();
     }
@@ -459,6 +422,60 @@ class GrassApp final : public smvk::App {
     smvk::Holder<smvk::ShaderModuleHandle> m_groundVsModule{};
     smvk::ShaderProgram m_groundProgram{};
     smvk::Surface m_groundSurface{};
+
+    struct GrassFrame {
+        glm::mat4 vp{1.0f};
+        uint32_t mainView = 0;
+        uint32_t frameIndex = 0;
+    };
+    static void RecordGrass(smvk::CommandBuffer& cmd,
+                            const smvk::FrameContext& fc,
+                            const smvk::PassData& pd) {
+        auto* self = static_cast<GrassApp*>(const_cast<void*>(pd.config));
+        const GrassFrame& f = fc.rg->FrameData().Get<GrassFrame>(pd.frameSlot);
+        cmd.BindStaticVertexFmt();
+        const smvk::DepthSettings depth{.depthFunc = smvk::CompareOp::LessEqual,
+                                        .writeEnable = true,
+                                        .depthTestEnable = true};
+        cmd.BindRenderPipeline(self->m_groundProgram,
+                               ::tour::vertex_layouts::Static,
+                               depth,
+                               smvk::StencilSettings{},
+                               smvk::BlendSettings::Opaque(),
+                               smvk::MSAASettings::Count1(),
+                               smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+        cmd.PushConstants(0, sizeof(f.vp), &f.vp, smvk::ShaderStage::All);
+        cmd.DrawIndexed(self->m_groundSurface.indexCount,
+                        1,
+                        self->m_groundSurface.firstIndex,
+                        self->m_groundSurface.baseVertex);
+        cmd.BindRenderPipeline(self->m_draw.program,
+                               ::tour::vertex_layouts::Static,
+                               smvk::DepthSettings{.depthFunc = smvk::CompareOp::LessEqual,
+                                                   .writeEnable = true,
+                                                   .depthTestEnable = true},
+                               smvk::StencilSettings{},
+                               smvk::BlendSettings::Opaque(),
+                               smvk::MSAASettings::Count1(),
+                               smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+        for (uint32_t i = 0; i < kSlotCount; ++i) {
+            const auto* vis = self->m_runtime->VisSet(int32_t(i), f.frameIndex);
+            if (!vis)
+                continue;
+            const tour::placement::PlacementVsPush push{
+                vis->VisibleAddress(*self->m_context),
+                self->m_runtime->pass.TileInstancesAddress(*self->m_context, i),
+                self->m_views.DeviceAddress(*self->m_context, f.frameIndex),
+                f.mainView,
+                0u};
+            cmd.PushConstants(tour::placement::kPlacementVsPushOffset,
+                              sizeof(push),
+                              &push,
+                              smvk::ShaderStage::All);
+            cmd.DrawIndexedIndirect(
+                vis->IndirectBuffer(), 0, 1, tour::placement::kPlacementIndirectStride);
+        }
+    }
     tour::placement::PlacementIndirectCmd m_seed{};
     smvk::RenderViewSet m_views{};
     smvk::LogicalBufferHandle m_viewsLogical{};

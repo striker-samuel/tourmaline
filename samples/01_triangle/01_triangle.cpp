@@ -126,15 +126,7 @@ class TriangleApp : public smvk::App {
                       smvk::AttachmentLoadOp::Clear,
                       smvk::AttachmentStoreOp::Store,
                       smvk::ClearColor(0, 0, 0, 1))
-            .SetRecordingFunc([this](smvk::CommandBuffer& cmd) { // recording
-                cmd.BindRenderPipeline(m_program, ::tour::vertex_layouts::Empty);
-                cmd.Draw(3, // vertex count
-                         1, // instance count
-                         0, // first vertex
-                         0  // first instance
-                );
-            } // end recording
-            );
+            .SetRecordFn(&TriangleApp::RecordTriangle, this);
 
         m_rendergraph->Execute(fb);
         m_context->ProcessDeferrredTasks(); // Not needed here
@@ -143,6 +135,14 @@ class TriangleApp : public smvk::App {
   private:
     std::vector<smvk::LogicalImageViewHandle> swapViews;
     smvk::ShaderProgram m_program{};
+
+    static void RecordTriangle(smvk::CommandBuffer& cmd,
+                               const smvk::FrameContext&,
+                               const smvk::PassData& pd) {
+        auto* self = static_cast<TriangleApp*>(const_cast<void*>(pd.config));
+        cmd.BindRenderPipeline(self->m_program, ::tour::vertex_layouts::Empty);
+        cmd.Draw(3, 1, 0, 0);
+    }
 };
 
 int main(int argc, const char* argv[]) {

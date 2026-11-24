@@ -12,6 +12,7 @@
 
 #include <Engine/Memory/memory.h>
 #include <Engine/Renderer/dxc_integration.h>
+#include <Engine/Rendergraph/renderer.h>
 #include <Engine/core.h>
 #include <SDL3/SDL_video.h>
 #include <imgui.h>
@@ -488,25 +489,17 @@ class BlurApp : public smvk::App {
                 push.texelY = srcTexelY;
                 push.radius = 0.0f;
                 push.direction = 0;
-                m_rendergraph->AddPass("BlurDownsample")
+                auto& blurPass = m_rendergraph->AddPass("BlurDownsample")
                     .SetOffset(0, 0)
                     .SetExtent(be)
                     .SetInputImages({m_source.logical})
                     .SetColor({m_blurA.logical},
                               smvk::AttachmentLoadOp::DontCare,
-                              smvk::AttachmentStoreOp::Store)
-                    .SetRecordingFunc([this, push](smvk::CommandBuffer& cmd) mutable {
-                        cmd.BindRenderPipeline(
-                            m_program,
-                            ::tour::vertex_layouts::Empty,
-                            smvk::DepthSettings::Disabled(),
-                            smvk::StencilSettings::DefaultDisabled(),
-                            smvk::BlendSettings::Opaque(),
-                            smvk::MSAASettings::Count1(),
-                            smvk::RasterSettings{.cullMode = smvk::CullMode::None});
-                        cmd.PushConstants(0, sizeof(BlurPush), &push, smvk::ShaderStage::All);
-                        cmd.Draw(3, 1, 0, 0);
-                    });
+                              smvk::AttachmentStoreOp::Store);
+                BlurFrame& frame = m_rendergraph->PassFrameData<BlurFrame>(blurPass);
+                frame.program = &m_program;
+                frame.push = push;
+                blurPass.SetRecordFn(&BlurApp::RecordBlur);
             }
 
             // Passes 1..N: separable H/V ping-pong between A and B.
@@ -523,25 +516,17 @@ class BlurApp : public smvk::App {
                 push.texelY = blurTexelY;
                 push.radius = m_blurRadius;
                 push.direction = uint32_t(i % 2); // alternate H, V, H, V...
-                m_rendergraph->AddPass(i % 2 == 0 ? "BlurH" : "BlurV")
+                auto& blurPass = m_rendergraph->AddPass(i % 2 == 0 ? "BlurH" : "BlurV")
                     .SetOffset(0, 0)
                     .SetExtent(be)
                     .SetInputImages({curView})
                     .SetColor({dst.logical},
                               smvk::AttachmentLoadOp::DontCare,
-                              smvk::AttachmentStoreOp::Store)
-                    .SetRecordingFunc([this, push](smvk::CommandBuffer& cmd) mutable {
-                        cmd.BindRenderPipeline(
-                            m_program,
-                            ::tour::vertex_layouts::Empty,
-                            smvk::DepthSettings::Disabled(),
-                            smvk::StencilSettings::DefaultDisabled(),
-                            smvk::BlendSettings::Opaque(),
-                            smvk::MSAASettings::Count1(),
-                            smvk::RasterSettings{.cullMode = smvk::CullMode::None});
-                        cmd.PushConstants(0, sizeof(BlurPush), &push, smvk::ShaderStage::All);
-                        cmd.Draw(3, 1, 0, 0);
-                    });
+                              smvk::AttachmentStoreOp::Store);
+                BlurFrame& frame = m_rendergraph->PassFrameData<BlurFrame>(blurPass);
+                frame.program = &m_program;
+                frame.push = push;
+                blurPass.SetRecordFn(&BlurApp::RecordBlur);
                 curView = dst.logical;
                 curBindless = dst.bindlessIndex;
             }
@@ -560,23 +545,16 @@ class BlurApp : public smvk::App {
             push.texelY = finalTexelY;
             push.radius = 0.0f;
             push.direction = 0;
-            m_rendergraph->AddPass("BlurComposite")
+            auto& blurPass = m_rendergraph->AddPass("BlurComposite")
                 .SetOffset(0, 0)
                 .SetExtent(swapEx)
                 .SetInputImages({finalView})
                 .SetColor(
-                    {swapView}, smvk::AttachmentLoadOp::DontCare, smvk::AttachmentStoreOp::Store)
-                .SetRecordingFunc([this, push](smvk::CommandBuffer& cmd) mutable {
-                    cmd.BindRenderPipeline(m_program,
-                                           ::tour::vertex_layouts::Empty,
-                                           smvk::DepthSettings::Disabled(),
-                                           smvk::StencilSettings::DefaultDisabled(),
-                                           smvk::BlendSettings::Opaque(),
-                                           smvk::MSAASettings::Count1(),
-                                           smvk::RasterSettings{.cullMode = smvk::CullMode::None});
-                    cmd.PushConstants(0, sizeof(BlurPush), &push, smvk::ShaderStage::All);
-                    cmd.Draw(3, 1, 0, 0);
-                });
+                    {swapView}, smvk::AttachmentLoadOp::DontCare, smvk::AttachmentStoreOp::Store);
+            BlurFrame& frame = m_rendergraph->PassFrameData<BlurFrame>(blurPass);
+            frame.program = &m_program;
+            frame.push = push;
+            blurPass.SetRecordFn(&BlurApp::RecordBlur);
         }
 
         // ImGui controls – built before Execute so AddPass sees the draw data.
@@ -613,7 +591,9 @@ class BlurApp : public smvk::App {
             m_imgui->AddPass(*m_rendergraph, swapView, swapEx);
         }
 
-        m_rendergraph->Execute(fb);
+        smvk::FrameContext fc{};
+        fc.rg = m_rendergraph.get();
+        m_rendergraph->Execute(fb, &fc);
         m_context->ProcessDeferrredTasks();
     }
 
@@ -623,6 +603,25 @@ class BlurApp : public smvk::App {
     smvk::Holder<smvk::ShaderModuleHandle> m_vert;
     smvk::Holder<smvk::ShaderModuleHandle> m_frag;
     smvk::ShaderProgram m_program{};
+
+    struct BlurFrame {
+        smvk::ShaderProgram* program = nullptr;
+        BlurPush push{};
+    };
+    static void RecordBlur(smvk::CommandBuffer& cmd,
+                           const smvk::FrameContext& fc,
+                           const smvk::PassData& pd) {
+        const BlurFrame& f = fc.rg->FrameData().Get<BlurFrame>(pd.frameSlot);
+        cmd.BindRenderPipeline(*f.program,
+                               ::tour::vertex_layouts::Empty,
+                               smvk::DepthSettings::Disabled(),
+                               smvk::StencilSettings::DefaultDisabled(),
+                               smvk::BlendSettings::Opaque(),
+                               smvk::MSAASettings::Count1(),
+                               smvk::RasterSettings{.cullMode = smvk::CullMode::None});
+        cmd.PushConstants(0, sizeof(f.push), &f.push, smvk::ShaderStage::All);
+        cmd.Draw(3, 1, 0, 0);
+    }
 
     SourceImage m_source{};
     BlurTarget m_blurA{};
