@@ -5,14 +5,9 @@
 //
 // Each cascade gets independent GPUScene visibility, work and draw commands.
 // Main-view visibility cannot represent light-space/off-camera casters.
-struct GpuCascadeSubmission {
-    bool ready = false;
-    smvk::BufferHandle commands{};
-    tour::gpu_scene::RasterVsPush vs{};
-    uint32_t capacity = 0;
-    smvk::LogicalBufferHandle indirectLogical{}, workLogical{}, viewLogical{};
-};
-std::array<GpuCascadeSubmission, smvk::kMaxCascades> gpuCascades{};
+// GpuCascadeSubmission is a nested WorldRenderer type (hoisted to the header);
+// RecordGpuCascade / HintGpuCascade are WorldRenderer member/static helpers.
+std::array<WorldRenderer::GpuCascadeSubmission, smvk::kMaxCascades> gpuCascades{};
 
 static const bool s_gpuSceneShadows = [] {
     const char* e = std::getenv("TOURMALINE_GPU_SCENE_SHADOWS");
@@ -217,63 +212,25 @@ if (s_gpuSceneShadows && m_gpuSceneRasterEnabled && m_gpuSceneDatabaseReady &&
             ownerRead.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
             ownerRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
             pass.AddBufferHint(m_gpuSceneRasterOwnerMaskLogical[flight], ownerRead);
-            auto cullProgram = m_gpuSceneCullProgram;
-            auto compactPrograms = m_gpuSceneCompactPrograms;
-            auto workPrograms = m_gpuSceneWorkPrograms;
-            auto workScanPrograms = m_gpuSceneWorkScanPrograms;
-            auto rasterProgram = m_gpuSceneRasterBuildProgram;
-            pass.SetRecordingFunc(
-                [cullProgram, compactPrograms, workPrograms, workScanPrograms,
-                 rasterProgram, cull, count, prefix, scatter, workSelect,
-                 workBlock, workGroups, workAdd, workScatter, raster,
-                 candidates](smvk::CommandBuffer& cmd) mutable {
-                    const uint32_t groups = (candidates + 63u) / 64u;
-                    cmd.BindComputePipeline(cullProgram);
-                    cmd.PushConstants(0, sizeof(cull), &cull, smvk::ShaderStage::Compute);
-                    cmd.Dispatch(groups, 1, 1);
-                    cmd.EmitGlobalMemoryBarrier();
-                    cmd.BindComputePipeline(compactPrograms[0]);
-                    cmd.PushConstants(0, sizeof(count), &count, smvk::ShaderStage::Compute);
-                    cmd.Dispatch(groups, 1, 1);
-                    cmd.EmitGlobalMemoryBarrier();
-                    cmd.BindComputePipeline(compactPrograms[1]);
-                    cmd.PushConstants(0, sizeof(prefix), &prefix, smvk::ShaderStage::Compute);
-                    cmd.Dispatch(1, 1, 1);
-                    cmd.EmitGlobalMemoryBarrier();
-                    cmd.BindComputePipeline(compactPrograms[2]);
-                    cmd.PushConstants(0, sizeof(scatter), &scatter, smvk::ShaderStage::Compute);
-                    cmd.Dispatch(groups, 1, 1);
-                    cmd.EmitGlobalMemoryBarrier();
-                    cmd.BindComputePipeline(workPrograms[0]);
-                    cmd.PushConstants(0, sizeof(workSelect), &workSelect,
-                                      smvk::ShaderStage::Compute);
-                    cmd.Dispatch(groups, 1, 1);
-                    cmd.EmitGlobalMemoryBarrier();
-                    cmd.BindComputePipeline(workScanPrograms[0]);
-                    cmd.PushConstants(0, sizeof(workBlock), &workBlock,
-                                      smvk::ShaderStage::Compute);
-                    cmd.Dispatch((candidates + 255u) / 256u, 1, 1);
-                    cmd.EmitGlobalMemoryBarrier();
-                    cmd.BindComputePipeline(workScanPrograms[1]);
-                    cmd.PushConstants(0, sizeof(workGroups), &workGroups,
-                                      smvk::ShaderStage::Compute);
-                    cmd.Dispatch(1, 1, 1);
-                    cmd.EmitGlobalMemoryBarrier();
-                    cmd.BindComputePipeline(workScanPrograms[2]);
-                    cmd.PushConstants(0, sizeof(workAdd), &workAdd,
-                                      smvk::ShaderStage::Compute);
-                    cmd.Dispatch((candidates + 255u) / 256u, 1, 1);
-                    cmd.EmitGlobalMemoryBarrier();
-                    cmd.BindComputePipeline(workPrograms[2]);
-                    cmd.PushConstants(0, sizeof(workScatter), &workScatter,
-                                      smvk::ShaderStage::Compute);
-                    cmd.Dispatch(groups, 1, 1);
-                    cmd.EmitGlobalMemoryBarrier();
-                    cmd.BindComputePipeline(rasterProgram);
-                    cmd.PushConstants(0, sizeof(raster), &raster,
-                                      smvk::ShaderStage::Compute);
-                    cmd.Dispatch((raster.commandCapacity + 127u) / 128u, 1, 1);
-                });
+            GpuSceneCascadeBuildFrame& buildFrame =
+                m_rendergraph->PassFrameData<GpuSceneCascadeBuildFrame>(pass);
+            buildFrame.cullProgram = &m_gpuSceneCullProgram;
+            buildFrame.compactPrograms = m_gpuSceneCompactPrograms.data();
+            buildFrame.workPrograms = m_gpuSceneWorkPrograms.data();
+            buildFrame.workScanPrograms = m_gpuSceneWorkScanPrograms.data();
+            buildFrame.rasterProgram = &m_gpuSceneRasterBuildProgram;
+            buildFrame.cull = cull;
+            buildFrame.count = count;
+            buildFrame.prefix = prefix;
+            buildFrame.scatter = scatter;
+            buildFrame.workSelect = workSelect;
+            buildFrame.workBlock = workBlock;
+            buildFrame.workGroups = workGroups;
+            buildFrame.workAdd = workAdd;
+            buildFrame.workScatter = workScatter;
+            buildFrame.raster = raster;
+            buildFrame.candidates = candidates;
+            pass.SetRecordFn(&RecordGpuSceneCascadeBuild);
             validator.MarkDispatched(flight);
         }
         }
@@ -408,118 +365,33 @@ if (s_gpuSceneVisibilityProd && s_gpuSceneShadows && m_gpuSceneRasterEnabled &&
             write.barrierMasks.accessMask = smvk::AccessFlags::ShaderWrite;
             pass.AddBufferHint(result.indirectLogical, write);
             pass.AddBufferHint(result.workLogical, write);
-            auto compactPrograms = m_gpuSceneCompactPrograms;
-            auto workPrograms = m_gpuSceneWorkPrograms;
-            auto workScanPrograms = m_gpuSceneWorkScanPrograms;
-            auto expandProgram = m_gpuVisibilityExpandProgram;
-            auto rasterProgram = m_gpuSceneRasterBuildProgram;
-            pass.SetRecordingFunc(
-                [expandProgram, compactPrograms, workPrograms, workScanPrograms,
-                 rasterProgram, expandPush, countPush, prefixPush, scatterPush, workSelect,
-                 workPrefix, workScatter, workBlock, workGroups, workAdd, rasterPush,
-                 groups, instanceCount](smvk::CommandBuffer& cmd) mutable {
-                    cmd.BindComputePipeline(expandProgram);
-                    cmd.PushConstants(
-                        0, sizeof(expandPush), &expandPush, smvk::ShaderStage::Compute);
-                    cmd.Dispatch(groups, 1, 1);
-                    cmd.EmitGlobalMemoryBarrier();
-                    cmd.BindComputePipeline(compactPrograms[0]);
-                    cmd.PushConstants(
-                        0, sizeof(countPush), &countPush, smvk::ShaderStage::Compute);
-                    cmd.Dispatch(groups, 1, 1);
-                    cmd.EmitGlobalMemoryBarrier();
-                    cmd.BindComputePipeline(compactPrograms[1]);
-                    cmd.PushConstants(
-                        0, sizeof(prefixPush), &prefixPush, smvk::ShaderStage::Compute);
-                    cmd.Dispatch(1, 1, 1);
-                    cmd.EmitGlobalMemoryBarrier();
-                    cmd.BindComputePipeline(compactPrograms[2]);
-                    cmd.PushConstants(
-                        0, sizeof(scatterPush), &scatterPush, smvk::ShaderStage::Compute);
-                    cmd.Dispatch(groups, 1, 1);
-                    cmd.EmitGlobalMemoryBarrier();
-                    cmd.BindComputePipeline(workPrograms[0]);
-                    cmd.PushConstants(
-                        0, sizeof(workSelect), &workSelect, smvk::ShaderStage::Compute);
-                    cmd.Dispatch(groups, 1, 1);
-                    cmd.EmitGlobalMemoryBarrier();
-                    cmd.BindComputePipeline(workScanPrograms[0]);
-                    cmd.PushConstants(
-                        0, sizeof(workBlock), &workBlock, smvk::ShaderStage::Compute);
-                    cmd.Dispatch((instanceCount + 255u) / 256u, 1, 1);
-                    cmd.EmitGlobalMemoryBarrier();
-                    cmd.BindComputePipeline(workScanPrograms[1]);
-                    cmd.PushConstants(
-                        0, sizeof(workGroups), &workGroups, smvk::ShaderStage::Compute);
-                    cmd.Dispatch(1, 1, 1);
-                    cmd.EmitGlobalMemoryBarrier();
-                    cmd.BindComputePipeline(workScanPrograms[2]);
-                    cmd.PushConstants(
-                        0, sizeof(workAdd), &workAdd, smvk::ShaderStage::Compute);
-                    cmd.Dispatch((instanceCount + 255u) / 256u, 1, 1);
-                    cmd.EmitGlobalMemoryBarrier();
-                    cmd.BindComputePipeline(workPrograms[2]);
-                    cmd.PushConstants(
-                        0, sizeof(workScatter), &workScatter, smvk::ShaderStage::Compute);
-                    cmd.Dispatch(groups, 1, 1);
-                    cmd.EmitGlobalMemoryBarrier();
-                    cmd.BindComputePipeline(rasterProgram);
-                    cmd.PushConstants(
-                        0, sizeof(rasterPush), &rasterPush, smvk::ShaderStage::Compute);
-                    cmd.Dispatch((rasterPush.commandCapacity + 127u) / 128u, 1, 1);
-                });
+            GpuSceneCascadeBuildFusedFrame& fusedFrame =
+                m_rendergraph->PassFrameData<GpuSceneCascadeBuildFusedFrame>(pass);
+            fusedFrame.expandProgram = &m_gpuVisibilityExpandProgram;
+            fusedFrame.compactPrograms = m_gpuSceneCompactPrograms.data();
+            fusedFrame.workPrograms = m_gpuSceneWorkPrograms.data();
+            fusedFrame.workScanPrograms = m_gpuSceneWorkScanPrograms.data();
+            fusedFrame.rasterProgram = &m_gpuSceneRasterBuildProgram;
+            fusedFrame.expandPush = expandPush;
+            fusedFrame.countPush = countPush;
+            fusedFrame.prefixPush = prefixPush;
+            fusedFrame.scatterPush = scatterPush;
+            fusedFrame.workSelect = workSelect;
+            fusedFrame.workPrefix = workPrefix;
+            fusedFrame.workScatter = workScatter;
+            fusedFrame.workBlock = workBlock;
+            fusedFrame.workGroups = workGroups;
+            fusedFrame.workAdd = workAdd;
+            fusedFrame.rasterPush = rasterPush;
+            fusedFrame.groups = groups;
+            fusedFrame.instanceCount = instanceCount;
+            pass.SetRecordFn(&RecordGpuSceneCascadeBuildFused);
             validator.MarkDispatched(flight);
         }
     }
 }
 
-const auto recordGpuCascade =
-    [this](smvk::CommandBuffer& cmd, const IRenderer::PushConstants& scenePC,
-           const GpuCascadeSubmission& sub, const smvk::MSAASettings& msaa) {
-        if (!sub.ready) return;
-        const smvk::DepthSettings depth{.depthFunc = smvk::CompareOp::LessEqual,
-                                        .writeEnable = true, .depthTestEnable = true};
-        cmd.BindStaticVertexFmt();
-        const auto bind = [&](smvk::ShaderProgram& program, smvk::CullMode cull) {
-            cmd.BindRenderPipeline(program, ::tour::vertex_layouts::Static, depth,
-                                   smvk::StencilSettings{}, smvk::BlendSettings{},
-                                   msaa, smvk::RasterSettings{.cullMode = cull});
-            cmd.PushConstants(0, sizeof(scenePC), &scenePC, smvk::ShaderStage::All);
-            cmd.PushConstants(tour::gpu_scene::kRasterVsPushOffset,
-                              sizeof(sub.vs), &sub.vs, smvk::ShaderStage::All);
-        };
-        const uint32_t stride =
-            sub.capacity / tour::gpu_scene::kRasterPipelineClassCount;
-        const auto drawBin = [&](uint32_t bin) {
-            constexpr uint32_t kChunk = 65535u;
-            for (uint32_t first = 0; first < stride; first += kChunk)
-                cmd.DrawIndexedIndirect(
-                    sub.commands,
-                    uint64_t(bin * stride + first) *
-                        sizeof(tour::gpu_scene::RasterIndirectCommand),
-                    std::min(kChunk, stride - first),
-                    sizeof(tour::gpu_scene::RasterIndirectCommand));
-        };
-        // Solid casters use backfaces for acne suppression; masked casters
-        // use material culling (Back or None), just like the direct path.
-        bind(m_gpuSceneShadowDepthProgram, smvk::CullMode::Front);
-        drawBin(0); drawBin(1); drawBin(4); drawBin(5);
-        bind(m_gpuSceneShadowMaskedProgram, smvk::CullMode::Back);
-        drawBin(2); drawBin(6);
-        bind(m_gpuSceneShadowMaskedProgram, smvk::CullMode::None);
-        drawBin(3); drawBin(7);
-    };
+// recordGpuCascade / hintGpuCascade are now WorldRenderer member/static
+// helpers (RecordGpuCascade / HintGpuCascade); the shadow passes call them
+// through `this` and no longer capture a local callable.
 
-const auto hintGpuCascade =
-    [](smvk::RenderPass& pass, const GpuCascadeSubmission& sub) {
-        if (!sub.ready) return;
-        smvk::BufferSyncRequest indirectRead{};
-        indirectRead.barrierMasks.stageMask = smvk::PipelineStageBit_DrawIndirect;
-        indirectRead.barrierMasks.accessMask = smvk::AccessFlags::IndirectCommandRead;
-        pass.AddBufferHint(sub.indirectLogical, indirectRead);
-        smvk::BufferSyncRequest vertexRead{};
-        vertexRead.barrierMasks.stageMask = smvk::PipelineStageBit_Vertex;
-        vertexRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
-        pass.AddBufferHint(sub.workLogical, vertexRead);
-        pass.AddBufferHint(sub.viewLogical, vertexRead);
-    };

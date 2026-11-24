@@ -3783,6 +3783,38 @@ class WorldRenderer : public IRenderer {
     static void RecordSnapshotCopy(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
     struct FogShadowFrame { IRenderer::PushConstants fogPC{}; };
     static void RecordFogShadow(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
+    // GPU-scene cascade draw helper (hoisted from WorldRendererGpuSceneCascades.inl
+    // so the shadow record functions can reach it as a member).
+    struct GpuCascadeSubmission {
+        bool ready = false;
+        smvk::BufferHandle commands{};
+        tour::gpu_scene::RasterVsPush vs{};
+        uint32_t capacity = 0;
+        smvk::LogicalBufferHandle indirectLogical{}, workLogical{}, viewLogical{};
+    };
+    void RecordGpuCascade(smvk::CommandBuffer& cmd,
+                          const IRenderer::PushConstants& scenePC,
+                          const GpuCascadeSubmission& sub,
+                          const smvk::MSAASettings& msaa);
+    static void HintGpuCascade(smvk::RenderPass& pass, const GpuCascadeSubmission& sub);
+    struct ShadowCascadeFrame {
+        IRenderer::PushConstants cascadePC{};
+        uint32_t casterViewIndex = UINT32_MAX;
+        bool tsBegin = false;
+        bool tsEnd = false;
+        bool evsm = false;
+        GpuCascadeSubmission gpuCascade{};
+    };
+    static void RecordShadowCascade(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
+    struct ShadowCasterFrame {
+        smvk::ShaderProgram* program = nullptr;
+        IRenderer::PushConstants pc{};
+        uint32_t casterViewIndex = UINT32_MAX;
+        bool tsBegin = false;
+        bool tsEnd = false;
+        bool evsm = false;
+    };
+    static void RecordShadowCaster(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
     // Must mirror the HLSL SdsmGroupStats (264 bytes).
     struct SdsmGroupStats {
         float minV = 0.0f;
