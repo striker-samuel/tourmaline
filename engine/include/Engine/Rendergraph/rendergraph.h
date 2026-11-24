@@ -1057,9 +1057,11 @@ struct RenderGraph final {
     // Compile the current declaration set into an immutable plan (checkpoint B
     // foundation): canonicalizes the physical resources into dense ids,
     // extracts the per-pass access modes/stages/masks/layouts, and runs the
-    // static timeline compiler. The returned GraphKey is the structural
-    // permutation identity the executor caches on.
-    [[nodiscard]] smvk::rg::CompiledGraph CompileGraph() const;
+    // static timeline compiler over `order` (topological execution order).
+    // The returned GraphKey is the structural permutation identity the
+    // executor caches on. plan.passBatch / sections are indexed by position
+    // in `order` (== the executor's walk index).
+    [[nodiscard]] smvk::rg::CompiledGraph CompileGraph(const std::vector<size_t>& order) const;
 
     // --------------------------------------------------------
     // Resource resolution

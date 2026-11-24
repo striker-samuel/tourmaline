@@ -13734,8 +13734,9 @@ std::vector<smvk::PassUsage> smvk::RenderGraph::CollectPassUsages() const {
     return out;
 }
 
-smvk::rg::CompiledGraph smvk::RenderGraph::CompileGraph() const {
+smvk::rg::CompiledGraph smvk::RenderGraph::CompileGraph(const std::vector<size_t>& order) const {
     const std::vector<PassUsage> usages = CollectPassUsages();
+    assert(order.size() == usages.size());
 
     // Canonicalize physical resources (images + buffers) into dense ids over a
     // SHARED whole-resource space (the compiler's granularity). The packed
@@ -13774,7 +13775,8 @@ smvk::rg::CompiledGraph smvk::RenderGraph::CompileGraph() const {
     smvk::rg::Id section = 0;
     smvk::rg::Id sectionCount = 1;
 
-    for (size_t p = 0; p < usages.size(); ++p) {
+    for (size_t pos = 0; pos < order.size(); ++pos) {
+        const size_t p = order[pos];
         const RenderPass& rp = passes_[p];
         const PassUsage& pu = usages[p];
         smvk::rg::Pass gp{};
