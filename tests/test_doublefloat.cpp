@@ -119,16 +119,21 @@ int main() {
         CHECK(pair.eyes[0].origin.low == pair.eyes[1].origin.low);
         CHECK(std::abs((pair.eyes[1].worldPosition.x - pair.eyes[0].worldPosition.x) -
                        0.064) < 0.0002);
+        // The float32 relativeView carries the eye-to-origin translation
+        // (~4096 m at a snapped cell edge, where base=4095.999 lands a full
+        // cell from the floor-snapped origin), so its float32 ULP is ~0.0005.
+        // The IPD contract is the double worldPosition above; the derived
+        // render view only needs the eye delta within one float32 ULP.
         const float relativeEyeDelta =
             pair.eyes[0].relativeView[3].x - pair.eyes[1].relativeView[3].x;
-        CHECK(std::abs(relativeEyeDelta - 0.064f) < 0.0002f);
+        CHECK(std::abs(relativeEyeDelta - 0.064f) < 0.002f);
         // A point in front of the head is offset correctly in both eyes,
         // rather than collapsing to a single float32 absolute position.
         const glm::vec4 headRelative(head - pair.originWorld, 1.0);
         const glm::vec4 left = pair.eyes[0].relativeView * headRelative;
         const glm::vec4 right = pair.eyes[1].relativeView * headRelative;
-        CHECK(std::abs(left.x - 0.032f) < 0.0002f);
-        CHECK(std::abs(right.x + 0.032f) < 0.0002f);
+        CHECK(std::abs(left.x - 0.032f) < 0.002f);
+        CHECK(std::abs(right.x + 0.032f) < 0.002f);
     }
 
     // Rotated head and independent per-eye orientation are respected.

@@ -122,12 +122,15 @@ class DependencyStampTests(unittest.TestCase):
     def test_stale_pin_fails_with_the_refresh_command(self):
         self.tree("imgui", "imgui", OLD_IMGUI_PIN, "deadbeef",
                   {"imgui.h": DOCKING_HEADER})
+        # The refresh command is the PLATFORM's installer (install_dependencies
+        # .ps1 on Windows, .sh elsewhere), so match the shared stem, not the
+        # extension.
         out = self.assert_fails(self.check(),
                                 "Stale vendored dependencies",
                                 "external/imgui",
                                 OLD_IMGUI_PIN,
                                 IMGUI_PIN,
-                                "install_dependencies.ps1")
+                                "install_dependencies")
         self.assertIn("TOURMALINE_SKIP_DEP_STAMP_CHECK", out)
 
     def test_mainline_imgui_is_named_even_when_the_stamp_matches(self):
