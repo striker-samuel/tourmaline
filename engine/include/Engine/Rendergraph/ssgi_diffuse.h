@@ -64,6 +64,7 @@
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/renderer.h>
 #include <Engine/platform.h>
 
 #include <algorithm>
@@ -341,6 +342,36 @@ struct ScreenSpaceDiffuseGi {
     ShaderProgram prevProgram{};
     ShaderProgram composeProgram{};
     ShaderProgram copyProgram{}; // the SSR copy blit (layout-identical push)
+
+    struct TraceFrame {
+        ShaderProgram* program = nullptr;
+        SsgiDiffuseTracePush push{};
+        uint32_t gx = 0, gy = 0;
+    };
+    static void RecordTrace(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+        const TraceFrame& f = fc.rg->FrameData().Get<TraceFrame>(pd.frameSlot);
+        cmd.BindComputePipeline(*f.program);
+        cmd.PushConstants(0, sizeof(SsgiDiffuseTracePush), &f.push, ShaderStage::Compute);
+        cmd.Dispatch(f.gx, f.gy, 1);
+    }
+    template <typename Push>
+    struct RenderFrame {
+        ShaderProgram* program = nullptr;
+        Push push{};
+    };
+    template <typename Push>
+    static void RecordRender(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+        const RenderFrame<Push>& f = fc.rg->FrameData().Get<RenderFrame<Push>>(pd.frameSlot);
+        cmd.BindRenderPipeline(*f.program,
+                               ::tour::vertex_layouts::Empty,
+                               DepthSettings::Disabled(),
+                               StencilSettings::DefaultDisabled(),
+                               BlendSettings::Opaque(),
+                               MSAASettings::Count1(),
+                               RasterSettings{.cullMode = CullMode::None});
+        cmd.PushConstants(0, sizeof(Push), &f.push, ShaderStage::All);
+        cmd.Draw(3, 1, 0, 0); // fullscreen triangle
+    }
     SsgiDiffuseDesc desc{};
 
     [[nodiscard]] bool TargetsValid() const {
@@ -843,12 +874,12 @@ struct ScreenSpaceDiffuseGi {
             pass.SetInputImages({hdrView, depthView, gbufferView});
             const uint32_t hw = halfExtent.width;
             const uint32_t hh = halfExtent.height;
-            ShaderProgram progCopy = traceProgram; // copyable (handles only)
-            pass.SetRecordingFunc([progCopy, push, hw, hh](CommandBuffer& cmd) mutable {
-                cmd.BindComputePipeline(progCopy);
-                cmd.PushConstants(0, sizeof(SsgiDiffuseTracePush), &push, ShaderStage::Compute);
-                cmd.Dispatch((hw + 7) / 8, (hh + 7) / 8, 1);
-            });
+            TraceFrame& frame = rg.PassFrameData<TraceFrame>(pass);
+            frame.program = const_cast<ShaderProgram*>(&traceProgram);
+            frame.push = push;
+            frame.gx = (hw + 7) / 8;
+            frame.gy = (hh + 7) / 8;
+            pass.SetRecordFn(&RecordTrace);
         }
 
         // ---- Copy: the radiance buffer -> the raw target (the blur
@@ -869,18 +900,11 @@ struct ScreenSpaceDiffuseGi {
                 pass.AddBufferHint(radiance.logical, radRead);
             }
             pass.SetColor({raw.logical}, AttachmentLoadOp::DontCare, AttachmentStoreOp::Store);
-            ShaderProgram progCopy = copyProgram; // copyable (handles only)
-            pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(progCopy,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Opaque(),
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(SsgiDiffuseCopyPush), &push, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-            });
+            RenderFrame<SsgiDiffuseCopyPush>& frame =
+                rg.PassFrameData<RenderFrame<SsgiDiffuseCopyPush>>(pass);
+            frame.program = const_cast<ShaderProgram*>(&copyProgram);
+            frame.push = push;
+            pass.SetRecordFn(&RecordRender<SsgiDiffuseCopyPush>);
         }
 
         // ---- Blur: raw -> blurred (fixed 5x5 joint-bilateral).
@@ -914,18 +938,11 @@ struct ScreenSpaceDiffuseGi {
                 recvRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
                 pass.AddBufferHint(receiverData.logical, recvRead);
             }
-            ShaderProgram progCopy = blurProgram; // copyable (handles only)
-            pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(progCopy,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Opaque(),
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(SsgiDiffuseBlurPush), &push, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-            });
+            RenderFrame<SsgiDiffuseBlurPush>& frame =
+                rg.PassFrameData<RenderFrame<SsgiDiffuseBlurPush>>(pass);
+            frame.program = const_cast<ShaderProgram*>(&blurProgram);
+            frame.push = push;
+            pass.SetRecordFn(&RecordRender<SsgiDiffuseBlurPush>);
         }
 
         // ---- Temporal (the optional TAA record): blurred + history
@@ -966,18 +983,11 @@ struct ScreenSpaceDiffuseGi {
                                  prevNormal.logical,
                                  gbufferView})
                 .SetColor({histCurr.logical}, AttachmentLoadOp::DontCare, AttachmentStoreOp::Store);
-            ShaderProgram progCopy = temporalProgram; // copyable (handles only)
-            pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(progCopy,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Opaque(),
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(SsgiDiffuseTemporalPush), &push, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-            });
+            RenderFrame<SsgiDiffuseTemporalPush>& frame =
+                rg.PassFrameData<RenderFrame<SsgiDiffuseTemporalPush>>(pass);
+            frame.program = const_cast<ShaderProgram*>(&temporalProgram);
+            frame.push = push;
+            pass.SetRecordFn(&RecordRender<SsgiDiffuseTemporalPush>);
         }
 
         // ---- Compose: the GI layer + the frozen HDR + the baseline
@@ -1038,18 +1048,11 @@ struct ScreenSpaceDiffuseGi {
                 recvRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
                 pass.AddBufferHint(receiverData.logical, recvRead);
             }
-            ShaderProgram progCopy = composeProgram; // copyable (handles only)
-            pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(progCopy,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Opaque(),
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(SsgiDiffuseComposePush), &push, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-            });
+            RenderFrame<SsgiDiffuseComposePush>& frame =
+                rg.PassFrameData<RenderFrame<SsgiDiffuseComposePush>>(pass);
+            frame.program = const_cast<ShaderProgram*>(&composeProgram);
+            frame.push = push;
+            pass.SetRecordFn(&RecordRender<SsgiDiffuseComposePush>);
         }
 
         // ---- The history mirrors (TEMPORAL records only): depth +
@@ -1070,18 +1073,11 @@ struct ScreenSpaceDiffuseGi {
                 .SetColor({prevDepth.logical, prevNormal.logical},
                           AttachmentLoadOp::DontCare,
                           AttachmentStoreOp::Store);
-            ShaderProgram progCopy = prevProgram; // copyable (handles only)
-            pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(progCopy,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Opaque(),
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(SsgiDiffusePrevPush), &push, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-            });
+            RenderFrame<SsgiDiffusePrevPush>& frame =
+                rg.PassFrameData<RenderFrame<SsgiDiffusePrevPush>>(pass);
+            frame.program = const_cast<ShaderProgram*>(&prevProgram);
+            frame.push = push;
+            pass.SetRecordFn(&RecordRender<SsgiDiffusePrevPush>);
         }
     }
 };

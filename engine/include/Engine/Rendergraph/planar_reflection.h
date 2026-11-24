@@ -18,6 +18,7 @@
 #include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/hdr.h>
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/renderer.h>
 #include <Engine/Utils/shader_library.h>
 
 #include <glm/glm.hpp>
@@ -130,6 +131,23 @@ struct PlanarReflections {
     Holder<ShaderModuleHandle> psModule;
     ShaderProgram program{};
 
+    struct Frame {
+        ShaderProgram* program = nullptr;
+        PlanarReflectionPush push{};
+    };
+    static void Record(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+        const Frame& f = fc.rg->FrameData().Get<Frame>(pd.frameSlot);
+        cmd.BindRenderPipeline(*f.program,
+                               ::tour::vertex_layouts::Empty,
+                               DepthSettings::Disabled(),
+                               StencilSettings::DefaultDisabled(),
+                               BlendSettings::Opaque(),
+                               MSAASettings::Count1(),
+                               RasterSettings{.cullMode = CullMode::None});
+        cmd.PushConstants(0, sizeof(PlanarReflectionPush), &f.push, ShaderStage::All);
+        cmd.Draw(3, 1, 0, 0);
+    }
+
     [[nodiscard]] bool Valid() const {
         return output.Valid() && !output.logicalView.empty() && program.shaderCount == 2;
     }
@@ -207,18 +225,10 @@ struct PlanarReflections {
             .SetExtent(output.extent)
             .SetInputImages({hdrView, captureView, depthView})
             .SetColor({output.logicalView}, AttachmentLoadOp::DontCare, AttachmentStoreOp::Store);
-        ShaderProgram programCopy = program;
-        pass.SetRecordingFunc([programCopy, push](CommandBuffer& cmd) mutable {
-            cmd.BindRenderPipeline(programCopy,
-                                   ::tour::vertex_layouts::Empty,
-                                   DepthSettings::Disabled(),
-                                   StencilSettings::DefaultDisabled(),
-                                   BlendSettings::Opaque(),
-                                   MSAASettings::Count1(),
-                                   RasterSettings{.cullMode = CullMode::None});
-            cmd.PushConstants(0, sizeof(PlanarReflectionPush), &push, ShaderStage::All);
-            cmd.Draw(3, 1, 0, 0);
-        });
+        Frame& frame = rg.PassFrameData<Frame>(pass);
+        frame.program = &program;
+        frame.push = push;
+        pass.SetRecordFn(&Record);
         return true;
     }
 

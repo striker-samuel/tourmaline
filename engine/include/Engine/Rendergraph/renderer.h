@@ -16,7 +16,6 @@
 // Migration is incremental: passes that still need app-local push structs
 // stay in main until their push data moves into the context.
 
-#include <Engine/App/world.h>
 #include <Engine/Memory/pool.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/renderview.h>
@@ -24,7 +23,17 @@
 
 #include <glm/glm.hpp>
 
+// Forward-declared: renderer.h must stay include-light so post-effect and
+// placement headers can include it for the full FrameContext without pulling
+// in the world.h -> baked_placement_runtime.h -> placement_pass.h cycle
+// (world.h includes those; see placement_pass.h). World is only used here
+// as a pointer, so a forward declaration is sufficient.
+namespace tour {
+struct World;
+}
+
 namespace smvk {
+using ::tour::World;
 
 // Whole-frame input. Persistent resources live on the renderer object;
 // everything here is per-frame. App extends this (see App/frame_context.h)

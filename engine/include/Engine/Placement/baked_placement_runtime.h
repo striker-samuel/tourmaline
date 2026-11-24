@@ -658,26 +658,32 @@ class BakedPlacementRuntime {
             smvk::RenderPass& cull = PlacementCullPrograms::AddCullPass(
                 rg, pass, uint32_t(s), vs, smvk::LogicalBufferHandle{}, renderViewsLogical);
             const uint32_t capacity = pass.desc.maxInstancesPerTile;
-            cull.SetRecordingFunc([this, cullPush, capacity](smvk::CommandBuffer& cmd) {
-                PlacementCullPrograms::PushAndDispatchCull(
-                    cmd, cullPrograms.cullProgram, cullPush, capacity);
-            });
+            PlacementWorldRuntime::CullFrame& cullFrame =
+                rg.PassFrameData<PlacementWorldRuntime::CullFrame>(cull);
+            cullFrame.program = &cullPrograms.cullProgram;
+            cullFrame.push = cullPush;
+            cullFrame.groups = capacity;
+            cull.SetRecordFn(&PlacementWorldRuntime::RecordCull);
             smvk::RenderPass& pre = PlacementCullPrograms::AddPrefixPass(rg, vs);
-            pre.SetRecordingFunc([this, cullPush](smvk::CommandBuffer& cmd) {
-                PlacementCullPrograms::PushAndDispatchPrefix(
-                    cmd, cullPrograms.prefixProgram, cullPush);
-            });
+            PlacementWorldRuntime::PrefixFrame& preFrame =
+                rg.PassFrameData<PlacementWorldRuntime::PrefixFrame>(pre);
+            preFrame.program = &cullPrograms.prefixProgram;
+            preFrame.push = cullPush;
+            pre.SetRecordFn(&PlacementWorldRuntime::RecordPrefix);
             smvk::RenderPass& sc =
                 PlacementCullPrograms::AddScatterVisPass(rg, pass, uint32_t(s), vs);
-            sc.SetRecordingFunc([this, scPush, capacity](smvk::CommandBuffer& cmd) {
-                PlacementCullPrograms::PushAndDispatchScatterVis(
-                    cmd, cullPrograms.scatterProgram, scPush, capacity);
-            });
+            PlacementWorldRuntime::ScatterVisFrame& scFrame =
+                rg.PassFrameData<PlacementWorldRuntime::ScatterVisFrame>(sc);
+            scFrame.program = &cullPrograms.scatterProgram;
+            scFrame.push = scPush;
+            scFrame.groups = capacity;
+            sc.SetRecordFn(&PlacementWorldRuntime::RecordScatterVis);
             smvk::RenderPass& db = PlacementCullPrograms::AddDrawBuildPass(rg, vs);
-            db.SetRecordingFunc([this, dbPush](smvk::CommandBuffer& cmd) {
-                PlacementCullPrograms::PushAndDispatchDrawBuild(
-                    cmd, cullPrograms.buildProgram, dbPush);
-            });
+            PlacementWorldRuntime::DrawBuildFrame& dbFrame =
+                rg.PassFrameData<PlacementWorldRuntime::DrawBuildFrame>(db);
+            dbFrame.program = &cullPrograms.buildProgram;
+            dbFrame.push = dbPush;
+            db.SetRecordFn(&PlacementWorldRuntime::RecordDrawBuild);
             // The read-only proto table feeds both the cull (bounds/distance)
             // and the draw-build (index range) — hint the shared read.
             if (!at.protoTableLogical.empty()) {

@@ -687,6 +687,37 @@ struct ScreenSpaceReflections {
         cmd.PushConstants(0, sizeof(SsrIndirectPush), &f.push, ShaderStage::Compute);
         cmd.Dispatch(1, 1, 1);
     }
+    struct IntersectFrame {
+        ShaderProgram* program = nullptr;
+        SsrIntersectPush push{};
+        BufferHandle indirectBuffer{};
+    };
+    static void RecordIntersect(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+        const IntersectFrame& f = fc.rg->FrameData().Get<IntersectFrame>(pd.frameSlot);
+        cmd.BindComputePipeline(*f.program);
+        cmd.PushConstants(0, sizeof(SsrIntersectPush), &f.push, ShaderStage::Compute);
+        cmd.DispatchIndirect(f.indirectBuffer, 0);
+    }
+    // Fullscreen-triangle render passes (copy / temporal / depth-history /
+    // compose): identical body, only the push payload type differs.
+    template <typename Push>
+    struct RenderFrame {
+        ShaderProgram* program = nullptr;
+        Push push{};
+    };
+    template <typename Push>
+    static void RecordRender(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+        const RenderFrame<Push>& f = fc.rg->FrameData().Get<RenderFrame<Push>>(pd.frameSlot);
+        cmd.BindRenderPipeline(*f.program,
+                               ::tour::vertex_layouts::Empty,
+                               DepthSettings::Disabled(),
+                               StencilSettings::DefaultDisabled(),
+                               BlendSettings::Opaque(),
+                               MSAASettings::Count1(),
+                               RasterSettings{.cullMode = CullMode::None});
+        cmd.PushConstants(0, sizeof(Push), &f.push, ShaderStage::All);
+        cmd.Draw(3, 1, 0, 0); // fullscreen triangle
+    }
     ShaderProgram depthHistoryProgram{}; // fullscreen FS (tonemap VS + the depth-mirror PS)
     SsrDesc desc{};
 
@@ -1662,13 +1693,12 @@ struct ScreenSpaceReflections {
                 gbReq.layout = ImageLayout::ShaderReadOnlyOptimal;
                 pass.AddImageHint(gbufferView, gbReq);
             }
-            ShaderProgram progCopy = classifyProgram; // copyable (handles only)
-            pass.SetRecordingFunc([this, progCopy, push](CommandBuffer& cmd) mutable {
-                cmd.BindComputePipeline(progCopy);
-                cmd.PushConstants(0, sizeof(SsrClassifyPush), &push, ShaderStage::Compute);
-                cmd.Dispatch(
-                    (this->halfExtent.width + 7) / 8, (this->halfExtent.height + 7) / 8, 1);
-            });
+            ClassifyFrame& frame = rg.PassFrameData<ClassifyFrame>(pass);
+            frame.program = const_cast<ShaderProgram*>(&classifyProgram);
+            frame.push = push;
+            frame.gx = (halfExtent.width + 7) / 8;
+            frame.gy = (halfExtent.height + 7) / 8;
+            pass.SetRecordFn(&RecordClassify);
         }
 
         // ---- Indirect args: 1 thread builds the intersect's
@@ -1686,12 +1716,10 @@ struct ScreenSpaceReflections {
                 pass.AddBufferHint(rayCounter.logical, rw);
                 pass.AddBufferHint(indirectArgs.logical, rw);
             }
-            ShaderProgram progCopy = indirectProgram;
-            pass.SetRecordingFunc([this, progCopy, push](CommandBuffer& cmd) mutable {
-                cmd.BindComputePipeline(progCopy);
-                cmd.PushConstants(0, sizeof(SsrIndirectPush), &push, ShaderStage::Compute);
-                cmd.Dispatch(1, 1, 1);
-            });
+            IndirectFrame& frame = rg.PassFrameData<IndirectFrame>(pass);
+            frame.program = const_cast<ShaderProgram*>(&indirectProgram);
+            frame.push = push;
+            pass.SetRecordFn(&RecordIndirect);
         }
 
         // ---- Intersect: indirect compute dispatch (see
@@ -1754,12 +1782,11 @@ struct ScreenSpaceReflections {
             if (gbuffer2On)
                 intersectInputs.push_back(gbuffer2View);
             pass.SetInputImages(intersectInputs);
-            ShaderProgram progCopy = intersectProgram;
-            pass.SetRecordingFunc([this, progCopy, push](CommandBuffer& cmd) mutable {
-                cmd.BindComputePipeline(progCopy);
-                cmd.PushConstants(0, sizeof(SsrIntersectPush), &push, ShaderStage::Compute);
-                cmd.DispatchIndirect(this->indirectArgs.buffer, 0);
-            });
+            IntersectFrame& frame = rg.PassFrameData<IntersectFrame>(pass);
+            frame.program = const_cast<ShaderProgram*>(&intersectProgram);
+            frame.push = push;
+            frame.indirectBuffer = indirectArgs.buffer;
+            pass.SetRecordFn(&RecordIntersect);
         }
 
         // ---- Copy: the radiance buffer -> the raw reflection image (the
@@ -1778,18 +1805,10 @@ struct ScreenSpaceReflections {
                 pass.AddBufferHint(radiance.logical, radRead);
             }
             pass.SetColor({raw.logical}, AttachmentLoadOp::DontCare, AttachmentStoreOp::Store);
-            ShaderProgram progCopy = copyProgram;
-            pass.SetRecordingFunc([this, progCopy, push](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(progCopy,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Opaque(),
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(SsrCopyPush), &push, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-            });
+            RenderFrame<SsrCopyPush>& frame = rg.PassFrameData<RenderFrame<SsrCopyPush>>(pass);
+            frame.program = const_cast<ShaderProgram*>(&copyProgram);
+            frame.push = push;
+            pass.SetRecordFn(&RecordRender<SsrCopyPush>);
         }
 
         // ---- Blur: raw reflection -> blurred (depth edges via HZB mip1).
@@ -1877,19 +1896,12 @@ struct ScreenSpaceReflections {
                 recvRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
                 pass.AddBufferHint(receiverData.logical, recvRead);
             }
-            ShaderProgram progCopy =
-                contribDbgOn ? composeDbgProgram : composeProgram; // copyable (handles only)
-            pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(progCopy,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Opaque(),
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(SsrComposePush), &push, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-            });
+            RenderFrame<SsrComposePush>& frame =
+                rg.PassFrameData<RenderFrame<SsrComposePush>>(pass);
+            frame.program = const_cast<ShaderProgram*>(
+                contribDbgOn ? &composeDbgProgram : &composeProgram);
+            frame.push = push;
+            pass.SetRecordFn(&RecordRender<SsrComposePush>);
         }
     }
 
@@ -2033,13 +2045,12 @@ struct ScreenSpaceReflections {
                 gbReq.layout = ImageLayout::ShaderReadOnlyOptimal;
                 pass.AddImageHint(gbufferView, gbReq);
             }
-            ShaderProgram progCopy = classifyProgram; // copyable (handles only)
-            pass.SetRecordingFunc([this, progCopy, push](CommandBuffer& cmd) mutable {
-                cmd.BindComputePipeline(progCopy);
-                cmd.PushConstants(0, sizeof(SsrClassifyPush), &push, ShaderStage::Compute);
-                cmd.Dispatch(
-                    (this->halfExtent.width + 7) / 8, (this->halfExtent.height + 7) / 8, 1);
-            });
+            ClassifyFrame& frame = rg.PassFrameData<ClassifyFrame>(pass);
+            frame.program = const_cast<ShaderProgram*>(&classifyProgram);
+            frame.push = push;
+            frame.gx = (halfExtent.width + 7) / 8;
+            frame.gy = (halfExtent.height + 7) / 8;
+            pass.SetRecordFn(&RecordClassify);
         }
 
         // ---- Indirect args: 1 thread builds the intersect's
@@ -2057,12 +2068,10 @@ struct ScreenSpaceReflections {
                 pass.AddBufferHint(rayCounter.logical, rw);
                 pass.AddBufferHint(indirectArgs.logical, rw);
             }
-            ShaderProgram progCopy = indirectProgram;
-            pass.SetRecordingFunc([this, progCopy, push](CommandBuffer& cmd) mutable {
-                cmd.BindComputePipeline(progCopy);
-                cmd.PushConstants(0, sizeof(SsrIndirectPush), &push, ShaderStage::Compute);
-                cmd.Dispatch(1, 1, 1);
-            });
+            IndirectFrame& frame = rg.PassFrameData<IndirectFrame>(pass);
+            frame.program = const_cast<ShaderProgram*>(&indirectProgram);
+            frame.push = push;
+            pass.SetRecordFn(&RecordIndirect);
         }
 
         // ---- Intersect: indirect compute dispatch (see
@@ -2125,12 +2134,11 @@ struct ScreenSpaceReflections {
             if (gbuffer2On)
                 intersectInputs.push_back(gbuffer2View);
             pass.SetInputImages(intersectInputs);
-            ShaderProgram progCopy = intersectProgram;
-            pass.SetRecordingFunc([this, progCopy, push](CommandBuffer& cmd) mutable {
-                cmd.BindComputePipeline(progCopy);
-                cmd.PushConstants(0, sizeof(SsrIntersectPush), &push, ShaderStage::Compute);
-                cmd.DispatchIndirect(this->indirectArgs.buffer, 0);
-            });
+            IntersectFrame& frame = rg.PassFrameData<IntersectFrame>(pass);
+            frame.program = const_cast<ShaderProgram*>(&intersectProgram);
+            frame.push = push;
+            frame.indirectBuffer = indirectArgs.buffer;
+            pass.SetRecordFn(&RecordIntersect);
         }
 
         // ---- Copy: the radiance buffer -> the raw reflection image (the
@@ -2149,18 +2157,10 @@ struct ScreenSpaceReflections {
                 pass.AddBufferHint(radiance.logical, radRead);
             }
             pass.SetColor({raw.logical}, AttachmentLoadOp::DontCare, AttachmentStoreOp::Store);
-            ShaderProgram progCopy = copyProgram;
-            pass.SetRecordingFunc([this, progCopy, push](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(progCopy,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Opaque(),
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(SsrCopyPush), &push, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-            });
+            RenderFrame<SsrCopyPush>& frame = rg.PassFrameData<RenderFrame<SsrCopyPush>>(pass);
+            frame.program = const_cast<ShaderProgram*>(&copyProgram);
+            frame.push = push;
+            pass.SetRecordFn(&RecordRender<SsrCopyPush>);
         }
 
         // ---- Blur: raw reflection -> blurred (depth edges via HZB mip1).
@@ -2217,18 +2217,11 @@ struct ScreenSpaceReflections {
                 .SetInputImages(
                     {blurred.logical, histPrev.logical, motionView, depthView, prevDepth.logical})
                 .SetColor({histCurr.logical}, AttachmentLoadOp::DontCare, AttachmentStoreOp::Store);
-            ShaderProgram progCopy = temporalProgram; // copyable (handles only)
-            pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(progCopy,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Opaque(),
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(SsrTemporalPush), &push, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-            });
+            RenderFrame<SsrTemporalPush>& frame =
+                rg.PassFrameData<RenderFrame<SsrTemporalPush>>(pass);
+            frame.program = const_cast<ShaderProgram*>(&temporalProgram);
+            frame.push = push;
+            pass.SetRecordFn(&RecordRender<SsrTemporalPush>);
         }
 
         // ---- Composite: temporal half-res + HZB depth authority + HDR ----
@@ -2303,19 +2296,12 @@ struct ScreenSpaceReflections {
                 recvRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
                 pass.AddBufferHint(receiverData.logical, recvRead);
             }
-            ShaderProgram progCopy =
-                contribDbgOn ? composeDbgProgram : composeProgram; // copyable (handles only)
-            pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(progCopy,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Opaque(),
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(SsrComposePush), &push, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-            });
+            RenderFrame<SsrComposePush>& frame =
+                rg.PassFrameData<RenderFrame<SsrComposePush>>(pass);
+            frame.program = const_cast<ShaderProgram*>(
+                contribDbgOn ? &composeDbgProgram : &composeProgram);
+            frame.push = push;
+            pass.SetRecordFn(&RecordRender<SsrComposePush>);
         }
 
         // ---- Depth history copy: the final renderDepth -> the prevDepth
@@ -2339,18 +2325,11 @@ struct ScreenSpaceReflections {
                 .SetInputImages({depthView})
                 .SetColor(
                     {prevDepth.logical}, AttachmentLoadOp::DontCare, AttachmentStoreOp::Store);
-            ShaderProgram progCopy = depthHistoryProgram; // copyable (handles only)
-            pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(progCopy,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Opaque(),
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(SsrDepthHistoryPush), &push, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-            });
+            RenderFrame<SsrDepthHistoryPush>& frame =
+                rg.PassFrameData<RenderFrame<SsrDepthHistoryPush>>(pass);
+            frame.program = const_cast<ShaderProgram*>(&depthHistoryProgram);
+            frame.push = push;
+            pass.SetRecordFn(&RecordRender<SsrDepthHistoryPush>);
         }
     }
 

@@ -47,6 +47,7 @@
 #include <Engine/Renderer/gfx_types.h>
 #include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/renderer.h>
 #include <Engine/platform.h>
 
 #include <algorithm>
@@ -380,35 +381,17 @@ struct Ssgi {
             uint32_t offsets[gfx::kHizMaxMips];
             for (uint32_t k = 0; k < gfx::kHizMaxMips; ++k)
                 offsets[k] = hzb.mipOffsets[k];
-            ShaderProgram hzbProgCopy = hzbProgram; // copyable (handles only)
-            hzbPass.SetRecordingFunc(
-                [hzbProgCopy, hzbAddr, mip, depthBindlessIndex, fromDepth, width, height, offsets](
-                    CommandBuffer& cmd) mutable {
-                    uint32_t dw = 0, dh = 0, sw = 0, sh = 0;
-                    gfx::HzbMipDims(width, height, mip, dw, dh);
-                    gfx::HzbMipDims(width, height, fromDepth ? 0u : mip - 1u, sw, sh);
-                    gfx::HzbPush push{};
-                    push.hzb = hzbAddr;
-                    push.dstMip = mip;
-                    push.dstWidth = dw;
-                    push.dstHeight = dh;
-                    push.dstOffset = offsets[mip];
-                    push.depthTextureIndex = depthBindlessIndex;
-                    if (fromDepth) {
-                        push.srcMip = gfx::kHizSrcDepth;
-                        push.srcWidth = width;
-                        push.srcHeight = height;
-                        push.srcOffset = 0;
-                    } else {
-                        push.srcMip = mip - 1;
-                        push.srcWidth = sw;
-                        push.srcHeight = sh;
-                        push.srcOffset = offsets[mip - 1];
-                    }
-                    cmd.BindComputePipeline(hzbProgCopy);
-                    cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
-                    cmd.Dispatch((dw + 7) / 8, (dh + 7) / 8, 1);
-                });
+            HzbMipFrame& frame = rg.PassFrameData<HzbMipFrame>(hzbPass);
+            frame.program = const_cast<ShaderProgram*>(&hzbProgram);
+            frame.hzbAddr = hzbAddr;
+            frame.mip = mip;
+            frame.depthBindlessIndex = depthBindlessIndex;
+            frame.fromDepth = fromDepth;
+            frame.width = width;
+            frame.height = height;
+            for (uint32_t k = 0; k < gfx::kHizMaxMips; ++k)
+                frame.offsets[k] = offsets[k];
+            hzbPass.SetRecordFn(&RecordHzbMip);
         }
     }
 
@@ -480,32 +463,19 @@ struct Ssgi {
         uint32_t offsets[gfx::kHizMaxMips];
         for (uint32_t k = 0; k < gfx::kHizMaxMips; ++k)
             offsets[k] = hzb.mipOffsets[k];
-        ShaderProgram spdProgCopy = spdProgram; // copyable (handles only)
-        pass.SetRecordingFunc([spdProgCopy,
-                               hzbAddr,
-                               counterAddr,
-                               depthBindlessIndex,
-                               width,
-                               height,
-                               mipCount,
-                               groupX,
-                               groupY,
-                               offsets](CommandBuffer& cmd) mutable {
-            ::smvk::profiler::GpuPassScope spdScope("SsgiHzbSPD", __FILE__, __LINE__);
-            gfx::HzbSpdPush push{};
-            push.hzb = hzbAddr;
-            push.counter = counterAddr;
-            push.width = width;
-            push.height = height;
-            push.mipCount = mipCount;
-            push.depthTextureIndex = depthBindlessIndex;
-            for (uint32_t k = 0; k < gfx::kHizMaxMips; ++k)
-                push.mipOffsets[k] = offsets[k];
-            push.groupCount = groupX * groupY;
-            cmd.BindComputePipeline(spdProgCopy);
-            cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
-            cmd.Dispatch(groupX, groupY, 1);
-        });
+        HzbSpdFrame& frame = rg.PassFrameData<HzbSpdFrame>(pass);
+        frame.program = const_cast<ShaderProgram*>(&spdProgram);
+        frame.hzbAddr = hzbAddr;
+        frame.counterAddr = counterAddr;
+        frame.depthBindlessIndex = depthBindlessIndex;
+        frame.width = width;
+        frame.height = height;
+        frame.mipCount = mipCount;
+        frame.groupX = groupX;
+        frame.groupY = groupY;
+        for (uint32_t k = 0; k < gfx::kHizMaxMips; ++k)
+            frame.offsets[k] = offsets[k];
+        pass.SetRecordFn(&RecordHzbSpd);
     }
 
     // ---- targets ----
@@ -563,6 +533,88 @@ struct Ssgi {
     ShaderProgram saoRawProgram{};
     ShaderProgram blurProgram{};
     ShaderProgram composeProgram{};
+
+    struct HzbMipFrame {
+        ShaderProgram* program = nullptr;
+        uint64_t hzbAddr = 0;
+        uint32_t mip = 0;
+        uint32_t depthBindlessIndex = 0;
+        bool fromDepth = false;
+        uint32_t width = 0, height = 0;
+        uint32_t offsets[gfx::kHizMaxMips]{};
+    };
+    static void RecordHzbMip(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+        const HzbMipFrame& f = fc.rg->FrameData().Get<HzbMipFrame>(pd.frameSlot);
+        uint32_t dw = 0, dh = 0, sw = 0, sh = 0;
+        gfx::HzbMipDims(f.width, f.height, f.mip, dw, dh);
+        gfx::HzbMipDims(f.width, f.height, f.fromDepth ? 0u : f.mip - 1u, sw, sh);
+        gfx::HzbPush push{};
+        push.hzb = f.hzbAddr;
+        push.dstMip = f.mip;
+        push.dstWidth = dw;
+        push.dstHeight = dh;
+        push.dstOffset = f.offsets[f.mip];
+        push.depthTextureIndex = f.depthBindlessIndex;
+        if (f.fromDepth) {
+            push.srcMip = gfx::kHizSrcDepth;
+            push.srcWidth = f.width;
+            push.srcHeight = f.height;
+            push.srcOffset = 0;
+        } else {
+            push.srcMip = f.mip - 1;
+            push.srcWidth = sw;
+            push.srcHeight = sh;
+            push.srcOffset = f.offsets[f.mip - 1];
+        }
+        cmd.BindComputePipeline(*f.program);
+        cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
+        cmd.Dispatch((dw + 7) / 8, (dh + 7) / 8, 1);
+    }
+    struct HzbSpdFrame {
+        ShaderProgram* program = nullptr;
+        uint64_t hzbAddr = 0;
+        uint64_t counterAddr = 0;
+        uint32_t depthBindlessIndex = 0;
+        uint32_t width = 0, height = 0;
+        uint32_t mipCount = 0;
+        uint32_t groupX = 0, groupY = 0;
+        uint32_t offsets[gfx::kHizMaxMips]{};
+    };
+    static void RecordHzbSpd(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+        const HzbSpdFrame& f = fc.rg->FrameData().Get<HzbSpdFrame>(pd.frameSlot);
+        ::smvk::profiler::GpuPassScope spdScope("SsgiHzbSPD", __FILE__, __LINE__);
+        gfx::HzbSpdPush push{};
+        push.hzb = f.hzbAddr;
+        push.counter = f.counterAddr;
+        push.width = f.width;
+        push.height = f.height;
+        push.mipCount = f.mipCount;
+        push.depthTextureIndex = f.depthBindlessIndex;
+        for (uint32_t k = 0; k < gfx::kHizMaxMips; ++k)
+            push.mipOffsets[k] = f.offsets[k];
+        push.groupCount = f.groupX * f.groupY;
+        cmd.BindComputePipeline(*f.program);
+        cmd.PushConstants(0, sizeof(push), &push, ShaderStage::Compute);
+        cmd.Dispatch(f.groupX, f.groupY, 1);
+    }
+    template <typename Push>
+    struct RenderFrame {
+        ShaderProgram* program = nullptr;
+        Push push{};
+    };
+    template <typename Push>
+    static void RecordRender(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+        const RenderFrame<Push>& f = fc.rg->FrameData().Get<RenderFrame<Push>>(pd.frameSlot);
+        cmd.BindRenderPipeline(*f.program,
+                               ::tour::vertex_layouts::Empty,
+                               DepthSettings::Disabled(),
+                               StencilSettings::DefaultDisabled(),
+                               BlendSettings::Opaque(),
+                               MSAASettings::Count1(),
+                               RasterSettings{.cullMode = CullMode::None});
+        cmd.PushConstants(0, sizeof(Push), &f.push, ShaderStage::All);
+        cmd.Draw(3, 1, 0, 0); // fullscreen triangle
+    }
 
     [[nodiscard]] bool TargetsValid() const {
         // aoTermMsaa deliberately NOT required: the 1x chain (raw ->
@@ -1037,18 +1089,10 @@ struct Ssgi {
                 push.invDepthH = 1.0f / static_cast<float>(std::max(1u, fullExtent.height));
                 push.normalTextureIndex = normalOn ? normalBindlessIndex : UINT32_MAX;
                 push.pad1 = 0;
-                ShaderProgram progCopy = ssaoRawProgram; // copyable (handles only)
-                pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-                    cmd.BindRenderPipeline(progCopy,
-                                           ::tour::vertex_layouts::Empty,
-                                           DepthSettings::Disabled(),
-                                           StencilSettings::DefaultDisabled(),
-                                           BlendSettings::Opaque(),
-                                           MSAASettings::Count1(),
-                                           RasterSettings{.cullMode = CullMode::None});
-                    cmd.PushConstants(0, sizeof(SsaoPush), &push, ShaderStage::All);
-                    cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-                });
+                RenderFrame<SsaoPush>& frame = rg.PassFrameData<RenderFrame<SsaoPush>>(pass);
+                frame.program = const_cast<ShaderProgram*>(&ssaoRawProgram);
+                frame.push = push;
+                pass.SetRecordFn(&RecordRender<SsaoPush>);
             } else {
                 SaoPush push{};
                 push.frameUniforms = frameUniformsAddr;
@@ -1062,18 +1106,10 @@ struct Ssgi {
                 push.invDepthH = 1.0f / static_cast<float>(std::max(1u, fullExtent.height));
                 push.spiralTurns = std::clamp(overrideDesc.spiralTurns, 1u, 16u);
                 push.normalTextureIndex = normalOn ? normalBindlessIndex : UINT32_MAX;
-                ShaderProgram progCopy = saoRawProgram; // copyable (handles only)
-                pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-                    cmd.BindRenderPipeline(progCopy,
-                                           ::tour::vertex_layouts::Empty,
-                                           DepthSettings::Disabled(),
-                                           StencilSettings::DefaultDisabled(),
-                                           BlendSettings::Opaque(),
-                                           MSAASettings::Count1(),
-                                           RasterSettings{.cullMode = CullMode::None});
-                    cmd.PushConstants(0, sizeof(SaoPush), &push, ShaderStage::All);
-                    cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-                });
+                RenderFrame<SaoPush>& frame = rg.PassFrameData<RenderFrame<SaoPush>>(pass);
+                frame.program = const_cast<ShaderProgram*>(&saoRawProgram);
+                frame.push = push;
+                pass.SetRecordFn(&RecordRender<SaoPush>);
             }
         }
 
@@ -1094,18 +1130,11 @@ struct Ssgi {
                 .SetExtent(halfExtent)
                 .SetInputImages({raw.logical})
                 .SetColor({blurred.logical}, AttachmentLoadOp::DontCare, AttachmentStoreOp::Store);
-            ShaderProgram progCopy = blurProgram; // copyable (handles only)
-            pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(progCopy,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Opaque(),
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(SsgiAoBlurPush), &push, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-            });
+            RenderFrame<SsgiAoBlurPush>& frame =
+                rg.PassFrameData<RenderFrame<SsgiAoBlurPush>>(pass);
+            frame.program = const_cast<ShaderProgram*>(&blurProgram);
+            frame.push = push;
+            pass.SetRecordFn(&RecordRender<SsgiAoBlurPush>);
         }
 
         // ---- Compose: blurred half-res + HZB depth + shared normal +
@@ -1173,18 +1202,11 @@ struct Ssgi {
                 hzbRead.barrierMasks.stageMask = PipelineStageBit_Fragment;
                 pass.AddBufferHint(hzb.logical, hzbRead);
             }
-            ShaderProgram progCopy = composeProgram; // copyable (handles only)
-            pass.SetRecordingFunc([progCopy, push](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(progCopy,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Opaque(),
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(SsgiAoComposePush), &push, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-            });
+            RenderFrame<SsgiAoComposePush>& frame =
+                rg.PassFrameData<RenderFrame<SsgiAoComposePush>>(pass);
+            frame.program = const_cast<ShaderProgram*>(&composeProgram);
+            frame.push = push;
+            pass.SetRecordFn(&RecordRender<SsgiAoComposePush>);
         }
     }
 };

@@ -99,6 +99,7 @@
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/renderer.h>
 #include <Engine/Rendergraph/smaa_area_tex.h>
 #include <Engine/Rendergraph/smaa_search_tex.h>
 #include <Engine/platform.h>
@@ -327,6 +328,23 @@ struct Smaa {
     ShaderProgram weightsProgram{};
     ShaderProgram nbProgram{};
     ShaderProgram resolveProgram{};
+
+    struct Frame {
+        ShaderProgram* program = nullptr;
+        SmaaPush push{};
+    };
+    static void Record(CommandBuffer& cmd, const FrameContext& fc, const PassData& pd) {
+        const Frame& f = fc.rg->FrameData().Get<Frame>(pd.frameSlot);
+        cmd.BindRenderPipeline(*f.program,
+                               ::tour::vertex_layouts::Empty,
+                               DepthSettings::Disabled(),
+                               StencilSettings::DefaultDisabled(),
+                               BlendSettings::Opaque(),
+                               MSAASettings::Count1(),
+                               RasterSettings{.cullMode = CullMode::None});
+        cmd.PushConstants(0, sizeof(SmaaPush), &f.push, ShaderStage::All);
+        cmd.Draw(3, 1, 0, 0); // fullscreen triangle
+    }
 
     Extent2D extent{0, 0};
     Format ldrFormat = Format::BGRA8_UNorm;
@@ -618,18 +636,10 @@ struct Smaa {
                           AttachmentLoadOp::Clear,
                           AttachmentStoreOp::Store,
                           ClearColor(0, 0, 0, 0)); // edges (and alpha) must be cleared
-            ShaderProgram progCopy = edgeProgram;
-            pass.SetRecordingFunc([progCopy, edgePush](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(progCopy,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Opaque(),
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(SmaaPush), &edgePush, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0); // fullscreen triangle
-            });
+            Frame& frame = rg.PassFrameData<Frame>(pass);
+            frame.program = const_cast<ShaderProgram*>(&edgeProgram);
+            frame.push = edgePush;
+            pass.SetRecordFn(&Record);
         }
 
         SmaaPush weightsPush{};
@@ -655,18 +665,10 @@ struct Smaa {
                           AttachmentLoadOp::Clear,
                           AttachmentStoreOp::Store,
                           ClearColor(0, 0, 0, 0)); // weights (and alpha) must be cleared
-            ShaderProgram progCopy = weightsProgram;
-            pass.SetRecordingFunc([progCopy, weightsPush](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(progCopy,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Opaque(),
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(SmaaPush), &weightsPush, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0);
-            });
+            Frame& frame = rg.PassFrameData<Frame>(pass);
+            frame.program = const_cast<ShaderProgram*>(&weightsProgram);
+            frame.push = weightsPush;
+            pass.SetRecordFn(&Record);
         }
 
         SmaaPush nbPush{};
@@ -694,18 +696,10 @@ struct Smaa {
                 .SetColor({t2x ? historyCurrent.logicalView : swapViews[0]},
                           AttachmentLoadOp::DontCare,
                           AttachmentStoreOp::Store);
-            ShaderProgram progCopy = nbProgram;
-            pass.SetRecordingFunc([progCopy, nbPush](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(progCopy,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Opaque(),
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(SmaaPush), &nbPush, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0);
-            });
+            Frame& frame = rg.PassFrameData<Frame>(pass);
+            frame.program = const_cast<ShaderProgram*>(&nbProgram);
+            frame.push = nbPush;
+            pass.SetRecordFn(&Record);
         }
 
         if (t2x) {
@@ -723,18 +717,10 @@ struct Smaa {
                 .SetInputImages(
                     {historyCurrent.logicalView, historyPrevious.logicalView, motionView})
                 .SetColor(swapViews, AttachmentLoadOp::DontCare, AttachmentStoreOp::Store);
-            ShaderProgram progCopy = resolveProgram;
-            pass.SetRecordingFunc([progCopy, resolvePush](CommandBuffer& cmd) mutable {
-                cmd.BindRenderPipeline(progCopy,
-                                       ::tour::vertex_layouts::Empty,
-                                       DepthSettings::Disabled(),
-                                       StencilSettings::DefaultDisabled(),
-                                       BlendSettings::Opaque(),
-                                       MSAASettings::Count1(),
-                                       RasterSettings{.cullMode = CullMode::None});
-                cmd.PushConstants(0, sizeof(SmaaPush), &resolvePush, ShaderStage::All);
-                cmd.Draw(3, 1, 0, 0);
-            });
+            Frame& frame = rg.PassFrameData<Frame>(pass);
+            frame.program = const_cast<ShaderProgram*>(&resolveProgram);
+            frame.push = resolvePush;
+            pass.SetRecordFn(&Record);
         }
     }
 };

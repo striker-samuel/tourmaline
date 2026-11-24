@@ -31,6 +31,7 @@
 #include <Engine/Placement/placement_tile.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/renderer.h>
 #include <Engine/platform.h>
 
 #include <algorithm>
@@ -2139,6 +2140,71 @@ struct PlacementWorldRuntime {
     uint64_t programRevision = 0;
     bool created = false;
 
+    // ---- static record ABI (per-flight slots, non-capturing record fns) ----
+    struct ScatterEvalFrame {
+        smvk::ShaderProgram* program = nullptr;
+        PlacementScatterPush push{};
+    };
+    static void RecordScatterEval(smvk::CommandBuffer& cmd,
+                                  const smvk::FrameContext& fc,
+                                  const smvk::PassData& pd) {
+        const ScatterEvalFrame& f = fc.rg->FrameData().Get<ScatterEvalFrame>(pd.frameSlot);
+        PlacementScatterPrograms::PushAndDispatchScatter(cmd, *f.program, f.push);
+    }
+    struct ConstraintFrame {
+        smvk::ShaderProgram* program = nullptr;
+        PlacementConPush push{};
+        uint32_t width = 0;
+    };
+    static void RecordConstraint(smvk::CommandBuffer& cmd,
+                                 const smvk::FrameContext& fc,
+                                 const smvk::PassData& pd) {
+        const ConstraintFrame& f = fc.rg->FrameData().Get<ConstraintFrame>(pd.frameSlot);
+        PlacementConstraint::PushAndDispatchCon(cmd, *f.program, f.push, f.width);
+    }
+    struct CullFrame {
+        smvk::ShaderProgram* program = nullptr;
+        PlacementCullPush push{};
+        uint32_t groups = 0;
+    };
+    static void RecordCull(smvk::CommandBuffer& cmd,
+                           const smvk::FrameContext& fc,
+                           const smvk::PassData& pd) {
+        const CullFrame& f = fc.rg->FrameData().Get<CullFrame>(pd.frameSlot);
+        PlacementCullPrograms::PushAndDispatchCull(cmd, *f.program, f.push, f.groups);
+    }
+    struct PrefixFrame {
+        smvk::ShaderProgram* program = nullptr;
+        PlacementCullPush push{};
+    };
+    static void RecordPrefix(smvk::CommandBuffer& cmd,
+                             const smvk::FrameContext& fc,
+                             const smvk::PassData& pd) {
+        const PrefixFrame& f = fc.rg->FrameData().Get<PrefixFrame>(pd.frameSlot);
+        PlacementCullPrograms::PushAndDispatchPrefix(cmd, *f.program, f.push);
+    }
+    struct ScatterVisFrame {
+        smvk::ShaderProgram* program = nullptr;
+        PlacementScatterVisPush push{};
+        uint32_t groups = 0;
+    };
+    static void RecordScatterVis(smvk::CommandBuffer& cmd,
+                                 const smvk::FrameContext& fc,
+                                 const smvk::PassData& pd) {
+        const ScatterVisFrame& f = fc.rg->FrameData().Get<ScatterVisFrame>(pd.frameSlot);
+        PlacementCullPrograms::PushAndDispatchScatterVis(cmd, *f.program, f.push, f.groups);
+    }
+    struct DrawBuildFrame {
+        smvk::ShaderProgram* program = nullptr;
+        PlacementDrawBuildPush push{};
+    };
+    static void RecordDrawBuild(smvk::CommandBuffer& cmd,
+                                const smvk::FrameContext& fc,
+                                const smvk::PassData& pd) {
+        const DrawBuildFrame& f = fc.rg->FrameData().Get<DrawBuildFrame>(pd.frameSlot);
+        PlacementCullPrograms::PushAndDispatchDrawBuild(cmd, *f.program, f.push);
+    }
+
     // Per-slot harvest + uploads (live while the slot is tenanted; the
     // Holders' deferred destroy retires an evicted tenant's buffers
     // behind the frames still reading them).
@@ -2645,9 +2711,10 @@ struct PlacementWorldRuntime {
                                                          {at.hf.heightsL},
                                                          at.params.logical,
                                                          "PlacementWorldScatter");
-            eval.SetRecordingFunc([this, slot, push](smvk::CommandBuffer& cmd) {
-                PlacementScatterPrograms::PushAndDispatchScatter(cmd, scatter.hfProgram, push);
-            });
+            ScatterEvalFrame& eFrame = rg.PassFrameData<ScatterEvalFrame>(eval);
+            eFrame.program = &scatter.hfProgram;
+            eFrame.push = push;
+            eval.SetRecordFn(&RecordScatterEval);
             if (wantsCon) {
                 constraint.UploadParams(ctx, conPrm);
                 constraint.Clear(ctx);
@@ -2665,30 +2732,33 @@ struct PlacementWorldRuntime {
                                                       constraint,
                                                       pass.instanceLogicals[size_t(slot)],
                                                       pass.countLogicals[size_t(slot)]);
-                cBuild.SetRecordingFunc([this, conPush, width](smvk::CommandBuffer& cmd) {
-                    PlacementConstraint::PushAndDispatchCon(
-                        cmd, constraint.buildProgram, conPush, width);
-                });
+                ConstraintFrame& bFrame = rg.PassFrameData<ConstraintFrame>(cBuild);
+                bFrame.program = &constraint.buildProgram;
+                bFrame.push = conPush;
+                bFrame.width = width;
+                cBuild.SetRecordFn(&RecordConstraint);
                 smvk::RenderPass& cElect =
                     PlacementConstraint::AddElectPass(rg,
                                                       constraint,
                                                       pass.instanceLogicals[size_t(slot)],
                                                       pass.countLogicals[size_t(slot)],
                                                       at.aliveL);
-                cElect.SetRecordingFunc([this, conPush, width](smvk::CommandBuffer& cmd) {
-                    PlacementConstraint::PushAndDispatchCon(
-                        cmd, constraint.electProgram, conPush, width);
-                });
+                ConstraintFrame& eFrame = rg.PassFrameData<ConstraintFrame>(cElect);
+                eFrame.program = &constraint.electProgram;
+                eFrame.push = conPush;
+                eFrame.width = width;
+                cElect.SetRecordFn(&RecordConstraint);
                 smvk::RenderPass& cKill =
                     PlacementConstraint::AddKillPass(rg,
                                                      constraint,
                                                      pass.instanceLogicals[size_t(slot)],
                                                      pass.countLogicals[size_t(slot)],
                                                      at.aliveL);
-                cKill.SetRecordingFunc([this, conPush, width](smvk::CommandBuffer& cmd) {
-                    PlacementConstraint::PushAndDispatchCon(
-                        cmd, constraint.killProgram, conPush, width);
-                });
+                ConstraintFrame& kFrame = rg.PassFrameData<ConstraintFrame>(cKill);
+                kFrame.program = &constraint.killProgram;
+                kFrame.push = conPush;
+                kFrame.width = width;
+                cKill.SetRecordFn(&RecordConstraint);
                 ++conTrioThisFrame;
             }
             at.published = true;
@@ -2764,28 +2834,28 @@ struct PlacementWorldRuntime {
 
             smvk::RenderPass& cull = PlacementCullPrograms::AddCullPass(
                 rg, pass, uint32_t(s), vs, at.aliveL, renderViewsLogical);
-            cull.SetRecordingFunc([this, cullPush](smvk::CommandBuffer& cmd) {
-                PlacementCullPrograms::PushAndDispatchCull(cmd,
-					cullPrograms.cullProgram, cullPush,
-					pass.desc.maxInstancesPerTile /* the capacity bound —
-						the kernel self-bounds from the count buffer */);
-            });
+            CullFrame& cullFrame = rg.PassFrameData<CullFrame>(cull);
+            cullFrame.program = &cullPrograms.cullProgram;
+            cullFrame.push = cullPush;
+            cullFrame.groups = pass.desc.maxInstancesPerTile;
+            cull.SetRecordFn(&RecordCull);
             smvk::RenderPass& pre = PlacementCullPrograms::AddPrefixPass(rg, vs);
-            pre.SetRecordingFunc([this, cullPush](smvk::CommandBuffer& cmd) {
-                PlacementCullPrograms::PushAndDispatchPrefix(
-                    cmd, cullPrograms.prefixProgram, cullPush);
-            });
+            PrefixFrame& preFrame = rg.PassFrameData<PrefixFrame>(pre);
+            preFrame.program = &cullPrograms.prefixProgram;
+            preFrame.push = cullPush;
+            pre.SetRecordFn(&RecordPrefix);
             smvk::RenderPass& sc =
                 PlacementCullPrograms::AddScatterVisPass(rg, pass, uint32_t(s), vs);
-            sc.SetRecordingFunc([this, scPush](smvk::CommandBuffer& cmd) {
-                PlacementCullPrograms::PushAndDispatchScatterVis(
-                    cmd, cullPrograms.scatterProgram, scPush, pass.desc.maxInstancesPerTile);
-            });
+            ScatterVisFrame& scFrame = rg.PassFrameData<ScatterVisFrame>(sc);
+            scFrame.program = &cullPrograms.scatterProgram;
+            scFrame.push = scPush;
+            scFrame.groups = pass.desc.maxInstancesPerTile;
+            sc.SetRecordFn(&RecordScatterVis);
             smvk::RenderPass& db = PlacementCullPrograms::AddDrawBuildPass(rg, vs);
-            db.SetRecordingFunc([this, dbPush](smvk::CommandBuffer& cmd) {
-                PlacementCullPrograms::PushAndDispatchDrawBuild(
-                    cmd, cullPrograms.buildProgram, dbPush);
-            });
+            DrawBuildFrame& dbFrame = rg.PassFrameData<DrawBuildFrame>(db);
+            dbFrame.program = &cullPrograms.buildProgram;
+            dbFrame.push = dbPush;
+            db.SetRecordFn(&RecordDrawBuild);
             // The read-only proto table feeds both the cull (bounds/distance)
             // and the draw-build (index range) — hint the shared read.
             if (!protoTableLogical.empty()) {
