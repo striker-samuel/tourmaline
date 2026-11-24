@@ -13760,15 +13760,32 @@ smvk::rg::CompiledGraph smvk::RenderGraph::CompileGraph() const {
     uint64_t passHash = 1469598103934665603ull;
     uint64_t accessHash = 1469598103934665603ull;
 
+    // Explicit async submit sections (RFC queue contract): a section is a full
+    // submission boundary. Ordinary compute passes record inline on the
+    // graphics queue (Queue::Graphics); only AsyncCompute-marked passes land on
+    // the dedicated compute queue (Queue::Compute). The section counter
+    // advances on every queue transition in DECLARATION order, so a resource
+    // shared by graphics and async compute spans a section boundary (the
+    // compiler rejects same-section cross-queue sharing) and compiles into a
+    // timeline-semaphore handoff — the G1/C/G2 shape the EVSM blur needs.
+    smvk::rg::Queue currentQueue = smvk::rg::Queue::Graphics;
+    smvk::rg::Id section = 0;
+    smvk::rg::Id sectionCount = 1;
+
     for (size_t p = 0; p < usages.size(); ++p) {
         const RenderPass& rp = passes_[p];
         const PassUsage& pu = usages[p];
         smvk::rg::Pass gp{};
-        // Single section until the async submit split is authored into the
-        // declarations; compute/graphics still split into queue-local batches.
-        gp.section = 0;
-        gp.queue = rp.IsCompute() ? smvk::rg::Queue::Compute : smvk::rg::Queue::Graphics;
+        gp.queue =
+            rp.IsAsyncCompute() ? smvk::rg::Queue::Compute : smvk::rg::Queue::Graphics;
+        if (gp.queue != currentQueue) {
+            currentQueue = gp.queue;
+            ++section;
+            sectionCount = section + 1;
+        }
+        gp.section = section;
         passHash = smvk::rg::GraphHash(passHash, (uint64_t)gp.queue);
+        passHash = smvk::rg::GraphHash(passHash, (uint64_t)gp.section);
         const auto addAccess = [&](smvk::rg::Id id,
                                    AccessFlags a,
                                    PipelineStage st,
@@ -13800,7 +13817,7 @@ smvk::rg::CompiledGraph smvk::RenderGraph::CompileGraph() const {
     out.key.resourceStructure = (uint64_t)identities.size();
     out.key.accessStructure = accessHash;
     out.resourceIdentities = std::move(identities);
-    out.plan = smvk::rg::Compile(rgPasses, (smvk::rg::Id)out.resourceIdentities.size(), 1u);
+    out.plan = smvk::rg::Compile(rgPasses, (smvk::rg::Id)out.resourceIdentities.size(), sectionCount);
     return out;
 }
 
