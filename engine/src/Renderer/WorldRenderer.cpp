@@ -545,6 +545,33 @@ void WorldRenderer::Configure(WorldRendererConfig passes, const RunConfig& run) 
     ApplyRunConfig(run);
 }
 void WorldRenderer::ApplyRunConfig(const RunConfig& run) {
+    if (run.planarReflection) {
+        smvk::PlanarReflectionSettings settings{};
+        unsigned divisor = 0, maxDraws = 0;
+        char trailing = 0;
+        const int fields = std::sscanf(run.planarReflection->c_str(),
+            "%f,%f,%f,%f,%f,%f,%f,%f,%u,%f,%u,%f %c",
+            &settings.receiverPlane.x, &settings.receiverPlane.y,
+            &settings.receiverPlane.z, &settings.receiverPlane.w,
+            &settings.receiverCenter.x, &settings.receiverCenter.y,
+            &settings.receiverCenter.z, &settings.receiverRadius,
+            &divisor, &settings.maxDistance, &maxDraws, &settings.f0, &trailing);
+        glm::vec4 normalized{};
+        if (fields == 12 && smvk::NormalizePlanarPlane(settings.receiverPlane, normalized) &&
+            std::isfinite(settings.receiverCenter.x) && std::isfinite(settings.receiverCenter.y) &&
+            std::isfinite(settings.receiverCenter.z) && std::isfinite(settings.receiverRadius) &&
+            settings.receiverRadius >= 0 && (divisor == 2 || divisor == 4) &&
+            std::isfinite(settings.maxDistance) && settings.maxDistance > 0 &&
+            maxDraws > 0 && maxDraws <= 65535 && std::isfinite(settings.f0) &&
+            settings.f0 >= 0 && settings.f0 <= 1) {
+            settings.resolutionDivisor = divisor;
+            settings.maxDraws = maxDraws;
+            SetPlanarReflectionSettings(settings);
+        } else {
+            std::fprintf(stderr, "[WorldRenderer] invalid TOURMALINE_PLANAR_REFLECTION pin\n");
+        }
+    }
+
     // Debug: force the AA mode for headless A/B benches (the UI combo
     // keeps working after this). The pin is validated once in
     // RunConfig::Parse; ApplyHeadlessPostfxOverrides re-applies the
