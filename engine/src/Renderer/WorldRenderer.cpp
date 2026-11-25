@@ -6193,7 +6193,10 @@ smvk::GpuDirectionalLightDescription WorldRenderer::UpdateLights(
     } else {
         m_sdsmAppliedValid = false; // stats cold / SDSM off: fixed heuristic
     }
-    auto splits = smvk::ComputeCascadeSplits(splitNear, splitFar, m_cascadeLambda, NUM_CASCADES);
+    // The delayed percentile near bound can miss disoccluded receivers.
+    // Preserve the adaptive distribution, but never trim near coverage.
+    auto splits = smvk::ComputeCoveredCascadeSplits(
+        default_near_clip, splitNear, splitFar, m_cascadeLambda, NUM_CASCADES);
     // TMP-DIAG (TOURMALINE_SDSM_TRACE=1): one stderr line per frame —
     // the split-fit latches + the shared readback ticket + the exposure
     // adaptation state, so one off->on toggle cycle shows exactly which

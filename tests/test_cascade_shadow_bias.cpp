@@ -43,5 +43,27 @@ int main() {
     const auto zero = smvk::ComputeCascadeReceiverBias(0.0f, 100.0f);
     Near(zero.depthNdc, 0.0f, "zero texel disables depth bias");
     Near(zero.normalWorld, 0.0f, "zero texel disables normal bias");
+    // A depth histogram from an occluded frame can start well behind the
+    // actual camera near plane. The next frame must still cover that gap.
+    constexpr float cameraNear = 0.1f;
+    constexpr float measuredNear = 8.0f;
+    for (uint32_t count = 1; count <= smvk::kMaxCascades; ++count) {
+        for (float lambda : {0.0f, 0.8f, 1.0f}) {
+            const auto adaptive = smvk::ComputeCascadeSplits(
+                measuredNear, 100.0f, lambda, count);
+            const auto covered = smvk::ComputeCoveredCascadeSplits(
+                cameraNear, measuredNear, 100.0f, lambda, count);
+            Near(covered.front(), cameraNear, "SDSM covers camera near plane");
+            for (uint32_t i = 1; i <= count; ++i)
+                Near(covered[i], adaptive[i], "SDSM keeps adaptive split end");
+
+            const auto fixed = smvk::ComputeCascadeSplits(
+                cameraNear, 100.0f, lambda, count);
+            const auto fallback = smvk::ComputeCoveredCascadeSplits(
+                cameraNear, cameraNear, 100.0f, lambda, count);
+            for (uint32_t i = 0; i <= count; ++i)
+                Near(fallback[i], fixed[i], "fixed CSM unchanged");
+        }
+    }
     return failures ? 1 : 0;
 }

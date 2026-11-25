@@ -95,6 +95,21 @@ inline std::vector<float> ComputeCascadeSplits(float nearClip,
     return splits;
 }
 
+// SDSM's measured near bound is a distribution hint, not a coverage bound.
+// Delayed/percentile depth stats can omit newly visible near receivers.
+// Keep the adaptive interior splits but fit cascade zero from the camera
+// near plane so those receivers still have a shadow projection.
+inline std::vector<float> ComputeCoveredCascadeSplits(float cameraNear,
+                                                      float distributionNear,
+                                                      float farClip,
+                                                      float lambda,
+                                                      uint32_t cascadeCount) {
+    assert(cameraNear > 0.0f && cameraNear <= distributionNear);
+    auto splits = ComputeCascadeSplits(distributionNear, farClip, lambda, cascadeCount);
+    splits[0] = cameraNear;
+    return splits;
+}
+
 // Biases are expressed relative to the cascade's WORLD-SPACE texel size.
 // A fixed meter cap silently under-biases distant cascades; their projected
 // shadow texels grow even though the receiver's raster footprint does not.
