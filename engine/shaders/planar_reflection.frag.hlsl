@@ -20,7 +20,7 @@ struct PSOut
     float4 outColor : SV_Target0;
 };
 
-// C++ twin: Engine/Rendergraph/planar_reflection.h (128 bytes).
+// C++ twin: Engine/Rendergraph/planar_reflection.h (144 bytes).
 struct PlanarReflectionPush
 {
     GPU_PTR_READ(FrameUniforms) frameUniforms;  // 0
@@ -35,6 +35,7 @@ struct PlanarReflectionPush
     float thickness;
     float f0;
     float pad0;
+    float4 receiverBounds; // xyz center, w radius, zero = unbounded
 };
 GPU_PUSH(PlanarReflectionPush, pp);
 
@@ -61,6 +62,9 @@ PSOut mainPS(PSIn IN)
     if (!(abs(worldH.w) > 1e-8f))
         return OUT;
     const float3 world = worldH.xyz / worldH.w;
+    if (pp.receiverBounds.w > 0.0f &&
+        distance(world, pp.receiverBounds.xyz) > pp.receiverBounds.w)
+        return OUT;
 
     // Reject every pixel not on the authored receiver plane. The narrow
     // finite tolerance accounts for geometric tessellation and float depth
