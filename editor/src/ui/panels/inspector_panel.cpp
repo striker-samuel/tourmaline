@@ -153,6 +153,9 @@ void EditorApp::DrawInspector() {
         case EditVerb::SetCastsVolumetricShadow:
             mark("Volumetric shadow", 1);
             break;
+        case EditVerb::SetIgnoreSdfBake:
+            mark("Ignore SDF bake", 1);
+            break;
         case EditVerb::SetVisibility:
             mark("Visibility", 1);
             break;
@@ -170,7 +173,8 @@ void EditorApp::DrawInspector() {
                               {smvk::tour::OverrideAttr::NoLightmap, "Exclude lightmaps"},
                               {smvk::tour::OverrideAttr::DitherCloseup, "Dither closeup"},
                               {smvk::tour::OverrideAttr::Static, "Static"},
-                              {smvk::tour::OverrideAttr::VolumetricShadow, "Volumetric shadow"}}) {
+                              {smvk::tour::OverrideAttr::VolumetricShadow, "Volumetric shadow"},
+                              {smvk::tour::OverrideAttr::IgnoreSdfBake, "Ignore SDF bake"}}) {
         if (LastWideRuleFor(entry.first, nodeName))
             mark(entry.second, 2);
     }
@@ -700,6 +704,26 @@ void EditorApp::DrawInspector() {
                         "frame.")) {
             EditCmd c{};
             c.verb = EditVerb::SetCastsVolumetricShadow;
+            c.node = node;
+            c.afterFlag = self;
+            c.beforeFlag = !self;
+            Do(c);
+        }
+    }
+
+    // Static-SDF bake opt-out (SELF flag - per mesh node): flagged nodes'
+    // meshes are excluded from the mesh-local .geometry.sdf sidecar. Bake-
+    // time only (takes effect on the next cook), thin features that smear
+    // into voxel columns.
+    {
+        bool self = IsIgnoreSdfBakeNode(scene, int(node));
+        if (attr::Check("Ignore SDF bake",
+                        &self,
+                        "Exclude this mesh from the static-SDF sidecar bake "
+                        "(thin features — poles, railings — that smear into "
+                        "voxel columns). Takes effect on the next cook.")) {
+            EditCmd c{};
+            c.verb = EditVerb::SetIgnoreSdfBake;
             c.node = node;
             c.afterFlag = self;
             c.beforeFlag = !self;

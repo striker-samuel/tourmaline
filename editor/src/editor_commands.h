@@ -37,6 +37,8 @@ enum class EditVerb : uint8_t {
     SetVisibility,            // Clarisse-style self hidden flag (hierarchical effect)
     SetCastsVolumetricShadow, // the coarse fog-tile caster mark (self
                               // flag, see TransformHierarchy::castsVolumetricShadow)
+    SetIgnoreSdfBake,         // SELF flag (per mesh node): exclude the node's mesh
+                              // from the static-SDF sidecar bake
     SetStatic,                // static-subtree ROOT mark (frozen transforms,
                               // mega-mesh collapse eligibility; whole tree)
     Parent,                   // world parent id

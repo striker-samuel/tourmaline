@@ -76,6 +76,7 @@ inline constexpr Descriptor kDescriptors[] = {
     {"node.noLightmap", Kind::Boolean, "transform"},
     {"node.ditherCloseup", Kind::Boolean, "transform"},
     {"node.volumetricShadow", Kind::Boolean, "transform"},
+    {"node.ignoreSdfBake", Kind::Boolean, "transform"},
     {"node.material", Kind::Number, "transform", Semantic::AssetReference},
     {"gi.spacing", Kind::Number, "giVolume"},
     {"gi.priority", Kind::Number, "giVolume", Semantic::Integer},
@@ -137,6 +138,8 @@ inline bool Read(const TransformHierarchy& scene, uint32_t node, std::string_vie
         return boolean(node < scene.ditherCloseup.size() && scene.ditherCloseup[node] != 0);
     if (key == "node.volumetricShadow")
         return boolean(IsCastsVolumetricShadowNode(scene, int(node)));
+    if (key == "node.ignoreSdfBake")
+        return boolean(IsIgnoreSdfBakeNode(scene, int(node)));
     if (key == "node.material") {
         const auto* row = FindMaterial(scene, node);
         return number(row ? row->material : UINT32_MAX);
@@ -257,6 +260,13 @@ inline bool Write(TransformHierarchy& scene, uint32_t node, std::string_view key
             MarkCastsVolumetricShadow(scene, int(node));
         else
             ClearCastsVolumetricShadow(scene, int(node));
+        return true;
+    }
+    if (key == "node.ignoreSdfBake") {
+        if (v.boolean)
+            MarkIgnoreSdfBake(scene, int(node));
+        else
+            ClearIgnoreSdfBake(scene, int(node));
         return true;
     }
     if (key == "node.material") {

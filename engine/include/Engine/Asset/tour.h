@@ -192,6 +192,9 @@ enum class Verb : uint8_t {
     SetVisibility,    // flag: hidden self state (hierarchical, see TransformHierarchy::hidden)
     SetCastsVolumetricShadow, // flag: the coarse fog-tile caster mark
                               // (self flag, see TransformHierarchy::castsVolumetricShadow)
+    SetIgnoreSdfBake,         // flag: SELF mark (per mesh node) excluding the node's
+                              // mesh from the static-SDF sidecar bake (see
+                              // TransformHierarchy::ignoreSdfBake)
     SetStatic,                // flag: static-subtree ROOT mark (TransformHierarchy::staticRoot —
                               // frozen transforms after the initial build, mega-mesh
                               // collapse eligibility; see Scene/static_merge.h)
@@ -408,6 +411,7 @@ enum class OverrideAttr : uint8_t {
     DitherCloseup,    // flag
     Static,           // subtree frozen-transform root
     VolumetricShadow, // coarse fog shadow caster
+    IgnoreSdfBake,    // flag (bake-time: exclude the node's mesh from the static-SDF sidecar)
     Plug,             // path + typed value from the shared scene plug registry
 };
 
@@ -610,7 +614,7 @@ struct LightCookieBake {
     std::string output;
     uint32_t resolution = 256;
     uint32_t samples = 64;
-    float emitterRadius = 0.01f; // meters, controls soft penumbrae
+    float emitterRadius = 0.01f;  // meters, controls soft penumbrae
     float captureDistance = 2.0f; // meters, reference receiver distance
 };
 

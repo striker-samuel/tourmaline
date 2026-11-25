@@ -69,6 +69,7 @@ void TransformHierarchy::ReserveNodeCapacity(size_t slots) {
     lightmap.reserve(slots);
     castsVolumetricShadow.reserve(slots);
     ditherCloseup.reserve(slots);
+    ignoreSdfBake.reserve(slots);
     hidden.reserve(slots);
     metadata.reserve(slots);
     rowsForNode.reserve(slots);
@@ -108,6 +109,8 @@ void TransformHierarchy::ResetForResolve() {
     fresh.castsVolumetricShadow.clear();
     fresh.ditherCloseup = std::move(ditherCloseup);
     fresh.ditherCloseup.clear();
+    fresh.ignoreSdfBake = std::move(ignoreSdfBake);
+    fresh.ignoreSdfBake.clear();
     fresh.hidden = std::move(hidden);
     fresh.hidden.clear();
     fresh.metadata = std::move(metadata);
@@ -197,6 +200,8 @@ int addNode(TransformHierarchy& scene, int parent, int level, bool autoName) {
             scene.castsVolumetricShadow[size_t(node)] = 0;
         if (scene.ditherCloseup.size() > size_t(node))
             scene.ditherCloseup[size_t(node)] = 0;
+        if (scene.ignoreSdfBake.size() > size_t(node))
+            scene.ignoreSdfBake[size_t(node)] = 0;
         if (scene.hidden.size() > size_t(node))
             scene.hidden[size_t(node)] = 0;
         scene.hierarchy[size_t(node)] = NodeLinks{};
@@ -224,6 +229,7 @@ int addNode(TransformHierarchy& scene, int parent, int level, bool autoName) {
             scene.lightmap.push_back(0);
             scene.castsVolumetricShadow.push_back(0);
             scene.ditherCloseup.push_back(0);
+            scene.ignoreSdfBake.push_back(0);
             scene.hidden.push_back(0);
         }
         // Generation word: grow-with-alive so a lagging array (wholesale
@@ -346,6 +352,8 @@ void RetireNodeSlot(TransformHierarchy& scene, NodeId node) {
         scene.castsVolumetricShadow[size_t(node)] = 0;
     if (scene.ditherCloseup.size() > size_t(node))
         scene.ditherCloseup[size_t(node)] = 0;
+    if (scene.ignoreSdfBake.size() > size_t(node))
+        scene.ignoreSdfBake[size_t(node)] = 0;
     if (scene.hidden.size() > size_t(node))
         scene.hidden[size_t(node)] = 0;
     scene.localTransform[size_t(node)] = glm::mat4(1.0f);
@@ -911,6 +919,7 @@ void loadScene(const char* fileName, TransformHierarchy& scene) {
     scene.hidden.assign(sz, 0);
     scene.castsVolumetricShadow.assign(sz, 0);
     scene.ditherCloseup.assign(sz, 0);
+    scene.ignoreSdfBake.assign(sz, 0);
     // Epoch 6b: the file is DENSE (the writer compacts) — the loaded
     // scene's slots are 0..sz-1, all alive at generation 0, free list
     // empty. A stale free list would hand addNode recycled slots whose
@@ -1528,6 +1537,7 @@ void mergeScenes(TransformHierarchy& scene,
     scene.lightmap.clear();
     scene.castsVolumetricShadow.clear();
     scene.ditherCloseup.clear();
+    scene.ignoreSdfBake.clear();
     scene.hidden.clear();
     // The hierarchy reset above makes EVERY prior association row dead
     // (node ids no longer resolve) — clear all tables with it. Lights
@@ -1594,6 +1604,8 @@ void mergeScenes(TransformHierarchy& scene,
                 scene.castsVolumetricShadow[size_t(dst)] = s->castsVolumetricShadow[src];
             if (s->ditherCloseup.size() > size_t(src))
                 scene.ditherCloseup[size_t(dst)] = s->ditherCloseup[src];
+            if (s->ignoreSdfBake.size() > size_t(src))
+                scene.ignoreSdfBake[size_t(dst)] = s->ignoreSdfBake[src];
         }
 
         // Pass 2: hierarchy links through the map (a live node's links point

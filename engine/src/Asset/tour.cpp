@@ -202,8 +202,8 @@ static bool IsGenericNodeVerb(Verb v) {
     return v == Verb::Rename || v == Verb::SetTranslate || v == Verb::SetRotate ||
            v == Verb::SetScale || v == Verb::AssignMaterial || v == Verb::SetNoLightmap ||
            v == Verb::SetLightmap || v == Verb::SetDitherCloseup ||
-           v == Verb::SetCastsVolumetricShadow || v == Verb::SetStatic ||
-           v == Verb::SetVisibility || v == Verb::Parent;
+           v == Verb::SetCastsVolumetricShadow || v == Verb::SetIgnoreSdfBake ||
+           v == Verb::SetStatic || v == Verb::SetVisibility || v == Verb::Parent;
 }
 static bool IsAttrNodeVerb(Verb v) {
     return v == Verb::AttachTriggerVolume || v == Verb::RemoveTriggerVolume ||
@@ -289,6 +289,12 @@ static void WriteCommandLine(std::ostream& f, const Command& c, const char* inde
         break;
     case Verb::SetCastsVolumetricShadow:
         f << "setCastsVolumetricShadow";
+        WriteNodeToken(f, c);
+        WriteTargetKeys(f, c, true);
+        f << " -type \"bool\" -v " << FlagVal(c.flag);
+        break;
+    case Verb::SetIgnoreSdfBake:
+        f << "setIgnoreSdfBake";
         WriteNodeToken(f, c);
         WriteTargetKeys(f, c, true);
         f << " -type \"bool\" -v " << FlagVal(c.flag);
@@ -771,6 +777,10 @@ bool OverrideAttrFromString(const std::string& s, OverrideAttr& out) {
         out = OverrideAttr::VolumetricShadow;
         return true;
     }
+    if (s == "ignoreSdfBake" || s == "ignoreSdf") {
+        out = OverrideAttr::IgnoreSdfBake;
+        return true;
+    }
     if (s == "plug") {
         out = OverrideAttr::Plug;
         return true;
@@ -917,6 +927,8 @@ const char* OverrideAttrName(OverrideAttr a) {
         return "static";
     case OverrideAttr::VolumetricShadow:
         return "volumetricShadow";
+    case OverrideAttr::IgnoreSdfBake:
+        return "ignoreSdfBake";
     case OverrideAttr::Plug:
         return "plug";
     }
@@ -1152,12 +1164,9 @@ bool SaveTour(const std::string& path, const Doc& doc, std::string& err) {
     // stable node UUID. Baking regenerates the output asset; the recipe
     // survives SaveTour/LoadTour independent of transient editor selection.
     for (const LightCookieBake& bake : doc.lightCookieBakes) {
-        f << "lightCookieBake -light " << Quote(bake.lightUuid)
-          << " -output " << Quote(bake.output)
-          << " -resolution " << bake.resolution
-          << " -samples " << bake.samples
-          << " -radius " << bake.emitterRadius
-          << " -distance " << bake.captureDistance;
+        f << "lightCookieBake -light " << Quote(bake.lightUuid) << " -output " << Quote(bake.output)
+          << " -resolution " << bake.resolution << " -samples " << bake.samples << " -radius "
+          << bake.emitterRadius << " -distance " << bake.captureDistance;
         for (const auto& uuid : bake.occluderUuids)
             f << " -occluder " << Quote(uuid);
         f << ";\n";
@@ -2074,11 +2083,14 @@ bool LoadTourFromString(const std::string& text,
                     char* end = nullptr;
                     const auto number = std::strtoul(value.c_str(), &end, 10);
                     if (end == value.c_str() || *end != '\0' || number > 4096) {
-                        err = "line " + std::to_string(lineNo) + ": invalid lightCookieBake integer";
+                        err =
+                            "line " + std::to_string(lineNo) + ": invalid lightCookieBake integer";
                         return false;
                     }
-                    if (field == "-resolution") bake.resolution = uint32_t(number);
-                    else bake.samples = uint32_t(number);
+                    if (field == "-resolution")
+                        bake.resolution = uint32_t(number);
+                    else
+                        bake.samples = uint32_t(number);
                 } else if (field == "-radius" || field == "-distance") {
                     char* end = nullptr;
                     const float number = std::strtof(value.c_str(), &end);
@@ -2086,22 +2098,23 @@ bool LoadTourFromString(const std::string& text,
                         err = "line " + std::to_string(lineNo) + ": invalid lightCookieBake float";
                         return false;
                     }
-                    if (field == "-radius") bake.emitterRadius = number;
-                    else bake.captureDistance = number;
+                    if (field == "-radius")
+                        bake.emitterRadius = number;
+                    else
+                        bake.captureDistance = number;
                 } else {
-                    err = "line " + std::to_string(lineNo) + ": unknown lightCookieBake field '" + field + "'";
+                    err = "line " + std::to_string(lineNo) + ": unknown lightCookieBake field '" +
+                          field + "'";
                     return false;
                 }
             }
-            if (!hasLight || !hasOutput || bake.lightUuid.empty() ||
-                bake.output.empty() || bake.output.find("..") != std::string::npos ||
-                bake.output[0] == '/' || bake.output.find('\\\\') != std::string::npos ||
-                bake.resolution < 16 || bake.resolution > 4096 ||
-                (bake.resolution & (bake.resolution - 1)) ||
-                bake.samples < 1 || bake.samples > 4096 ||
-                bake.emitterRadius < 0.0f || bake.captureDistance <= 0.0f ||
-                bake.occluderUuids.empty() || bake.occluderUuids.size() > 4096 ||
-                doc.lightCookieBakes.size() >= 4096) {
+            if (!hasLight || !hasOutput || bake.lightUuid.empty() || bake.output.empty() ||
+                bake.output.find("..") != std::string::npos || bake.output[0] == '/' ||
+                bake.output.find('\\\\') != std::string::npos || bake.resolution < 16 ||
+                bake.resolution > 4096 || (bake.resolution & (bake.resolution - 1)) ||
+                bake.samples < 1 || bake.samples > 4096 || bake.emitterRadius < 0.0f ||
+                bake.captureDistance <= 0.0f || bake.occluderUuids.empty() ||
+                bake.occluderUuids.size() > 4096 || doc.lightCookieBakes.size() >= 4096) {
                 err = "line " + std::to_string(lineNo) + ": invalid lightCookieBake recipe";
                 return false;
             }
@@ -2332,6 +2345,11 @@ bool LoadTourFromString(const std::string& text,
         } else if (effVerb == "setCastsVolumetricShadow" && (fl.hasN || fl.hasUuid || fl.hasName) &&
                    fl.hasV) {
             c.verb = Verb::SetCastsVolumetricShadow;
+            c.node = fl.n;
+            c.flag = (fl.v == "1" || fl.v == "on" || fl.v == "true");
+        } else if (effVerb == "setIgnoreSdfBake" && (fl.hasN || fl.hasUuid || fl.hasName) &&
+                   fl.hasV) {
+            c.verb = Verb::SetIgnoreSdfBake;
             c.node = fl.n;
             c.flag = (fl.v == "1" || fl.v == "on" || fl.v == "true");
         } else if (effVerb == "setStatic" && (fl.hasN || fl.hasUuid || fl.hasName) && fl.hasV) {
@@ -4267,6 +4285,18 @@ bool ApplyTourToCluster(WorldPage& cluster,
             scene.castsVolumetricShadow[target] = c.flag ? 1 : 0;
             break;
         }
+        case Verb::SetIgnoreSdfBake: {
+            uint32_t target = 0;
+            if (!resolveNode(c.node, c, target)) {
+                if (!failCmd(c))
+                    return false;
+                break;
+            }
+            if (scene.ignoreSdfBake.size() != scene.hierarchy.size())
+                scene.ignoreSdfBake.assign(scene.hierarchy.size(), 0);
+            scene.ignoreSdfBake[target] = c.flag ? 1 : 0;
+            break;
+        }
         case Verb::SetStatic: {
             // Static-subtree ROOT mark (TransformHierarchy::staticRoot): the subtree's
             // transforms freeze after the initial build (skip per-frame
@@ -5684,7 +5714,7 @@ bool ApplyTourToCluster(WorldPage& cluster,
     // wide rule touching the same node+attr (local wins).
     if (!doc.overrides.empty()) {
         std::unordered_set<uint32_t> localVis, localMat, localNoLM, localLM, localDither;
-        std::unordered_set<uint32_t> localStatic, localVolumetric;
+        std::unordered_set<uint32_t> localStatic, localVolumetric, localIgnoreSdf;
         for (const Command& c : doc.commands) {
             switch (c.verb) {
             case Verb::SetVisibility:
@@ -5707,6 +5737,9 @@ bool ApplyTourToCluster(WorldPage& cluster,
                 break;
             case Verb::SetCastsVolumetricShadow:
                 localVolumetric.insert(c.node);
+                break;
+            case Verb::SetIgnoreSdfBake:
+                localIgnoreSdf.insert(c.node);
                 break;
             default:
                 break;
@@ -5818,6 +5851,14 @@ bool ApplyTourToCluster(WorldPage& cluster,
                         MarkCastsVolumetricShadow(scene, int(n));
                     else
                         ClearCastsVolumetricShadow(scene, int(n));
+                    break;
+                case OverrideAttr::IgnoreSdfBake:
+                    if (localIgnoreSdf.contains(n))
+                        continue;
+                    if (r.flag)
+                        MarkIgnoreSdfBake(scene, int(n));
+                    else
+                        ClearIgnoreSdfBake(scene, int(n));
                     break;
                 }
             }

@@ -44,6 +44,8 @@ bool SameAttr(editor::EditVerb verb, smvk::tour::OverrideAttr attr) {
         return attr == OverrideAttr::Static;
     case editor::EditVerb::SetCastsVolumetricShadow:
         return attr == OverrideAttr::VolumetricShadow;
+    case editor::EditVerb::SetIgnoreSdfBake:
+        return attr == OverrideAttr::IgnoreSdfBake;
     default:
         return false;
     }
@@ -109,7 +111,8 @@ bool EditorApp::HasLocalPlugOverride(uint32_t node, const std::string& plug) con
             (plug == "node.lightmap" && c.verb == EV::SetLightmap) ||
             (plug == "node.noLightmap" && c.verb == EV::SetNoLightmap) ||
             (plug == "node.ditherCloseup" && c.verb == EV::SetDitherCloseup) ||
-            (plug == "node.volumetricShadow" && c.verb == EV::SetCastsVolumetricShadow))
+            (plug == "node.volumetricShadow" && c.verb == EV::SetCastsVolumetricShadow) ||
+            (plug == "node.ignoreSdfBake" && c.verb == EV::SetIgnoreSdfBake))
             return true;
         if (c.verb == EV::SetGiVolumeAttr &&
             ((plug == "gi.spacing" && c.giVolumeAttr == "spacing") ||
@@ -339,6 +342,18 @@ void EditorApp::ApplyOverrideRule(OverrideRule& r) {
             ++touched;
             break;
         }
+        case smvk::tour::OverrideAttr::IgnoreSdfBake: {
+            a.beforeFlag = IsIgnoreSdfBakeNode(scene, int(n));
+            if (a.beforeFlag == r.flag)
+                break;
+            if (r.flag)
+                MarkIgnoreSdfBake(scene, int(n));
+            else
+                ClearIgnoreSdfBake(scene, int(n));
+            r.applied.push_back(a);
+            ++touched;
+            break;
+        }
         }
     }
     r.lastMatches = int(hits.size());
@@ -443,6 +458,15 @@ void EditorApp::UnapplyOverrideRule(OverrideRule& r) {
             else
                 ClearCastsVolumetricShadow(scene, int(n));
             RefreshNodeDrawState(n);
+            break;
+        }
+        case smvk::tour::OverrideAttr::IgnoreSdfBake: {
+            if (IsIgnoreSdfBakeNode(scene, int(n)) != r.flag)
+                continue;
+            if (it->beforeFlag)
+                MarkIgnoreSdfBake(scene, int(n));
+            else
+                ClearIgnoreSdfBake(scene, int(n));
             break;
         }
         }
@@ -810,6 +834,17 @@ void EditorApp::ReassertWideOverrides(uint32_t node) {
             r.applied.push_back(a);
             break;
         }
+        case smvk::tour::OverrideAttr::IgnoreSdfBake: {
+            a.beforeFlag = IsIgnoreSdfBakeNode(scene, int(node));
+            if (a.beforeFlag == r.flag)
+                break;
+            if (r.flag)
+                MarkIgnoreSdfBake(scene, int(node));
+            else
+                ClearIgnoreSdfBake(scene, int(node));
+            r.applied.push_back(a);
+            break;
+        }
         }
     }
 }
@@ -960,6 +995,10 @@ void EditorApp::DrawInspectorOverrides(uint32_t node) {
         const bool eff = IsDitherCloseupNode(scene, int(node));
         statusRow("Dither", OverrideAttr::DitherCloseup, eff ? "on" : "off");
     }
+    {
+        const bool eff = IsIgnoreSdfBakeNode(scene, int(node));
+        statusRow("SDF", OverrideAttr::IgnoreSdfBake, eff ? "excluded" : "baked");
+    }
     // ---- which wide rules touch this node (evaluated-state debugging) ----
     {
         bool any = false;
@@ -1008,7 +1047,7 @@ void EditorApp::DrawOverridesPanel() {
     ImGui::SameLine();
     ImGui::SetNextItemWidth(130.0f);
     const char* kAttrs = "Visibility\0Material\0NoLightmap\0DitherCloseup\0Static\0Volumetric "
-                         "shadow\0Bake lightmaps\0Typed plug...\0";
+                         "shadow\0Bake lightmaps\0Ignore SDF bake\0Typed plug...\0";
     ImGui::Combo("##attr", &m_overrideAttrSel, kAttrs);
     if (m_overrideAttrSel == 1) {
         // Material value picker (world slots, like the Inspector combo).
@@ -1032,7 +1071,7 @@ void EditorApp::DrawOverridesPanel() {
             }
             ImGui::EndCombo();
         }
-    } else if (m_overrideAttrSel == 7) {
+    } else if (m_overrideAttrSel == 8) {
         using namespace tour::transformhierarchy::plugs;
         m_overridePlugSel = std::clamp(m_overridePlugSel, 0, int(std::size(kDescriptors)) - 1);
         const Descriptor& selected = kDescriptors[m_overridePlugSel];
@@ -1100,8 +1139,9 @@ void EditorApp::DrawOverridesPanel() {
                                       OverrideAttr::Static,
                                       OverrideAttr::VolumetricShadow,
                                       OverrideAttr::Lightmap,
+                                      OverrideAttr::IgnoreSdfBake,
                                       OverrideAttr::Plug};
-        const OverrideAttr attr = attrs[std::clamp(m_overrideAttrSel, 0, 7)];
+        const OverrideAttr attr = attrs[std::clamp(m_overrideAttrSel, 0, 8)];
         const uint32_t mat = (m_overrideAttrSel == 1) ? uint32_t(m_overrideMatSel) : UINT32_MAX;
         // VISIBILITY inverts here: the form's checkbox is the
         // attribute's OWN state ("On" = visible), the stored rule

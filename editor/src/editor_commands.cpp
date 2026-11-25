@@ -422,6 +422,14 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
         RefreshNodeDrawState(c.node);
         break;
     }
+    case EditVerb::SetIgnoreSdfBake: {
+        const bool v = forward ? c.afterFlag : c.beforeFlag;
+        if (v)
+            MarkIgnoreSdfBake(scene, int(c.node));
+        else
+            ClearIgnoreSdfBake(scene, int(c.node));
+        break;
+    }
     case EditVerb::SetVisibility: {
         // Undo/redo and commands may run while isolation is active. End
         // the temporary mask before mutating authoritative visibility.
@@ -3750,6 +3758,8 @@ void EditorApp::Do(EditCmd c) {
         NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::Lightmap);
     else if (c.verb == EditVerb::SetDitherCloseup)
         NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::DitherCloseup);
+    else if (c.verb == EditVerb::SetIgnoreSdfBake)
+        NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::IgnoreSdfBake);
     m_history.erase(m_history.begin() + m_historyCursor, m_history.end());
     m_history.push_back(c);
     m_historyCursor = m_history.size();
@@ -3772,6 +3782,8 @@ void EditorApp::PushDone(EditCmd c) {
         NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::Lightmap);
     else if (c.verb == EditVerb::SetDitherCloseup)
         NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::DitherCloseup);
+    else if (c.verb == EditVerb::SetIgnoreSdfBake)
+        NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::IgnoreSdfBake);
     m_history.erase(m_history.begin() + m_historyCursor, m_history.end());
     m_history.push_back(c);
     m_historyCursor = m_history.size();
@@ -3807,6 +3819,8 @@ bool EditorApp::Redo() {
         NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::Lightmap);
     else if (c.verb == EditVerb::SetDitherCloseup)
         NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::DitherCloseup);
+    else if (c.verb == EditVerb::SetIgnoreSdfBake)
+        NoteLocalOverrideWritten(c.node, smvk::tour::OverrideAttr::IgnoreSdfBake);
     ++m_historyCursor;
     AutosaveTour();
     return true;
@@ -3840,6 +3854,7 @@ std::vector<size_t> EditorApp::CoalescedSaveIndices() const {
         case EditVerb::SetLightmap:
         case EditVerb::SetDitherCloseup:
         case EditVerb::SetCastsVolumetricShadow:
+        case EditVerb::SetIgnoreSdfBake:
         case EditVerb::SetStatic:
         case EditVerb::AssignMaterial:
             lastByNode[{int(c.verb), c.node}] = i;
@@ -3882,6 +3897,7 @@ std::vector<size_t> EditorApp::CoalescedSaveIndices() const {
         case EditVerb::SetLightmap:
         case EditVerb::SetDitherCloseup:
         case EditVerb::SetCastsVolumetricShadow:
+        case EditVerb::SetIgnoreSdfBake:
         case EditVerb::SetStatic:
         case EditVerb::AssignMaterial:
             superseded = lastByNode[{int(c.verb), c.node}] != i;
@@ -3955,6 +3971,7 @@ size_t EditorApp::CoalesceHistory() {
         case EditVerb::SetLightmap:
         case EditVerb::SetDitherCloseup:
         case EditVerb::SetCastsVolumetricShadow:
+        case EditVerb::SetIgnoreSdfBake:
         case EditVerb::SetStatic:
         case EditVerb::AssignMaterial:
             lastByNode[{int(c.verb), c.node}] = i;
@@ -3998,6 +4015,7 @@ size_t EditorApp::CoalesceHistory() {
         case EditVerb::SetLightmap:
         case EditVerb::SetDitherCloseup:
         case EditVerb::SetCastsVolumetricShadow:
+        case EditVerb::SetIgnoreSdfBake:
         case EditVerb::SetStatic:
         case EditVerb::AssignMaterial:
             superseded = lastByNode[{int(c.verb), c.node}] != i;
@@ -4064,6 +4082,8 @@ static std::string VerbName(editor::EditVerb v) {
         return "dither flag";
     case editor::EditVerb::SetCastsVolumetricShadow:
         return "volumetric caster mark";
+    case editor::EditVerb::SetIgnoreSdfBake:
+        return "ignore SDF bake";
     case editor::EditVerb::SetStatic:
         return "static mark";
     case editor::EditVerb::SetVisibility:
@@ -4382,6 +4402,12 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c, smvk::tour::Co
         if (!needNode())
             return false;
         out.verb = smvk::tour::Verb::SetCastsVolumetricShadow;
+        out.flag = c.afterFlag;
+        return true;
+    case EditVerb::SetIgnoreSdfBake:
+        if (!needNode())
+            return false;
+        out.verb = smvk::tour::Verb::SetIgnoreSdfBake;
         out.flag = c.afterFlag;
         return true;
     case EditVerb::SetStatic:
@@ -5424,7 +5450,8 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget, bool allowE
                  c.verb == EditVerb::Rotate || c.verb == EditVerb::Scale ||
                  c.verb == EditVerb::AssignMaterial || c.verb == EditVerb::SetNoLightmap ||
                  c.verb == EditVerb::SetLightmap || c.verb == EditVerb::SetDitherCloseup ||
-                 c.verb == EditVerb::SetCastsVolumetricShadow || c.verb == EditVerb::SetStatic ||
+                 c.verb == EditVerb::SetCastsVolumetricShadow ||
+                 c.verb == EditVerb::SetIgnoreSdfBake || c.verb == EditVerb::SetStatic ||
                  c.verb == EditVerb::SetVisibility) {
             ensureUuidKeyed(c.node);
         } else if (c.verb == EditVerb::CreateLight || c.verb == EditVerb::CreateTerrain ||
@@ -5799,6 +5826,13 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
         out.verb = EditVerb::SetCastsVolumetricShadow;
         out.afterFlag = tc.flag;
         out.beforeFlag = IsCastsVolumetricShadowNode(app.m_world->scene, int(node));
+        return true;
+    case smvk::tour::Verb::SetIgnoreSdfBake:
+        if (!needNode())
+            return false;
+        out.verb = EditVerb::SetIgnoreSdfBake;
+        out.afterFlag = tc.flag;
+        out.beforeFlag = IsIgnoreSdfBakeNode(app.m_world->scene, int(node));
         return true;
     case smvk::tour::Verb::SetVisibility:
         if (!needNode())

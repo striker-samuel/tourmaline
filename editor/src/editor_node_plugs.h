@@ -72,6 +72,7 @@ inline constexpr std::array transform = {
     Descriptor{"node.noLightmap", "Exclude lightmaps", Kind::Boolean},
     Descriptor{"node.ditherCloseup", "Dither closeup", Kind::Boolean},
     Descriptor{"node.volumetricShadow", "Volumetric shadow", Kind::Boolean},
+    Descriptor{"node.ignoreSdfBake", "Ignore SDF bake", Kind::Boolean},
     Descriptor{"node.environment", "Environment node", Kind::Boolean},
     Descriptor{"node.material", "Material", Kind::Resource},
 };

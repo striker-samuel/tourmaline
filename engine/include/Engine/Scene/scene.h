@@ -476,6 +476,15 @@ struct TransformHierarchy {
     // the merge/serialize/world-resolve paths like the flag tables
     // above.
     std::vector<uint8_t> castsVolumetricShadow;
+    // Static-SDF bake opt-out (editor + cook, SELF flag — per mesh node,
+    // not subtree): ignoreSdfBake[node] == 1 excludes that node's mesh from
+    // the mesh-local .geometry.sdf sidecar (thin features — poles, railings —
+    // that smear into voxel columns at bake resolution). Bake-time input
+    // only, like `lightmap`: intentionally NOT serialized into the scene
+    // blob (the runtime keys on the cooked SDF sidecar, and tours are the
+    // source of truth — replayed every cook). Carried through merge/resize
+    // paths alongside the flag tables above.
+    std::vector<uint8_t> ignoreSdfBake;
 };
 
 // ---- stable node slots (Epoch 6b) ----------------------------------------
@@ -788,6 +797,28 @@ inline void ClearLightmap(TransformHierarchy& scene, int node) {
     scene.lightmap[(size_t)node] = 0;
 }
 
+// Marks node as SDF-bake-excluded (SELF flag — the node's mesh skips the
+// static-SDF sidecar bake). Grows the array if needed.
+inline void MarkIgnoreSdfBake(TransformHierarchy& scene, int node) {
+    if (node < 0 || (size_t)node >= scene.hierarchy.size())
+        return;
+    if (scene.ignoreSdfBake.size() != scene.hierarchy.size())
+        scene.ignoreSdfBake.assign(scene.hierarchy.size(), 0);
+    scene.ignoreSdfBake[(size_t)node] = 1;
+}
+inline void ClearIgnoreSdfBake(TransformHierarchy& scene, int node) {
+    if (node < 0 || (size_t)node >= scene.hierarchy.size())
+        return;
+    if (scene.ignoreSdfBake.size() != scene.hierarchy.size())
+        scene.ignoreSdfBake.assign(scene.hierarchy.size(), 0);
+    scene.ignoreSdfBake[(size_t)node] = 0;
+}
+// Self-flag predicate (empty/mismatched == off).
+inline bool IsIgnoreSdfBakeNode(const TransformHierarchy& scene, int node) {
+    return node >= 0 && (size_t)node < scene.ignoreSdfBake.size() &&
+           scene.ignoreSdfBake[(size_t)node] != 0;
+}
+
 inline bool IsStaticSubtreeRoot(const TransformHierarchy& scene, int node) {
     return node >= 0 && (size_t)node < scene.staticRoot.size() &&
            scene.staticRoot[(size_t)node] != 0;
@@ -883,6 +914,7 @@ using tour::transformhierarchy::BuildSlotToDenseMap;
 using tour::transformhierarchy::ClearCastsVolumetricShadow;
 using tour::transformhierarchy::ClearDitherCloseup;
 using tour::transformhierarchy::ClearHidden;
+using tour::transformhierarchy::ClearIgnoreSdfBake;
 using tour::transformhierarchy::ClearLightmap;
 using tour::transformhierarchy::ClearNoLightmap;
 using tour::transformhierarchy::ClearSubtreeStatic;
@@ -898,6 +930,7 @@ using tour::transformhierarchy::getNodeName;
 using tour::transformhierarchy::IsCastsVolumetricShadowNode;
 using tour::transformhierarchy::IsDitherCloseupNode;
 using tour::transformhierarchy::IsHiddenNode;
+using tour::transformhierarchy::IsIgnoreSdfBakeNode;
 using tour::transformhierarchy::IsLightmapNode;
 using tour::transformhierarchy::IsLiveSlot;
 using tour::transformhierarchy::IsNodeAlive;
@@ -920,6 +953,7 @@ using tour::transformhierarchy::markAsChangedDynamic;
 using tour::transformhierarchy::MarkCastsVolumetricShadow;
 using tour::transformhierarchy::MarkDitherCloseup;
 using tour::transformhierarchy::MarkHidden;
+using tour::transformhierarchy::MarkIgnoreSdfBake;
 using tour::transformhierarchy::MarkLightmap;
 using tour::transformhierarchy::MarkNoLightmap;
 using tour::transformhierarchy::MarkSubtreeStatic;
