@@ -42,6 +42,27 @@ void TestReflectionCamera() {
           "reverse normal accepted");
     Check(Near(reflected.eye, reversed.eye), "plane sign is irrelevant");
 }
+void TestObliqueProjection() {
+    glm::mat4 projection(0.0f);
+    projection[0][0] = 1.0f;
+    projection[1][1] = -1.0f;
+    projection[2][3] = -1.0f;
+    projection[3][2] = 0.1f; // infinite reversed-Z perspective
+    glm::mat4 clipped(1.0f);
+    Check(smvk::MakePlanarObliqueProjection(glm::mat4(1), projection,
+          glm::vec4(0, 0, -1, -2), clipped), "oblique projection succeeds");
+    const auto on = clipped * glm::vec4(0, 0, -2, 1);
+    const auto behind = clipped * glm::vec4(0, 0, -1, 1);
+    const auto ahead = clipped * glm::vec4(0.5f, 0.5f, -4, 1);
+    const auto original = projection * glm::vec4(0.5f, 0.5f, -4, 1);
+    Check(std::abs(on.w - on.z) < 1e-5f, "receiver is near clip");
+    Check(behind.z > behind.w, "geometry behind receiver clipped");
+    Check(ahead.z >= 0 && ahead.z <= ahead.w, "retained geometry visible");
+    Check(ahead.x == original.x && ahead.y == original.y && ahead.w == original.w,
+          "capture UV unchanged");
+    Check(!smvk::MakePlanarObliqueProjection(glm::mat4(1), projection,
+          glm::vec4(0, 0, 1, 2), clipped), "wrong half-space rejected");
+}
 void TestInvalidPlane() {
     smvk::PlanarReflectionCamera camera{};
     Check(!smvk::MakePlanarReflectionCamera(
@@ -61,6 +82,7 @@ void TestInvalidPlane() {
 int main() {
     TestReflectionCamera();
     TestInvalidPlane();
+    TestObliqueProjection();
     std::cout << "checks=" << checks << " failures=" << failures << "\n";
     return failures ? 1 : 0;
 }
