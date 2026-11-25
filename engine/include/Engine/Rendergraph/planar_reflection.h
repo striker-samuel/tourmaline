@@ -40,7 +40,10 @@ inline bool NormalizePlanarPlane(const glm::vec4& plane, glm::vec4& out) {
     const float length = glm::length(glm::vec3(plane));
     if (!std::isfinite(length) || length < 1e-6f || !std::isfinite(plane.w))
         return false;
-    out = plane / length;
+    const glm::vec4 normalized = plane / length;
+    if (!std::isfinite(normalized.w))
+        return false;
+    out = normalized;
     return true;
 }
 
@@ -162,10 +165,12 @@ struct PlanarReflectionCapture {
     float strength = 1.0f;   // 0 = off; 1 = physically weighted Fresnel
     float f0 = 1.0f;         // 1 = mirror, ~0.04 = dielectric
     bool coverageAlpha = false; // internal capture: alpha zero leaves SSR/IBL intact
+    glm::vec3 receiverCenter{0};
+    float receiverRadius = 0; // optional finite circular receiver bound
 };
 
-// Must match planar_reflection.frag.hlsl. 128 bytes = minimum Vulkan
-// push-constant guarantee. A frameUniforms BDA supplies invViewProj and
+// Must match planar_reflection.frag.hlsl. 144 bytes, within the engine's
+// existing 256-byte push-constant requirement. A frameUniforms BDA supplies invViewProj and
 // cameraPos to avoid two extra matrices in the push.
 struct PlanarReflectionPush {
     uint64_t frameUniforms = 0;
@@ -180,8 +185,10 @@ struct PlanarReflectionPush {
     float thickness = 0.05f;
     float f0 = 1.0f;
     float pad0 = 0.0f;
+    glm::vec4 receiverBounds{0.0f};
 };
-static_assert(sizeof(PlanarReflectionPush) == 128);
+static_assert(sizeof(PlanarReflectionPush) == 144);
+static_assert(offsetof(PlanarReflectionPush, receiverBounds) == 128);
 static_assert(offsetof(PlanarReflectionPush, reflectedViewProjection) == 16);
 static_assert(offsetof(PlanarReflectionPush, receiverPlane) == 80);
 static_assert(offsetof(PlanarReflectionPush, hdrTextureIndex) == 96);
@@ -326,6 +333,7 @@ struct PlanarReflections {
         push.thickness = std::max(0.001f, capture.thickness);
         push.f0 = std::clamp(capture.f0, 0.0f, 1.0f);
         push.pad0 = capture.coverageAlpha ? 1.0f : 0.0f;
+        push.receiverBounds = glm::vec4(capture.receiverCenter, capture.receiverRadius);
 
         auto& pass = rg.AddPass("PlanarReflectionComposite");
         pass.SetOffset(0, 0)
