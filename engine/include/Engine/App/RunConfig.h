@@ -56,6 +56,8 @@ struct RunConfig {
     // behind the world exposes geometry that fails to occlude it. Unset =
     // authored scene sky wins.
     std::optional<std::string> skyColor;
+    // nx,ny,nz,d,cx,cy,cz,radius,divisor,maxDistance,maxDraws,f0
+    std::optional<std::string> planarReflection;
 
     // ---- antialiasing / filtering ----
     // aa: off|msaa2x|msaa|smaa1x|smaat2x|t2x|msaa2xcustom
