@@ -428,7 +428,10 @@ void RecordGpuSceneTask(smvk::CommandBuffer& cmd,
         cmd.PushConstants(0, sizeof(f.scenePush), &f.scenePush, smvk::ShaderStage::All);
         auto push = f.tail;
         push.rasterClass = cls;
-        cmd.PushConstants(192u, sizeof(push), &push, smvk::ShaderStage::All);
+        cmd.PushConstants(tour::gpu_scene::kTaskMeshPrefixOffset,
+                          sizeof(push.prefix), &push.prefix, smvk::ShaderStage::All);
+        cmd.PushConstants(tour::gpu_scene::kTaskMeshTailOffset,
+                          tour::gpu_scene::kTaskMeshTailSize, &push, smvk::ShaderStage::All);
         cmd.DrawMeshTasksIndirect(f.indirect,
                                   uint64_t(cls) * sizeof(tour::gpu_scene::TaskMeshIndirectCommand),
                                   1u,

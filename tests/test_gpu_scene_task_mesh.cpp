@@ -18,6 +18,14 @@
 
 int main() {
     using namespace tour::gpu_scene;
+    TaskMeshGpuPush packet{};
+    packet.prefix = {1, 2, 3, 4, 5, 6, 7, 8};
+    CHECK(kTaskMeshPrefixOffset == 0u);
+    CHECK(kTaskMeshTailOffset == 192u);
+    CHECK(kTaskMeshTailSize == 48u);
+    CHECK(sizeof(packet.prefix) == 64u);
+    CHECK(offsetof(TaskMeshGpuPush, prefix) == kTaskMeshTailSize);
+    CHECK(packet.prefix.work == 1u && packet.prefix.rasterView == 8u);
     TaskMeshletPlan plan;
     CHECK(TaskMeshletPlan::Build({}, {}, 0u, plan));
     std::array<MeshletRange, 6> ranges{{{100u, 32u, false},

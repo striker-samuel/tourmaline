@@ -61,7 +61,7 @@ bool MeshletOccluded(float4 bound, GpuSceneInstance inst, GsTaskMeshParams p) {
     if (!all(isfinite(bound)) || bound.w <= 0.0f || p.hizMips == 0u ||
         p.hizWidth == 0u || p.hizHeight == 0u)
         return false;
-    const GsRasterView rv = p.rasterView.Get();
+    const GsRasterView rv = pc.rasterView.Get();
     const float3 originRelative =
         DoubleFloatRelative(inst.worldPosition, rv.origin);
     const float3 x = inst.basisX.xyz;
@@ -110,12 +110,12 @@ void mainAS(uint3 groupId : SV_GroupID,
             group.clusterCount<=p.clusterCount-group.firstCluster;
     }
     if (valid) {
-        work=p.work.Get().rows[group.workSlot];
+        work=pc.work.Get().rows[group.workSlot];
         valid=work.identity.y!=0u && work.identity.x<p.instanceCount &&
             work.identity.x<GS_MAX_INSTANCES &&
             work.detail.z==group.rasterClass;
         if (valid) {
-            const GpuSceneInstanceRow row=p.instances.Get().rows[work.identity.x];
+            const GpuSceneInstanceRow row=pc.instances.Get().rows[work.identity.x];
             valid=row.identity.y==1u && row.identity.x==work.identity.y;
             if (valid) inst=row.value;
         }
@@ -136,7 +136,7 @@ void mainAS(uint3 groupId : SV_GroupID,
         const bool skinned=(inst.refs.w & GPU_SCENE_INSTANCE_SKINNED)!=0u;
         if (!skinned && p.viewValid!=0u) {
             const GsView view=p.cullView.Get();
-            const GsCluster c=p.clusters.Get().rows[clusterId];
+            const GsCluster c=pc.clusters.Get().rows[clusterId];
             keep=SphereVisible(c.b,inst,view);
             if (keep && p.coneEnabled!=0u &&
                 (group.rasterClass&1u)==0u)

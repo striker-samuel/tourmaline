@@ -80,11 +80,11 @@ GsMeshVertex FetchVertex(uint vertexId,
     GsMeshVertex v=(GsMeshVertex)0;
     const uint pb=vertexId*3u, sb=vertexId*4u;
     float3 local=float3(
-        asfloat(p.positions.Get().word[pb]),
-        asfloat(p.positions.Get().word[pb+1u]),
-        asfloat(p.positions.Get().word[pb+2u]));
-    uint nword=p.shading.Get().word[sb+2u];
-    uint tword=p.shading.Get().word[sb+3u];
+        asfloat(pc.positions.Get().word[pb]),
+        asfloat(pc.positions.Get().word[pb+1u]),
+        asfloat(pc.positions.Get().word[pb+2u]));
+    uint nword=pc.shading.Get().word[sb+2u];
+    uint tword=pc.shading.Get().word[sb+3u];
     // Skinned fetch: swap the bind-pose position/normal/tangent for the
     // frame's DEFORMED words (5/vertex at (vertexId - base) * 5). The
     // instance flag proves the mesh is skinned; skinValid proves the frame
@@ -100,8 +100,8 @@ GsMeshVertex FetchVertex(uint vertexId,
         nword=pc.skinDeformed.Get().word[d+3u];
         tword=pc.skinDeformed.Get().word[d+4u];
     }
-    const uint color=p.shading.Get().word[sb];
-    const uint uv=p.shading.Get().word[sb+1u];
+    const uint color=pc.shading.Get().word[sb];
+    const uint uv=pc.shading.Get().word[sb+1u];
 
     const float3 relative=f.originRelative
         +f.a*local.x+f.b*local.y+f.c*local.z;
@@ -227,13 +227,13 @@ void mainMS(uint3 gid : SV_GroupID,
     // chain reproduces it (the same convention as the direct meshdebug path).
     float4 dbgColor=float4(0.0f,0.0f,0.0f,1.0f);
     if (valid) {
-        work=p.work.Get().rows[task.workSlot];
+        work=pc.work.Get().rows[task.workSlot];
         valid=work.identity.y!=0u && work.identity.x<p.instanceCount &&
             work.identity.x<GS_MAX_INSTANCES &&
             work.detail.z==pc.rasterClass;
     }
     if (valid) {
-        const GpuSceneInstanceRow row=p.instances.Get().rows[work.identity.x];
+        const GpuSceneInstanceRow row=pc.instances.Get().rows[work.identity.x];
         valid=row.identity.y==1u && row.identity.x==work.identity.y;
         if (valid) inst=row.value;
     }
@@ -255,7 +255,7 @@ void mainMS(uint3 gid : SV_GroupID,
         const uint clusterId=task.clusterIds[gid.x];
         valid=clusterId<p.clusterCount && clusterId<GS_MAX_CLUSTERS;
         if (valid) {
-            c=p.clusters.Get().rows[clusterId];
+            c=pc.clusters.Get().rows[clusterId];
             if (p.debugMode==1u)
                 dbgColor=float4(MeshletDebugColor(clusterId) * 1000.0f, 1.0f);
             else if (p.debugMode==2u)
@@ -280,7 +280,7 @@ void mainMS(uint3 gid : SV_GroupID,
     SetMeshOutputCounts(vertexCount,triCount);
     if (vertexCount==0u || triCount==0u) return;
 
-    const GsRasterView view=p.rasterView.Get();
+    const GsRasterView view=pc.rasterView.Get();
     const GsInstanceFrame frame=MakeInstanceFrame(inst,view);
     const bool fastNormal=(pc.vertexOptFlags & 1u) != 0u;
     const uint vertexBase=c.a.z;
@@ -290,7 +290,7 @@ void mainMS(uint3 gid : SV_GroupID,
     // in its physical descriptor; applying that offset again here would
     // corrupt optional task/mesh rendering.
     for (uint v=tid.x;v<vertexCount;v+=GS_MESH_THREADS) {
-        const uint globalId=p.meshletVertices.Get().id[vertexBase+v];
+        const uint globalId=pc.meshletVertices.Get().id[vertexBase+v];
         verts[v]=FetchVertex(globalId,frame,p,fastNormal);
 #ifdef GPU_SCENE_TRIANGLE_BACKFACE
         s_clipXYW[v]=verts[v].pos.xyw;
@@ -306,7 +306,7 @@ void mainMS(uint3 gid : SV_GroupID,
 #endif
     // One local triangle per lane (3 packed u8 ids).
     for (uint t=tid.x;t<triCount;t+=GS_MESH_THREADS) {
-        const uint packed=p.meshletTriangles.Get().tri[triBase+t];
+        const uint packed=pc.meshletTriangles.Get().tri[triBase+t];
         tris[t]=uint3(packed&255u,(packed>>8u)&255u,(packed>>16u)&255u);
         prims[t].cull=false;
 #ifdef GPU_SCENE_TRIANGLE_BACKFACE
