@@ -280,6 +280,8 @@ struct PlanarReflections {
     Holder<ShaderModuleHandle> captureVsModule;
     Holder<ShaderModuleHandle> capturePsModule;
     ShaderProgram captureProgram{};
+    Holder<ShaderModuleHandle> terrainVs, terrainFarVs, terrainPs;
+    ShaderProgram terrainNearProgram{}, terrainFarProgram{};
 
     struct Frame {
         ShaderProgram* program = nullptr;
@@ -348,6 +350,27 @@ struct PlanarReflections {
             Shader{.module = captureVsModule, .entryPoint = "mainVS", .stage = ShaderStage::Vertex},
             Shader{.module = capturePsModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment}},
             .shaderCount = 2};
+        return true;
+    }
+
+    bool EnsureTerrainShaders(ResourceManager& ctx) {
+        if (terrainNearProgram.shaderCount == 2 && terrainFarProgram.shaderCount == 2)
+            return true;
+        try {
+            if (terrainVs.empty())
+                terrainVs = ctx.CreateShaderModule(shaders::Read("content/shaders/terrain.vert.hlsl.spv"), "planarTerrainVS");
+            if (terrainFarVs.empty())
+                terrainFarVs = ctx.CreateShaderModule(shaders::Read("content/shaders/terrainfar.vert.hlsl.spv"), "planarTerrainFarVS");
+            if (terrainPs.empty())
+                terrainPs = ctx.CreateShaderModule(shaders::Read("content/shaders/planar_terrain.frag.hlsl.spv"), "planarTerrainPS");
+        } catch (...) { return false; }
+        if (terrainVs.empty() || terrainFarVs.empty() || terrainPs.empty())
+            return false;
+        Shader ps{.module = terrainPs, .entryPoint = "mainPS", .stage = ShaderStage::Fragment};
+        terrainNearProgram = {.shaders = {
+            Shader{.module = terrainVs, .entryPoint = "mainVS", .stage = ShaderStage::Vertex}, ps}, .shaderCount = 2};
+        terrainFarProgram = {.shaders = {
+            Shader{.module = terrainFarVs, .entryPoint = "mainVS", .stage = ShaderStage::Vertex}, ps}, .shaderCount = 2};
         return true;
     }
 
@@ -443,10 +466,27 @@ struct PlanarReflections {
             }
             changed |= captureChanged;
         }
+        if (terrainNearProgram.shaderCount == 2) {
+            bool terrainChanged = false;
+            terrainChanged |= SwapShaderModule(ctx, "content/shaders/terrain.vert.hlsl.spv", "planarTerrainVS", terrainVs, retired);
+            terrainChanged |= SwapShaderModule(ctx, "content/shaders/terrainfar.vert.hlsl.spv", "planarTerrainFarVS", terrainFarVs, retired);
+            terrainChanged |= SwapShaderModule(ctx, "content/shaders/planar_terrain.frag.hlsl.spv", "planarTerrainPS", terrainPs, retired);
+            if (terrainChanged) {
+                terrainNearProgram = {};
+                terrainFarProgram = {};
+                EnsureTerrainShaders(ctx);
+            }
+            changed |= terrainChanged;
+        }
         return changed;
     }
 
     void Destroy(RenderGraph& rg) {
+        terrainNearProgram = {};
+        terrainFarProgram = {};
+        terrainVs = {};
+        terrainFarVs = {};
+        terrainPs = {};
         captureProgram = {};
         captureVsModule = {};
         capturePsModule = {};
