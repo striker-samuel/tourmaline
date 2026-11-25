@@ -63,6 +63,19 @@ void TestObliqueProjection() {
     Check(!smvk::MakePlanarObliqueProjection(glm::mat4(1), projection,
           glm::vec4(0, 0, 1, 2), clipped), "wrong half-space rejected");
 }
+void TestCaptureBudget() {
+    const auto half = smvk::PlanarCaptureExtent({1920, 1080}, 2);
+    const auto quarter = smvk::PlanarCaptureExtent({1920, 1080}, 4);
+    const auto tiny = smvk::PlanarCaptureExtent({1, 1}, 100);
+    const auto clamped = smvk::PlanarCaptureExtent({1919, 1079}, 0);
+    Check(half.width == 960 && half.height == 540, "half resolution");
+    Check(quarter.width == 480 && quarter.height == 270, "quarter resolution");
+    Check(tiny.width == 1 && tiny.height == 1, "nonzero tiny target");
+    Check(clamped.width == 959 && clamped.height == 539, "odd dimensions and divisor clamp");
+    const smvk::PlanarReflectionSettings settings{};
+    Check(settings.maxDraws == 512 && settings.resolutionDivisor == 2 &&
+          !settings.includeMasked && settings.lodBias == 1, "cheap defaults");
+}
 void TestInvalidPlane() {
     smvk::PlanarReflectionCamera camera{};
     Check(!smvk::MakePlanarReflectionCamera(
@@ -83,6 +96,7 @@ int main() {
     TestReflectionCamera();
     TestInvalidPlane();
     TestObliqueProjection();
+    TestCaptureBudget();
     std::cout << "checks=" << checks << " failures=" << failures << "\n";
     return failures ? 1 : 0;
 }
