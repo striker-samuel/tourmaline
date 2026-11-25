@@ -495,7 +495,8 @@ bool WorldRenderer::ReloadBuilderShaders() {
     moved += m_viewportResources.dof.ReloadShaders(*m_context, retired) ? 1 : 0;
     moved += m_viewportResources.ssr.ReloadShaders(*m_context, retired) ? 1 : 0;
     // Planar captures use the same fresh-first/retirement contract.
-    if (m_viewportResources.planarReflections.program.shaderCount != 0)
+    if (m_viewportResources.planarReflections.program.shaderCount != 0 ||
+        m_viewportResources.planarReflections.captureProgram.shaderCount != 0)
         moved += m_viewportResources.planarReflections.ReloadShaders(*m_context, retired) ? 1 : 0;
     moved += m_viewportResources.volumetric.ReloadShaders(*m_context, retired) ? 1 : 0;
     moved += m_viewportResources.exposure.ReloadShaders(*m_context, retired) ? 1 : 0;
@@ -10062,9 +10063,15 @@ void WorldRenderer::RecordPlanarCapture(smvk::CommandBuffer& cmd,
             smvk::IteratorFlagBit_StaticVertexFmt,
         [&](const smvk::World::RenderItem& item) {
             if (draws >= f.maxDraws || item.material == smvk::World::kInvalidIndex ||
-                (item.flags & smvk::IteratorFlagBit_Masked) != 0)
+                (!f.includeMasked && (item.flags & smvk::IteratorFlagBit_Masked) != 0))
                 return;
-            auto* mesh = self->LodMeshForNode(item.node, item.mesh);
+            auto* mesh = self->m_world->GetMesh(item.mesh);
+            const uint32_t levels = self->m_world->LodChainLength(item.mesh);
+            if (levels > 1) {
+                const uint32_t lod = std::min(f.lodBias, levels - 1);
+                if (auto* cheaper = self->m_world->GetLodMesh(item.mesh, lod))
+                    mesh = cheaper;
+            }
             if (!mesh || mesh->skinned)
                 return;
             const auto& model = self->m_world->scene.globalTransform[item.node];
@@ -10078,12 +10085,15 @@ void WorldRenderer::RecordPlanarCapture(smvk::CommandBuffer& cmd,
             const auto* mat = static_cast<const smvk::World&>(*self->m_world).GetMaterial(item.material);
             if (!mat)
                 return;
+            if (DitherCloseupStateFor(self->m_world->scene, int(item.node), f.eye) ==
+                DitherCloseupState::Hidden)
+                return;
             smvk::RasterSettings raster = mat->pipeline.raster;
             if (raster.cullMode == smvk::CullMode::Back)
                 raster.cullMode = smvk::CullMode::Front;
             else if (raster.cullMode == smvk::CullMode::Front)
                 raster.cullMode = smvk::CullMode::Back;
-            cmd.BindRenderPipeline(self->m_resources.vertexLitProgram,
+            cmd.BindRenderPipeline(self->m_viewportResources.planarReflections.captureProgram,
                 ::tour::vertex_layouts::Static,
                 smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
                                     .writeEnable = true, .depthTestEnable = true},
@@ -15192,7 +15202,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     smvk::Extent2D planarExtent{};
     glm::vec3 planarEye{};
     if (m_planarReflectionSettings && !m_planarReflectionCapture && m_world &&
-        !DebugVisualizationActive() && m_resources.vertexLitProgram.shaderCount == 2 &&
+        !DebugVisualizationActive() &&
         mainRenderView != smvk::RenderViewSet::kInvalidIndex) {
         const auto& cfg = *m_planarReflectionSettings;
         glm::vec4 plane{};
@@ -20782,6 +20792,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         f.eye = planarEye;
         f.maxDistance = m_planarReflectionSettings->maxDistance;
         f.maxDraws = m_planarReflectionSettings->maxDraws;
+        f.lodBias = m_planarReflectionSettings->lodBias;
+        f.includeMasked = m_planarReflectionSettings->includeMasked;
         pass.SetRecordFn(&WorldRenderer::RecordPlanarCapture, this);
     }
     const auto& activePlanarCapture = m_planarReflectionCapture
