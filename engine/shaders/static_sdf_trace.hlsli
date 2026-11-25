@@ -15,6 +15,7 @@
 // material base-color factor; shading is handled by the SSR caller.
 #define STATIC_SDF_MAX_INSTANCES 128u
 #define STATIC_SDF_MAX_SAMPLE_WORDS 2097152u
+#define STATIC_SDF_MAX_MATERIALS 4096u
 
 struct StaticSdfGpuInstance
 {
@@ -22,7 +23,7 @@ struct StaticSdfGpuInstance
     float4 invRow1;       // ROW 1
     float4 invRow2;       // ROW 2
     float4 originVoxel;   // xyz first voxel center, w voxel width
-    float4 surface;       // xyz material base color factor, w roughness
+    uint4 material;       // x = index into the shared packed-material palette
     uint4 meta;           // x resolution, y packed sample WORD offset,
                           // z signedDistance, w asuint(maxDistance)
 }; // 96 bytes; C++ static_assert in static_sdf_gpu.h
@@ -35,18 +36,41 @@ struct StaticSdfSampleWords
 {
     uint words[STATIC_SDF_MAX_SAMPLE_WORDS];
 };
+struct StaticSdfMaterialWords
+{
+    uint words[STATIC_SDF_MAX_MATERIALS];
+};
 
-// 32-byte scene descriptor uploaded by StaticSdfGpuScene. A single
-// pointer in the SSR push fits Vulkan's guaranteed 128-byte limit.
+// Scene descriptor uploaded by StaticSdfGpuScene. A single pointer in the
+// SSR push fits Vulkan's guaranteed 128-byte minimum.
 struct StaticSdfSceneHeader
 {
     GPU_PTR_READ(StaticSdfInstanceBuffer) instances;
     GPU_PTR_READ(StaticSdfSampleWords) samples;
+    GPU_PTR_READ(StaticSdfMaterialWords) materials;
     uint instanceCount;
+    uint materialCount;
     uint maxSteps;
     float epsilon;
     float originBias;
 };
+
+// Decode a PackSdfMaterial word (see Engine/Asset/sdf.h). Emissive color
+// is the base color scaled by the emissive scalar (compact approximation).
+void UnpackStaticSdfMaterial(uint packed,
+                             out float3 baseColor,
+                             out float roughness,
+                             out float metallic,
+                             out float emissive)
+{
+    baseColor = float3(float(packed & 31u),
+                       float((packed >> 5) & 63u),
+                       float((packed >> 11) & 31u)) /
+                float3(31.0, 63.0, 31.0);
+    roughness = float((packed >> 16) & 31u) / 31.0;
+    metallic = float((packed >> 21) & 31u) / 31.0;
+    emissive = float((packed >> 26) & 63u) / 63.0;
+}
 
 struct StaticSdfRayHit
 {
@@ -55,6 +79,8 @@ struct StaticSdfRayHit
     float3 normal;
     float3 baseColor;
     float roughness;
+    float metallic;
+    float emissive;
     float worldVoxel;
     bool valid;
 };
@@ -154,9 +180,10 @@ float3 StaticSdfGradient(StaticSdfGpuInstance instance, float3 p,
 
 StaticSdfRayHit StaticSdfTrace(float3 worldOrigin, float3 worldDir,
     float maxWorldDistance, float worldEpsilon, uint stepBudget,
-    uint instanceCount,
+    uint instanceCount, uint materialCount,
     GPU_PTR_READ(StaticSdfInstanceBuffer) instances,
-    GPU_PTR_READ(StaticSdfSampleWords) samples)
+    GPU_PTR_READ(StaticSdfSampleWords) samples,
+    GPU_PTR_READ(StaticSdfMaterialWords) materials)
 {
     StaticSdfRayHit best = (StaticSdfRayHit)0;
     best.t = maxWorldDistance;
@@ -210,8 +237,15 @@ StaticSdfRayHit StaticSdfTrace(float3 worldOrigin, float3 worldDir,
                 best.t = t;
                 best.hitPoint = worldOrigin + t * worldDir;
                 best.normal = n;
-                best.baseColor = max(v.surface.xyz, 0.0f);
-                best.roughness = v.surface.w;
+                const uint matIdx =
+                    materialCount > 0u ? min(v.material.x, materialCount - 1u) : 0u;
+                float3 bc;
+                float ro, me, em;
+                UnpackStaticSdfMaterial(materials.Get().words[matIdx], bc, ro, me, em);
+                best.baseColor = max(bc, 0.0f);
+                best.roughness = ro;
+                best.metallic = me;
+                best.emissive = em;
                 best.worldVoxel = v.originVoxel.w / speed;
                 break;
             }

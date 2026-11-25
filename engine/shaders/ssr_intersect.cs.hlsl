@@ -130,8 +130,8 @@ float4 SsrStaticSdfMiss(FrameUniforms frame, float3 viewPos,
         return float4(0.0f, 0.0f, 0.0f, 0.0f);
     StaticSdfRayHit hit = StaticSdfTrace(worldOrigin + bias * worldDir,
         worldDir, maxTrace, scene.epsilon,
-        scene.maxSteps, scene.instanceCount,
-        scene.instances, scene.samples);
+        scene.maxSteps, scene.instanceCount, scene.materialCount,
+        scene.instances, scene.samples, scene.materials);
     if (!hit.valid)
         return float4(0.0f, 0.0f, 0.0f, 0.0f);
 
@@ -183,7 +183,8 @@ float4 SsrStaticSdfMiss(FrameUniforms frame, float3 viewPos,
             : 0.0f;
         float3 sun = frame.env.sunColor.rgb *
             max(frame.env.sunColor.w, 0.0f) * (ndl / 3.14159265f);
-        radiance = max(hit.baseColor, 0.0f) * max(sky + sun, 0.0f);
+        const float3 albedo = max(hit.baseColor, 0.0f);
+        radiance = albedo * max(sky + sun, 0.0f) + albedo * hit.emissive;
     }
     radiance = min(max(radiance, 0.0f), 65504.0f);
 

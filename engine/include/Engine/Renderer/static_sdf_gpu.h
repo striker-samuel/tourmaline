@@ -33,29 +33,32 @@ struct StaticSdfGpuInstance {
     glm::vec4 inverseRow1{0.0f};
     glm::vec4 inverseRow2{0.0f};
     glm::vec4 originVoxel{0.0f}; // xyz=voxel zero CENTER, w=voxel edge
-    glm::vec4 surface{0.0f};     // rgb=base color factor, w=roughness
+    glm::uvec4 material{0u};     // x=index into the shared packed-material palette
     glm::uvec4 meta{0u};
 };
 static_assert(sizeof(StaticSdfGpuInstance) == 96);
-static_assert(offsetof(StaticSdfGpuInstance, surface) == 64);
+static_assert(offsetof(StaticSdfGpuInstance, material) == 64);
 static_assert(offsetof(StaticSdfGpuInstance, meta) == 80);
 
-// Matches StaticSdfSceneHeader in static_sdf_trace.hlsli (32 B).
+// Matches StaticSdfSceneHeader in static_sdf_trace.hlsli (48 B).
 // Publishing the descriptor through one BDA keeps the SSR push
 // constants within Vulkan's guaranteed 128-byte minimum.
 struct StaticSdfSceneHeader {
     uint64_t instancesAddress = 0;
     uint64_t samplesAddress = 0;
+    uint64_t materialsAddress = 0;
     uint32_t instanceCount = 0;
+    uint32_t materialCount = 0;
     uint32_t maxSteps = 64;
     float epsilon = 0.02f;
     float originBias = 0.05f;
 };
-static_assert(sizeof(StaticSdfSceneHeader) == 32);
-static_assert(offsetof(StaticSdfSceneHeader, instanceCount) == 16);
+static_assert(sizeof(StaticSdfSceneHeader) == 48);
+static_assert(offsetof(StaticSdfSceneHeader, instanceCount) == 24);
 
 inline constexpr uint32_t kStaticSdfMaxInstances = 128;
 inline constexpr uint32_t kStaticSdfMaxSampleWords = 2u * 1024u * 1024u;
+inline constexpr uint32_t kStaticSdfMaxMaterials = 4096;
 
 // Pure CPU packer for the shader's x-fastest R16_SNORM word layout.
 // Low 16 bits = even sample; high 16 bits = odd sample (zero-padded).
@@ -83,13 +86,14 @@ class StaticSdfGpuScene {
     uint64_t SceneAddress(ResourceManager& ctx) const;
     bool Ready() const {
         return m_instanceCount != 0 && !m_header.empty() && !m_instances.empty() &&
-               !m_samples.empty();
+               !m_samples.empty() && !m_materials.empty();
     }
 
   private:
     Holder<BufferHandle> m_header;
     Holder<BufferHandle> m_instances;
     Holder<BufferHandle> m_samples;
+    Holder<BufferHandle> m_materials;
     uint32_t m_instanceCount = 0;
     uint64_t m_generation = 0; // republished static SDF scene generation
     const ::tour::World* m_world = nullptr;

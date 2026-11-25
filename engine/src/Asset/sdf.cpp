@@ -313,7 +313,11 @@ std::vector<uint8_t> WriteSdfAsset(const SdfAsset& asset) {
             out.push_back(uint8_t(u));
             out.push_back(uint8_t(u >> 8));
         }
+        PutU32(out, mesh.materialIndex);
     }
+    PutU32(out, uint32_t(asset.materials.size()));
+    for (uint32_t packed : asset.materials)
+        PutU32(out, packed);
     return out;
 }
 
@@ -329,7 +333,7 @@ bool ParseSdfAsset(const uint8_t* byteData, size_t byteCount, SdfAsset& out, std
         return fail("bad SDF magic/header");
     size_t at = 4;
     uint32_t version = 0, n = 0;
-    if (!GetU32(bytes, at, version) || version != kSdfVersion)
+    if (!GetU32(bytes, at, version) || version < 1 || version > kSdfVersion)
         return fail("unsupported SDF version");
     if (!GetU32(bytes, at, n) || n > 4096)
         return fail("invalid SDF mesh count");
@@ -360,10 +364,24 @@ bool ParseSdfAsset(const uint8_t* byteData, size_t byteCount, SdfAsset& out, std
             v.samples.push_back(std::bit_cast<int16_t>(raw));
             at += 2;
         }
+        if (version >= 2 && !GetU32(bytes, at, mesh.materialIndex))
+            return fail("invalid SDF material index");
         for (const SdfMesh& other : parsed.meshes)
             if (other.fragment == mesh.fragment)
                 return fail("duplicate SDF fragment");
         parsed.meshes.push_back(std::move(mesh));
+    }
+    if (version >= 2) {
+        uint32_t matCount = 0;
+        if (!GetU32(bytes, at, matCount) || matCount > 4096 || matCount > (bytes.size() - at) / 4)
+            return fail("invalid SDF material palette");
+        parsed.materials.reserve(matCount);
+        for (uint32_t i = 0; i < matCount; ++i) {
+            uint32_t packed = 0;
+            if (!GetU32(bytes, at, packed))
+                return fail("invalid SDF material");
+            parsed.materials.push_back(packed);
+        }
     }
     if (at != bytes.size())
         return fail("trailing SDF bytes");

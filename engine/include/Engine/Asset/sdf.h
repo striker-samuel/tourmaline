@@ -17,7 +17,45 @@
 
 namespace tour::asset {
 
-inline constexpr uint32_t kSdfVersion = 1;
+inline constexpr uint32_t kSdfVersion = 2;
+
+// Bit-packed static material (32 bits) carried by the SDF sidecar so
+// reflections can sample a small PBR set without the runtime material
+// table. Layout (LSB first):
+//   [0..4]   base color R  (5 bits -> 0..1)
+//   [5..10]  base color G  (6 bits -> 0..1)
+//   [11..15] base color B  (5 bits -> 0..1)
+//   [16..20] roughness     (5 bits -> 0..1)
+//   [21..25] metallic      (5 bits -> 0..1)
+//   [26..31] emissive      (6 bits -> 0..1; emissive color = base color)
+// The HLSL mirror is static_sdf_trace.hlsli (UnpackStaticSdfMaterial).
+inline uint32_t PackSdfMaterial(glm::vec3 baseColor,
+                                float roughness,
+                                float metallic,
+                                float emissive) {
+    auto q = [](float v, uint32_t levels) {
+        return uint32_t(glm::clamp(v, 0.0f, 1.0f) * float(levels - 1u) + 0.5f);
+    };
+    const uint32_t r = q(baseColor.r, 32u);
+    const uint32_t g = q(baseColor.g, 64u);
+    const uint32_t b = q(baseColor.b, 32u);
+    const uint32_t ro = q(roughness, 32u);
+    const uint32_t me = q(metallic, 32u);
+    const uint32_t em = q(emissive, 64u);
+    return r | (g << 5) | (b << 11) | (ro << 16) | (me << 21) | (em << 26);
+}
+inline void UnpackSdfMaterial(uint32_t packed,
+                              glm::vec3& baseColor,
+                              float& roughness,
+                              float& metallic,
+                              float& emissive) {
+    baseColor = glm::vec3(float(packed & 31u) / 31.0f,
+                          float((packed >> 5) & 63u) / 63.0f,
+                          float((packed >> 11) & 31u) / 31.0f);
+    roughness = float((packed >> 16) & 31u) / 31.0f;
+    metallic = float((packed >> 21) & 31u) / 31.0f;
+    emissive = float((packed >> 26) & 63u) / 63.0f;
+}
 
 struct SdfVolume {
     uint32_t resolution = 0; // cubic grid, x fastest
@@ -31,10 +69,17 @@ struct SdfVolume {
 struct SdfMesh {
     std::string fragment; // .geometry URI fragment, e.g. "mesh.0/prim.0"
     SdfVolume volume;
+    // Index into SdfAsset::materials (the shared bit-packed palette).
+    // Constant per primitive — the color is the material's flat base-color
+    // factor, not a texture bake (see SdfMaterial).
+    uint32_t materialIndex = 0;
 };
 
 struct SdfAsset {
     std::vector<SdfMesh> meshes;
+    // Shared bit-packed material palette (PackSdfMaterial); meshes index
+    // into it. Entry 0 is a neutral grey fallback for unbound materials.
+    std::vector<uint32_t> materials;
 };
 
 struct SdfBakeOptions {

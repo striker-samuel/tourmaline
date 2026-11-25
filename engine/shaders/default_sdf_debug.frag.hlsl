@@ -114,15 +114,17 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
 
     StaticSdfRayHit hit = StaticSdfTrace(rayOrigin, rayDir, maxTrace,
                                          sdfScene.epsilon, sdfScene.maxSteps,
-                                         sdfScene.instanceCount,
-                                         sdfScene.instances, sdfScene.samples);
+                                         sdfScene.instanceCount, sdfScene.materialCount,
+                                         sdfScene.instances, sdfScene.samples,
+                                         sdfScene.materials);
 
     float3 color;
     if (hit.valid)
     {
         const float3 L = normalize(-light.direction);
         const float NdotL = saturate(dot(hit.normal, L));
-        color = hit.baseColor * (0.15f + 0.85f * NdotL);
+        const float3 albedo = max(hit.baseColor, 0.0f);
+        color = albedo * (0.15f + 0.85f * NdotL) + albedo * hit.emissive;
     }
     else
     {

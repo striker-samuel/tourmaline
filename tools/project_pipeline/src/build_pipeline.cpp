@@ -13,6 +13,7 @@
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -447,6 +448,92 @@ bool RefreshPlanImports(const Project& project,
     return true;
 }
 
+// Jacobi eigen-decomposition of a symmetric 3x3 matrix `a` (destroyed).
+// On return `a`'s diagonal holds the eigenvalues (descending) and `v`'s
+// COLUMNS are the corresponding unit eigenvectors.
+static void JacobiEigen3(double a[3][3], double v[3][3]) {
+    v[0][0] = v[1][1] = v[2][2] = 1.0;
+    v[0][1] = v[0][2] = v[1][0] = v[1][2] = v[2][0] = v[2][1] = 0.0;
+    for (int sweep = 0; sweep < 24; ++sweep) {
+        const double off = std::max({std::fabs(a[0][1]), std::fabs(a[0][2]), std::fabs(a[1][2])});
+        const double diag = std::fabs(a[0][0]) + std::fabs(a[1][1]) + std::fabs(a[2][2]) + 1e-30;
+        if (off <= 1e-10 * diag)
+            break;
+        int p = 0, q = 1;
+        if (std::fabs(a[0][2]) >= std::fabs(a[0][1]) && std::fabs(a[0][2]) >= std::fabs(a[1][2]))
+            p = 0, q = 2;
+        else if (std::fabs(a[1][2]) >= std::fabs(a[0][1]))
+            p = 1, q = 2;
+        const int r = 3 - p - q;
+        const double app = a[p][p], aqq = a[q][q], apq = a[p][q];
+        const double theta = 0.5 * std::atan2(2.0 * apq, aqq - app);
+        const double c = std::cos(theta), s = std::sin(theta);
+        a[p][p] = c * c * app - 2.0 * s * c * apq + s * s * aqq;
+        a[q][q] = s * s * app + 2.0 * s * c * apq + c * c * aqq;
+        a[p][q] = a[q][p] = 0.0;
+        const double apr = a[p][r], aqr = a[q][r];
+        a[p][r] = a[r][p] = c * apr - s * aqr;
+        a[q][r] = a[r][q] = s * apr + c * aqr;
+        for (int i = 0; i < 3; ++i) {
+            const double vip = v[i][p], viq = v[i][q];
+            v[i][p] = c * vip - s * viq;
+            v[i][q] = s * vip + c * viq;
+        }
+    }
+    for (int i = 0; i < 3; ++i) {
+        int m = i;
+        for (int j = i + 1; j < 3; ++j)
+            if (a[j][j] > a[m][m])
+                m = j;
+        if (m != i) {
+            std::swap(a[i][i], a[m][m]);
+            for (int k = 0; k < 3; ++k)
+                std::swap(v[k][i], v[k][m]);
+        }
+    }
+}
+
+// Oriented (PCA-fitted) bounding-box extents of a point cloud, ascending
+// (extents.x = thinnest axis). True min/max projection onto the covariance
+// eigenvectors — a non-axis-aligned wire still reads as thin, unlike its
+// axis-aligned AABB. Degenerate input returns all-zero.
+static glm::vec3 FittedBoxExtents(const std::vector<glm::vec3>& pts) {
+    if (pts.size() < 2)
+        return glm::vec3(0.0f);
+    glm::dvec3 mean(0.0);
+    for (const glm::vec3& p : pts)
+        mean += glm::dvec3(p);
+    mean /= double(pts.size());
+    double a[3][3] = {};
+    for (const glm::vec3& p : pts) {
+        const double x = p.x - mean.x, y = p.y - mean.y, z = p.z - mean.z;
+        a[0][0] += x * x;
+        a[0][1] += x * y;
+        a[0][2] += x * z;
+        a[1][1] += y * y;
+        a[1][2] += y * z;
+        a[2][2] += z * z;
+    }
+    a[1][0] = a[0][1];
+    a[2][0] = a[0][2];
+    a[2][1] = a[1][2];
+    double v[3][3];
+    JacobiEigen3(a, v);
+    glm::vec3 ext(0.0f);
+    for (int axis = 0; axis < 3; ++axis) {
+        double lo = 1e30, hi = -1e30;
+        for (const glm::vec3& p : pts) {
+            const glm::dvec3 d = glm::dvec3(p) - mean;
+            const double t = d.x * v[0][axis] + d.y * v[1][axis] + d.z * v[2][axis];
+            lo = std::min(lo, t);
+            hi = std::max(hi, t);
+        }
+        ext[axis] = float(hi - lo);
+    }
+    std::sort(&ext.x, &ext.x + 3);
+    return ext;
+}
+
 // Mesh-local distance fields are DERIVED from already imported .geometry,
 // after any Cook writeback and before pak assembly. Each geometry family
 // owns one sibling .geometry.sdf, containing all base primitives (not the
@@ -514,6 +601,12 @@ static bool BakePlanSdfs(const Project& project,
                                                                     upload->indices.size(),
                                                                     scene.globalTransform[row.node],
                                                                     !upload->skin.empty()))
+                    continue;
+                // Per-node SDF-bake opt-out (TransformHierarchy::ignoreSdfBake):
+                // a flagged mesh node's fragment is dropped from the sidecar.
+                // The set below is fragment-keyed, so a shared fragment still
+                // bakes while ANY unflagged node references it.
+                if (IsIgnoreSdfBakeNode(scene, int(row.node)))
                     continue;
                 eligibleSceneMeshes.insert(canonicalFamily(parts.first.Str()) + "#" +
                                            parts.second.Str());
@@ -587,6 +680,76 @@ static bool BakePlanSdfs(const Project& project,
                                                         !geo.skin.empty()))
                     eligible[instance.geometry] = 1;
             }
+        // Compact material palette for reflections: resolve each fragment's
+        // flat base-color + small PBR set (roughness/metallic/emissive) from
+        // the source .material assets, dedup into a shared palette, and index
+        // it per fragment. Missing/unbound materials fall back to a neutral
+        // grey entry (index 0).
+        std::vector<uint32_t> fragmentIndex(mesh.geometry.size(), 0u);
+        const uint32_t kNeutralMaterial =
+            ::tour::asset::PackSdfMaterial(glm::vec3(0.7f), 0.5f, 0.0f, 0.0f);
+        std::vector<uint32_t> palette{kNeutralMaterial};
+        {
+            smvk::assets::AssetManifest manifest;
+            bool haveManifest = false;
+            for (const char* e : {".gltf", ".glb", ".obj"}) {
+                fs::path srcAbs = source;
+                srcAbs.replace_extension(e);
+                std::string mErr;
+                if (fs::is_regular_file(srcAbs) &&
+                    smvk::assets::LoadAssetManifest(srcAbs, manifest, mErr)) {
+                    haveManifest = true;
+                    break;
+                }
+            }
+            const fs::path matDir = source.parent_path();
+            std::map<std::string, uint32_t> guidToPacked;
+            auto packedForGuid = [&](const std::string& guid) -> uint32_t {
+                auto it = guidToPacked.find(guid);
+                if (it != guidToPacked.end())
+                    return it->second;
+                uint32_t packed = kNeutralMaterial; // neutral fallback
+                if (haveManifest) {
+                    const smvk::assets::AssetEntry* ent = nullptr;
+                    for (const auto& e : manifest.entries)
+                        if (e.kind == smvk::assets::AssetKind::Material && e.guid == guid) {
+                            ent = &e;
+                            break;
+                        }
+                    if (ent) {
+                        smvk::assets::MaterialAsset mat;
+                        std::string mErr;
+                        if (smvk::assets::LoadMaterialAsset(matDir / ent->file, mat, mErr)) {
+                            const auto& info = mat.info;
+                            const float emissive =
+                                info.emissiveStrength *
+                                glm::dot(info.emissiveFactor, glm::vec3(0.2126f, 0.7152f, 0.0722f));
+                            packed = ::tour::asset::PackSdfMaterial(glm::vec3(info.baseColorFactor),
+                                                                    info.roughnessFactor,
+                                                                    info.metallicFactor,
+                                                                    std::min(emissive, 1.0f));
+                        }
+                    }
+                }
+                guidToPacked.emplace(guid, packed);
+                return packed;
+            };
+            std::map<uint32_t, uint32_t> packedToIndex{{kNeutralMaterial, 0u}};
+            for (const auto& inst : mesh.instances) {
+                if (inst.geometry >= mesh.geometry.size())
+                    continue;
+                const uint32_t packed = packedForGuid(inst.materialGuid);
+                auto it = packedToIndex.find(packed);
+                if (it == packedToIndex.end()) {
+                    const uint32_t idx = uint32_t(palette.size());
+                    palette.push_back(packed);
+                    packedToIndex.emplace(packed, idx);
+                    fragmentIndex[inst.geometry] = idx;
+                } else {
+                    fragmentIndex[inst.geometry] = it->second;
+                }
+            }
+        }
         // (::tour::asset — the leading :: is required inside smvk::project,
         // where tour.h's `namespace tour = ::tour::asset` alias shadows the
         // global tour namespace).
@@ -601,12 +764,30 @@ static bool BakePlanSdfs(const Project& project,
                 positions.push_back(v.pos);
             ::tour::asset::SdfMesh entry;
             entry.fragment = geometry.uriFragment;
+            entry.materialIndex = fragmentIndex[gi];
             // Higher resolution than SdfBakeOptions' 24 default: thin
             // geometry (Sponza poles, railings) smears into voxel-sized
             // "columns" at coarse grids — 64 keeps the bake tractable while
             // resolving ~3x thinner features.
             ::tour::asset::SdfBakeOptions sdfOpts{};
             sdfOpts.resolution = 64;
+            // Thin-feature exclusion: a fitted (oriented) box thin in TWO
+            // axes is a wire/rod — sub-voxel at this grid, it smears into a
+            // column. Thin-in-one-axis features (walls, panels, slabs) stay:
+            // they remain valid surfaces. Threshold is relative to the voxel
+            // size (scale-free); extents.y is the second-thinnest axis.
+            {
+                const glm::vec3 fitted = FittedBoxExtents(positions);
+                glm::vec3 mn = positions.front(), mx = positions.front();
+                for (const glm::vec3& p : positions) {
+                    mn = glm::min(mn, p);
+                    mx = glm::max(mx, p);
+                }
+                const float aabbExtent = std::max({mx.x - mn.x, mx.y - mn.y, mx.z - mn.z});
+                const float voxel = aabbExtent / float(sdfOpts.resolution - 2u * sdfOpts.padding);
+                if (fitted.y < 2.0f * voxel)
+                    continue; // too thin in two axes (wire/rod)
+            }
             if (!::tour::asset::BakeMeshSdf(positions.data(),
                                             positions.size(),
                                             geometry.indices.data(),
@@ -619,6 +800,7 @@ static bool BakePlanSdfs(const Project& project,
             }
             baked.meshes.push_back(std::move(entry));
         }
+        baked.materials = std::move(palette);
         const std::vector<uint8_t> bytes = ::tour::asset::WriteSdfAsset(baked);
         const fs::path dest = source.generic_string() + ".sdf";
         const fs::path temp = dest.generic_string() + ".tmp";

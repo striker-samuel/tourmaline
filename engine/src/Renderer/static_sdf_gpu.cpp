@@ -88,6 +88,8 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
     std::unordered_map<std::string, uint32_t> wordOffsets;
     std::vector<StaticSdfGpuInstance> instances;
     std::vector<uint32_t> words;
+    std::vector<uint32_t> materials; // concatenated packed-material palettes
+    std::unordered_map<std::string, uint32_t> familyMaterialBase;
     instances.reserve(std::min(world.drawItems.size(), size_t(kStaticSdfMaxInstances)));
 
     // Deterministic closest-first upload order. Selecting from a scene's
@@ -159,6 +161,18 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
                              family.c_str(),
                              error.c_str());
             familyIt = families.emplace(family, std::move(decoded)).first;
+            // Merge the family's packed-material palette into the global
+            // palette and remember its base offset. A v1 sidecar (no
+            // palette) contributes a single neutral entry.
+            const uint32_t base = uint32_t(materials.size());
+            familyMaterialBase.emplace(family, base);
+            if (familyIt->second.materials.empty())
+                materials.push_back(
+                    ::tour::asset::PackSdfMaterial(glm::vec3(0.7f), 0.5f, 0.0f, 0.0f));
+            else
+                materials.insert(materials.end(),
+                                 familyIt->second.materials.begin(),
+                                 familyIt->second.materials.end());
         }
         const auto it =
             std::find_if(familyIt->second.meshes.begin(),
@@ -191,11 +205,8 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
         gpu.inverseRow2 = {inverse[0][2], inverse[1][2], inverse[2][2], inverse[3][2]};
         const auto& v = it->volume;
         gpu.originVoxel = glm::vec4(v.origin, v.voxelSize);
-        gpu.surface = glm::vec4(0.7f, 0.7f, 0.7f, 0.5f);
-        if (const Material* material = world.GetMaterial(item.material)) {
-            gpu.surface = material->values.diffuse;
-            gpu.surface.w = std::clamp(material->values.params.z, 0.0f, 1.0f);
-        }
+        const uint32_t matBase = familyMaterialBase[family] + it->materialIndex;
+        gpu.material = glm::uvec4(matBase, 0u, 0u, 0u);
         gpu.meta = {v.resolution,
                     wordOffset,
                     v.signedDistance ? 1u : 0u,
@@ -204,16 +215,21 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
     }
 
     // A failed build must not leave stale buffers from a previous world.
-    Holder<BufferHandle> headerBuffer, instanceBuffer, sampleBuffer;
+    Holder<BufferHandle> headerBuffer, instanceBuffer, sampleBuffer, materialBuffer;
     if (!instances.empty()) {
         instanceBuffer = ctx.CreateBuffer(instances.size() * sizeof(StaticSdfGpuInstance),
                                           BufferType_Storage,
                                           "Static SDF reflection instances");
         sampleBuffer = ctx.CreateBuffer(
             words.size() * sizeof(uint32_t), BufferType_Storage, "Static SDF reflection samples");
+        const uint32_t matCount = uint32_t(materials.size());
+        materialBuffer = ctx.CreateBuffer(std::max(matCount, 1u) * sizeof(uint32_t),
+                                          BufferType_Storage,
+                                          "Static SDF reflection materials");
         headerBuffer = ctx.CreateBuffer(
             sizeof(StaticSdfSceneHeader), BufferType_Storage, "Static SDF reflection descriptor");
-        if (instanceBuffer.empty() || sampleBuffer.empty() || headerBuffer.empty()) {
+        if (instanceBuffer.empty() || sampleBuffer.empty() || materialBuffer.empty() ||
+            headerBuffer.empty()) {
             Clear();
             m_world = &world;
             m_worldRevision = world.gpuSceneTopologyRevision;
@@ -231,12 +247,20 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
                                words.size() * sizeof(uint32_t),
                                PipelineStageBit_Compute,
                                AccessFlags::ShaderRead);
+        const uint32_t neutral = ::tour::asset::PackSdfMaterial(glm::vec3(0.7f), 0.5f, 0.0f, 0.0f);
+        ctx.UploadDataToBuffer(materialBuffer,
+                               matCount ? materials.data() : &neutral,
+                               std::max(matCount, 1u) * sizeof(uint32_t),
+                               PipelineStageBit_Compute,
+                               AccessFlags::ShaderRead);
         StaticSdfSceneHeader gpuHeader{};
         gpuHeader.instancesAddress = ctx.GetBufferDeviceAddress(instanceBuffer);
         gpuHeader.samplesAddress = ctx.GetBufferDeviceAddress(sampleBuffer);
+        gpuHeader.materialsAddress = ctx.GetBufferDeviceAddress(materialBuffer);
         // A non-BDA storage allocation cannot be published as a valid
         // scene: a zero address would cause an unsafe shader dereference.
-        if (gpuHeader.instancesAddress == 0 || gpuHeader.samplesAddress == 0) {
+        if (gpuHeader.instancesAddress == 0 || gpuHeader.samplesAddress == 0 ||
+            gpuHeader.materialsAddress == 0) {
             Clear();
             m_world = &world;
             m_worldRevision = world.gpuSceneTopologyRevision;
@@ -245,6 +269,7 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
             return false;
         }
         gpuHeader.instanceCount = uint32_t(instances.size());
+        gpuHeader.materialCount = matCount;
         ctx.UploadDataToBuffer(headerBuffer,
                                &gpuHeader,
                                sizeof(gpuHeader),
@@ -254,6 +279,7 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
     m_header = std::move(headerBuffer);
     m_instances = std::move(instanceBuffer);
     m_samples = std::move(sampleBuffer);
+    m_materials = std::move(materialBuffer);
     m_instanceCount = uint32_t(instances.size());
     ++m_generation;
     m_world = &world;
