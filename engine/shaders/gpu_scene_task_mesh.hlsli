@@ -133,8 +133,16 @@ struct GsTaskMeshParams {
     uint prevSlots; // previous snapshot's instance count
 };
 struct GsTaskMeshPush {
-    // Preserve the fragment shader's 192-byte scene push constants.
-    float4x4 _scenePad0;
+    // Task/mesh has no per-draw model matrix. Bytes 0..64 carry direct
+    // geometry addresses; scene fragment fields at 64..192 stay unchanged.
+    GPU_PTR_READ(GsWork) work;
+    GPU_PTR_READ(GsInstances) instances;
+    GPU_PTR_READ(GsClusters) clusters;
+    GPU_PTR_READ(GsPositions) positions;
+    GPU_PTR_READ(GsShading) shading;
+    GPU_PTR_READ(GsMeshletVerts) meshletVertices;
+    GPU_PTR_READ(GsMeshletTris) meshletTriangles;
+    GPU_PTR_READ(GsRasterView) rasterView;
     float4x4 _scenePad1;
     float4x4 _scenePad2;
     GPU_PTR_READ(GsTaskMeshParams) params;
