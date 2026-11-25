@@ -7,8 +7,8 @@
 // The next compute stage consumes the member ranges and performs per-instance
 // tests. Neither stage replaces GfxDraw/seed/HZB yet.
 
-#include <Engine/Renderer/gpu_scene_leaf.h>
 #include <Engine/Memory/arena.h>
+#include <Engine/Renderer/gpu_scene_leaf.h>
 
 #include <glm/glm.hpp>
 
@@ -71,13 +71,42 @@ struct InstanceCullGpuPush {
     // Zero for validation/pass-all; nonzero BDA of per-instance slot ->
     // admitted generation. Only exact generation matches may rasterize.
     uint64_t ownerGenerations = 0;
+    // Shadow-caster early-out (shadow passes only): xyz = main camera
+    // forward (unit), w = the furthest visible view depth (m), or 0 to
+    // disable. The CPU only sets w > 0 when the sun travels away from the
+    // camera, so a caster deeper than w can never shadow a visible surface
+    // and is culled before any HZB work.
+    glm::vec4 shadowCullParams{0.0f, 0.0f, 0.0f, 0.0f};
+    // BDA of a GpuSceneShadowHizView (per frame, shared across cascades).
+    // Nonzero enables the swept-volume HZB occlusion test on shadow casters.
+    uint64_t shadowHiz = 0;
 };
 static_assert(sizeof(InstanceCullGpuView) == 128);
 static_assert(offsetof(InstanceCullGpuView, inwardPlanes) == 32);
-static_assert(sizeof(InstanceCullGpuPush) == 96);
+static_assert(sizeof(InstanceCullGpuPush) == 120);
 static_assert(offsetof(InstanceCullGpuPush, counts) == 56);
 static_assert(offsetof(InstanceCullGpuPush, counts2) == 72);
 static_assert(offsetof(InstanceCullGpuPush, ownerGenerations) == 88);
+static_assert(offsetof(InstanceCullGpuPush, shadowCullParams) == 96);
+static_assert(offsetof(InstanceCullGpuPush, shadowHiz) == 112);
+
+// Shadow-caster HZB occlusion context (one per frame, shared across all
+// cascades). The cascade cull projects each caster's swept shadow volume
+// (its bounding sphere extruded along the sun) into the MAIN view and tests
+// it against the reversed-Z MIN pyramid; a fully-occluded swept volume casts
+// no visible shadow and the caster is dropped. HLSL mirror:
+// GpuSceneShadowHizView in gpu_scene_instance_cull.cs.hlsl.
+struct GpuSceneShadowHizView {
+    glm::mat4 mainViewProj{1.0f};   // main view, camera-relative VP (Y-flipped)
+    glm::vec4 sunDirAndSweep{0.0f}; // xyz = light dir (unit, sun->scene), w = sweep cap (m)
+    glm::vec4 depthRange{0.0f};     // x = near clip (m), y = furthest visible depth (m)
+    glm::uvec4 hzbDesc{0u};         // x width, y height, z mips, w valid (0 = off)
+    uint64_t hzb = 0;               // HZB buffer BDA
+    uint32_t pad0 = 0;
+    uint32_t pad1 = 0;
+};
+static_assert(sizeof(GpuSceneShadowHizView) == 128);
+static_assert(offsetof(GpuSceneShadowHizView, hzb) == 112);
 
 struct RelativeFrustum {
     // The origin and six inward half-spaces must be in the SAME frame as
@@ -203,7 +232,9 @@ struct FrameCandidateSelection {
     uint32_t candidateCount = 0;
     uint32_t rejectedLeaves = 0;
     uint32_t unculledLeaves = 0;
-    [[nodiscard]] bool Valid() const { return status == CandidateStatus::Ok; }
+    [[nodiscard]] bool Valid() const {
+        return status == CandidateStatus::Ok;
+    }
 };
 
 [[nodiscard]] inline FrameCandidateSelection SelectPassedInstanceRangesFrame(
@@ -244,14 +275,14 @@ struct FrameCandidateSelection {
 
     const size_t capacity = std::min<size_t>(tickets.size(), maxRanges);
     auto* ranges = capacity
-        ? static_cast<PassedInstanceRange*>(smvk::FrameArena().Allocate(
-              capacity * sizeof(PassedInstanceRange), alignof(PassedInstanceRange)))
-        : nullptr;
+                       ? static_cast<PassedInstanceRange*>(smvk::FrameArena().Allocate(
+                             capacity * sizeof(PassedInstanceRange), alignof(PassedInstanceRange)))
+                       : nullptr;
     size_t used = 0;
     for (const LeafTicket& ticket : tickets) {
         const Leaf* leaf = db.leaves.Get(ticket.leaf);
-        if (!leaf || leaf->range.x != ticket.firstMember ||
-            leaf->range.y != ticket.memberCount || ticket.memberCount == 0 ||
+        if (!leaf || leaf->range.x != ticket.firstMember || leaf->range.y != ticket.memberCount ||
+            ticket.memberCount == 0 ||
             uint64_t(ticket.firstMember) + ticket.memberCount > db.leafMembers.Size())
             return fail(CandidateStatus::InvalidSnapshot);
         const bool safe = (leaf->range.z & LeafFlagBoundsComplete) != 0;
@@ -261,12 +292,10 @@ struct FrameCandidateSelection {
             ++out.rejectedLeaves;
             continue;
         }
-        if (used >= capacity ||
-            uint64_t(out.candidateCount) + ticket.memberCount > maxCandidates)
+        if (used >= capacity || uint64_t(out.candidateCount) + ticket.memberCount > maxCandidates)
             return fail(CandidateStatus::CapacityExceeded);
         PassedInstanceRange range{};
-        range.members = glm::uvec4(ticket.firstMember, ticket.memberCount,
-                                    out.candidateCount, 0u);
+        range.members = glm::uvec4(ticket.firstMember, ticket.memberCount, out.candidateCount, 0u);
         range.leaf = glm::uvec4(ticket.leaf.slot, ticket.leaf.generation, 0u, 0u);
         std::construct_at(ranges + used++, range);
         out.candidateCount += ticket.memberCount;

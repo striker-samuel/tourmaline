@@ -2721,6 +2721,14 @@ class WorldRenderer : public IRenderer {
     std::array<uint64_t, smvk::limits::MaxFramesInFlight> m_gpuSceneRasterOwnerMaskTopologyRev{};
     std::array<uint64_t, smvk::limits::MaxFramesInFlight> m_gpuSceneRasterOwnerMaskGeometryRev{};
 
+    // Shadow-caster HZB occlusion context (one per flight): the cascade cull
+    // reads it to test each caster's swept shadow volume against the main
+    // view's reversed-Z MIN pyramid (see GpuSceneShadowHizView).
+    std::array<smvk::Holder<smvk::BufferHandle>, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneShadowHizBuffers{};
+    std::array<smvk::LogicalBufferHandle, smvk::limits::MaxFramesInFlight>
+        m_gpuSceneShadowHizLogical{};
+
     uint32_t m_gpuSceneRasterCompatibleCount = 0;
     // Transparent (AlphaMode::Blend + dithered) instances admitted through
     // the same source ownership: single-authority classification for the
@@ -3213,6 +3221,13 @@ class WorldRenderer : public IRenderer {
     smvk::LodFrameInputs m_lodFrameInputs{};
     float m_lodPixelBudget = 1.0f;       // mirrors m_lodFrameInputs.pixelBudget
     float m_lodViewportHeight = 1080.0f; // mirrors m_lodFrameInputs.viewportHeight
+    // Shadow-caster LOD budget (the cascade work-select's pixel budget). A
+    // COARSER budget than m_lodPixelBudget (higher px) so shadow maps draw
+    // fewer triangles than the lit view. Shares the Main camera + distance
+    // (monotonic, so the shadow LOD is never finer than the view LOD —
+    // coherent silhouettes, no peter-panning), and a coarser budget also
+    // reduces LOD transitions. TOURMALINE_SHADOW_LODBUDGET overrides.
+    float m_shadowLodPixelBudget = 4.0f;
     // LOD-selection hysteresis (mirrors m_lodFrameInputs.hysteresis). 0 =
     // the GPU-scene canonical stateless threshold; TOURMALINE_LOD_HYSTERESIS
     // restores the sticky CPU band (kLodSelectHysteresis) as an opt-in.
@@ -3991,6 +4006,10 @@ class WorldRenderer : public IRenderer {
     uint32_t m_sdsmCutCooldown = 0; // teleport cooldown: heuristic range frames
     glm::vec3 m_sdsmLastCamPos{0.0f};
     bool m_sdsmLastCamPosValid = false;
+    // Sun light direction (from the sun toward the scene, -SunDirectionToSun).
+    // Cached here so the GPU-scene shadow cascade cull can use it for the
+    // fast "furthest visible depth" early-out (shadow-away-from-camera test).
+    glm::vec3 m_sunLightDir{0.0f, -1.0f, 0.0f};
     // Per-flight stats buffers + the readback plumbing (own ticket).
     smvk::Holder<smvk::BufferHandle> m_sdsmStatsBuffers[2]{};
     tour::mem::ArenaFlatArray<uint8_t> m_pendingSdsmStats; // kSdsmStatsBytes; readback destination

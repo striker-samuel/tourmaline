@@ -13,6 +13,15 @@ static const bool s_gpuSceneShadows = [] {
     const char* e = std::getenv("TOURMALINE_GPU_SCENE_SHADOWS");
     return !e || std::strcmp(e, "0") != 0;
 }();
+// Swept-volume HZB occlusion for shadow casters (default OFF; =1 to enable).
+// Uses the PREVIOUS frame's main-view pyramid (the current frame's is built
+// after the shadow passes), so it is one frame stale — see the block below.
+// Measured to cull nothing on the flat grid and bistro: the cascade frustum
+// already removes casters whose shadows are occluded, so this is opt-in.
+static const bool s_shadowHzb = [] {
+    const char* e = std::getenv("TOURMALINE_SHADOW_HZB");
+    return e && std::strcmp(e, "1") == 0;
+}();
 if (s_gpuSceneShadows && m_gpuSceneRasterEnabled && m_gpuSceneDatabaseReady &&
     m_passes.directionalShadows && m_world &&
     cascadeViewBase != smvk::RenderViewSet::kInvalidIndex) {
@@ -95,6 +104,100 @@ if (s_gpuSceneShadows && m_gpuSceneRasterEnabled && m_gpuSceneDatabaseReady &&
             std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - selectStart)
                 .count();
         const auto prepStart = std::chrono::steady_clock::now();
+
+        // ---- Shadow-caster HZB occlusion context (built once per frame) ----
+        // Projects each caster's swept shadow volume into the MAIN view and
+        // tests it against the main view's reversed-Z MIN pyramid. The shadow
+        // passes run before this frame's HZB build, so this reads the PREVIOUS
+        // frame's pyramid (temporals[slot].hiz[1 - frameIndex]) — one frame
+        // stale. A stale pyramid can only under-occlude on disocclusion (a
+        // freshly-revealed receiver briefly keeps its caster), never drop a
+        // still-visible shadow, so the test stays conservative.
+        tour::gpu_scene::GpuSceneShadowHizView shadowHizCtx{};
+        bool shadowHizReady = false;
+        smvk::LogicalBufferHandle shadowHizSrcLogical{};
+        if (s_shadowHzb) {
+            const uint32_t hizSlot = m_gfxRenderer.LastSlot();
+            if (hizSlot != UINT32_MAX &&
+                hizSlot < m_gfxRenderer.gfx.temporals.size() &&
+                hizSlot < m_gfxRenderer.gfx.views.size()) {
+                const uint32_t prevFlight = 1u - m_gfxRenderer.gfx.views[hizSlot].frameIndex;
+                const auto& prevHz = m_gfxRenderer.gfx.temporals[hizSlot].hiz[prevFlight];
+                const uint64_t hizBda = prevHz.buffer.empty()
+                    ? 0u
+                    : m_context->GetBufferDeviceAddress(prevHz.buffer);
+                const bool hizOcclusion =
+                    (uint32_t(m_gfxRenderer.config.cullFlags) &
+                     uint32_t(smvk::gfx::CullFlagBit_HzbOcclusion)) != 0u;
+                const uint32_t mainView = m_renderViews.MainViewIndex();
+                if (hizBda != 0 && prevHz.mipCount != 0u && prevHz.width != 0u &&
+                    prevHz.height != 0u && hizOcclusion && m_sdsmStatsValid &&
+                    mainView != smvk::RenderViewSet::kInvalidIndex) {
+                    const auto packedMain = tour::gpu_scene::MakeGpuSceneRenderView(
+                        m_renderViews.Get(mainView), mainView, origin);
+                    if (packedMain.valid) {
+                        shadowHizCtx.mainViewProj = packedMain.raster.relativeViewProjection;
+                        shadowHizCtx.sunDirAndSweep =
+                            glm::vec4(glm::normalize(m_sunLightDir), shadowFar);
+                        shadowHizCtx.depthRange =
+                            glm::vec4(default_near_clip, m_sdsmMax, 0.0f, 0.0f);
+                        shadowHizCtx.hzbDesc =
+                            glm::uvec4(prevHz.width, prevHz.height, prevHz.mipCount, 1u);
+                        shadowHizCtx.hzb = hizBda;
+                        shadowHizSrcLogical = prevHz.logical;
+                        shadowHizReady = true;
+                    }
+                }
+            }
+        }
+        // Always create + upload the context (128 B) so the shader never sees a
+        // null pointer; hzbDesc.w = 0 disarms the test when not ready.
+        if (m_gpuSceneShadowHizBuffers[flight].empty()) {
+            m_gpuSceneShadowHizBuffers[flight] = m_context->CreateBuffer(
+                sizeof(tour::gpu_scene::GpuSceneShadowHizView),
+                smvk::BufferType_Storage, "GPUScene shadow HZB context");
+            if (!m_gpuSceneShadowHizBuffers[flight].empty())
+                m_gpuSceneShadowHizLogical[flight] = m_rendergraph->AddExternalBuffer(
+                    m_gpuSceneShadowHizBuffers[flight], "GPUScene shadow HZB context");
+        }
+        uint64_t shadowHizBda = 0u;
+        if (!m_gpuSceneShadowHizBuffers[flight].empty()) {
+            if (!shadowHizReady)
+                shadowHizCtx = {}; // disarmed (hzbDesc.w = 0)
+            m_context->UploadDataToBuffer(
+                m_gpuSceneShadowHizBuffers[flight], &shadowHizCtx, sizeof(shadowHizCtx),
+                smvk::PipelineStageBit_Compute, smvk::AccessFlags::ShaderRead);
+            shadowHizBda = m_context->GetBufferDeviceAddress(
+                m_gpuSceneShadowHizBuffers[flight]);
+        }
+        // One-shot HZB cull readiness diagnostic (frame 30).
+        {
+            static bool loggedHzb = false;
+            if (!loggedHzb && m_frameCounter == 30u) {
+                loggedHzb = true;
+                const uint32_t hzSlot = m_gfxRenderer.LastSlot();
+                const bool slotOk = hzSlot != UINT32_MAX &&
+                    hzSlot < m_gfxRenderer.gfx.temporals.size() &&
+                    hzSlot < m_gfxRenderer.gfx.views.size();
+                uint32_t pw = 0, ph = 0, pm = 0;
+                if (slotOk) {
+                    const uint32_t pf = 1u - m_gfxRenderer.gfx.views[hzSlot].frameIndex;
+                    const auto& pz = m_gfxRenderer.gfx.temporals[hzSlot].hiz[pf];
+                    pw = pz.width; ph = pz.height; pm = pz.mipCount;
+                }
+                const bool hizOcc = (uint32_t(m_gfxRenderer.config.cullFlags) &
+                    uint32_t(smvk::gfx::CullFlagBit_HzbOcclusion)) != 0u;
+                std::fprintf(stderr,
+                             "[ShadowHiz] ready=%d hizBda=%llu prevHz=%ux%u mips=%u "
+                             "hizOcc=%d sdsmValid=%d zMax=%.1f\n",
+                             shadowHizReady ? 1 : 0,
+                             (unsigned long long)shadowHizBda,
+                             pw, ph, pm, hizOcc ? 1 : 0,
+                             m_sdsmStatsValid ? 1 : 0,
+                             shadowHizCtx.depthRange.y);
+            }
+        }
+
         // Capacity overflow is *never* clamped: use the proven direct
         // path instead, so shadow coverage remains complete.
         if (selected.Valid() && selected.candidateCount > 0) {
@@ -128,6 +231,35 @@ if (s_gpuSceneShadows && m_gpuSceneRasterEnabled && m_gpuSceneDatabaseReady &&
             cull.ownerGenerations = ownerMaskBda;
             cull.counts2.w = 1u;
             cull.counts2.z |= 2u; // shadow-caster-only cull
+            if (shadowHizReady && shadowHizBda != 0u) {
+                cull.shadowHiz = shadowHizBda;
+                cull.counts2.z |= 4u; // swept-volume HZB occlusion armed
+            }
+            // Furthest-visible-depth shadow early-out: cull casters whose
+            // shadow (extruded along the sun direction) can only land deeper
+            // than the furthest visible surface. Armed only when the sun
+            // travels AWAY from the camera (the shadow deepens) — otherwise
+            // a deep caster's shadow can fall back onto a visible surface and
+            // must be kept. Stale SDSM stats (teleport cut) disarm it.
+            {
+                const glm::vec3 camFwd = glm::normalize(m_cameraPositioner.getForward());
+                const bool shadowDeepens = glm::dot(m_sunLightDir, camFwd) > 0.0f;
+                const float furthestDepth =
+                    (m_sdsmStatsValid && m_sdsmCutCooldown == 0 && shadowDeepens)
+                        ? m_sdsmMax * 1.05f
+                        : 0.0f;
+                cull.shadowCullParams = glm::vec4(camFwd, furthestDepth);
+                static bool logged = false;
+                if (!logged) {
+                    logged = true;
+                    std::fprintf(stderr,
+                                 "[ShadowCull] sun=(%.3f,%.3f,%.3f) fwd=(%.3f,%.3f,%.3f) "
+                                 "deepens=%d maxDepth=%.1f earlyOut=%.1f\n",
+                                 m_sunLightDir.x, m_sunLightDir.y, m_sunLightDir.z,
+                                 camFwd.x, camFwd.y, camFwd.z, shadowDeepens ? 1 : 0,
+                                 m_sdsmMax, furthestDepth);
+                }
+            }
             if (!validator.PrepareCompaction(*m_context, flight, candidates,
                                              count, prefix, scatter) ||
                 !validator.PrepareWorkExpansion(*m_context, flight, m_gpuSceneDatabase,
@@ -143,10 +275,13 @@ if (s_gpuSceneShadows && m_gpuSceneRasterEnabled && m_gpuSceneDatabaseReady &&
                     m_gpuScenePersistentGeometry.AliasCount(flight),
                     raster, commands))
                 continue;
-            // Initially keep Main's resident-LOD policy while varying the
-            // visibility frustum. A separate shadow LOD budget is future work.
+            // Shadow casters use a COARSER LOD budget than the lit view
+            // (m_shadowLodPixelBudget), sharing the Main camera distance so
+            // the shadow LOD is monotonic (never finer than the view) and the
+            // silhouettes stay coherent. A coarser budget also reduces LOD
+            // transitions, so shadows don't pop.
             workSelect.lodEyeBudget =
-                glm::vec4(m_cameraPositioner.cameraPosition_, m_lodPixelBudget);
+                glm::vec4(m_cameraPositioner.cameraPosition_, m_shadowLodPixelBudget);
             workSelect.lodProjection =
                 glm::vec4(float(renderExtent.height),
                           glm::radians(kCameraFovYDegrees),
@@ -212,6 +347,17 @@ if (s_gpuSceneShadows && m_gpuSceneRasterEnabled && m_gpuSceneDatabaseReady &&
             ownerRead.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
             ownerRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
             pass.AddBufferHint(m_gpuSceneRasterOwnerMaskLogical[flight], ownerRead);
+            // Shadow HZB occlusion inputs: the per-flight context buffer (CPU
+            // upload) and the previous frame's main-view pyramid (cross-frame,
+            // fence-complete — a read hint keeps the graph barrier honest).
+            if (shadowHizReady && shadowHizBda != 0u) {
+                smvk::BufferSyncRequest hizRead{};
+                hizRead.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+                hizRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+                pass.AddBufferHint(m_gpuSceneShadowHizLogical[flight], hizRead);
+                if (!shadowHizSrcLogical.empty())
+                    pass.AddBufferHint(shadowHizSrcLogical, hizRead);
+            }
             GpuSceneCascadeBuildFrame& buildFrame =
                 m_rendergraph->PassFrameData<GpuSceneCascadeBuildFrame>(pass);
             buildFrame.cullProgram = &m_gpuSceneCullProgram;
@@ -298,7 +444,7 @@ if (s_gpuSceneVisibilityProd && s_gpuSceneShadows && m_gpuSceneRasterEnabled &&
                     rasterPush, rasterCommands))
                 continue;
             workSelect.lodEyeBudget =
-                glm::vec4(m_cameraPositioner.cameraPosition_, m_lodPixelBudget);
+                glm::vec4(m_cameraPositioner.cameraPosition_, m_shadowLodPixelBudget);
             workSelect.lodProjection =
                 glm::vec4(float(renderExtent.height), glm::radians(kCameraFovYDegrees),
                           m_lodEnabled ? 1.0f : 0.0f, 0.0f);

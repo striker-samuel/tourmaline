@@ -1015,6 +1015,23 @@ bool WorldRenderer::onAttach() {
         if (b >= 0.05f && b <= 256.0f)
             m_lodPixelBudget = b;
     }
+    // Headless shadow-LOD budget (TOURMALINE_SHADOW_LODBUDGET=<px>): the
+    // cascade work-select's pixel budget, COARSER than the lit view's so
+    // shadow maps rasterise fewer triangles. Same clamp as LODBUDGET.
+    if (const char* shLodBudgetEnv = std::getenv("TOURMALINE_SHADOW_LODBUDGET")) {
+        const float b = float(std::atof(trimEnv(shLodBudgetEnv).data()));
+        if (b >= 0.05f && b <= 256.0f)
+            m_shadowLodPixelBudget = b;
+    }
+    // Headless cascade max-distance pin (TOURMALINE_CASCADE_MAX_DISTANCE=<m>):
+    // caps CascadeFar() so the far cascade stops before a huge scene's tail.
+    // 0 = scene far clip (the default). This is the far-shadow coverage
+    // lever — smaller = cheaper shadows, but distant casters stop shadowing.
+    if (const char* cdmEnv = std::getenv("TOURMALINE_CASCADE_MAX_DISTANCE")) {
+        const float d = float(std::atof(trimEnv(cdmEnv).data()));
+        if (d > 0.0f && d <= 10000.0f)
+            m_cascadeMaxDistance = d;
+    }
     // Headless LOD-hysteresis pin (TOURMALINE_LOD_HYSTERESIS=<0..1>): 0 =
     // the GPU-scene canonical stateless threshold (CPU + GPU select the
     // SAME level); the historical kLodSelectHysteresis (0.2) restores the
@@ -6057,6 +6074,7 @@ smvk::GpuDirectionalLightDescription WorldRenderer::UpdateLights(
     // lightDir points FROM the sun toward the scene (i.e. -toSun).
     glm::vec3 toSun = env.SunDirectionToSun();
     glm::vec3 lightDir = -toSun;
+    m_sunLightDir = lightDir; // cached for the GPU-scene shadow cull early-out
     auto cameraView = m_camera.getViewMatrix();
     auto cameraProj = m_camera.getProjMatrix();
     // Keep Y-flip consistent with main view (UpdateFrameUniforms does proj[1][1] *= -1 for Vulkan).
@@ -9807,9 +9825,13 @@ void WorldRenderer::RecordMotion(smvk::CommandBuffer& cmd,
             auto push = f.taskMeshPush;
             push.rasterClass = cls;
             cmd.PushConstants(tour::gpu_scene::kTaskMeshPrefixOffset,
-                              sizeof(push.prefix), &push.prefix, smvk::ShaderStage::All);
+                              sizeof(push.prefix),
+                              &push.prefix,
+                              smvk::ShaderStage::All);
             cmd.PushConstants(tour::gpu_scene::kTaskMeshTailOffset,
-                              tour::gpu_scene::kTaskMeshTailSize, &push, smvk::ShaderStage::All);
+                              tour::gpu_scene::kTaskMeshTailSize,
+                              &push,
+                              smvk::ShaderStage::All);
             cmd.DrawMeshTasksIndirect(f.taskMeshIndirect,
                                       uint64_t(cls) *
                                           sizeof(tour::gpu_scene::TaskMeshIndirectCommand),
@@ -10295,9 +10317,13 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
             push.rasterClass = cls;
             push.temporalPhase = f.sceneTaskTemporalActive ? 3u : 0u;
             cmd.PushConstants(tour::gpu_scene::kTaskMeshPrefixOffset,
-                              sizeof(push.prefix), &push.prefix, smvk::ShaderStage::All);
+                              sizeof(push.prefix),
+                              &push.prefix,
+                              smvk::ShaderStage::All);
             cmd.PushConstants(tour::gpu_scene::kTaskMeshTailOffset,
-                              tour::gpu_scene::kTaskMeshTailSize, &push, smvk::ShaderStage::All);
+                              tour::gpu_scene::kTaskMeshTailSize,
+                              &push,
+                              smvk::ShaderStage::All);
             cmd.DrawMeshTasksIndirect(f.sceneTaskPlan.indirectHandle,
                                       uint64_t(cls) *
                                           sizeof(tour::gpu_scene::TaskMeshIndirectCommand),
