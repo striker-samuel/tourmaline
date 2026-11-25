@@ -20,7 +20,7 @@ struct PSOut
     float4 outColor : SV_Target0;
 };
 
-// C++ twin: Engine/Rendergraph/planar_reflection.h (128 bytes).
+// C++ twin: Engine/Rendergraph/planar_reflection.h (144 bytes).
 struct PlanarReflectionPush
 {
     GPU_PTR_READ(FrameUniforms) frameUniforms;  // 0
@@ -35,6 +35,7 @@ struct PlanarReflectionPush
     float thickness;
     float f0;
     float pad0;
+    float4 receiverBounds; // xyz center, w radius, zero = unbounded
 };
 GPU_PUSH(PlanarReflectionPush, pp);
 
@@ -61,6 +62,9 @@ PSOut mainPS(PSIn IN)
     if (!(abs(worldH.w) > 1e-8f))
         return OUT;
     const float3 world = worldH.xyz / worldH.w;
+    if (pp.receiverBounds.w > 0.0f &&
+        distance(world, pp.receiverBounds.xyz) > pp.receiverBounds.w)
+        return OUT;
 
     // Reject every pixel not on the authored receiver plane. The narrow
     // finite tolerance accounts for geometric tessellation and float depth
@@ -91,7 +95,11 @@ PSOut mainPS(PSIn IN)
     const float fresnel = pp.f0 +
         (1.0f - pp.f0) * pow(1.0f - cosTheta, 5.0f);
     const float weight = saturate(pp.strength * fresnel * planeWeight);
-    const float3 reflection = capture.SampleLevel(smp, captureUv, 0.0f).rgb;
-    OUT.outColor = float4(lerp(base.rgb, reflection, weight), 1.0f);
+    const float4 reflection = capture.SampleLevel(smp, captureUv, 0.0f);
+    // Internal capture is coverage-premultiplied over transparent black.
+    // Uncovered pixels keep the existing SSR/IBL contribution.
+    const float coverage = pp.pad0 > 0.5f ? saturate(reflection.a) : 1.0f;
+    OUT.outColor = float4(base.rgb * (1.0f - weight * coverage) +
+        reflection.rgb * weight, 1.0f);
     return OUT;
 }

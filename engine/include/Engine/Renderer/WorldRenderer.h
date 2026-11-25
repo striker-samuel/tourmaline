@@ -1855,6 +1855,10 @@ class WorldRenderer : public IRenderer {
     // this renderer's rendergraph and keeps the underlying image/bindless
     // descriptor alive until frame execution. Nullopt disables the pass.
     // No scene render is launched recursively by this setter.
+    // Internal low-cost static-mesh capture. External capture takes precedence.
+    void SetPlanarReflectionSettings(std::optional<smvk::PlanarReflectionSettings> settings) {
+        m_planarReflectionSettings = std::move(settings);
+    }
     void SetPlanarReflectionCapture(std::optional<smvk::PlanarReflectionCapture> capture) {
         m_planarReflectionCapture = std::move(capture);
     }
@@ -4845,6 +4849,17 @@ class WorldRenderer : public IRenderer {
     // Host-managed planar capture is intentionally opt-in: no capture means
     // no extra targets, shader loads, or rendergraph passes.
     std::optional<smvk::PlanarReflectionCapture> m_planarReflectionCapture;
+    std::optional<smvk::PlanarReflectionSettings> m_planarReflectionSettings;
+    struct PlanarCaptureFrame {
+        IRenderer::PushConstants pc{};
+        smvk::RenderView cullView{};
+        glm::vec3 eye{};
+        float maxDistance = 0;
+        uint32_t maxDraws = 0;
+        bool includeMasked = false;
+    };
+    static void RecordPlanarCapture(smvk::CommandBuffer&, const smvk::FrameContext&,
+                                    const smvk::PassData&);
     // Keep imported aliases alive until teardown: an in-flight graph may
     // still reference a previous physical capture after a host swap.
     std::vector<std::pair<smvk::ImageViewHandle, smvk::LogicalImageViewHandle>>

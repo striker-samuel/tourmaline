@@ -190,7 +190,12 @@ struct TerrainField {
                           const BlendSettings& blend,
                           const MSAASettings& msaa,
                           int hfShadow = 1,
-                          int hfSteps = 16);
+                          int hfSteps = 16,
+                          bool reflection = false,
+                          float reflectionDistance = 0,
+                          uint32_t maxBlocks = UINT32_MAX,
+                          ShaderProgram* reflectionNear = nullptr,
+                          ShaderProgram* reflectionFar = nullptr);
 };
 
 } // namespace smvk::terrain
