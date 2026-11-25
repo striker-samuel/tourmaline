@@ -36,6 +36,14 @@ struct TaskMeshGpuParams {
     uint32_t prevValid = 0;
     uint32_t prevSlots = 0;
 };
+// Host packet for disjoint writes into the existing 256-byte scene range.
+struct TaskMeshGpuPrefix {
+    uint64_t work, instances, clusters, positions;
+    uint64_t shading, meshletVertices, meshletTriangles, rasterView;
+};
+inline constexpr uint32_t kTaskMeshPrefixOffset = 0u;
+inline constexpr uint32_t kTaskMeshTailOffset = 192u;
+inline constexpr uint32_t kTaskMeshTailSize = 48u;
 struct TaskMeshGpuPush {
     uint64_t params;
     uint32_t groupBase;
@@ -53,6 +61,7 @@ struct TaskMeshGpuPush {
     uint64_t skinDeformed = 0;
     uint32_t skinDeformedBase = 0;
     uint32_t skinValid = 0;
+    TaskMeshGpuPrefix prefix{}; // host-only suffix, pushed separately at byte 0
 };
 struct TaskMeshIndirectCommand {
     uint32_t groupCountX;
@@ -68,7 +77,20 @@ static_assert(offsetof(TaskMeshGpuParams, hizValid) == 164);
 static_assert(offsetof(TaskMeshGpuParams, meshletVertices) == 168);
 static_assert(offsetof(TaskMeshGpuParams, historyPrevious) == 184);
 static_assert(offsetof(TaskMeshGpuParams, historyCapacity) == 200);
-static_assert(sizeof(TaskMeshGpuPush) == 48);
+static_assert(sizeof(TaskMeshGpuPrefix) == 64);
+static_assert(offsetof(TaskMeshGpuPrefix, work) == 0);
+static_assert(offsetof(TaskMeshGpuPrefix, instances) == 8);
+static_assert(offsetof(TaskMeshGpuPrefix, clusters) == 16);
+static_assert(offsetof(TaskMeshGpuPrefix, positions) == 24);
+static_assert(offsetof(TaskMeshGpuPrefix, shading) == 32);
+static_assert(offsetof(TaskMeshGpuPrefix, meshletVertices) == 40);
+static_assert(offsetof(TaskMeshGpuPrefix, meshletTriangles) == 48);
+static_assert(offsetof(TaskMeshGpuPrefix, rasterView) == 56);
+static_assert(offsetof(TaskMeshGpuPush, prefix) == kTaskMeshTailSize);
+static_assert(sizeof(TaskMeshGpuPush) == 112);
+static_assert(std::is_trivially_copyable_v<TaskMeshGpuPush>);
+static_assert(kTaskMeshPrefixOffset + sizeof(TaskMeshGpuPrefix) == 64);
+static_assert(kTaskMeshTailOffset + kTaskMeshTailSize == 240);
 static_assert(sizeof(TaskMeshIndirectCommand) == 12);
 static_assert(std::is_trivially_copyable_v<TaskMeshGpuParams>);
 } // namespace tour::gpu_scene
