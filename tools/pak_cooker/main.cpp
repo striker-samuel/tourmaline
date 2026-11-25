@@ -3142,6 +3142,7 @@ int Run(const PakArgs& c) {
                 tool::err() << "Content-set SDF AddBlob failed: " << vfsPath << std::endl;
                 return 1;
             }
+            tool::out() << "Embedded content-set SDF " << vfsPath << "\n";
             continue;
         }
         if (ext == ".wav") {

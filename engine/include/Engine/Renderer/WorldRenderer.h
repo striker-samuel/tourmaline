@@ -571,6 +571,12 @@ enum class ViewMode : int {
     // DdgiParams::debug flag set (default_lit_body's DDGI debug branch);
     // needs the DDGI GI source active, else it falls back to plain Lit.
     DdgiIrradiance = 33,
+    // Static-SDF reflection scene (combo/env only): a fullscreen sphere-trace
+    // of the uploaded static SDF scene (static_sdf_trace.hlsli) from the
+    // camera, shaded with the SDF instance's base color + a simple sun term.
+    // Renders through the lit path with the SDF debug FS swap; needs the
+    // static SDF residency published (frame.staticSdfScene), else MAGENTA.
+    SdfScene = 34,
 };
 
 // The diffuse SSGI debug views (see the ViewMode block): rendered by
@@ -678,6 +684,7 @@ enum class DebugFs : int {
     Sss,   // default_sss_debug
     Hair,  // default_hair_debug
     Water, // default_water_debug
+    Sdf,   // default_sdf_debug (fullscreen static-SDF sphere trace)
     Count
 };
 
@@ -723,6 +730,8 @@ enum class DebugFs : int {
         return DebugFs::Hair;
     case ViewMode::WaterPreview:
         return DebugFs::Water;
+    case ViewMode::SdfScene:
+        return DebugFs::Sdf;
     default:
         return std::nullopt;
     }
@@ -1230,6 +1239,12 @@ struct FrameUniforms {
     glm::mat4 relativeViewProj{}; // 3424
     glm::vec4 cameraOriginHigh{}; // 3488
     glm::vec4 cameraOriginLow{};  // 3504
+    // Static-SDF reflection scene (Engine/Renderer/static_sdf_gpu.h): a BDA
+    // to the 32-byte StaticSdfSceneHeader (instances + samples + count +
+    // trace params). The SdfScene debug view ray-marches it; the SSR trace
+    // keeps its own push copy (this is the lit-FS-readable twin). 0 = off.
+    uint64_t staticSdfScene = 0;   // 3520 StaticSdfSceneHeader BDA
+    uint32_t staticSdfEnabled = 0; // 3528 1 = the BDA above is valid
 };
 // FrameUniforms layout insurance: the HLSL mirror (common.hlsli) reads
 // every field by absolute offset — any drift desyncs the GPU reads.
@@ -1352,9 +1367,13 @@ static_assert(offsetof(FrameUniforms, fogShadowEnabled) == 2148,
               "fogShadowEnabled offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, contactShadowIndex) == 2152,
               "contactShadowIndex offset: HLSL mirror (the old tail pad's first word)");
-static_assert(sizeof(FrameUniforms) == 3520,
+static_assert(offsetof(FrameUniforms, staticSdfScene) == 3520,
+              "staticSdfScene offset: HLSL mirror");
+static_assert(sizeof(FrameUniforms) == 3536,
               "FrameUniforms size: HLSL mirror (the motion tail appended "
-              "relativeViewProj + cameraOriginHigh/Low 3424 -> 3520); "
+              "relativeViewProj + cameraOriginHigh/Low 3424 -> 3520, then the "
+              "staticSdfScene BDA 8-aligns to 3520 -> 3528 and the 16-byte "
+              "struct pad rounds it to 3536); "
               "the GI-blend tail grew the struct 2160 -> 2500; "
               "the §1.1 layer tables append 2500 -> 3140, the 64-bit telemetry BDA 8-aligns to "
               "3144 -> 3152, the octahedral atlas tail appends 3156 -> 3220, the compact "
@@ -1565,6 +1584,7 @@ struct AppResources {
     smvk::Holder<smvk::ShaderModuleHandle> fragSssDebugShader;   // default_sss_debug
     smvk::Holder<smvk::ShaderModuleHandle> fragHairDebugShader;  // default_hair_debug
     smvk::Holder<smvk::ShaderModuleHandle> fragWaterDebugShader; // default_water_debug
+    smvk::Holder<smvk::ShaderModuleHandle> fragSdfDebugShader;   // default_sdf_debug
     // Shader-LOD farthest-level program (see World::UseVertexLitShaderAt):
     // its own VS computes the lighting per vertex (see
     // default_vertexlit.vert.hlsl) and the FS is a fog pass-through.

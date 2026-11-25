@@ -63,6 +63,7 @@ void PrintUsage(const char* prog) {
            "--bench)\n"
         << "  --vrr enables a 2 FPS margin below the detected refresh rate (e.g. 142 at 144 Hz)\n"
         << "  --vsync on|off selects FIFO (tear-free) or immediate (may tear)\n"
+        << "  --fullscreen starts in exclusive fullscreen on the primary display\n"
         << "  VRR requires compatible monitor, OS and driver settings; pair --vrr with --vsync on\n"
         << "  --input-record <path> writes an engine input tape at exit\n"
         << "  --input-replay <path> replays engine input + timestep by tick\n"
@@ -270,6 +271,8 @@ bool ParsePakAppArgs(int argc, const char* argv[], ViewerOptions& opts, int& exi
             opts.memTransientMb = size_t(n);
         } else if (std::strcmp(a, "--vrr") == 0) {
             opts.vrr = true;
+        } else if (std::strcmp(a, "--fullscreen") == 0) {
+            opts.fullscreen = true;
         } else if (std::strcmp(a, "--vsync") == 0 || std::strncmp(a, "--vsync=", 8) == 0) {
             const char* v =
                 std::strcmp(a, "--vsync") == 0 ? (i + 1 < argc ? argv[++i] : nullptr) : a + 8;

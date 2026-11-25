@@ -859,6 +859,8 @@ int RunPakApp(PakAppConfig cfg) {
         }
         if (cfg.cli.vrr)
             app.SetVrrEnabled(true);
+        if (cfg.cli.fullscreen)
+            app.SetFullscreen(true);
         if (cfg.cli.maxFps > 0)
             app.SetMaxFps(static_cast<uint32_t>(cfg.cli.maxFps));
         if (!cfg.cli.inputRecordPath.empty() || !cfg.cli.inputReplayPath.empty()) {

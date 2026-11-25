@@ -4355,15 +4355,18 @@ struct UploadShardActiveGuard {
     }
 };
 
-smvk::UploadRequest smvk::UploadStreamer::requestBuffer(
-    BufferHandle dst, const void* data, size_t size, size_t dstOffset,
-    VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess) {
+smvk::UploadRequest smvk::UploadStreamer::requestBuffer(BufferHandle dst,
+                                                        const void* data,
+                                                        size_t size,
+                                                        size_t dstOffset,
+                                                        VkPipelineStageFlags2 dstStages,
+                                                        VkAccessFlags2 dstAccess) {
     if (!data || size == 0 || dst.empty())
         return {};
     const Buffer* dstBuf = m_rm->buffers_.get(dst);
     if (!dstBuf || dstBuf->vkBuffer == VK_NULL_HANDLE ||
-        !(dstBuf->usage & VK_BUFFER_USAGE_TRANSFER_DST_BIT) ||
-        dstOffset > dstBuf->size || size > dstBuf->size - dstOffset)
+        !(dstBuf->usage & VK_BUFFER_USAGE_TRANSFER_DST_BIT) || dstOffset > dstBuf->size ||
+        size > dstBuf->size - dstOffset)
         return {};
     const uint32_t shard = CurrentPoolShard();
     if (shard >= kNumPoolShards)
@@ -4388,8 +4391,7 @@ smvk::UploadRequest smvk::UploadStreamer::requestBuffer(
     }
     const bool alreadySubmitted =
         st.ticketSequence.submitted.load(std::memory_order_acquire) >= seq;
-    return {alreadySubmitted ? UploadStatus::Submitted : UploadStatus::Recorded,
-            {shard, seq, 0}};
+    return {alreadySubmitted ? UploadStatus::Submitted : UploadStatus::Recorded, {shard, seq, 0}};
 }
 smvk::UploadStatus smvk::UploadStreamer::pollUpload(UploadTicket ticket) const noexcept {
     if (!ticket || ticket.shard >= kNumPoolShards)
@@ -4402,13 +4404,12 @@ smvk::UploadStatus smvk::UploadStreamer::pollUpload(UploadTicket ticket) const n
     const uint64_t submitted = state.submitted.load(std::memory_order_acquire);
     if (ticket.sequence > submitted)
         return state.Poll(ticket.sequence, 0);
-    const TimelinePoint point =
-        hostVisible ? m_graphics->nextSignalPoint() : lastTransferPoint();
+    const TimelinePoint point = hostVisible ? m_graphics->nextSignalPoint() : lastTransferPoint();
     if (!point.valid())
         return UploadStatus::Submitted;
     uint64_t completed = 0;
-    const VkResult r = vkGetSemaphoreCounterValue(m_rm->VkDeviceHandle(),
-                                                  point.semaphore, &completed);
+    const VkResult r =
+        vkGetSemaphoreCounterValue(m_rm->VkDeviceHandle(), point.semaphore, &completed);
     if (r != VK_SUCCESS)
         return UploadStatus::Failed;
     return state.Poll(ticket.sequence, completed);
@@ -4539,8 +4540,7 @@ bool smvk::UploadStreamer::uploadBuffer(BufferHandle dst,
             st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess));
         st.masks.accessMask = FromVkAccess(dstAccess);
         m_rm->SetBufferSyncState(dst, st);
-        ust.ticketRecordedThrough =
-            ust.ticketSequence.issued.load(std::memory_order_relaxed);
+        ust.ticketRecordedThrough = ust.ticketSequence.issued.load(std::memory_order_relaxed);
         ust.stagedBytesSinceFlush += size;
         if (ust.stagedBytesSinceFlush >= flushThreshold_) {
             submitState(ust, false);
@@ -4606,8 +4606,7 @@ bool smvk::UploadStreamer::uploadBuffer(BufferHandle dst,
         st.masks.stageMask = DerivePipelineStage(FromVkAccess(dstAccess));
     st.masks.accessMask = FromVkAccess(dstAccess);
     m_rm->SetBufferSyncState(dst, st);
-    ust.ticketRecordedThrough =
-        ust.ticketSequence.issued.load(std::memory_order_relaxed);
+    ust.ticketRecordedThrough = ust.ticketSequence.issued.load(std::memory_order_relaxed);
     ust.stagedBytesSinceFlush += size;
     if (ust.stagedBytesSinceFlush >= flushThreshold_) {
         submitState(ust, false);
@@ -5866,14 +5865,17 @@ void smvk::VulkanResourceManager::WaitForUploadsLocal() {
         m_streamer->waitLocal();
 }
 smvk::UploadRequest smvk::VulkanResourceManager::RequestBufferUpload(
-    BufferHandle buffer, const void* data, size_t dataSize,
-    VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t destOffset) {
-    if (!m_streamer) return {};
-    return m_streamer->requestBuffer(buffer, data, dataSize, destOffset,
-                                     dstStages, dstAccess);
+    BufferHandle buffer,
+    const void* data,
+    size_t dataSize,
+    VkPipelineStageFlags2 dstStages,
+    VkAccessFlags2 dstAccess,
+    size_t destOffset) {
+    if (!m_streamer)
+        return {};
+    return m_streamer->requestBuffer(buffer, data, dataSize, destOffset, dstStages, dstAccess);
 }
-smvk::UploadStatus smvk::VulkanResourceManager::PollUpload(
-    UploadTicket ticket) const noexcept {
+smvk::UploadStatus smvk::VulkanResourceManager::PollUpload(UploadTicket ticket) const noexcept {
     return m_streamer ? m_streamer->pollUpload(ticket) : UploadStatus::Invalid;
 }
 void smvk::VulkanResourceManager::UploadDataToBuffer(BufferHandle buffer,
@@ -6900,8 +6902,8 @@ void smvk::VulkanResourceManager::UploadDataToImage3DRegion(ImageHandle image,
     // Allocation ledger: capture the EXACT committed bytes (the out-info
     // vmaCreateImage already writes; one extra stack struct, no query).
     VmaAllocationInfo allocInfo{};
-    const VkResult allocRes = vmaCreateImage(
-        m_allocator, &vkCI, &allocCI, &image.vkImage, &image.allocation, &allocInfo);
+    const VkResult allocRes =
+        vmaCreateImage(m_allocator, &vkCI, &allocCI, &image.vkImage, &image.allocation, &allocInfo);
     if (allocRes != VK_SUCCESS) {
         // Report the failure as an smvk::Error + an actionable message (image
         // name, dimensions, format, samples, layers + an approximate byte
@@ -6909,13 +6911,10 @@ void smvk::VulkanResourceManager::UploadDataToImage3DRegion(ImageHandle image,
         // default aborts. The common OOM cause is an over-large shadow/EVSM
         // cascade atlas or render scale.
         const FormatInfo fmt = getFormatInfo(vkCI.format);
-        const VkDeviceSize blocksX =
-            (vkCI.extent.width + fmt.blockWidth - 1) / fmt.blockWidth;
-        const VkDeviceSize blocksY =
-            (vkCI.extent.height + fmt.blockHeight - 1) / fmt.blockHeight;
-        const VkDeviceSize approxBytes = blocksX * blocksY * vkCI.extent.depth *
-                                         fmt.bytesPerBlock * vkCI.arrayLayers *
-                                         static_cast<VkDeviceSize>(vkCI.samples);
+        const VkDeviceSize blocksX = (vkCI.extent.width + fmt.blockWidth - 1) / fmt.blockWidth;
+        const VkDeviceSize blocksY = (vkCI.extent.height + fmt.blockHeight - 1) / fmt.blockHeight;
+        const VkDeviceSize approxBytes = blocksX * blocksY * vkCI.extent.depth * fmt.bytesPerBlock *
+                                         vkCI.arrayLayers * static_cast<VkDeviceSize>(vkCI.samples);
         const char* remedy = (allocRes == VK_ERROR_OUT_OF_DEVICE_MEMORY)
                                  ? " Reduce shadow/EVSM cascade resolution, render scale, "
                                    "or close other GPU work."
@@ -7450,8 +7449,7 @@ void ReportFatalError(Error code, const char* message) {
         g_fatalErrorHandler(code, message); // expected to unwind (throw / longjmp / abort)
     // Fall through: no handler, or the handler returned -> default abort.
     FatalMirrorOpen();
-    FatalPrintf("[smvk] fatal error %s: %s\n",
-                ErrorName(code), message ? message : "?");
+    FatalPrintf("[smvk] fatal error %s: %s\n", ErrorName(code), message ? message : "?");
     FatalFlush();
     FatalMirrorClose();
     std::abort();
@@ -12951,7 +12949,12 @@ bool tour::App::InitializePlatform() {
 
     int width_ = smvk::limits::WindowDefaultWidth;
     int height_ = smvk::limits::WindowDefaultHeight;
-    window = SDL_CreateWindow("Vulkan", width_, height_, SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+    // --fullscreen: exclusive fullscreen on the primary display (the passed
+    // size is ignored; SDL sizes the window to the display's current mode).
+    // Otherwise the default resizable window.
+    SDL_WindowFlags windowFlags = fullscreenRequested_ ? (SDL_WINDOW_VULKAN | SDL_WINDOW_FULLSCREEN)
+                                                       : (SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+    window = SDL_CreateWindow("Vulkan", width_, height_, windowFlags);
 
     if (!window) {
         std::cerr << "Failed to create SDL3 window: " << SDL_GetError() << "\n";
@@ -12992,8 +12995,11 @@ tour::App* tour::App::s_activeApp = nullptr;
 void tour::App::FatalErrorCallback(smvk::Error code, const char* message) {
     const char* name = smvk::ErrorName(code);
     const char* desc = smvk::ErrorDescription(code);
-    std::fprintf(stderr, "[App] fatal RHI error: %s (%s): %s\n",
-                 name, desc, message ? message : "(no detail)");
+    std::fprintf(stderr,
+                 "[App] fatal RHI error: %s (%s): %s\n",
+                 name,
+                 desc,
+                 message ? message : "(no detail)");
     std::fflush(stderr);
     // Interactive runs surface the failure in a dialog; headless/bench runs
     // (frameBudget_ > 0) skip it so automated matrices never block on input.
@@ -13001,8 +13007,8 @@ void tour::App::FatalErrorCallback(smvk::Error code, const char* message) {
     if (app && app->window && app->frameBudget_ == 0) {
         char title[128];
         std::snprintf(title, sizeof(title), "Renderer fatal error: %s", name);
-        SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, title,
-                                 message ? message : desc, app->window);
+        SDL_ShowSimpleMessageBox(
+            SDL_MESSAGEBOX_ERROR, title, message ? message : desc, app->window);
     }
     // Return so ReportFatalError's default path writes the crash dump + aborts.
 }
@@ -13175,8 +13181,7 @@ struct smvk::RenderGraph::TransientHeapOpaque {
 };
 
 smvk::RenderGraph::RenderGraph(ResourceManager& ctx)
-    : frameData_(AppArena()),
-      ctx_(ctx),
+    : frameData_(AppArena()), ctx_(ctx),
       pipelineCacheOpaque_(smvk::mem::ProcessAllocator().Create<PipelineCacheOpaque>(
           static_cast<VulkanResourceManager*>(ctx.GetVulkanOpaque()))),
       transientHeapOpaque_(smvk::mem::ProcessAllocator().Create<TransientHeapOpaque>()) {}
@@ -13937,10 +13942,9 @@ inline smvk::BufferHandle RebuildBufferHandle(uint64_t key) {
     return h;
 }
 
-inline std::vector<BoundResource> ResolveResourceBindings(
-    const std::vector<uint64_t>& identities,
-    const std::vector<uint64_t>& handles,
-    VulkanResourceManager& vctx) {
+inline std::vector<BoundResource> ResolveResourceBindings(const std::vector<uint64_t>& identities,
+                                                          const std::vector<uint64_t>& handles,
+                                                          VulkanResourceManager& vctx) {
     std::vector<BoundResource> out(identities.size());
     for (size_t id = 0; id < identities.size(); ++id) {
         const uint64_t key = handles[id];
@@ -13952,8 +13956,7 @@ inline std::vector<BoundResource> ResolveResourceBindings(
                 const VkFormat fmt = out[id].format;
                 if (fmt == VK_FORMAT_D16_UNORM || fmt == VK_FORMAT_D32_SFLOAT)
                     out[id].aspect = VK_IMAGE_ASPECT_DEPTH_BIT;
-                else if (fmt == VK_FORMAT_D24_UNORM_S8_UINT ||
-                         fmt == VK_FORMAT_D32_SFLOAT_S8_UINT)
+                else if (fmt == VK_FORMAT_D24_UNORM_S8_UINT || fmt == VK_FORMAT_D32_SFLOAT_S8_UINT)
                     out[id].aspect = VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT;
                 else if (fmt == VK_FORMAT_S8_UINT)
                     out[id].aspect = VK_IMAGE_ASPECT_STENCIL_BIT;
@@ -14133,19 +14136,17 @@ smvk::RenderGraph::GraphPrepare smvk::RenderGraph::PrepareGraph(
         gp.section = section;
         passHash = smvk::rg::GraphHash(passHash, (uint64_t)gp.queue);
         passHash = smvk::rg::GraphHash(passHash, (uint64_t)gp.section);
-        const auto addAccess = [&](smvk::rg::Id id,
-                                   AccessFlags a,
-                                   PipelineStage st,
-                                   uint32_t layout) {
-            const smvk::rg::Mode mode =
-                IsWriteAccess(a) ? smvk::rg::Mode::Write : smvk::rg::Mode::Read;
-            gp.accesses.push_back({id, mode, (uint64_t)st, (uint64_t)a, layout});
-            accessHash = smvk::rg::GraphHash(accessHash, (uint64_t)id);
-            accessHash = smvk::rg::GraphHash(accessHash, (uint64_t)mode);
-            accessHash = smvk::rg::GraphHash(accessHash, (uint64_t)st);
-            accessHash = smvk::rg::GraphHash(accessHash, (uint64_t)a);
-            accessHash = smvk::rg::GraphHash(accessHash, (uint64_t)layout);
-        };
+        const auto addAccess =
+            [&](smvk::rg::Id id, AccessFlags a, PipelineStage st, uint32_t layout) {
+                const smvk::rg::Mode mode =
+                    IsWriteAccess(a) ? smvk::rg::Mode::Write : smvk::rg::Mode::Read;
+                gp.accesses.push_back({id, mode, (uint64_t)st, (uint64_t)a, layout});
+                accessHash = smvk::rg::GraphHash(accessHash, (uint64_t)id);
+                accessHash = smvk::rg::GraphHash(accessHash, (uint64_t)mode);
+                accessHash = smvk::rg::GraphHash(accessHash, (uint64_t)st);
+                accessHash = smvk::rg::GraphHash(accessHash, (uint64_t)a);
+                accessHash = smvk::rg::GraphHash(accessHash, (uint64_t)layout);
+            };
         for (const auto& [img, req] : pu.images)
             addAccess(internImage(img),
                       req.barrierMasks.accessMask,
@@ -14174,8 +14175,8 @@ smvk::rg::CompiledGraph smvk::RenderGraph::CompileGraph(const std::vector<PassUs
     out.key = prep.key;
     out.resourceIdentities = std::move(prep.identities);
     out.resourceHandles = std::move(prep.handles);
-    out.plan = smvk::rg::Compile(prep.passes, (smvk::rg::Id)out.resourceIdentities.size(),
-                                 prep.sectionCount);
+    out.plan = smvk::rg::Compile(
+        prep.passes, (smvk::rg::Id)out.resourceIdentities.size(), prep.sectionCount);
     return out;
 }
 
@@ -14832,8 +14833,8 @@ void smvk::RenderGraph::Execute(Framebuffer& fb, const FrameContext* fc) {
             const auto& tl = plan.timelines[id];
             if (tl.empty())
                 continue;
-            const uint64_t key = (uint64_t(tl[0].section) << 40) |
-                                 (uint64_t(tl[0].queue) << 32) | uint64_t(tl[0].firstBatch);
+            const uint64_t key = (uint64_t(tl[0].section) << 40) | (uint64_t(tl[0].queue) << 32) |
+                                 uint64_t(tl[0].firstBatch);
             barriers->importedByBatch[key].push_back(id);
         }
         barrierCache_ = barriers;
@@ -15135,9 +15136,8 @@ void smvk::RenderGraph::Execute(Framebuffer& fb, const FrameContext* fc) {
                                                   VK_REMAINING_ARRAY_LAYERS};
                             imgBarriers.push_back(b);
                             if (useAsyncCompute)
-                                imgBarrierSrcQ.push_back(src.queueFamily == UINT32_MAX
-                                                             ? graphicsFam
-                                                             : src.queueFamily);
+                                imgBarrierSrcQ.push_back(
+                                    src.queueFamily == UINT32_MAX ? graphicsFam : src.queueFamily);
                         } else {
                             if (br.buffer == VK_NULL_HANDLE)
                                 continue;
@@ -15160,9 +15160,8 @@ void smvk::RenderGraph::Execute(Framebuffer& fb, const FrameContext* fc) {
                             b.size = VK_WHOLE_SIZE;
                             bufBarriers.push_back(b);
                             if (useAsyncCompute)
-                                bufBarrierSrcQ.push_back(src.queueFamily == UINT32_MAX
-                                                             ? graphicsFam
-                                                             : src.queueFamily);
+                                bufBarrierSrcQ.push_back(
+                                    src.queueFamily == UINT32_MAX ? graphicsFam : src.queueFamily);
                         }
                     }
                 }
@@ -15174,8 +15173,7 @@ void smvk::RenderGraph::Execute(Framebuffer& fb, const FrameContext* fc) {
                     for (smvk::rg::Id bidx : batches[batch].barriers) {
                         const BarrierTemplate& t = barrierTemplates[bidx];
                         const BoundResource& br = resourceBindings[t.resource];
-                        const bool isImage =
-                            (prep.identities[t.resource] >> 32) == 0;
+                        const bool isImage = (prep.identities[t.resource] >> 32) == 0;
                         if (isImage) {
                             if (br.image == VK_NULL_HANDLE)
                                 continue;
@@ -15196,10 +15194,10 @@ void smvk::RenderGraph::Execute(Framebuffer& fb, const FrameContext* fc) {
                                                   VK_REMAINING_ARRAY_LAYERS};
                             imgBarriers.push_back(b);
                             if (useAsyncCompute)
-                                imgBarrierSrcQ.push_back(
-                                    plan.barriers[bidx].sourceQueue == smvk::rg::Queue::Compute
-                                        ? computeFam
-                                        : graphicsFam);
+                                imgBarrierSrcQ.push_back(plan.barriers[bidx].sourceQueue ==
+                                                                 smvk::rg::Queue::Compute
+                                                             ? computeFam
+                                                             : graphicsFam);
                         } else {
                             if (br.buffer == VK_NULL_HANDLE)
                                 continue;
@@ -15215,10 +15213,10 @@ void smvk::RenderGraph::Execute(Framebuffer& fb, const FrameContext* fc) {
                             b.size = VK_WHOLE_SIZE;
                             bufBarriers.push_back(b);
                             if (useAsyncCompute)
-                                bufBarrierSrcQ.push_back(
-                                    plan.barriers[bidx].sourceQueue == smvk::rg::Queue::Compute
-                                        ? computeFam
-                                        : graphicsFam);
+                                bufBarrierSrcQ.push_back(plan.barriers[bidx].sourceQueue ==
+                                                                 smvk::rg::Queue::Compute
+                                                             ? computeFam
+                                                             : graphicsFam);
                         }
                     }
                 }

@@ -345,12 +345,20 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                     // pre-Main depth raymarch toward the sun, min'd
                     // with the CSM/EVSM factor in the lit body - the
                     // contact-hardening detail the cascades cannot
-                    // resolve. The full/half resolution combo is the
-                    // A/B the tuning plan asks to benchmark (half
-                    // saves the tracing but can lose thin occluders,
-                    // which are the effect's point).
+                    // resolve. Redundant when hardware RT sun shadows
+                    // are on (the shared pass switches to the ray path),
+                    // so the screen-space toggle is gated off then.
+                    const bool contactRedundant = m_rayTracedSunShadowsEnabled;
+                    if (contactRedundant)
+                        ImGui::BeginDisabled();
                     ImGui::Checkbox("Sun contact shadows", &m_contactShadowsEnabled);
-                    if (m_contactShadowsEnabled) {
+                    if (contactRedundant) {
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip("Redundant: hardware ray-traced sun shadows "
+                                              "replace the screen-space march");
+                        ImGui::EndDisabled();
+                    }
+                    if (m_contactShadowsEnabled && !contactRedundant) {
                         ImGui::SliderFloat(
                             "Contact distance (m)", &m_contactShadowMaxDistance, 0.05f, 2.0f);
                         ImGui::SliderFloat(
@@ -923,6 +931,7 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                         "Clipping (shadows only)",
                         "Clipping (highlights only)",
                         "DDGI irradiance (raw probe field)",
+                        "Static SDF scene (sphere trace)",
                     };
                     // Combo index <-> ViewMode mapping (SsrContribution stays
                     // env-only; UV1 and Normals are combo/env only; the
@@ -966,6 +975,7 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                         ViewMode::ClippingShadows,
                         ViewMode::ClippingHighlights,
                         ViewMode::DdgiIrradiance,
+                        ViewMode::SdfScene,
                     };
                     // The combo count follows the arrays (the old hardcoded
                     // 20 once left appended modes existing but unselectable).
@@ -2212,6 +2222,12 @@ void WorldRenderer::DrawDebugViewHint() {
             lines[0] = "the sampled probe irradiance E (HDR, no albedo);";
             lines[1] = "MAGENTA = outside every volume / no valid probe.";
             lines[2] = "Needs the DDGI GI source active (GI source = DDGI).";
+            break;
+        case ViewMode::SdfScene:
+            title = "Static SDF scene (sphere trace)";
+            lines[0] = "the uploaded static-SDF volume sphere-traced from";
+            lines[1] = "the camera, shaded by base color + a sun term.";
+            lines[2] = "MAGENTA = no SDF residency (no .tsdf sidecars).";
             break;
         default:
             return; // Lit with no overlays - nothing to hint

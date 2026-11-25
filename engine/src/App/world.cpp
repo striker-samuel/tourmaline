@@ -2318,49 +2318,22 @@ std::vector<World::RenderItem> World::BuildPageDrawChunk(
     WorldPage& page,
     uint32_t ordinal,
     const std::unordered_map<NodeId, uint64_t>& entityInstanceByNode) {
-    // The dynamic page's renderable rows live on the MERGED scene as entity
-    // mirrors (the durable dyn-scene nodes carry no mesh rows — the mesh
-    // binding is cross-cluster and rides the MeshEntity). Build its chunk
-    // from the entity registry instead of the (empty) dyn-scene mesh table.
-    if (page.isDynamic) {
-        std::vector<RenderItem> chunk;
-        chunk.reserve(meshEntities.size());
-        for (const MeshEntity& e : meshEntities) {
-            if (!e.alive || e.mergedNode == UINT32_MAX || e.mergedNode >= flags.size())
-                continue;
-            if (!IsVisibleNode(scene, int(e.mergedNode)))
-                continue;
-            const MeshRow* wrow = FindMesh(scene, e.mergedNode);
-            if (!wrow)
-                continue;
-            const MaterialRow* matRow = FindMaterial(scene, e.mergedNode);
-            uint64_t instanceLink = 0;
-            if (const auto it = entityInstanceByNode.find(e.mergedNode);
-                it != entityInstanceByNode.end())
-                instanceLink = it->second;
-            chunk.push_back(RenderItem{
-                .node = e.mergedNode,
-                .mesh = wrow->mesh,
-                .material = matRow ? matRow->material : defaultMaterialIndex,
-                .flags = flags[e.mergedNode],
-                .materialInstance = instanceLink,
-            });
-        }
-        for (RenderItem& item : chunk)
-            item.psoClass = PsoClassFor(item);
-        std::stable_sort(chunk.begin(), chunk.end(), [](const RenderItem& a, const RenderItem& b) {
-            if (a.psoClass != b.psoClass)
-                return a.psoClass < b.psoClass;
-            return a.material < b.material;
-        });
-        return chunk;
-    }
-
+    // The dynamic page's renderable rows normally live on the MERGED scene
+    // as entity mirrors (the cross-cluster mesh binding rides the
+    // MeshEntity). The durable dyn-scene mesh table is ALSO honored for the
+    // direct-authoring style — RuntimeProcedurals writes rows onto
+    // dyn.scene.tables.meshes without an entity mirror — otherwise those
+    // meshes never reach drawItems and neither raster path draws them. The
+    // two sources are disjoint (entity mirrors carry their rows on the
+    // merged scene, not on this page's own table), so there is no double draw.
     if (ordinal >= pageMergedNodes.size())
         return {};
     const std::vector<NodeId>& nodeMap = pageMergedNodes[ordinal];
     std::vector<RenderItem> chunk;
-    chunk.reserve(page.scene.tables.meshes.size());
+    if (page.isDynamic)
+        chunk.reserve(meshEntities.size() + page.scene.tables.meshes.size());
+    else
+        chunk.reserve(page.scene.tables.meshes.size());
     for (const MeshRow& crow : page.scene.tables.meshes) {
         if (crow.node >= nodeMap.size() || nodeMap[crow.node] == UINT32_MAX)
             continue;
@@ -2383,6 +2356,29 @@ std::vector<World::RenderItem> World::BuildPageDrawChunk(
             .flags = flags[node],
             .materialInstance = instanceLink,
         });
+    }
+    if (page.isDynamic) {
+        for (const MeshEntity& e : meshEntities) {
+            if (!e.alive || e.mergedNode == UINT32_MAX || e.mergedNode >= flags.size())
+                continue;
+            if (!IsVisibleNode(scene, int(e.mergedNode)))
+                continue;
+            const MeshRow* wrow = FindMesh(scene, e.mergedNode);
+            if (!wrow)
+                continue;
+            const MaterialRow* matRow = FindMaterial(scene, e.mergedNode);
+            uint64_t instanceLink = 0;
+            if (const auto it = entityInstanceByNode.find(e.mergedNode);
+                it != entityInstanceByNode.end())
+                instanceLink = it->second;
+            chunk.push_back(RenderItem{
+                .node = e.mergedNode,
+                .mesh = wrow->mesh,
+                .material = matRow ? matRow->material : defaultMaterialIndex,
+                .flags = flags[e.mergedNode],
+                .materialInstance = instanceLink,
+            });
+        }
     }
     for (RenderItem& item : chunk)
         item.psoClass = PsoClassFor(item);

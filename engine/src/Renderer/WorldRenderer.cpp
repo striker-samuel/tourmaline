@@ -1171,6 +1171,8 @@ bool WorldRenderer::onAttach() {
             m_debugView = ViewMode::ClippingShadows;
         else if (dv == "clipbright" || dv == "clippinghighlights" || dv == "highlightclip")
             m_debugView = ViewMode::ClippingHighlights;
+        else if (dv == "sdf" || dv == "sdfscene" || dv == "sdf_scene")
+            m_debugView = ViewMode::SdfScene;
         else
             std::cerr << "[WorldRenderer] unknown TOURMALINE_DEBUGVIEW value: " << dv << "\n";
     }
@@ -2175,6 +2177,13 @@ bool WorldRenderer::onAttach() {
         std::cerr << "[WorldRenderer] default_water_debug unavailable - Water preview falls back "
                      "to Lit\n";
     }
+    try {
+        auto sdfCode = smvk::shaders::Read("content/shaders/default_sdf_debug.frag.hlsl.spv");
+        m_resources.fragSdfDebugShader = m_context->CreateShaderModule(sdfCode, "fragSdfDebug");
+    } catch (...) {
+        std::cerr
+            << "[WorldRenderer] default_sdf_debug unavailable - SDF scene view falls back to Lit\n";
+    }
     // Shading debug-view program pairs: ONE pairing rule for every
     // flat FS — the direct twin (default.vert + FS) rides the direct
     // fallback leg, the filtered twin (gfxfiltered.vert + FS, via
@@ -2219,6 +2228,7 @@ bool WorldRenderer::onAttach() {
             {DebugFs::Sss, m_resources.fragSssDebugShader},
             {DebugFs::Hair, m_resources.fragHairDebugShader},
             {DebugFs::Water, m_resources.fragWaterDebugShader},
+            {DebugFs::Sdf, m_resources.fragSdfDebugShader},
         };
         for (const auto& [slot, frag] : slots) {
             auto& pair = m_resources.debugPrograms[size_t(slot)];
@@ -5991,6 +6001,11 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
                                   currentFrame * sizeof(smvk::ddgi::DdgiParams));
     data.ddgiParams = m_context->GetBufferDeviceAddress(m_resources.ddgiParams) +
                       currentFrame * sizeof(smvk::ddgi::DdgiParams);
+    // Static-SDF reflection scene: the SdfScene debug view reads this header
+    // BDA (0 while the frozen-topology SDF residency isn't published yet).
+    const uint64_t staticSdfAddr = m_staticSdfGpu.SceneAddress(*m_context);
+    data.staticSdfScene = staticSdfAddr;
+    data.staticSdfEnabled = staticSdfAddr != 0u ? 1u : 0u;
 
     m_context->UploadDataToBuffer(m_resources.frameUniforms,
                                   &data,
@@ -20285,25 +20300,29 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                            !m_viewportResources.renderDepth.logicalView.empty() &&
                            m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX &&
                            m_ssrIntensity > 0.0f && !DebugVisualizationActive();
+        // Static-SDF scene residency is shared by the SSSR trace AND the
+        // SdfScene debug view, so publish it independently of the SSR gate:
+        // a debug view sets DebugVisualizationActive() (which turns SSR off),
+        // and the SdfScene view would otherwise never get its residency.
+        if (m_staticSdfReflectionsEnabled && m_world) {
+            const bool sdfReady = m_staticSdfGpu.Update(
+                *m_context, *m_world, glm::vec3(m_cameraPositioner.cameraPosition_));
+            // Camera-cell republishing changes the set of reflected objects;
+            // old SSSR temporal history is not compatible with a different
+            // instance list.
+            if (m_staticSdfGpu.Generation() != m_staticSdfSeenGeneration) {
+                m_staticSdfSeenGeneration = m_staticSdfGpu.Generation();
+                smvk::SsrTaaInvalidateHistory(m_ssrTaa);
+            }
+            if (sdfReady) {
+                // One scene-header BDA, keeping SSR at 128 B.
+                ssrDesc.staticSdfSceneAddr = m_staticSdfGpu.SceneAddress(*m_context);
+            }
+        }
         if (ssrOn) {
             // The frozen volume set is rebuilt on world topology changes.
             // Inactive/no-bake scenes keep both addresses zero: the shader
             // never dereferences them, and original SSR is unchanged.
-            if (m_staticSdfReflectionsEnabled && m_world) {
-                const bool sdfReady = m_staticSdfGpu.Update(
-                    *m_context, *m_world, glm::vec3(m_cameraPositioner.cameraPosition_));
-                // Camera-cell republishing changes the set of
-                // reflected objects; old SSSR temporal history is
-                // not compatible with a different instance list.
-                if (m_staticSdfGpu.Generation() != m_staticSdfSeenGeneration) {
-                    m_staticSdfSeenGeneration = m_staticSdfGpu.Generation();
-                    smvk::SsrTaaInvalidateHistory(m_ssrTaa);
-                }
-                if (sdfReady) {
-                    // One scene-header BDA, keeping SSR at 128 B.
-                    ssrDesc.staticSdfSceneAddr = m_staticSdfGpu.SceneAddress(*m_context);
-                }
-            }
             // Receiver-material layer availability: the thin G-buffer
             // (oct normal + roughness + metal) is written by the Forward+
             // depth prepass when fc.ssrGbufferWanted (see

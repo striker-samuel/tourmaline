@@ -99,6 +99,7 @@ struct ViewerOptions {
     std::string presentMode; // empty = default; fifo|mailbox|immediate
     bool presentSet = false; // --present/--vsync explicit (wins over --bench)
     bool vrr = false;        // VRR-friendly automatic FPS cap below detected refresh
+    bool fullscreen = false; // --fullscreen: start in exclusive fullscreen
     int maxFps = 0;          // --max-fps N: optional interactive cap; ignored by --bench
     bool disableControl = false;
     // Engine-normalized input events indexed by simulation tick.

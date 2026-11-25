@@ -601,11 +601,17 @@ static bool BakePlanSdfs(const Project& project,
                 positions.push_back(v.pos);
             ::tour::asset::SdfMesh entry;
             entry.fragment = geometry.uriFragment;
+            // Higher resolution than SdfBakeOptions' 24 default: thin
+            // geometry (Sponza poles, railings) smears into voxel-sized
+            // "columns" at coarse grids — 64 keeps the bake tractable while
+            // resolving ~3x thinner features.
+            ::tour::asset::SdfBakeOptions sdfOpts{};
+            sdfOpts.resolution = 64;
             if (!::tour::asset::BakeMeshSdf(positions.data(),
                                             positions.size(),
                                             geometry.indices.data(),
                                             geometry.indices.size(),
-                                            ::tour::asset::SdfBakeOptions{},
+                                            sdfOpts,
                                             entry.volume,
                                             err)) {
                 err = "SDF bake '" + name + "#" + entry.fragment + "': " + err;

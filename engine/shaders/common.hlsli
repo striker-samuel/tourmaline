@@ -11,6 +11,7 @@
 // The C++ side bridges the same file via Engine/Core/Limits.h.
 #include "engine_limits.hlsli"
 #include "ddgi_common.hlsli"
+#include "static_sdf_trace.hlsli"
 
 // Specialization constant IDs (driver will constant-fold these)
 // Must match CPU-side pipeline creation (App::CreatePipelines)
@@ -1058,6 +1059,8 @@ uint decalCount;                                         // 776 0 = decals off
     float4x4 relativeViewProj;   // 3424
     float4 cameraOriginHigh;     // 3488 (double origin .high)
     float4 cameraOriginLow;      // 3504 (double origin .low)
+    GPU_PTR_READ(StaticSdfSceneHeader) staticSdfScene; // 3520 StaticSdfSceneHeader BDA (0 = off)
+    uint staticSdfEnabled;                              // 3528 1 = the BDA above is valid
 };
 
 // Deferred-shadow push constants + shared helpers (needs FrameUniforms

@@ -166,6 +166,15 @@ class App {
     bool GetVrrEnabled() const {
         return m_vrrEnabled;
     }
+    // Exclusive fullscreen at startup (--fullscreen). Must be set before
+    // Initialize()/InitializePlatform() creates the SDL window — the flag is
+    // applied to the window at creation.
+    void SetFullscreen(bool enabled) {
+        fullscreenRequested_ = enabled;
+    }
+    bool GetFullscreen() const {
+        return fullscreenRequested_;
+    }
     // True while the measured window runs (post warmup) — element-side
     // bench accounting (WorldRenderer's [perf] phase split) keys on it.
     bool BenchMeasuring() const {
@@ -312,9 +321,10 @@ class App {
     bool m_replayOsClose = false;
     bool windowShouldClose_ = false;
     bool relativeMouseMode_ = false;
-    int frameBudget_ = 0; // benchmark frame budget (0 = interactive)
-    int benchFrames_ = 0; // measured frames (post warmup)
-    int benchWarmup_ = 0; // warmup frames skipped from stats
+    bool fullscreenRequested_ = false; // SDL_WINDOW_FULLSCREEN at window creation
+    int frameBudget_ = 0;              // benchmark frame budget (0 = interactive)
+    int benchFrames_ = 0;              // measured frames (post warmup)
+    int benchWarmup_ = 0;              // warmup frames skipped from stats
     double benchAccum_ = 0.0;
     // Drains the SDL queue through the input bridge into m_input; returns
     // false when quit requested. Also forwards raw events to the ImGui SDL3
