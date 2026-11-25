@@ -561,6 +561,12 @@ static bool BakePlanSdfs(const Project& project,
     } catch (const std::exception& e) {
         std::fprintf(stderr, "[SDF] worker pool unavailable (%s); baking serially\n", e.what());
     }
+    // Lowest-brick knob: the octree's finest cell = extent / 2^sdfMaxDepth.
+    // Lower = coarser bricks (less memory, blockier); higher = finer.
+    uint32_t sdfMaxDepth = 6;
+    if (const char* d = std::getenv("TOURMALINE_SDF_MAX_DEPTH"))
+        sdfMaxDepth = uint32_t(std::atoi(d));
+    sdfMaxDepth = std::min(std::max(sdfMaxDepth, 1u), 12u);
     // Build each authoritative scene once, AFTER Cook, with the same
     // references and .tour replay used by the cooker. This captures
     // edited scale, reparenting, instancing and deleted scene nodes.
@@ -801,7 +807,7 @@ static bool BakePlanSdfs(const Project& project,
             // resolving ~3x thinner features.
             ::tour::asset::SdfBakeOptions sdfOpts{};
             sdfOpts.resolution = 64;
-            sdfOpts.maxDepth = 6; // lowest brick = extent / 2^6 (== 64 uniform voxels)
+            sdfOpts.maxDepth = sdfMaxDepth; // lowest brick = extent / 2^maxDepth
             // Thin-feature exclusion: a fitted (oriented) box thin in TWO
             // axes is a wire/rod — sub-voxel at this grid, it smears into a
             // column. Thin-in-one-axis features (walls, panels, slabs) stay:
