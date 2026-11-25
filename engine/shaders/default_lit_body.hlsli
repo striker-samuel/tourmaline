@@ -11,6 +11,7 @@
 // not) ALPHA_TO_COVERAGE before including this body.
 
 #include "material_coverage.hlsli"
+#include "ddgi_sample.hlsli"
 
 // Material fetch override (mesh-shader path): the mesh FS twin feeds
 // per-draw material through a flat varying (one dispatch covers many
@@ -1713,6 +1714,51 @@ float envVis = 1.0f;
     if (giSource == 0u && !isBlendMat)
     {
         ambient = lerp(legacyAmbient, ambientDiffuse, iblOn) * giScale;
+    }
+
+    // ---------------------------------------------------------------
+    // DDGI (dynamic diffuse GI, Rendergraph/ddgi.h): blend the probe
+    // field over the baked/sky diffuse ambient slice (the spec §6
+    // replacement — lerp(existing, kD*baseColor*E/pi, strength)). ONE
+    // diffuse owner at a time: DDGI composes over the existing slice,
+    // never adds a second full term. Skipped for blend materials (no
+    // diffuse lobe) and for points outside/without a valid probe.
+    // ddgiDebug (FrameUniforms) = 1 renders the raw probe irradiance E
+    // (HDR, no albedo) so the field is directly visible — magenta = the
+    // point is outside every volume / no valid probe (sky fallback).
+    // ---------------------------------------------------------------
+    const DdgiParams ddgiParams = frame.ddgiParams.Get();
+    if (ddgiParams.enabled != 0u)
+    {
+        const DdgiSampleResult ddgi = DdgiSampleIrradiance(ddgiParams, IN.worldPos, N);
+        if (ddgiParams.debug == 1u)
+        {
+            OUT.outAoTerm = float4(0.0f, 0.0f, 0.0f, 0.0f);
+            OUT.outEnvSpec = float4(0.0f, 0.0f, 0.0f, 0.0f);
+            // The field is ambient-only (no sun in the trace). Normalize it
+            // by the sky scale it was computed at — E/pi is the diffuse
+            // radiance, ≈ iblIntensity (ground.w) for a uniform sky — so the
+            // debug view reads sky-lit ≈ 1.0 and occluded ≈ 0 regardless of
+            // the scene's sky intensity. Until §4 (sun bounce at hit points)
+            // makes the field lux-scale like the baked-GI view, this is what
+            // makes the ambient-occlusion field readable.
+            const float ddgiNorm = max(frame.env.ground.w, 1e-4f);
+            // E/pi is the diffuse radiance; dividing by the sky scale
+            // normalizes sky-lit to ~1.0 and occluded to ~0. The debug-view
+            // exposure is a FIXED 0.001 (kDebugViewExposure), so pre-scale by
+            // its inverse so the normalized field survives the tonemap (the
+            // flat debug shaders get the same 1/exposure gain from the C++
+            // side; the lit-path DDGI branch hardcodes it).
+            OUT.outColor = ddgi.valid > 0.0f
+                               ? float4(SanitizeHdr(ddgi.irradiance / PI / ddgiNorm * 1000.0f), 1.0f)
+                               : float4(0.8f, 0.0f, 0.8f, 1.0f);
+            return OUT;
+        }
+        if (!isBlendMat && ddgi.valid > 0.0f)
+        {
+            const float3 ddgiAmbient = kD * baseColor * (ddgi.irradiance / PI) * occlusion;
+            ambient = lerp(ambient, ddgiAmbient, saturate(ddgiParams.strength));
+        }
     }
 
     // ---------------------------------------------------------------

@@ -216,6 +216,13 @@ RunConfig RunConfig::Parse() {
         else
             std::fprintf(stderr, "[RunConfig] bad TOURMALINE_SSGI (want 1|on|0|off): %s\n", v);
     }
+    if ((v = Get("TOURMALINE_DDGI")) != nullptr) {
+        bool on = true;
+        if (IsOnOff(Trimmed(v), on))
+            c.ddgi = on ? OnOffPin::On : OnOffPin::Off;
+        else
+            std::fprintf(stderr, "[RunConfig] bad TOURMALINE_DDGI (want 1|on|0|off): %s\n", v);
+    }
     if ((v = Get("TOURMALINE_BLOOM_THRESHOLD")) != nullptr) {
         const float bt = static_cast<float>(std::strtod(v, nullptr));
         if (bt >= 0.0f && bt <= 16000.0f)
@@ -816,6 +823,7 @@ void RunConfig::WarnUnknown() {
         "TOURMALINE_VOLUMETRIC_GI_VOLUMES",
         "TOURMALINE_SSR",
         "TOURMALINE_SSGI",
+        "TOURMALINE_DDGI",
         "TOURMALINE_BLOOM_THRESHOLD",
         "TOURMALINE_BLOOM_INTENSITY",
         "TOURMALINE_BLOOM_FFT",

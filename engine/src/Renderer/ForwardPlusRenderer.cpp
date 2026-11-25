@@ -66,16 +66,15 @@ void RecordPrepass(smvk::CommandBuffer& cmd,
     auto ensureMaskedPipeline = [&](smvk::CullMode cull) {
         if (cull == boundMaskedCull)
             return;
-        cmd.BindRenderPipeline(
-            gbufferOn ? self->gbufferMaskedProgram : self->prepassMaskedProgram,
-            ::tour::vertex_layouts::Static,
-            smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
-                                .writeEnable = true,
-                                .depthTestEnable = true},
-            smvk::StencilSettings{},
-            smvk::BlendSettings{},
-            smvk::MSAASettings{},
-            smvk::RasterSettings{.cullMode = cull});
+        cmd.BindRenderPipeline(gbufferOn ? self->gbufferMaskedProgram : self->prepassMaskedProgram,
+                               ::tour::vertex_layouts::Static,
+                               smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                                   .writeEnable = true,
+                                                   .depthTestEnable = true},
+                               smvk::StencilSettings{},
+                               smvk::BlendSettings{},
+                               smvk::MSAASettings{},
+                               smvk::RasterSettings{.cullMode = cull});
         cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &depthPC, smvk::ShaderStage::All);
         boundMaskedCull = cull;
     };
@@ -129,11 +128,8 @@ void RecordPrepass(smvk::CommandBuffer& cmd,
                             world->LodIndexForNode(item.node, item.mesh, lodInputs);
                         if (smvk::StaticMesh* selDesc = world->GetLodMesh(item.mesh, lod);
                             selDesc && selDesc != baseDesc) {
-                            smvk::MeshBoundsToWorld(model,
-                                                    selDesc->geometry.aabbMin,
-                                                    selDesc->geometry.aabbMax,
-                                                    c,
-                                                    r);
+                            smvk::MeshBoundsToWorld(
+                                model, selDesc->geometry.aabbMin, selDesc->geometry.aabbMax, c, r);
                             visible = smvk::RenderViewIntersectsSphere(mainView, c, r);
                         }
                     }
@@ -151,6 +147,14 @@ void RecordPrepass(smvk::CommandBuffer& cmd,
         }
         if (!meshDesc)
             return;
+        if (maskedPhase && std::getenv("TOURMALINE_MASK_AUDIT")) {
+            std::fprintf(stderr,
+                         "[MaskAudit] node=%u mat=%u verts=%u maskedFlag=%u\n",
+                         static_cast<unsigned>(item.node),
+                         item.material,
+                         meshDesc->geometry.vertexCount,
+                         (item.flags & smvk::IteratorFlagBit_Masked) ? 1u : 0u);
+        }
         if (maskedPhase) {
             smvk::CullMode cull = smvk::CullMode::None;
             if (const smvk::Material* mat =
@@ -198,16 +202,14 @@ void RecordPrepass(smvk::CommandBuffer& cmd,
         };
     };
     ensureSolidPipeline(smvk::CullMode::Back);
-    world->forEachRenderItem(smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
-                                 smvk::IteratorFlagBit_StaticVertexFmt,
-                             [&](const smvk::World::RenderItem& item) {
-                                 drawPrepassNode(item, true);
-                             });
-    world->forEachRenderItem(smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
-                                 smvk::IteratorFlagBit_StaticVertexFmt,
-                             [&](const smvk::World::RenderItem& item) {
-                                 drawPrepassNode(item, false);
-                             });
+    world->forEachRenderItem(
+        smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
+            smvk::IteratorFlagBit_StaticVertexFmt,
+        [&](const smvk::World::RenderItem& item) { drawPrepassNode(item, true); });
+    world->forEachRenderItem(
+        smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
+            smvk::IteratorFlagBit_StaticVertexFmt,
+        [&](const smvk::World::RenderItem& item) { drawPrepassNode(item, false); });
 }
 
 // Per-flight slot payload + record functions for the GPU-scene indirect
@@ -413,9 +415,8 @@ void RecordGpuSceneTask(smvk::CommandBuffer& cmd,
     smvk::ShaderProgram& taskGbuffer = *const_cast<smvk::ShaderProgram*>(f.taskGbuffer);
     smvk::ShaderProgram& maskedDepth = *const_cast<smvk::ShaderProgram*>(f.maskedDepth);
     smvk::ShaderProgram& maskedGbuffer = *const_cast<smvk::ShaderProgram*>(f.maskedGbuffer);
-    const auto depth = smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
-                                           .writeEnable = true,
-                                           .depthTestEnable = true};
+    const auto depth = smvk::DepthSettings{
+        .depthFunc = smvk::CompareOp::GreaterEqual, .writeEnable = true, .depthTestEnable = true};
     const auto drawBin = [&](uint32_t cls, smvk::ShaderProgram& program, smvk::CullMode cull) {
         cmd.BindRenderPipeline(program,
                                ::tour::vertex_layouts::Empty,
@@ -429,8 +430,7 @@ void RecordGpuSceneTask(smvk::CommandBuffer& cmd,
         push.rasterClass = cls;
         cmd.PushConstants(192u, sizeof(push), &push, smvk::ShaderStage::All);
         cmd.DrawMeshTasksIndirect(f.indirect,
-                                  uint64_t(cls) *
-                                      sizeof(tour::gpu_scene::TaskMeshIndirectCommand),
+                                  uint64_t(cls) * sizeof(tour::gpu_scene::TaskMeshIndirectCommand),
                                   1u,
                                   sizeof(tour::gpu_scene::TaskMeshIndirectCommand));
     };
@@ -546,9 +546,7 @@ void RecordOccluder(smvk::CommandBuffer& cmd,
     cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &depthPC, smvk::ShaderStage::All);
     world->forEachRenderItem(smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
                                  smvk::IteratorFlagBit_StaticVertexFmt,
-                             [&](const smvk::World::RenderItem& item) {
-                                 drawOccluderNode(item);
-                             });
+                             [&](const smvk::World::RenderItem& item) { drawOccluderNode(item); });
 }
 
 // Per-flight slot payload + non-capturing record function for the tile light
@@ -567,8 +565,7 @@ void RecordTileCull(smvk::CommandBuffer& cmd,
         const_cast<ForwardPlusRenderer*>(static_cast<const ForwardPlusRenderer*>(pd.config));
     const TileCullFrame& f = fc.rg->FrameData().Get<TileCullFrame>(pd.frameSlot);
     cmd.BindComputePipeline(self->fp->cullProgram);
-    cmd.PushConstants(
-        0, sizeof(smvk::ForwardPlusCullPush), &f.cullPC, smvk::ShaderStage::All);
+    cmd.PushConstants(0, sizeof(smvk::ForwardPlusCullPush), &f.cullPC, smvk::ShaderStage::All);
     cmd.Dispatch(f.tileCountX, f.tileCountY, 1);
 }
 

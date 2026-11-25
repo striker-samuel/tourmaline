@@ -115,6 +115,7 @@
 #include <Engine/Rendergraph/ForwardPlusRenderer.h>
 #include <Engine/Rendergraph/FrameContext.h>
 #include <Engine/Rendergraph/contact_shadow.h>
+#include <Engine/Rendergraph/ddgi.h>
 #include <Engine/Rendergraph/godrays.h>
 
 namespace tour::placement {
@@ -271,11 +272,13 @@ enum class AmbientMode : int {
     SkyIbl = 3,    // analytic sky IBL only
     Off = 4,       // direct light only
     Baked = 5,     // All minus the sky fallback (baked GI isolation)
+    Ddgi = 6,      // dynamic diffuse GI (probe grid, ray-query updates) — the
+                   // diffuse ambient owner; baked GI + sky IBL diffuse are off
 };
 inline const char* AmbientModeName(AmbientMode m) {
     switch (m) {
     case AmbientMode::All:
-        return "All (baked GI; sky fallback)";
+        return "Baked (sky fallback)";
     case AmbientMode::Lightmaps:
         return "Lightmaps only";
     case AmbientMode::Probes:
@@ -286,6 +289,8 @@ inline const char* AmbientModeName(AmbientMode m) {
         return "Off (direct only)";
     case AmbientMode::Baked:
         return "Baked (no sky fallback)";
+    case AmbientMode::Ddgi:
+        return "Dynamic (DDGI)";
     }
     return "?";
 }
@@ -319,8 +324,8 @@ static_assert(CappedEvsmTileResolution(256, 512) == 256);
 // touches the panel must render the unauthored default).
 // ---------------------------------------------------------------------------
 struct RenderQualityConfig {
-    int giMode = 0;                 // 0..5 — AmbientMode (All/Lightmaps/
-                                    // Probes/SkyIbl/Off/Baked; the N cycle)
+    int giMode = 0;                 // 0..6 — AmbientMode (All/Lightmaps/
+                                    // Probes/SkyIbl/Off/Baked/Ddgi; the N cycle)
     float giIntensity = 1.0f;       // 0..2 baked-GI + sky-IBL ambient scale
     bool lightmapsEnabled = false;  // proxy lightmap branch (opt-in)
     bool regProbesEnabled = true;   // regular probe grids (dynamic-object GI)
@@ -560,6 +565,12 @@ enum class ViewMode : int {
     ClippingCombined = 30,   // blue shadows + red highlights in one view
     ClippingShadows = 31,    // blue shadows only (rest keeps the image)
     ClippingHighlights = 32, // red highlights only (rest keeps the image)
+    // DDGI irradiance (combo/env only): the raw DDGI probe-field irradiance
+    // E at each lit pixel (HDR, no albedo) — magenta = outside every probe
+    // volume / no valid probe. Renders through the LIT path with the
+    // DdgiParams::debug flag set (default_lit_body's DDGI debug branch);
+    // needs the DDGI GI source active, else it falls back to plain Lit.
+    DdgiIrradiance = 33,
 };
 
 // The diffuse SSGI debug views (see the ViewMode block): rendered by
@@ -1195,6 +1206,30 @@ struct FrameUniforms {
     // volumeTextures[] carrying the bake's 3-way provenance (0 traced /
     // 127 dilated / 255 unfilled). UINT32_MAX = absent (mode 7 reads 0).
     uint32_t giVolumeClassSlots[8] = {}; // 3380 8 volumes x 1 R8 class slot
+    // ---- DDGI probe volumes (Rendergraph/ddgi.h): a BDA to the VolumeDesc
+    // list (one per occupied world subcell) + the live count. The lit
+    // shader walks the list to find the volume containing the pixel and
+    // samples its published irradiance/moments. ddgiEnabled = 1 -> the lit
+    // body blends the DDGI diffuse ambient over the baked/sky slice.
+    // APPEND-ONLY tail after giVolumeClassSlots: every pinned offset above
+    // stays put. The 64-bit BDA 8-aligns to 3416 (the uint array ends at
+    // 3412); the HLSL mirror is FrameUniforms (common.hlsli). ----
+    // ---- DDGI (dynamic diffuse GI, Rendergraph/ddgi.h): ONE BDA to the
+    // small per-view DdgiParams slab (volume list + slot + strength +
+    // enable + debug), uploaded per frame like FramePSHot — NOT grown into
+    // this monolithic struct. The 8-byte BDA 8-aligns to 3416 and lands in
+    // the pre-DDGI 12-byte tail pad, so sizeof stays 3424. ----
+    uint64_t ddgiParams = 0; // 3416 DdgiParams slab BDA (0 = off)
+    // Motion-vector pass: camera-relative view-projection (proj * view
+    // rotation, camera at the origin) + the double-precision camera origin
+    // (split high/low). The direct motion leg re-rasterises with the SAME
+    // double-float relative transform the GPU-scene prepass used, so its
+    // depth matches bit-for-bit (no GreaterEqual rejection holes). HLSL
+    // mirror: common.hlsli FrameUniforms (relativeViewProj / cameraOriginHigh
+    // / cameraOriginLow).
+    glm::mat4 relativeViewProj{}; // 3424
+    glm::vec4 cameraOriginHigh{}; // 3488
+    glm::vec4 cameraOriginLow{};  // 3504
 };
 // FrameUniforms layout insurance: the HLSL mirror (common.hlsli) reads
 // every field by absolute offset — any drift desyncs the GPU reads.
@@ -1262,6 +1297,13 @@ static_assert(offsetof(FrameUniforms, giVolumeSpecDims) == 3348,
               "giVolumeSpecDims offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, giVolumeClassSlots) == 3380,
               "giVolumeClassSlots offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, ddgiParams) == 3416, "ddgiParams offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, relativeViewProj) == 3424,
+              "relativeViewProj offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, cameraOriginHigh) == 3488,
+              "cameraOriginHigh offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, cameraOriginLow) == 3504,
+              "cameraOriginLow offset: HLSL mirror");
 // Env-zone block (the append-only tail): the per-frame EnvZoneGpu slice
 // BDA + count + reserved words, pinned like every other HLSL-mirrored
 // member. The reserved array keeps the old 208-byte block size so the
@@ -1310,12 +1352,15 @@ static_assert(offsetof(FrameUniforms, fogShadowEnabled) == 2148,
               "fogShadowEnabled offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, contactShadowIndex) == 2152,
               "contactShadowIndex offset: HLSL mirror (the old tail pad's first word)");
-static_assert(sizeof(FrameUniforms) == 3424,
-              "FrameUniforms size: HLSL mirror (the GI-blend tail grew the struct 2160 -> 2500; "
+static_assert(sizeof(FrameUniforms) == 3520,
+              "FrameUniforms size: HLSL mirror (the motion tail appended "
+              "relativeViewProj + cameraOriginHigh/Low 3424 -> 3520); "
+              "the GI-blend tail grew the struct 2160 -> 2500; "
               "the §1.1 layer tables append 2500 -> 3140, the 64-bit telemetry BDA 8-aligns to "
               "3144 -> 3152, the octahedral atlas tail appends 3156 -> 3220, the compact "
               "specular atlas appends 3220 -> 3380, the debug class-volume slots append "
-              "3380 -> 3412 (+12 pad to 16-align); every pre-blend offset above is unchanged)");
+              "3380 -> 3412; the DDGI BDA appends 3416 -> 3424 inside the pre-DDGI tail pad, so "
+              "every pre-blend offset above is unchanged)");
 
 // FramePSHot — tiny per-frame data frequently accessed by the pixel shader.
 // Mirrors HLSL FramePSHot in common.hlsli (96 bytes, 16-byte aligned).
@@ -1366,6 +1411,7 @@ static_assert(offsetof(FramePSHot, fps) == 84);
 struct AppResources {
     smvk::Holder<smvk::BufferHandle> frameUniforms;
     smvk::Holder<smvk::BufferHandle> frameHot;
+    smvk::Holder<smvk::BufferHandle> ddgiParams; // per-view DdgiParams slab (FramePSHot pattern)
     smvk::Holder<smvk::BufferHandle> lightsBuffer;
     smvk::Holder<smvk::BufferHandle> materialsBuffer;
     smvk::Holder<smvk::BufferHandle>
@@ -2054,7 +2100,11 @@ class WorldRenderer : public IRenderer {
     }
     void PushVolumetricEnv(const tour::transformhierarchy::SceneEnv& env) {
         const bool volTier = env.fogQuality == 2 && env.volumetrics > 0.0f;
-        m_volumetricEnabled = volTier;
+        // Fog defaults OFF regardless of the authored tier (the medium
+        // volumetric isn't engaging correctly by default). The authored
+        // settings below still seed the knobs so a UI opt-in (or
+        // TOURMALINE_VOLUMETRIC=1) has values to use.
+        m_volumetricEnabled = false;
         if (volTier) {
             m_volumetricIntensity = env.volumetrics;
             m_volumetricSteps = int(env.volumetricSteps);
@@ -2133,7 +2183,7 @@ class WorldRenderer : public IRenderer {
     // construction (plain member writes + the early-out setters), so
     // the per-panel-frame call is free.
     void PushRenderQuality(const RenderQualityConfig& q) {
-        m_ambientMode = static_cast<AmbientMode>(std::clamp(q.giMode, 0, 5));
+        m_ambientMode = static_cast<AmbientMode>(std::clamp(q.giMode, 0, 6));
         m_giIntensity = std::clamp(q.giIntensity, 0.0f, 2.0f);
         m_lmEnabled = q.lightmapsEnabled;
         m_regEnabled = q.regProbesEnabled;
@@ -3156,15 +3206,19 @@ class WorldRenderer : public IRenderer {
     // Per-node decisions are cached in the World and refreshed EVERY frame
     // (full rate, the default; halfrate parity opt-out — see World::
     // LodIndexForNode and m_lodFullRate); m_lodFrameInputs.frameId is the
-    // monotonic key. Selection is hysteretic around the budget
-    // (kLodSelectHysteresis), so switch distances don't flip siblings
-    // frame to frame while the camera moves.
+    // monotonic key. Selection matches the GPU-scene work-select (stateless
+    // threshold, Frobenius radius); TOURMALINE_LOD_HYSTERESIS>0 restores the
+    // sticky anti-flicker band on the CPU legs.
     bool m_lodEnabled = true;
     smvk::LodFrameInputs m_lodFrameInputs{};
     float m_lodPixelBudget = 1.0f;       // mirrors m_lodFrameInputs.pixelBudget
     float m_lodViewportHeight = 1080.0f; // mirrors m_lodFrameInputs.viewportHeight
-    uint64_t m_lodFrameId = 0;           // monotonic per-frame counter
-    float m_lodBudgetApplied = -1.0f;    // budget at last InvalidateLodCache
+    // LOD-selection hysteresis (mirrors m_lodFrameInputs.hysteresis). 0 =
+    // the GPU-scene canonical stateless threshold; TOURMALINE_LOD_HYSTERESIS
+    // restores the sticky CPU band (kLodSelectHysteresis) as an opt-in.
+    float m_lodHysteresis = 0.0f;
+    uint64_t m_lodFrameId = 0;        // monotonic per-frame counter
+    float m_lodBudgetApplied = -1.0f; // budget at last InvalidateLodCache
     // LOD refresh cadence: true (default) = every node recomputes every
     // frame; false = the World's halfrate parity split (perf A/B; also
     // TOURMALINE_LODFULL=0 at startup).
@@ -3294,8 +3348,7 @@ class WorldRenderer : public IRenderer {
     std::array<bool, smvk::limits::MaxFramesInFlight> m_materialForceFull{};
     // Latest ticket per flight covers earlier uploads on the same ordered
     // queue timeline; one status query per fenced flight reuse.
-    std::array<smvk::UploadTicket, smvk::limits::MaxFramesInFlight>
-        m_materialUploadTickets{};
+    std::array<smvk::UploadTicket, smvk::limits::MaxFramesInFlight> m_materialUploadTickets{};
     AppResources m_resources{};
     ViewportResources m_viewportResources{};
     // Resolved KHR_lights_punctual set for the loaded scene (snapshotted
@@ -3463,6 +3516,14 @@ class WorldRenderer : public IRenderer {
     // EnsureGiProbeInstances).
     smvk::giprobe::GiProbeVisual m_giProbeVisual{};
     bool m_giProbeInstancesBuilt = false;
+
+    // ---- DDGI (dynamic diffuse GI, Rendergraph/ddgi.h) ----------------
+    // One probe VOLUME per occupied 64 m world subcell: each owns its
+    // persistent irradiance + distance-moment buffers (double-buffered
+    // history), the ray scratch, and the static DDGITrace + DDGIBlend
+    // compute programs. The lit body finds the volume containing a pixel
+    // via the VolumeDesc list (FrameUniforms::ddgiVolumes).
+    std::vector<smvk::ddgi::Volume> m_ddgiVolumes;
 
     // ---- GPU probe pre-mix -------------------------------------------
     // The Remember Me architecture, GPU-only selection: the weights pass
@@ -3742,10 +3803,18 @@ class WorldRenderer : public IRenderer {
     // RecordFns: the immutable config is the WorldRenderer (PassData::config
     // = this); per-frame data rides a per-flight slot (PassFrameData<T>).
     // ---------------------------------------------------------------
-    struct MeshParticlesCullFrame { smvk::MeshParticlesCullPush push{}; };
-    struct MeshParticlesPrefixFrame { smvk::MeshParticlesPrefixPush push{}; };
-    struct MeshParticlesScatterFrame { smvk::MeshParticlesScatterPush push{}; };
-    struct MeshParticlesBuildFrame { tour::placement::PlacementDrawBuildPush push{}; };
+    struct MeshParticlesCullFrame {
+        smvk::MeshParticlesCullPush push{};
+    };
+    struct MeshParticlesPrefixFrame {
+        smvk::MeshParticlesPrefixPush push{};
+    };
+    struct MeshParticlesScatterFrame {
+        smvk::MeshParticlesScatterPush push{};
+    };
+    struct MeshParticlesBuildFrame {
+        tour::placement::PlacementDrawBuildPush push{};
+    };
     struct SdsmFrame {
         smvk::ShaderProgram* program = nullptr;
         SdsmStatsPush push{};
@@ -3763,26 +3832,50 @@ class WorldRenderer : public IRenderer {
                                          const smvk::FrameContext&,
                                          const smvk::PassData&);
     static void RecordSdsm(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
-    struct ParticlesEmitFrame { smvk::ParticlesEmitPush push{}; };
-    struct ParticlesSimFrame { smvk::ParticlesSimPush push{}; };
-    struct MeshParticlesEmitFrame { smvk::MeshParticlesEmitPush push{}; };
-    struct MeshParticlesSimFrame { smvk::MeshParticlesSimPush push{}; };
-    static void RecordParticlesEmit(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
-    static void RecordParticlesSim(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
-    static void RecordMeshParticlesEmit(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
-    static void RecordMeshParticlesSim(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
+    struct ParticlesEmitFrame {
+        smvk::ParticlesEmitPush push{};
+    };
+    struct ParticlesSimFrame {
+        smvk::ParticlesSimPush push{};
+    };
+    struct MeshParticlesEmitFrame {
+        smvk::MeshParticlesEmitPush push{};
+    };
+    struct MeshParticlesSimFrame {
+        smvk::MeshParticlesSimPush push{};
+    };
+    static void RecordParticlesEmit(smvk::CommandBuffer&,
+                                    const smvk::FrameContext&,
+                                    const smvk::PassData&);
+    static void RecordParticlesSim(smvk::CommandBuffer&,
+                                   const smvk::FrameContext&,
+                                   const smvk::PassData&);
+    static void RecordMeshParticlesEmit(smvk::CommandBuffer&,
+                                        const smvk::FrameContext&,
+                                        const smvk::PassData&);
+    static void RecordMeshParticlesSim(smvk::CommandBuffer&,
+                                       const smvk::FrameContext&,
+                                       const smvk::PassData&);
     struct ParticlesDrawFrame {
         smvk::ParticlesDrawPush push{};
         bool mixed = false;
     };
-    static void RecordParticlesDraw(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
+    static void RecordParticlesDraw(smvk::CommandBuffer&,
+                                    const smvk::FrameContext&,
+                                    const smvk::PassData&);
     struct SnapshotCopyFrame {
         size_t slot = 0;
         smvk::Extent2D outExtent{};
     };
-    static void RecordSnapshotCopy(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
-    struct FogShadowFrame { IRenderer::PushConstants fogPC{}; };
-    static void RecordFogShadow(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
+    static void RecordSnapshotCopy(smvk::CommandBuffer&,
+                                   const smvk::FrameContext&,
+                                   const smvk::PassData&);
+    struct FogShadowFrame {
+        IRenderer::PushConstants fogPC{};
+    };
+    static void RecordFogShadow(smvk::CommandBuffer&,
+                                const smvk::FrameContext&,
+                                const smvk::PassData&);
     // GPU-scene cascade draw helper (hoisted from WorldRendererGpuSceneCascades.inl
     // so the shadow record functions can reach it as a member).
     struct GpuCascadeSubmission {
@@ -3805,7 +3898,9 @@ class WorldRenderer : public IRenderer {
         bool evsm = false;
         GpuCascadeSubmission gpuCascade{};
     };
-    static void RecordShadowCascade(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
+    static void RecordShadowCascade(smvk::CommandBuffer&,
+                                    const smvk::FrameContext&,
+                                    const smvk::PassData&);
     struct ShadowCasterFrame {
         smvk::ShaderProgram* program = nullptr;
         IRenderer::PushConstants pc{};
@@ -3814,7 +3909,9 @@ class WorldRenderer : public IRenderer {
         bool tsEnd = false;
         bool evsm = false;
     };
-    static void RecordShadowCaster(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
+    static void RecordShadowCaster(smvk::CommandBuffer&,
+                                   const smvk::FrameContext&,
+                                   const smvk::PassData&);
     struct MotionFrame {
         IRenderer::PushConstants motionPC{};
         bool gpuSceneMotionActive = false;
@@ -3828,7 +3925,9 @@ class WorldRenderer : public IRenderer {
         bool motionRasterMasked = false;
         bool motionRasterMaskedTwoSided = false;
     };
-    static void RecordMotion(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
+    static void RecordMotion(smvk::CommandBuffer&,
+                             const smvk::FrameContext&,
+                             const smvk::PassData&);
     // CPU-authored debug line range (hoisted from RenderFrame so the Main
     // record function can carry it as an arena span).
     struct DebugDrawRange {
@@ -3942,6 +4041,17 @@ class WorldRenderer : public IRenderer {
                m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX &&
                !m_viewportResources.renderDepth.logicalView.empty() &&
                (!DebugVisualizationActive() || m_debugView == ViewMode::ContactShadows);
+    }
+    // DDGI: the shared publish + emission gate (the contact-shadows lesson:
+    // the frame-uniform publish and the pass emission MUST agree or Main
+    // samples a stale/unwritten probe field). Requires the opt-in pin, a
+    // ray-query device, a ready TLAS, a world, and a successfully created
+    // Volume (shaders + buffers). Disabled/unsupported -> everything reads
+    // the existing baked/sky ambient exactly as before.
+    bool DdgiActive() const {
+        return m_ambientMode == AmbientMode::Ddgi && m_context && m_context->SupportsRayQueries() &&
+               m_context->RayTracingWorldReady() && m_world != nullptr && !m_ddgiVolumes.empty() &&
+               m_ddgiVolumes.front().ready;
     }
     // Direct-path EVSM moment recording: depth-only 2x MSAA through the
     // PCF shadow programs (RecordShadowCastersDirect with Count2 MSAA) —
@@ -4312,7 +4422,7 @@ class WorldRenderer : public IRenderer {
         return m_world ? m_world->ReadBakeBytes(vfsPath) : std::span<const uint8_t>{};
     }
     void CycleAmbientMode() {
-        m_ambientMode = static_cast<AmbientMode>((static_cast<int>(m_ambientMode) + 1) % 6);
+        m_ambientMode = static_cast<AmbientMode>((static_cast<int>(m_ambientMode) + 1) % 7);
     }
     // (LoadGiOctree — the legacy .sggi loader — is DELETED; see the
     // members' retirement note above the ambient gating.)
@@ -4568,6 +4678,11 @@ class WorldRenderer : public IRenderer {
     // (called once after all three GI loaders at scene init): keeps the
     // isolation states meaningful instead of silently empty.
     void DegradeAmbientForMissingSources();
+    // DDGI probe-volume discovery: buckets the world's opaque static
+    // meshes into 64 m subcells, computes a dense grid per occupied
+    // subcell (within the probe budget), creates one Volume per subcell
+    // and publishes the GPU VolumeDesc list. Called on world change.
+    void RebuildDdgiVolumes();
 #if defined(DS_DEBUG_VIZ)
     // ---- Deferred-shadow debug visualizers (paper 5.3/5.4; debug builds
     // only). Mode/light/overlay ride the per-flight DsVizParams ring
@@ -4715,6 +4830,13 @@ class WorldRenderer : public IRenderer {
     bool m_debugMaterialOverride = false;
     float m_debugMaterialRoughness = 0.5f;
     float m_debugMaterialMetallic = 0.0f;
+    // Procedural checker debug-texture override (TOURMALINE_TEX_OVERRIDE=1):
+    // every material texture slot is remapped to this one bindless image so
+    // a stray/stale texture index shows up as the un-overridden source.
+    smvk::Holder<smvk::ImageHandle> m_debugTexImage;
+    smvk::Holder<smvk::ImageViewHandle> m_debugTexView;
+    smvk::Holder<smvk::BindlessImageHandle> m_debugTexBindless;
+    uint32_t m_debugTexBindlessIndex = UINT32_MAX;
     // ---- SSR temporal filter (TAA of the reflection layer only) ----
     // Motion-vector-reprojected accumulation of the half-res reflection
     // layer (see SsrTaaState in ssr.h). The base HDR is never filtered.
@@ -4811,6 +4933,32 @@ class WorldRenderer : public IRenderer {
     // screen-space depth march). Contact remains the baseline fallback.
     bool m_rayTracedSunShadowsEnabled = false;
     bool m_opacityMicromapsEnabled = true;
+    // ---- DDGI runtime state (the mode switch + update bookkeeping).
+    // DDGI is selected through AmbientMode::Ddgi (the GI source is a
+    // single, mutually-exclusive choice: baked / DDGI / sky IBL / off).
+    // m_ddgiWriteSlot ping-pongs the history buffers, m_ddgiUpdateIndex
+    // rotates the ray set, m_ddgiReset clears history on the first frame
+    // and after a world/grid change. The GPU VolumeDesc list (the lit
+    // shader's lookup) mirrors m_ddgiVolumeDescs.
+    smvk::Holder<smvk::BufferHandle> m_ddgiVolumeDescBuf;
+    std::vector<smvk::ddgi::VolumeDesc> m_ddgiVolumeDescs;
+    uint64_t m_ddgiVolumeDescBda = 0;
+    float m_ddgiStrength = 1.0f; // blend strength (0 = baked/sky, 1 = full DDGI)
+    // DDGI irradiance flat view is now a ViewMode (DdgiIrradiance), selected
+    // from the Debug-view dropdown; no standalone checkbox member.
+    uint32_t m_ddgiWriteSlot = 0;
+    uint32_t m_ddgiUpdateIndex = 0;
+    bool m_ddgiReset = true;
+    const void* m_ddgiCachedWorld = nullptr;
+    // DDGI probe-grid visualization (the "Probe debug view"): the dynamic
+    // probe positions as lattice markers over the scene (reuses giprobe.h's
+    // mode-2 lattice, no bake fetch). Strided to the draw cap; rebuilt when
+    // the volumes change (m_ddgiProbesDirty).
+    bool m_ddgiShowProbes = false;
+    smvk::Holder<smvk::BufferHandle> m_ddgiProbeInstances;
+    uint64_t m_ddgiProbeBda = 0;
+    uint32_t m_ddgiProbeCount = 0;
+    bool m_ddgiProbesDirty = true;
     float m_rayTracedSunShadowDistance = 200.0f;
     float m_rayTracedSunShadowBias = 0.02f;
     int m_rayTracedSunShadowResolutionDivisor = 2;

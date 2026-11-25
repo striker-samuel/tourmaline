@@ -2659,7 +2659,8 @@ uint32_t World::LodIndexForNode(NodeId node,
                                lodInputs_.fovY,
                                lodInputs_.pixelBudget,
                                nodeLod_[n],
-                               instanceScale));
+                               instanceScale,
+                               lodInputs_.hysteresis));
             nodeLodStamp_[n] = inputs.frameId;
             // Geometry streaming (the DESIRED half of the
             // desired/resident/drawn triad): over chains with
@@ -2687,7 +2688,7 @@ uint32_t World::LodIndexForNode(NodeId node,
                                                       lodInputs_.fovY,
                                                       lodInputs_.pixelBudget,
                                                       nodeLod_[n],
-                                                      kLodSelectHysteresis);
+                                                      lodInputs_.hysteresis);
                         for (uint32_t l = (desired > kLodDemandPrefetchLevels
                                                ? desired - kLodDemandPrefetchLevels
                                                : 0);
@@ -2749,13 +2750,33 @@ float World::LodDistanceForNode(NodeId node, uint32_t worldMesh, const glm::vec3
     const StaticMesh* m = GetMesh(worldMesh);
     if (!m || node < 0 || (uint32_t)node >= scene.globalTransform.size())
         return originDistance();
-    glm::vec3 c{0.0f};
-    float r = 0.0f;
-    MeshBoundsToWorld(
-        scene.globalTransform[(uint32_t)node], m->geometry.aabbMin, m->geometry.aabbMax, c, r);
-    if (!(r > 0.0f) || !std::isfinite(c.x + c.y + c.z) || !std::isfinite(r))
+    const glm::mat4& model = scene.globalTransform[(uint32_t)node];
+    // Match the GPU-scene work-select distance exactly
+    // (gpu_scene_work_select.cs.hlsl): center = model * aabbCenter,
+    // radius = halfDiagonal * maxColumnScale. The max column length is the
+    // tightest cheap bound (exact for pure rotation / pure scale / uniform
+    // scale+rotation; only slightly under the max singular value for
+    // rotated non-uniform scale, which we accept). The shared LOD selection
+    // must feed IDENTICAL distance to both legs.
+    //
+    // FUTURE (not implemented): the tight AND always-conservative radius is
+    // sigma_max (largest singular value of the 3x3 basis) * halfDiagonal.
+    // Max-column is exact except for rotated non-uniform scale, where it
+    // under-bounds and the LOD can switch one level coarser a touch early
+    // (a potential pop). If that ever bites, replace this bound with
+    // sigma_max in BOTH legs (CPU here + gpu_scene_work_select.cs.hlsl) —
+    // a few extra FLOPs per instance, computed identically on both sides.
+    const glm::vec3 localCenter = (m->geometry.aabbMin + m->geometry.aabbMax) * 0.5f;
+    const glm::vec3 halfDiagonal = (m->geometry.aabbMax - m->geometry.aabbMin) * 0.5f;
+    const float localRadius = glm::length(halfDiagonal);
+    const glm::vec3 bx(model[0]), by(model[1]), bz(model[2]);
+    const glm::vec3 center = glm::vec3(model * glm::vec4(localCenter, 1.0f));
+    const float maxScale = std::max({glm::length(bx), glm::length(by), glm::length(bz)});
+    const float radius = localRadius * maxScale;
+    if (!(radius > 0.0f) || !std::isfinite(center.x + center.y + center.z) ||
+        !std::isfinite(radius))
         return originDistance();
-    return std::max(0.0f, glm::length(c - eye) - r);
+    return std::max(0.0f, glm::length(center - eye) - radius);
 }
 
 static void EnsureLodChainsCached(const World& w) {
@@ -2847,7 +2868,8 @@ uint32_t World::SelectLodIndex(uint32_t meshIndex,
                                float fovYRadians,
                                float maxPixelError,
                                uint32_t currentLod,
-                               float instanceWorldScale) const {
+                               float instanceWorldScale,
+                               float hysteresis) const {
     if (!(distance > 0.0f) || !(maxPixelError >= 0.0f))
         return 0;
     EnsureLodChainsCached(*this);
@@ -2899,7 +2921,7 @@ uint32_t World::SelectLodIndex(uint32_t meshIndex,
                                               fovYRadians,
                                               maxPixelError,
                                               anchorSlot,
-                                              kLodSelectHysteresis)];
+                                              hysteresis)];
 }
 
 // ---------------------------------------------------------------------------

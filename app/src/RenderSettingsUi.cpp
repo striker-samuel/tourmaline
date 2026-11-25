@@ -240,11 +240,58 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                 }
 
                 // ---- Lighting: ambient/GI, AO, specular IBL, SSR.
+                ImGui::SeparatorText("Global Illumination");
+                {
+                    // ONE mutually-exclusive GI source (N cycles): baked /
+                    // dynamic (DDGI) / analytic sky IBL / off. Selecting a
+                    // source turns the others off — baked GI and DDGI never
+                    // both own the diffuse ambient.
+                    static const char* const kGiSourceNames[7] = {"Baked (sky fallback)",
+                                                                  "Lightmaps only",
+                                                                  "Probes only",
+                                                                  "Sky IBL only",
+                                                                  "Off (direct only)",
+                                                                  "Baked (no fallback)",
+                                                                  "Dynamic (DDGI)"};
+                    int giSrc = static_cast<int>(m_ambientMode);
+                    if (ImGui::Combo("GI source (N)", &giSrc, kGiSourceNames, 7))
+                        m_ambientMode = static_cast<AmbientMode>(std::clamp(giSrc, 0, 6));
+                    if (m_ambientMode == AmbientMode::Ddgi) {
+                        // DDGI owns the diffuse ambient (baked + sky diffuse
+                        // are off). Needs ray queries; otherwise the mode
+                        // degrades to the analytic sky IBL at the emission
+                        // site.
+                        if (!(m_context && m_context->SupportsRayQueries()))
+                            ImGui::TextDisabled(
+                                "DDGI needs a ray-query GPU - falling back to sky IBL");
+                        ImGui::SliderFloat("DDGI strength", &m_ddgiStrength, 0.0f, 1.0f);
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip(
+                                "Blend toward the DDGI diffuse ambient (0 = sky fallback, "
+                                "1 = full DDGI).");
+                        if (!m_ddgiVolumes.empty()) {
+                            uint64_t total = 0;
+                            for (const auto& vol : m_ddgiVolumes)
+                                total += uint64_t(vol.grid.dims[0]) * vol.grid.dims[1] *
+                                         vol.grid.dims[2];
+                            ImGui::Text("DDGI %u subcell volume(s), %llu probes",
+                                        (unsigned)m_ddgiVolumes.size(),
+                                        (unsigned long long)total);
+                        }
+                    } else {
+                        // Baked / IBL / off modes: the baked-GI source
+                        // toggles + the ambient scale.
+                        ImGui::SliderFloat("GI intensity", &m_giIntensity, 0.0f, 2.0f, "%.2f");
+                        if (m_lmLoaded)
+                            ImGui::Checkbox("Lightmaps", &m_lmEnabled);
+                        if (m_giVolumesLoaded)
+                            ImGui::Checkbox("Convex GI volumes", &m_giVolumesEnabled);
+                        if (m_regLoaded)
+                            ImGui::Checkbox("Regular probe grids", &m_regEnabled);
+                    }
+                }
                 ImGui::SeparatorText("Lighting");
                 {
-                    ImGui::SliderFloat("GI intensity", &m_giIntensity, 0.0f, 2.0f, "%.2f");
-                    if (m_lmLoaded)
-                        ImGui::Checkbox("Lightmaps", &m_lmEnabled);
                     // Screen-space ambient occlusion / SSGI chain.
                     static const char* const kAoNames[3] = {"No AO", "SSAO", "SAO"};
                     int aoIdx = static_cast<int>(m_aoMode);
@@ -812,6 +859,11 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                 // ---- Geometry & streaming: LODs + texture streaming.
                 ImGui::SeparatorText("Geometry & Streaming");
                 {
+                    ImGui::Checkbox("GPU-scene rendering (U)", &m_gpuSceneRasterEnabled);
+                    if (ImGui::IsItemHovered())
+                        ImGui::SetTooltip("On: GPU-driven meshlet raster (default).\n"
+                                          "Off: legacy direct per-node draw path (CPU cull +\n"
+                                          "full meshes) — same as the U key.");
                     ImGui::Checkbox("Enable LODs (L)", &m_lodEnabled);
                     ImGui::SliderFloat("Pixel budget (px)", &m_lodPixelBudget, 0.25f, 8.0f, "%.2f");
                     ImGui::Checkbox("Full-rate LOD updates", &m_lodFullRate);
@@ -870,6 +922,7 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                         "Clipping (shadows + highlights)",
                         "Clipping (shadows only)",
                         "Clipping (highlights only)",
+                        "DDGI irradiance (raw probe field)",
                     };
                     // Combo index <-> ViewMode mapping (SsrContribution stays
                     // env-only; UV1 and Normals are combo/env only; the
@@ -912,6 +965,7 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                         ViewMode::ClippingCombined,
                         ViewMode::ClippingShadows,
                         ViewMode::ClippingHighlights,
+                        ViewMode::DdgiIrradiance,
                     };
                     // The combo count follows the arrays (the old hardcoded
                     // 20 once left appended modes existing but unselectable).
@@ -1002,6 +1056,9 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                             m_giProbeColorMode = pcm;
                     }
                     ImGui::Checkbox("GI volume bounds (wireframe)", &m_giShowVolumeBounds);
+                    ImGui::Checkbox("DDGI probe grid", &m_ddgiShowProbes);
+                    if (m_ddgiShowProbes && m_ddgiVolumes.empty())
+                        ImGui::TextDisabled("DDGI not active - select the DDGI GI source first");
                     if (m_regLoaded || m_giVolumesLoaded) {
                         // All R / F8 stops (including off).
                         // Select Lit so the debug shader is visible.
@@ -1019,8 +1076,6 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                             if (m_giDebug != 0)
                                 m_debugView = ViewMode::Lit;
                         }
-                        if (m_giVolumesLoaded)
-                            ImGui::Checkbox("Convex GI volumes", &m_giVolumesEnabled);
                     }
                     ImGui::Checkbox("Capture locations overlay", &m_cubemapShowProbes);
                     if (m_cubemapShowProbes)
@@ -2151,6 +2206,12 @@ void WorldRenderer::DrawDebugViewHint() {
             lines[0] = "BLUE = display luma at/below the shadow threshold,";
             lines[1] = "RED = at/above the highlight threshold (sliders in";
             lines[2] = "the Debug panel; in-range pixels keep their color).";
+            break;
+        case ViewMode::DdgiIrradiance:
+            title = "DDGI irradiance (raw probe field)";
+            lines[0] = "the sampled probe irradiance E (HDR, no albedo);";
+            lines[1] = "MAGENTA = outside every volume / no valid probe.";
+            lines[2] = "Needs the DDGI GI source active (GI source = DDGI).";
             break;
         default:
             return; // Lit with no overlays - nothing to hint

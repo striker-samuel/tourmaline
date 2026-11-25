@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: MIT
+#pragma once
+#include "gpu_platform.hlsli"
+
+static const uint DDGI_IRR_RES = 8;
+static const uint DDGI_DIST_RES = 16;
+static const float DDGI_PI = 3.14159265358979323846;
+struct DdgiRay {
+    float3 direction;
+    float distance;
+    float3 radiance;
+    uint flags;
+};
+struct DdgiRayBuffer { DdgiRay values[1]; };
+struct DdgiIrrBuffer { float4 values[1]; };
+struct DdgiDistanceBuffer { float2 values[1]; };
+// One probe volume's lookup descriptor (mirror of smvk::ddgi::VolumeDesc,
+// 64 bytes). Carries both history-slot BDAs; the lit shader picks the
+// published slot via DdgiParams::slot.
+struct DdgiVolumeDesc {
+    GPU_PTR_READ(DdgiIrrBuffer) irradiance[2];
+    GPU_PTR_READ(DdgiDistanceBuffer) distance[2];
+    float originX, originY, originZ;
+    float spacing;
+    uint dimX, dimY, dimZ;
+    uint pad;
+};
+struct DdgiVolumeDescBuffer { DdgiVolumeDesc values[1]; };
+// The lit shader's DDGI sampling params (mirror of smvk::ddgi::DdgiParams,
+// 32 bytes) — reached through FrameUniforms::ddgiParams.Get().
+struct DdgiParams {
+    GPU_PTR_READ(DdgiVolumeDescBuffer) volumes;
+    uint volumeCount;
+    uint slot;
+    float strength;
+    uint enabled;
+    uint debug;
+    uint pad;
+};
+
+
+float2 DdgiSign(float2 v) {
+    return float2(v.x >= 0 ? 1 : -1, v.y >= 0 ? 1 : -1);
+}
+float2 DdgiOctEncode(float3 d) {
+    d /= abs(d.x) + abs(d.y) + abs(d.z);
+    float2 p = d.xy;
+    if (d.z < 0) p = (1 - abs(p.yx)) * DdgiSign(p);
+    return p * 0.5 + 0.5;
+}
+float3 DdgiOctDecode(float2 uv) {
+    float2 p = uv * 2 - 1;
+    float3 d = float3(p, 1 - abs(p.x) - abs(p.y));
+    if (d.z < 0) d.xy = (1 - abs(d.yx)) * DdgiSign(d.xy);
+    return normalize(d);
+}
+float3 DdgiBinDirection(uint bin, uint resolution) {
+    return DdgiOctDecode((float2(bin % resolution, bin / resolution) + 0.5) / resolution);
+}
+uint3 DdgiGridCoord(uint p, uint3 dims) {
+    return uint3(p % dims.x, (p / dims.x) % dims.y, p / (dims.x * dims.y));
+}
+float3 DdgiRayDirection(uint ray, uint count, uint updateIndex) {
+    float z = 1 - 2 * (float(ray) + 0.5) / float(count);
+    float radius = sqrt(max(0, 1 - z*z));
+    float phi = 2 * DDGI_PI * frac(float(ray) * 0.61803398875 +
+                                   float(updateIndex % 4096) * 0.754877666);
+    // Alternate axes to avoid a fixed polar sampling pattern.
+    float3 d = float3(radius * cos(phi), radius * sin(phi), z);
+    if (updateIndex % 3 == 1) d = d.yzx;
+    if (updateIndex % 3 == 2) d = d.zxy;
+    return d;
+}
+float DdgiVisibility(float2 moments, float distance) {
+    if (distance <= moments.x) return 1;
+    float variance = max(moments.y - moments.x * moments.x, 1e-5);
+    float delta = distance - moments.x;
+    float v = variance / (variance + delta * delta);
+    return v*v*v;
+}

@@ -27,8 +27,8 @@
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/ShaderSwap.h>
-#include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/Rendergraph/renderer.h>
+#include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/platform.h>
 
 #include <cassert>
@@ -88,8 +88,15 @@ struct TonemapPush {
     float displayBlueGain = 1.0f;
     float displayBrightness = 1.0f;
     uint32_t displayTestPattern = 0; // 0=scene, 1=calibration bars
+    // debugView 1 only: the nearest/clamp sampler for the motion texture
+    // (a velocity buffer must be point-sampled, not linearly filtered) and
+    // the motion image's size in texels (to scale UV-delta vectors to
+    // screen pixels for a readable magnitude ramp).
+    uint32_t pointSamplerIndex = 0;
+    float motionTexelSizeX = 0.0f;
+    float motionTexelSizeY = 0.0f;
 };
-static_assert(sizeof(TonemapPush) == 108);
+static_assert(sizeof(TonemapPush) == 120);
 
 inline constexpr uint32_t kTonemapReinhard = 0;
 inline constexpr uint32_t kTonemapACES = 1;
@@ -237,6 +244,9 @@ struct Tonemapper {
                                uint32_t bloomBindlessIndex,
                                float bloomIntensity,
                                uint32_t linearSamplerIndex,
+                               uint32_t pointSamplerIndex,
+                               float motionTexelSizeX,
+                               float motionTexelSizeY,
                                std::span<const LogicalImageViewHandle> swapViews,
                                Extent2D swapExtent,
                                const TonemapDesc& overrideDesc,
@@ -276,6 +286,9 @@ struct Tonemapper {
         TonemapPush push{};
         push.hdrTextureIndex = hdrBindlessIndex;
         push.samplerIndex = linearSamplerIndex;
+        push.pointSamplerIndex = pointSamplerIndex;
+        push.motionTexelSizeX = motionTexelSizeX;
+        push.motionTexelSizeY = motionTexelSizeY;
         push.exposure = overrideDesc.exposure;
         push.tonemapMode = overrideDesc.tonemapMode;
         push.bloomTextureIndex = bloomOn ? bloomBindlessIndex : UINT32_MAX;
@@ -336,6 +349,9 @@ struct Tonemapper {
                                uint32_t bloomBindlessIndex,
                                float bloomIntensity,
                                uint32_t linearSamplerIndex,
+                               uint32_t pointSamplerIndex,
+                               float motionTexelSizeX,
+                               float motionTexelSizeY,
                                std::span<const LogicalImageViewHandle> swapViews,
                                Extent2D swapExtent,
                                const char* name = nullptr,
@@ -358,6 +374,9 @@ struct Tonemapper {
                               bloomBindlessIndex,
                               bloomIntensity,
                               linearSamplerIndex,
+                              pointSamplerIndex,
+                              motionTexelSizeX,
+                              motionTexelSizeY,
                               swapViews,
                               swapExtent,
                               desc,
