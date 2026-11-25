@@ -142,7 +142,7 @@ struct PlanarReflectionSettings {
     uint32_t maxDraws = 512;
     uint32_t resolutionDivisor = 2;
     bool includeMasked = false;
-    uint32_t lodBias = 1;
+    // Always use the lowest resident cooked mesh LOD.
     float thickness = 0.05f;
     float strength = 1;
     float f0 = 0.04f;
@@ -150,6 +150,79 @@ struct PlanarReflectionSettings {
 inline Extent2D PlanarCaptureExtent(Extent2D main, uint32_t divisor) {
     divisor = std::clamp(divisor, 2u, 4u);
     return {std::max(1u, main.width / divisor), std::max(1u, main.height / divisor)};
+}
+
+// Clip a conservative square enclosing the circular receiver against the
+// camera clip volume, then crop XY. The square's projected area collapses
+// at grazing angles. Near-plane crossings are clipped before division.
+struct PlanarReceiverCrop {
+    glm::mat4 transform{1.0f};
+    Extent2D extent{};
+};
+inline bool MakePlanarReceiverCrop(const glm::mat4& vp, const glm::vec4& plane,
+                                   const glm::vec3& center, float radius,
+                                   Extent2D fullExtent, PlanarReceiverCrop& out) {
+    out = {glm::mat4(1), fullExtent};
+    if (!(radius > 0))
+        return true;
+    const glm::vec3 n(plane);
+    const glm::vec3 c = center - n * (glm::dot(n, center) + plane.w);
+    const glm::vec3 u = glm::normalize(glm::cross(n,
+        std::abs(n.y) < 0.9f ? glm::vec3(0,1,0) : glm::vec3(1,0,0)));
+    const glm::vec3 v = glm::cross(n, u);
+    std::vector<glm::vec4> poly{
+        vp * glm::vec4(c - radius*u - radius*v, 1),
+        vp * glm::vec4(c + radius*u - radius*v, 1),
+        vp * glm::vec4(c + radius*u + radius*v, 1),
+        vp * glm::vec4(c - radius*u + radius*v, 1)};
+    const glm::vec4 clipPlanes[] = {{1,0,0,1},{-1,0,0,1},
+        {0,1,0,1},{0,-1,0,1},{0,0,1,0},{0,0,-1,1}};
+    for (const auto& p : clipPlanes) {
+        if (poly.empty())
+            return false;
+        std::vector<glm::vec4> next;
+        auto prev = poly.back();
+        float a = glm::dot(p, prev);
+        for (const auto& curr : poly) {
+            const float b = glm::dot(p, curr);
+            if ((a >= 0) != (b >= 0))
+                next.push_back(glm::mix(prev, curr, a / (a-b)));
+            if (b >= 0)
+                next.push_back(curr);
+            prev = curr;
+            a = b;
+        }
+        poly.swap(next);
+    }
+    if (poly.empty())
+        return false;
+    glm::vec2 lo(1), hi(-1);
+    for (const auto& p : poly) {
+        if (!(p.w > 1e-6f))
+            return true; // conservative full-view fallback at the eye
+        const glm::vec2 ndc = glm::vec2(p) / p.w;
+        lo = glm::min(lo, ndc);
+        hi = glm::max(hi, ndc);
+    }
+    // Pad by two capture texels for jitter/filtering. Quantize to 32 pixel
+    // steps to avoid resizing on every small camera movement.
+    const glm::vec2 size(float(fullExtent.width), float(fullExtent.height));
+    lo = glm::max(glm::vec2(-1), lo - 4.0f / size);
+    hi = glm::min(glm::vec2(1), hi + 4.0f / size);
+    const glm::vec2 span = hi - lo;
+    if (!(span.x > 0 && span.y > 0))
+        return false;
+    const glm::vec2 scale = 2.0f / span;
+    out.transform[0][0] = scale.x;
+    out.transform[1][1] = scale.y;
+    out.transform[3][0] = -(hi.x + lo.x) / span.x;
+    out.transform[3][1] = -(hi.y + lo.y) / span.y;
+    auto quantize = [](float px, uint32_t limit) {
+        return std::min(limit, std::max(1u, uint32_t(std::ceil(px / 32.0f)) * 32u));
+    };
+    out.extent = {quantize(span.x * size.x * 0.5f, fullExtent.width),
+                  quantize(span.y * size.y * 0.5f, fullExtent.height)};
+    return true;
 }
 
 struct PlanarReflectionCapture {
