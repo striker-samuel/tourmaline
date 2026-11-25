@@ -21,6 +21,7 @@
 #include <fstream>
 #include <iomanip>
 #include <iterator>
+#include <memory>
 #include <random>
 #include <set>
 #include <sstream>
@@ -28,6 +29,8 @@
 #include <vector>
 
 #include <glm/gtc/packing.hpp> // unpackHalf2x16 for the SDF texture bake
+
+#include <Engine/Utils/thread_pool.h> // parallel SDF distance/color bake
 
 // stb_image (static impl, this TU) for the SDF base-color texture bake.
 #define STB_IMAGE_STATIC
@@ -549,6 +552,15 @@ static bool BakePlanSdfs(const Project& project,
                          const BuildPlan& plan,
                          const BuildPlanOptions& options,
                          std::string& err) {
+    // One worker pool for the whole bake (the per-voxel distance/color
+    // loops parallelize over it). Falls back to serial when the pool
+    // cannot be constructed (all shards leased elsewhere).
+    std::unique_ptr<smvk::ThreadPool> bakePool;
+    try {
+        bakePool = std::make_unique<smvk::ThreadPool>();
+    } catch (const std::exception& e) {
+        std::fprintf(stderr, "[SDF] worker pool unavailable (%s); baking serially\n", e.what());
+    }
     // Build each authoritative scene once, AFTER Cook, with the same
     // references and .tour replay used by the cooker. This captures
     // edited scale, reparenting, instancing and deleted scene nodes.
@@ -812,7 +824,8 @@ static bool BakePlanSdfs(const Project& project,
                                             geometry.indices.size(),
                                             sdfOpts,
                                             entry.volume,
-                                            err)) {
+                                            err,
+                                            bakePool.get())) {
                 err = "SDF bake '" + name + "#" + entry.fragment + "': " + err;
                 return false;
             }
@@ -843,7 +856,8 @@ static bool BakePlanSdfs(const Project& project,
                                                           colorIn,
                                                           entry.volume,
                                                           entry.volume.colors,
-                                                          colorErr)) {
+                                                          colorErr,
+                                                          bakePool.get())) {
                         stbi_image_free(tex);
                         err = "SDF color bake '" + name + "#" + entry.fragment + "': " + colorErr;
                         return false;

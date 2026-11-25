@@ -14,9 +14,9 @@
 // returned hit carries an approximate normal plus the mesh's constant
 // material base-color factor; shading is handled by the SSR caller.
 #define STATIC_SDF_MAX_INSTANCES 128u
-#define STATIC_SDF_MAX_SAMPLE_WORDS 2097152u
+#define STATIC_SDF_MAX_SAMPLE_WORDS 33554432u
 #define STATIC_SDF_MAX_MATERIALS 4096u
-#define STATIC_SDF_MAX_COLOR_WORDS 2097152u
+#define STATIC_SDF_MAX_COLOR_WORDS 33554432u
 
 struct StaticSdfGpuInstance
 {

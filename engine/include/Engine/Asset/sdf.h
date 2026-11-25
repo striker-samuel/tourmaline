@@ -15,6 +15,10 @@
 #include <string>
 #include <vector>
 
+namespace smvk {
+class ThreadPool;
+}
+
 namespace tour::asset {
 
 inline constexpr uint32_t kSdfVersion = 3;
@@ -127,7 +131,8 @@ bool BakeMeshSdf(const glm::vec3* positions,
                  size_t indexCount,
                  const SdfBakeOptions& options,
                  SdfVolume& out,
-                 std::string& err);
+                 std::string& err,
+                 smvk::ThreadPool* pool = nullptr);
 
 // Texture bake: fill `out.colors` (RGB565, parallel to out.samples) with
 // the base-color texture sampled at each voxel's closest surface point.
@@ -143,7 +148,8 @@ bool BakeMeshSdfColors(const glm::vec3* positions,
                        const SdfColorInput& color,
                        const SdfVolume& volume,
                        std::vector<uint16_t>& outColors,
-                       std::string& err);
+                       std::string& err,
+                       smvk::ThreadPool* pool = nullptr);
 
 // TSDF v1, little-endian, bounds-checked, no struct padding or host
 // endianness dependencies. A single sidecar groups a .geometry family's

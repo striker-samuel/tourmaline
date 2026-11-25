@@ -7,12 +7,14 @@
 #include <bit>
 #include <cmath>
 #include <cstddef>
+#include <future>
 #include <limits>
 #include <map>
 #include <span>
 #include <tuple>
 #include <utility>
 
+#include <Engine/Utils/thread_pool.h>
 #include <glm/geometric.hpp>
 #include <meshoptimizer.h>
 
@@ -215,7 +217,8 @@ bool BakeMeshSdf(const glm::vec3* positionData,
                  size_t indexCount,
                  const SdfBakeOptions& options,
                  SdfVolume& out,
-                 std::string& err) {
+                 std::string& err,
+                 smvk::ThreadPool* pool) {
     err.clear();
     std::span<const glm::vec3> positions(positionData, positionCount);
     std::span<const uint32_t> indices(indexData, indexCount);
@@ -327,32 +330,48 @@ bool BakeMeshSdf(const glm::vec3* positionData,
     result.signedDistance =
         triangles.size() == indices.size() / 3 && ClosedMesh(positions, indices);
     const size_t r = options.resolution;
-    result.samples.reserve(r * r * r);
+    result.samples.resize(r * r * r);
     const float maxSq = scale * scale;
-    for (size_t z = 0; z < r; ++z)
-        for (size_t y = 0; y < r; ++y)
-            for (size_t x = 0; x < r; ++x) {
-                const glm::vec3 p = result.origin + cell * glm::vec3(float(x), float(y), float(z));
-                float best = maxSq;
-                for (const Triangle& t : triangles) {
-                    if (AabbDistanceSquared(p, t) >= best)
-                        continue;
-                    best = std::min(best, PointTriangleDistanceSquared(p, t));
-                }
-                float dist = std::sqrt(std::max(0.0f, best));
-                if (result.signedDistance) {
-                    // Separate ray origin so sign is stable near a shared
-                    // vertex/edge, without perturbing the measured distance.
-                    const glm::vec3 ray = p + glm::vec3(0.0f, cell * 0.000137f, cell * 0.000293f);
-                    unsigned hits = 0;
-                    for (const Triangle& t : triangles)
-                        hits += RayHitsX(ray, t);
-                    if (hits & 1u)
-                        dist = -dist;
-                }
-                result.samples.push_back(
-                    int16_t(std::lround(std::clamp(dist / scale, -1.0f, 1.0f) * 32767.0f)));
+    const size_t total = r * r * r;
+    auto bakeRange = [&](size_t begin, size_t end) {
+        for (size_t idx = begin; idx < end; ++idx) {
+            const size_t x = idx % r;
+            const size_t y = (idx / r) % r;
+            const size_t z = idx / (r * r);
+            const glm::vec3 p = result.origin + cell * glm::vec3(float(x), float(y), float(z));
+            float best = maxSq;
+            for (const Triangle& t : triangles) {
+                if (AabbDistanceSquared(p, t) >= best)
+                    continue;
+                best = std::min(best, PointTriangleDistanceSquared(p, t));
             }
+            float dist = std::sqrt(std::max(0.0f, best));
+            if (result.signedDistance) {
+                // Separate ray origin so sign is stable near a shared
+                // vertex/edge, without perturbing the measured distance.
+                const glm::vec3 ray = p + glm::vec3(0.0f, cell * 0.000137f, cell * 0.000293f);
+                unsigned hits = 0;
+                for (const Triangle& t : triangles)
+                    hits += RayHitsX(ray, t);
+                if (hits & 1u)
+                    dist = -dist;
+            }
+            result.samples[idx] =
+                int16_t(std::lround(std::clamp(dist / scale, -1.0f, 1.0f) * 32767.0f));
+        }
+    };
+    if (pool) {
+        std::vector<std::future<void>> futures;
+        const size_t workers = std::max<size_t>(1, pool->size());
+        const size_t chunk = (total + workers - 1) / workers;
+        for (size_t s = 0; s < total; s += chunk)
+            futures.push_back(
+                pool->enqueue([&, s]() { bakeRange(s, std::min(s + chunk, total)); }));
+        for (auto& f : futures)
+            f.get();
+    } else {
+        bakeRange(0, total);
+    }
     out = std::move(result);
     return true;
 }
@@ -365,7 +384,8 @@ bool BakeMeshSdfColors(const glm::vec3* positionData,
                        const SdfColorInput& color,
                        const SdfVolume& volume,
                        std::vector<uint16_t>& outColors,
-                       std::string& err) {
+                       std::string& err,
+                       smvk::ThreadPool* pool) {
     err.clear();
     std::span<const glm::vec3> positions(positionData, positionCount);
     std::span<const uint32_t> indices(indexData, indexCount);
@@ -412,54 +432,70 @@ bool BakeMeshSdfColors(const glm::vec3* positionData,
     const size_t total = size_t(r) * r * r;
     outColors.assign(total, 0);
 
-    for (size_t idx = 0; idx < total; ++idx) {
-        // Distance from the sample (normalized * band). Only color the thin
-        // shell around the surface (the trilinear trace only reads there).
-        const float dist = std::fabs(volume.samples[idx]) / 32767.0f * band;
-        if (dist > 2.0f * cell)
-            continue;
-        const uint32_t x = uint32_t(idx % r), y = uint32_t((idx / r) % r),
-                       z = uint32_t(idx / (r * r));
-        const glm::vec3 p = origin + cell * glm::vec3(float(x), float(y), float(z));
-
-        float bestSq = std::numeric_limits<float>::max();
-        size_t bestTri = 0;
-        for (size_t k = 0; k < tris.size(); ++k) {
-            if (AabbDistanceSquared(p, tris[k].t) >= bestSq)
+    auto colorRange = [&](size_t begin, size_t end) {
+        for (size_t idx = begin; idx < end; ++idx) {
+            // Distance from the sample (normalized * band). Only color the
+            // thin shell around the surface (the trilinear trace only reads
+            // there).
+            const float dist = std::fabs(volume.samples[idx]) / 32767.0f * band;
+            if (dist > 2.0f * cell)
                 continue;
-            const float d = PointTriangleDistanceSquared(p, tris[k].t);
-            if (d < bestSq) {
-                bestSq = d;
-                bestTri = k;
+            const uint32_t x = uint32_t(idx % r), y = uint32_t((idx / r) % r),
+                           z = uint32_t(idx / (r * r));
+            const glm::vec3 p = origin + cell * glm::vec3(float(x), float(y), float(z));
+
+            float bestSq = std::numeric_limits<float>::max();
+            size_t bestTri = 0;
+            for (size_t k = 0; k < tris.size(); ++k) {
+                if (AabbDistanceSquared(p, tris[k].t) >= bestSq)
+                    continue;
+                const float d = PointTriangleDistanceSquared(p, tris[k].t);
+                if (d < bestSq) {
+                    bestSq = d;
+                    bestTri = k;
+                }
             }
-        }
-        const Tri& hit = tris[bestTri];
-        float u, v, w;
-        ClosestPointBarycentric(p, hit.t, u, v, w);
-        const size_t base = hit.base;
-        const glm::vec2 uv0 = uvs[indices[base]], uv1 = uvs[indices[base + 1]],
-                        uv2 = uvs[indices[base + 2]];
-        const glm::vec2 texUv = u * uv0 + v * uv1 + w * uv2;
-        // Bilinear sample (repeat wrap), the texel is already linear.
-        const float fx = (texUv.x - std::floor(texUv.x)) * float(tw) - 0.5f;
-        const float fy = (texUv.y - std::floor(texUv.y)) * float(th) - 0.5f;
-        int x0 = int(std::floor(fx)), y0 = int(std::floor(fy));
-        const float tx = fx - float(x0), ty = fy - float(y0);
-        x0 = (x0 % int(tw) + int(tw)) % int(tw);
-        y0 = (y0 % int(th) + int(th)) % int(th);
-        const int x1 = (x0 + 1) % int(tw), y1 = (y0 + 1) % int(th);
-        auto sample = [&](int px, int py) {
-            const uint8_t* s = tex + 4 * (size_t(py) * tw + size_t(px));
-            auto srgb = [](float c) {
-                return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+            const Tri& hit = tris[bestTri];
+            float u, v, w;
+            ClosestPointBarycentric(p, hit.t, u, v, w);
+            const size_t base = hit.base;
+            const glm::vec2 uv0 = uvs[indices[base]], uv1 = uvs[indices[base + 1]],
+                            uv2 = uvs[indices[base + 2]];
+            const glm::vec2 texUv = u * uv0 + v * uv1 + w * uv2;
+            // Bilinear sample (repeat wrap), the texel is already linear.
+            const float fx = (texUv.x - std::floor(texUv.x)) * float(tw) - 0.5f;
+            const float fy = (texUv.y - std::floor(texUv.y)) * float(th) - 0.5f;
+            int x0 = int(std::floor(fx)), y0 = int(std::floor(fy));
+            const float tx = fx - float(x0), ty = fy - float(y0);
+            x0 = (x0 % int(tw) + int(tw)) % int(tw);
+            y0 = (y0 % int(th) + int(th)) % int(th);
+            const int x1 = (x0 + 1) % int(tw), y1 = (y0 + 1) % int(th);
+            auto sample = [&](int px, int py) {
+                const uint8_t* s = tex + 4 * (size_t(py) * tw + size_t(px));
+                auto srgb = [](float c) {
+                    return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+                };
+                return glm::vec3(srgb(float(s[0]) / 255.0f),
+                                 srgb(float(s[1]) / 255.0f),
+                                 srgb(float(s[2]) / 255.0f));
             };
-            return glm::vec3(
-                srgb(float(s[0]) / 255.0f), srgb(float(s[1]) / 255.0f), srgb(float(s[2]) / 255.0f));
-        };
-        const glm::vec3 c00 = sample(x0, y0), c10 = sample(x1, y0), c01 = sample(x0, y1),
-                        c11 = sample(x1, y1);
-        const glm::vec3 c = glm::mix(glm::mix(c00, c10, tx), glm::mix(c01, c11, tx), ty);
-        outColors[idx] = PackRgb565(c);
+            const glm::vec3 c00 = sample(x0, y0), c10 = sample(x1, y0), c01 = sample(x0, y1),
+                            c11 = sample(x1, y1);
+            const glm::vec3 c = glm::mix(glm::mix(c00, c10, tx), glm::mix(c01, c11, tx), ty);
+            outColors[idx] = PackRgb565(c);
+        }
+    };
+    if (pool) {
+        std::vector<std::future<void>> futures;
+        const size_t workers = std::max<size_t>(1, pool->size());
+        const size_t chunk = (total + workers - 1) / workers;
+        for (size_t s = 0; s < total; s += chunk)
+            futures.push_back(
+                pool->enqueue([&, s]() { colorRange(s, std::min(s + chunk, total)); }));
+        for (auto& f : futures)
+            f.get();
+    } else {
+        colorRange(0, total);
     }
     return true;
 }

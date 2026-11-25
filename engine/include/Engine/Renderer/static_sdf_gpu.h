@@ -59,9 +59,9 @@ static_assert(sizeof(StaticSdfSceneHeader) == 56);
 static_assert(offsetof(StaticSdfSceneHeader, instanceCount) == 32);
 
 inline constexpr uint32_t kStaticSdfMaxInstances = 128;
-inline constexpr uint32_t kStaticSdfMaxSampleWords = 2u * 1024u * 1024u;
+inline constexpr uint32_t kStaticSdfMaxSampleWords = 32u * 1024u * 1024u;
 inline constexpr uint32_t kStaticSdfMaxMaterials = 4096;
-inline constexpr uint32_t kStaticSdfMaxColorWords = 2u * 1024u * 1024u;
+inline constexpr uint32_t kStaticSdfMaxColorWords = 32u * 1024u * 1024u;
 
 // Pure CPU packer for the shader's x-fastest R16_SNORM word layout.
 // Low 16 bits = even sample; high 16 bits = odd sample (zero-padded).
