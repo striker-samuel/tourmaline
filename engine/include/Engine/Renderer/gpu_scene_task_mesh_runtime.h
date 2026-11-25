@@ -419,6 +419,8 @@ class TaskMeshRuntime {
         }();
         next.graphics = {
             params, 0u, groupCapacity, 0u, taskGridX, 0u, s_vertexOptFlags, 0u, 0u, 0u};
+        next.graphics.prefix = {in.work, in.instances, in.clusters, in.positions,
+                                in.shading, in.meshletVertices, in.meshletTriangles, in.rasterView};
         next.workCapacity = in.workCapacity;
         next.taskGroupCapacity = groupCapacity;
         next.scanBlocks = blocks;
