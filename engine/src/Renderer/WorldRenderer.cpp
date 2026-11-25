@@ -15240,6 +15240,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         capture.strength = cfg.strength;
                         capture.f0 = cfg.f0;
                         capture.coverageAlpha = true;
+                        capture.receiverCenter = cfg.receiverCenter;
+                        capture.receiverRadius = cfg.receiverRadius;
                         internalPlanarCapture = capture;
                     }
                 }
