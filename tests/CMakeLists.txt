@@ -90,6 +90,13 @@ set_target_properties(PlanarReflectionTests PROPERTIES
 add_test(NAME planar_reflection_tests COMMAND PlanarReflectionTests)
 
 
+add_executable(ImpostorTests test_impostor.cpp)
+target_link_libraries(ImpostorTests PRIVATE engine)
+set_target_properties(ImpostorTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME impostor_tests COMMAND ImpostorTests)
+
+
 add_executable(EditorGameSessionTests test_editor_game_session.cpp)
 target_link_libraries(EditorGameSessionTests PRIVATE tourmaline::editor_entry)
 set_target_properties(EditorGameSessionTests PROPERTIES
