@@ -7,6 +7,8 @@
 #include <cstdint>
 #include <span>
 #include <vector>
+#include <utility>
+#include <initializer_list>
 
 #include <glm/glm.hpp>
 
@@ -130,6 +132,65 @@ inline TriangleProxy ReconstructDepth(const DepthView& view, float maxDepthJump)
         tri(a+1,a+n+1,a+n);
     }
     return proxy;
+}
+
+// Six orthographic views share a square object-local capture volume.
+// A flattened atlas uses a 3x2 tile layout; coverage is independent of depth.
+struct DepthAtlas {
+    uint32_t tileResolution = 0;
+    std::vector<DepthView> views;
+    std::vector<float> depth;
+    std::vector<uint8_t> coverage;
+};
+
+inline DepthAtlas BakeDepthAtlas(std::span<const glm::vec3> positions,
+                                 std::span<const uint32_t> indices,
+                                 uint32_t resolution) {
+    if (positions.empty() || resolution < 2 || resolution > 512)
+        return {};
+    glm::vec3 mn = positions.front(), mx = mn;
+    for (auto p : positions) {
+        if (!Finite(p)) return {};
+        mn = glm::min(mn,p); mx = glm::max(mx,p);
+    }
+    const glm::vec3 center = mn * 0.5f + mx * 0.5f;
+    const float extent = glm::length(mx-mn)*0.5f;
+    if (!std::isfinite(extent) || extent <= 0) return {};
+    DepthAtlas atlas;
+    atlas.tileResolution = resolution;
+    atlas.depth.resize(size_t(resolution)*resolution*6);
+    atlas.coverage.resize(atlas.depth.size());
+    for (int axis=0; axis<3; ++axis) for (int sign : {1,-1}) {
+        glm::vec3 forward(0), up(0);
+        forward[axis] = float(sign);
+        up[(axis+1)%3] = 1;
+        const auto right = glm::cross(up,forward);
+        auto view = BakeDepth(positions,indices,center,right,up,forward,extent,resolution);
+        if (!view.resolution) return {};
+        const size_t tile = atlas.views.size();
+        for (uint32_t y=0;y<resolution;++y) for (uint32_t x=0;x<resolution;++x) {
+            const size_t dst = (tile/3*resolution+y)*3*resolution+tile%3*resolution+x;
+            const size_t src = size_t(y)*resolution+x;
+            atlas.depth[dst] = view.depth[src];
+            atlas.coverage[dst] = view.coverage[src];
+        }
+        atlas.views.push_back(std::move(view));
+    }
+    return atlas;
+}
+
+// A view-independent triangle soup for the existing triangle BLAS builder.
+// Duplicate/overlapping patches are retained; this is not a closed hull.
+inline TriangleProxy ReconstructAtlas(const DepthAtlas& atlas, float maxDepthJump) {
+    TriangleProxy result;
+    for (const auto& view : atlas.views) {
+        auto patch = ReconstructDepth(view,maxDepthJump);
+        if (patch.positions.size() > UINT32_MAX-result.positions.size()) return {};
+        const auto base = uint32_t(result.positions.size());
+        result.positions.insert(result.positions.end(),patch.positions.begin(),patch.positions.end());
+        for (uint32_t index : patch.indices) result.indices.push_back(base+index);
+    }
+    return result;
 }
 
 } // namespace tour::impostor
