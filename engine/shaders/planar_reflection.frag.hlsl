@@ -91,7 +91,11 @@ PSOut mainPS(PSIn IN)
     const float fresnel = pp.f0 +
         (1.0f - pp.f0) * pow(1.0f - cosTheta, 5.0f);
     const float weight = saturate(pp.strength * fresnel * planeWeight);
-    const float3 reflection = capture.SampleLevel(smp, captureUv, 0.0f).rgb;
-    OUT.outColor = float4(lerp(base.rgb, reflection, weight), 1.0f);
+    const float4 reflection = capture.SampleLevel(smp, captureUv, 0.0f);
+    // Internal capture is coverage-premultiplied over transparent black.
+    // Uncovered pixels keep the existing SSR/IBL contribution.
+    const float coverage = pp.pad0 > 0.5f ? saturate(reflection.a) : 1.0f;
+    OUT.outColor = float4(base.rgb * (1.0f - weight * coverage) +
+        reflection.rgb * weight, 1.0f);
     return OUT;
 }
