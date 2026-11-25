@@ -4845,6 +4845,8 @@ class WorldRenderer : public IRenderer {
         glm::vec3 eye{};
         float maxDistance = 0;
         uint32_t maxDraws = 0;
+        uint32_t lodBias = 1;
+        bool includeMasked = false;
     };
     static void RecordPlanarCapture(smvk::CommandBuffer&, const smvk::FrameContext&,
                                     const smvk::PassData&);
