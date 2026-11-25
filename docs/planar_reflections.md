@@ -42,6 +42,24 @@ if (smvk::MakePlanarReflectionCamera(
 
 `physicalView` is imported by `WorldRenderer` into its private rendergraph on first use, and re-used while its handle remains unchanged. Alternatively, supply an already registered `logicalView` directly. Call `SetPlanarReflectionCapture(std::nullopt)` to disable the feature. Do not invalidate or recycle the capture's physical view while a frame is in flight. If a host replaces views, ensure proper GPU retirement before destroying the old images.
 
+
+## Low-cost capture strategy
+
+For a capture using Vulkan reversed-Z, call `MakePlanarObliqueProjection(mirrorCamera.view, mainProjection, keepPlane, clippedProjection)` and use `clippedProjection * mirrorCamera.view` for both the capture and the compositor. Orient keepPlane so the main eye is on its positive side; the reflected eye must be negative. On failure skip the capture or use an explicit clip plane. This avoids requiring a clip-distance shader variant in every geometry backend. Oblique clipping changes the far plane and does not eliminate the cost of submitting geometry; cull against the reflected frustum before drawing.
+
+Recommended budget (not an automatic capture implementation):
+
+- One visible plane, half-resolution per axis (quarter pixel count), with a quarter-resolution option for rough water. The existing compositor accepts smaller capture images.
+- Opaque and sky only initially; include masked geometry only if needed. No recursive reflections, SSR, post processing, or independent shadow/probe updates in the capture. Reuse scene/material/light data where view-independent.
+- CPU indirect: generate a separate reflected-view visible list and indirect stream; reuse mesh buffers, not the main camera's visibility results.
+- GPU scene indexed: share scene buffers but use separate per-view cull inputs, indirect commands and counters.
+- GPU scene task/mesh: share scene and meshlet data but use reflected frustum and winding; avoid using main-view temporal visibility.
+- Compute filter: use independent reflected-view filtering; never query the main-view Hi-Z. If independent filtering is unavailable, use a verified indexed fallback or disable the capture. The experimental backend adapters are not proof of active runtime support.
+- Rebuild reflected camera-dependent uniforms and cull orientation for every route. Never overwrite main-view in-flight buffers. Use the same projection for rendering and sampling. For throttled updates keep the captured image and its VP together.
+- Skip off-screen receivers and cap capture distance/LOD when the producer supports it. Measure GPU timestamps for cull, draw and composite separately and compare with feature off.
+
+The above is a producer integration checklist, not a claim of backend parity or measured speed. The current fullscreen compositor is still full resolution; a finite receiver mask or receiver-material sampling would be needed to reduce that bandwidth further.
+
 ## Composite behavior and limits
 
 The shader reads the main frame's reversed-Z depth, unprojects to a world point through `FrameUniforms.invViewProj`, and tests the normalized receiver plane with `thickness` as its world-space tolerance. It projects that point through the reflected VP, rejects outside-frustum samples, then blends captured HDR with the post-SSR HDR using Schlick Fresnel (`f0`), `strength` and an edge tolerance fade. Sky pixels and geometry off the receiver plane keep their original HDR untouched.
