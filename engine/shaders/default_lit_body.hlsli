@@ -211,6 +211,15 @@ float3 LinearToSRGB(float3 c)
 // deferred-shadow pipeline (vis). Takes baseColor + metallic (NOT a
 // precomputed diffuse): the diffuse Fresnel complement must come from
 // THIS light's half-vector (see the kD note at the tail of the body).
+// Cheap angular diffusion approximation. No screen-space buffer or LUT.
+// Normalize projected lobe energy over the full sphere; zero strength is Lambert.
+float3 EvaluateSubsurfaceDiffuse(float facing, float strength)
+{
+    float3 w = float3(0.6f, 0.3f, 0.15f) * saturate(strength);
+    float3 scale = 1.0f + w;
+    return saturate((facing + w) / scale) / scale;
+}
+
 void EvaluateForwardPlusLight(ForwardPlusLight pl, float3 worldPos,
     float3 geomN, float3 N, float3 V, float3 F0, float roughness,
     float3 baseColor, float metallic, float translucency, float NdotV, bool useInlineShadow,
@@ -282,14 +291,14 @@ plColor *= EvaluateLightFunction(
             g_time(time), spotUV, pl.type == 1);
     }
 
-    // Rear-facing light transmits through the fully opaque surface.
-    // Reuse the existing attenuation, spotlight cone, cookie and function;
-    // skip the more expensive front-facing shadow and BRDF work.
+    // Keep existing unshadowed thin transmission. Wrapped diffuse is
+    // evaluated separately with the ordinary light visibility.
     if (NdotLp <= 0.0f)
     {
         direct += (baseColor * (1.0f - metallic) / PI) * plColor
             * (translucency * saturate(-facing) * atten * angular);
-        return;
+        if (facing <= -0.6f * translucency || metallic >= 1.0f)
+            return;
     }
 
     // Shadow factor: inline local-light atlas sample (legacy path) or the
@@ -353,11 +362,16 @@ plColor *= EvaluateLightFunction(
         float Dp = DistributionGGX(N, Hp, roughness);
         float Gp = GeometrySmith(N, V, Lp, roughness);
         float3 Fp = FresnelSchlick(max(dot(Hp, V), 0.0f), F0);
-        specP = (Dp * Gp * Fp) / max(4.0f * NdotV * NdotLp, 1e-7f);
+        if (NdotLp > 0.0f)
+            specP = (Dp * Gp * Fp) / max(4.0f * NdotV * NdotLp, 1e-7f);
         diffuseP *= 1.0f - Fp;
     }
 
-    direct += (diffuseP + specP) * plColor * (NdotLp * atten * angular * shadowFactor);
+    float3 diffuseCos = NdotLp.xxx;
+    if (translucency > 0.0f && metallic < 1.0f)
+        diffuseCos = EvaluateSubsurfaceDiffuse(facing, translucency);
+    direct += (diffuseP * diffuseCos + specP * NdotLp)
+        * plColor * (atten * angular * shadowFactor);
 }
 
 // -------------------------------------------------------------------------
@@ -1267,13 +1281,16 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // so backlit/shaded leaves stay readable instead of pitch black.
     // Front-lit (NdotL=1) is unchanged; specular keeps the true NdotL.
     // Opaque PBR materials are untouched.
-    float NdotLWrap = NdotL;
+    const float translucency = saturate(mat.ambient.w);
+    float3 NdotLWrap = NdotL.xxx;
     if (shadingModelF == 2.0f)
     {
         const float w = 0.5f;
         float t = saturate((NdotL + w) / (1.0f + w));
-        NdotLWrap = t * t;
+        NdotLWrap = (t * t).xxx;
     }
+    if (translucency > 0.0f && metallic < 1.0f)
+        NdotLWrap = EvaluateSubsurfaceDiffuse(dot(N, L), translucency);
 
     float3 direct = (diffuse * NdotLWrap + specular * NdotL) * lightColor * shadow;
 
@@ -1282,7 +1299,6 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // keep their rendering and the existing opaque GPU-driven PSO/batches.
     // Unshadowed approximation: front-face shadow maps self-occlude rear
     // illumination; rear-side blocker shadows require a separate solution.
-    const float translucency = saturate(mat.ambient.w);
     if (translucency > 0.0f)
     {
         float back = saturate(-dot(N, L));
