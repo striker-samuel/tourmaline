@@ -47,18 +47,21 @@ struct StaticSdfSceneHeader {
     uint64_t instancesAddress = 0;
     uint64_t samplesAddress = 0;
     uint64_t materialsAddress = 0;
+    uint64_t colorsAddress = 0;
     uint32_t instanceCount = 0;
     uint32_t materialCount = 0;
+    uint32_t colorCount = 0;
     uint32_t maxSteps = 64;
     float epsilon = 0.02f;
     float originBias = 0.05f;
 };
-static_assert(sizeof(StaticSdfSceneHeader) == 48);
-static_assert(offsetof(StaticSdfSceneHeader, instanceCount) == 24);
+static_assert(sizeof(StaticSdfSceneHeader) == 56);
+static_assert(offsetof(StaticSdfSceneHeader, instanceCount) == 32);
 
 inline constexpr uint32_t kStaticSdfMaxInstances = 128;
 inline constexpr uint32_t kStaticSdfMaxSampleWords = 2u * 1024u * 1024u;
 inline constexpr uint32_t kStaticSdfMaxMaterials = 4096;
+inline constexpr uint32_t kStaticSdfMaxColorWords = 2u * 1024u * 1024u;
 
 // Pure CPU packer for the shader's x-fastest R16_SNORM word layout.
 // Low 16 bits = even sample; high 16 bits = odd sample (zero-padded).
@@ -86,7 +89,7 @@ class StaticSdfGpuScene {
     uint64_t SceneAddress(ResourceManager& ctx) const;
     bool Ready() const {
         return m_instanceCount != 0 && !m_header.empty() && !m_instances.empty() &&
-               !m_samples.empty() && !m_materials.empty();
+               !m_samples.empty() && !m_materials.empty() && !m_colors.empty();
     }
 
   private:
@@ -94,6 +97,7 @@ class StaticSdfGpuScene {
     Holder<BufferHandle> m_instances;
     Holder<BufferHandle> m_samples;
     Holder<BufferHandle> m_materials;
+    Holder<BufferHandle> m_colors;
     uint32_t m_instanceCount = 0;
     uint64_t m_generation = 0; // republished static SDF scene generation
     const ::tour::World* m_world = nullptr;

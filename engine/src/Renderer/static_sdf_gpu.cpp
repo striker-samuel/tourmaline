@@ -88,6 +88,8 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
     std::unordered_map<std::string, uint32_t> wordOffsets;
     std::vector<StaticSdfGpuInstance> instances;
     std::vector<uint32_t> words;
+    std::vector<uint32_t> colorWords; // packed per-voxel RGB565 (2 per word)
+    std::unordered_map<std::string, uint32_t> colorWordOffsets;
     std::vector<uint32_t> materials; // concatenated packed-material palettes
     std::unordered_map<std::string, uint32_t> familyMaterialBase;
     instances.reserve(std::min(world.drawItems.size(), size_t(kStaticSdfMaxInstances)));
@@ -198,6 +200,30 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
             wordOffsets.emplace(uri, wordOffset);
         }
 
+        // Pack the optional per-voxel color grid (texture bake), 2 RGB565
+        // per word. A volume without colors shares no color offset (0).
+        uint32_t colorOffset = 0u;
+        bool hasColors = !it->volume.colors.empty();
+        if (hasColors) {
+            if (const auto found = colorWordOffsets.find(uri); found != colorWordOffsets.end()) {
+                colorOffset = found->second;
+            } else {
+                const size_t newColorWords = (it->volume.colors.size() + 1u) / 2u;
+                if (newColorWords > kStaticSdfMaxColorWords - colorWords.size())
+                    hasColors = false;
+                else {
+                    colorOffset = uint32_t(colorWords.size());
+                    for (size_t i = 0; i < it->volume.colors.size(); i += 2) {
+                        uint32_t w = it->volume.colors[i];
+                        if (i + 1 < it->volume.colors.size())
+                            w |= uint32_t(it->volume.colors[i + 1]) << 16;
+                        colorWords.push_back(w);
+                    }
+                    colorWordOffsets.emplace(uri, colorOffset);
+                }
+            }
+        }
+
         const glm::mat4 inverse = glm::inverse(model);
         StaticSdfGpuInstance gpu{};
         gpu.inverseRow0 = {inverse[0][0], inverse[1][0], inverse[2][0], inverse[3][0]};
@@ -206,7 +232,7 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
         const auto& v = it->volume;
         gpu.originVoxel = glm::vec4(v.origin, v.voxelSize);
         const uint32_t matBase = familyMaterialBase[family] + it->materialIndex;
-        gpu.material = glm::uvec4(matBase, 0u, 0u, 0u);
+        gpu.material = glm::uvec4(matBase, colorOffset, hasColors ? 1u : 0u, 0u);
         gpu.meta = {v.resolution,
                     wordOffset,
                     v.signedDistance ? 1u : 0u,
@@ -215,7 +241,7 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
     }
 
     // A failed build must not leave stale buffers from a previous world.
-    Holder<BufferHandle> headerBuffer, instanceBuffer, sampleBuffer, materialBuffer;
+    Holder<BufferHandle> headerBuffer, instanceBuffer, sampleBuffer, materialBuffer, colorBuffer;
     if (!instances.empty()) {
         instanceBuffer = ctx.CreateBuffer(instances.size() * sizeof(StaticSdfGpuInstance),
                                           BufferType_Storage,
@@ -226,10 +252,14 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
         materialBuffer = ctx.CreateBuffer(std::max(matCount, 1u) * sizeof(uint32_t),
                                           BufferType_Storage,
                                           "Static SDF reflection materials");
+        const uint32_t colCount = uint32_t(colorWords.size());
+        colorBuffer = ctx.CreateBuffer(std::max(colCount, 1u) * sizeof(uint32_t),
+                                       BufferType_Storage,
+                                       "Static SDF reflection colors");
         headerBuffer = ctx.CreateBuffer(
             sizeof(StaticSdfSceneHeader), BufferType_Storage, "Static SDF reflection descriptor");
         if (instanceBuffer.empty() || sampleBuffer.empty() || materialBuffer.empty() ||
-            headerBuffer.empty()) {
+            colorBuffer.empty() || headerBuffer.empty()) {
             Clear();
             m_world = &world;
             m_worldRevision = world.gpuSceneTopologyRevision;
@@ -253,14 +283,21 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
                                std::max(matCount, 1u) * sizeof(uint32_t),
                                PipelineStageBit_Compute,
                                AccessFlags::ShaderRead);
+        const uint32_t neutralColor = ::tour::asset::PackRgb565(glm::vec3(0.7f));
+        ctx.UploadDataToBuffer(colorBuffer,
+                               colCount ? colorWords.data() : &neutralColor,
+                               std::max(colCount, 1u) * sizeof(uint32_t),
+                               PipelineStageBit_Compute,
+                               AccessFlags::ShaderRead);
         StaticSdfSceneHeader gpuHeader{};
         gpuHeader.instancesAddress = ctx.GetBufferDeviceAddress(instanceBuffer);
         gpuHeader.samplesAddress = ctx.GetBufferDeviceAddress(sampleBuffer);
         gpuHeader.materialsAddress = ctx.GetBufferDeviceAddress(materialBuffer);
+        gpuHeader.colorsAddress = ctx.GetBufferDeviceAddress(colorBuffer);
         // A non-BDA storage allocation cannot be published as a valid
         // scene: a zero address would cause an unsafe shader dereference.
         if (gpuHeader.instancesAddress == 0 || gpuHeader.samplesAddress == 0 ||
-            gpuHeader.materialsAddress == 0) {
+            gpuHeader.materialsAddress == 0 || gpuHeader.colorsAddress == 0) {
             Clear();
             m_world = &world;
             m_worldRevision = world.gpuSceneTopologyRevision;
@@ -270,6 +307,7 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
         }
         gpuHeader.instanceCount = uint32_t(instances.size());
         gpuHeader.materialCount = matCount;
+        gpuHeader.colorCount = colCount;
         ctx.UploadDataToBuffer(headerBuffer,
                                &gpuHeader,
                                sizeof(gpuHeader),
@@ -280,6 +318,7 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
     m_instances = std::move(instanceBuffer);
     m_samples = std::move(sampleBuffer);
     m_materials = std::move(materialBuffer);
+    m_colors = std::move(colorBuffer);
     m_instanceCount = uint32_t(instances.size());
     ++m_generation;
     m_world = &world;

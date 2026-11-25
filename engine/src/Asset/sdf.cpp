@@ -69,6 +69,70 @@ float AabbDistanceSquared(const glm::vec3& p, const Triangle& t) {
     return glm::dot(d, d);
 }
 
+// Barycentric (u,v,w) of the closest point on triangle t to p (u+v+w=1,
+// closest = u*a + v*b + w*c). Mirrors PointTriangleDistanceSquared's region
+// classification exactly.
+void ClosestPointBarycentric(const glm::vec3& p, const Triangle& t, float& u, float& v, float& w) {
+    const glm::vec3 ab = t.b - t.a, ac = t.c - t.a, ap = p - t.a;
+    const float d1 = glm::dot(ab, ap), d2 = glm::dot(ac, ap);
+    if (d1 <= 0 && d2 <= 0) {
+        u = 1.0f;
+        v = 0.0f;
+        w = 0.0f;
+        return;
+    }
+    const glm::vec3 bp = p - t.b;
+    const float d3 = glm::dot(ab, bp), d4 = glm::dot(ac, bp);
+    if (d3 >= 0 && d4 <= d3) {
+        u = 0.0f;
+        v = 1.0f;
+        w = 0.0f;
+        return;
+    }
+    const float vc = d1 * d4 - d3 * d2;
+    if (vc <= 0 && d1 >= 0 && d3 <= 0) {
+        const float s = d1 / (d1 - d3);
+        u = 1.0f - s;
+        v = s;
+        w = 0.0f;
+        return;
+    }
+    const glm::vec3 cp = p - t.c;
+    const float d5 = glm::dot(ab, cp), d6 = glm::dot(ac, cp);
+    if (d6 >= 0 && d5 <= d6) {
+        u = 0.0f;
+        v = 0.0f;
+        w = 1.0f;
+        return;
+    }
+    const float vb = d5 * d2 - d1 * d6;
+    if (vb <= 0 && d2 >= 0 && d6 <= 0) {
+        const float s = d2 / (d2 - d6);
+        u = 1.0f - s;
+        v = 0.0f;
+        w = s;
+        return;
+    }
+    const float va = d3 * d6 - d5 * d4;
+    if (va <= 0 && (d4 - d3) >= 0 && (d5 - d6) >= 0) {
+        const float denom = (d4 - d3) + (d5 - d6);
+        const float s = denom != 0.0f ? (d4 - d3) / denom : 0.5f;
+        u = 0.0f;
+        v = 1.0f - s;
+        w = s;
+        return;
+    }
+    // Face region: closest point q = p - (d/dn)*n, signed-area ratios.
+    const glm::vec3 n = glm::cross(ab, ac);
+    const float dn = glm::dot(n, n);
+    const float d = glm::dot(ap, n);
+    const glm::vec3 q = p - (d / dn) * n;
+    const float invDn = 1.0f / dn;
+    u = glm::dot(glm::cross(t.b - q, t.c - q), n) * invDn;
+    v = glm::dot(glm::cross(t.c - q, t.a - q), n) * invDn;
+    w = 1.0f - u - v;
+}
+
 // Parity of a ray along +X; an off-grid Y/Z perturbation avoids most
 // edge/vertex ties. Only used for meshes with exactly paired edges.
 bool RayHitsX(const glm::vec3& p, const Triangle& t) {
@@ -293,6 +357,113 @@ bool BakeMeshSdf(const glm::vec3* positionData,
     return true;
 }
 
+bool BakeMeshSdfColors(const glm::vec3* positionData,
+                       size_t positionCount,
+                       const glm::vec2* uvs,
+                       const uint32_t* indexData,
+                       size_t indexCount,
+                       const SdfColorInput& color,
+                       const SdfVolume& volume,
+                       std::vector<uint16_t>& outColors,
+                       std::string& err) {
+    err.clear();
+    std::span<const glm::vec3> positions(positionData, positionCount);
+    std::span<const uint32_t> indices(indexData, indexCount);
+    if (!uvs || !color.texel || color.texWidth == 0 || color.texHeight == 0) {
+        err = "SDF color bake requires per-vertex UVs and an RGBA8 texture";
+        return false;
+    }
+    if (indices.empty() || indices.size() % 3 != 0 || positions.empty()) {
+        err = "SDF color bake requires a triangle mesh";
+        return false;
+    }
+    if (volume.samples.size() !=
+        size_t(volume.resolution) * volume.resolution * volume.resolution) {
+        err = "SDF color bake volume is not baked";
+        return false;
+    }
+    // Rebuild the nondegenerate triangle list (the same filter BakeMeshSdf
+    // applies) with the per-triangle base index for UV lookup.
+    struct Tri {
+        Triangle t;
+        size_t base;
+    };
+    std::vector<Tri> tris;
+    tris.reserve(indices.size() / 3);
+    for (size_t i = 0; i < indices.size(); i += 3) {
+        const glm::vec3 a = positions[indices[i]], b = positions[indices[i + 1]],
+                        c = positions[indices[i + 2]];
+        if (glm::dot(glm::cross(b - a, c - a), glm::cross(b - a, c - a)) <= 1e-20f)
+            continue;
+        tris.push_back(
+            {Triangle{a, b, c, glm::min(glm::min(a, b), c), glm::max(glm::max(a, b), c)}, i});
+    }
+    if (tris.empty()) {
+        err = "SDF color bake: no nondegenerate triangles";
+        return false;
+    }
+
+    const uint32_t r = volume.resolution;
+    const glm::vec3 origin = volume.origin;
+    const float cell = volume.voxelSize;
+    const float band = volume.maxDistance;
+    const uint32_t tw = color.texWidth, th = color.texHeight;
+    const uint8_t* tex = color.texel;
+    const size_t total = size_t(r) * r * r;
+    outColors.assign(total, 0);
+
+    for (size_t idx = 0; idx < total; ++idx) {
+        // Distance from the sample (normalized * band). Only color the thin
+        // shell around the surface (the trilinear trace only reads there).
+        const float dist = std::fabs(volume.samples[idx]) / 32767.0f * band;
+        if (dist > 2.0f * cell)
+            continue;
+        const uint32_t x = uint32_t(idx % r), y = uint32_t((idx / r) % r),
+                       z = uint32_t(idx / (r * r));
+        const glm::vec3 p = origin + cell * glm::vec3(float(x), float(y), float(z));
+
+        float bestSq = std::numeric_limits<float>::max();
+        size_t bestTri = 0;
+        for (size_t k = 0; k < tris.size(); ++k) {
+            if (AabbDistanceSquared(p, tris[k].t) >= bestSq)
+                continue;
+            const float d = PointTriangleDistanceSquared(p, tris[k].t);
+            if (d < bestSq) {
+                bestSq = d;
+                bestTri = k;
+            }
+        }
+        const Tri& hit = tris[bestTri];
+        float u, v, w;
+        ClosestPointBarycentric(p, hit.t, u, v, w);
+        const size_t base = hit.base;
+        const glm::vec2 uv0 = uvs[indices[base]], uv1 = uvs[indices[base + 1]],
+                        uv2 = uvs[indices[base + 2]];
+        const glm::vec2 texUv = u * uv0 + v * uv1 + w * uv2;
+        // Bilinear sample (repeat wrap), the texel is already linear.
+        const float fx = (texUv.x - std::floor(texUv.x)) * float(tw) - 0.5f;
+        const float fy = (texUv.y - std::floor(texUv.y)) * float(th) - 0.5f;
+        int x0 = int(std::floor(fx)), y0 = int(std::floor(fy));
+        const float tx = fx - float(x0), ty = fy - float(y0);
+        x0 = (x0 % int(tw) + int(tw)) % int(tw);
+        y0 = (y0 % int(th) + int(th)) % int(th);
+        const int x1 = (x0 + 1) % int(tw), y1 = (y0 + 1) % int(th);
+        auto sample = [&](int px, int py) {
+            const uint8_t* s = tex + 4 * (size_t(py) * tw + size_t(px));
+            auto srgb = [](float c) {
+                return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+            };
+            return glm::vec3(
+                srgb(float(s[0]) / 255.0f), srgb(float(s[1]) / 255.0f), srgb(float(s[2]) / 255.0f));
+        };
+        const glm::vec3 c00 = sample(x0, y0), c10 = sample(x1, y0), c01 = sample(x0, y1),
+                        c11 = sample(x1, y1);
+        const glm::vec3 c = glm::mix(glm::mix(c00, c10, tx), glm::mix(c01, c11, tx), ty);
+        outColors[idx] = PackRgb565(c);
+    }
+    return true;
+}
+
 std::vector<uint8_t> WriteSdfAsset(const SdfAsset& asset) {
     std::vector<uint8_t> out{'T', 'S', 'D', 'F'};
     PutU32(out, kSdfVersion);
@@ -312,6 +483,11 @@ std::vector<uint8_t> WriteSdfAsset(const SdfAsset& asset) {
             const uint16_t u = uint16_t(s);
             out.push_back(uint8_t(u));
             out.push_back(uint8_t(u >> 8));
+        }
+        PutU32(out, uint32_t(v.colors.size()));
+        for (uint16_t c : v.colors) {
+            out.push_back(uint8_t(c));
+            out.push_back(uint8_t(c >> 8));
         }
         PutU32(out, mesh.materialIndex);
     }
@@ -363,6 +539,17 @@ bool ParseSdfAsset(const uint8_t* byteData, size_t byteCount, SdfAsset& out, std
             uint16_t raw = uint16_t(bytes[at]) | uint16_t(bytes[at + 1]) << 8;
             v.samples.push_back(std::bit_cast<int16_t>(raw));
             at += 2;
+        }
+        if (version >= 3) {
+            uint32_t colorCount = 0;
+            if (!GetU32(bytes, at, colorCount) || colorCount > (bytes.size() - at) / 2)
+                return fail("invalid SDF color count");
+            v.colors.reserve(colorCount);
+            for (uint32_t i = 0; i < colorCount; ++i) {
+                uint16_t c = uint16_t(bytes[at]) | uint16_t(bytes[at + 1]) << 8;
+                v.colors.push_back(c);
+                at += 2;
+            }
         }
         if (version >= 2 && !GetU32(bytes, at, mesh.materialIndex))
             return fail("invalid SDF material index");

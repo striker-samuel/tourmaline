@@ -27,6 +27,13 @@
 #include <system_error>
 #include <vector>
 
+#include <glm/gtc/packing.hpp> // unpackHalf2x16 for the SDF texture bake
+
+// stb_image (static impl, this TU) for the SDF base-color texture bake.
+#define STB_IMAGE_STATIC
+#define STB_IMAGE_IMPLEMENTATION
+#include <stb_image.h>
+
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
@@ -686,6 +693,7 @@ static bool BakePlanSdfs(const Project& project,
         // it per fragment. Missing/unbound materials fall back to a neutral
         // grey entry (index 0).
         std::vector<uint32_t> fragmentIndex(mesh.geometry.size(), 0u);
+        std::vector<std::string> fragmentTexPath(mesh.geometry.size());
         const uint32_t kNeutralMaterial =
             ::tour::asset::PackSdfMaterial(glm::vec3(0.7f), 0.5f, 0.0f, 0.0f);
         std::vector<uint32_t> palette{kNeutralMaterial};
@@ -703,12 +711,16 @@ static bool BakePlanSdfs(const Project& project,
                 }
             }
             const fs::path matDir = source.parent_path();
-            std::map<std::string, uint32_t> guidToPacked;
-            auto packedForGuid = [&](const std::string& guid) -> uint32_t {
-                auto it = guidToPacked.find(guid);
-                if (it != guidToPacked.end())
+            struct FragMat {
+                uint32_t packed = 0;
+                std::string texPath; // base-color source image, relative to matDir
+            };
+            std::map<std::string, FragMat> guidToMat;
+            auto matForGuid = [&](const std::string& guid) -> const FragMat& {
+                auto it = guidToMat.find(guid);
+                if (it != guidToMat.end())
                     return it->second;
-                uint32_t packed = kNeutralMaterial; // neutral fallback
+                FragMat fm{kNeutralMaterial, ""};
                 if (haveManifest) {
                     const smvk::assets::AssetEntry* ent = nullptr;
                     for (const auto& e : manifest.entries)
@@ -724,21 +736,25 @@ static bool BakePlanSdfs(const Project& project,
                             const float emissive =
                                 info.emissiveStrength *
                                 glm::dot(info.emissiveFactor, glm::vec3(0.2126f, 0.7152f, 0.0722f));
-                            packed = ::tour::asset::PackSdfMaterial(glm::vec3(info.baseColorFactor),
-                                                                    info.roughnessFactor,
-                                                                    info.metallicFactor,
-                                                                    std::min(emissive, 1.0f));
+                            fm.packed =
+                                ::tour::asset::PackSdfMaterial(glm::vec3(info.baseColorFactor),
+                                                               info.roughnessFactor,
+                                                               info.metallicFactor,
+                                                               std::min(emissive, 1.0f));
+                            if (!mat.baseColor.path.empty())
+                                fm.texPath = mat.baseColor.path;
                         }
                     }
                 }
-                guidToPacked.emplace(guid, packed);
-                return packed;
+                auto [it2, _] = guidToMat.emplace(guid, std::move(fm));
+                return it2->second;
             };
             std::map<uint32_t, uint32_t> packedToIndex{{kNeutralMaterial, 0u}};
             for (const auto& inst : mesh.instances) {
                 if (inst.geometry >= mesh.geometry.size())
                     continue;
-                const uint32_t packed = packedForGuid(inst.materialGuid);
+                const FragMat& fm = matForGuid(inst.materialGuid);
+                const uint32_t packed = fm.packed;
                 auto it = packedToIndex.find(packed);
                 if (it == packedToIndex.end()) {
                     const uint32_t idx = uint32_t(palette.size());
@@ -748,6 +764,8 @@ static bool BakePlanSdfs(const Project& project,
                 } else {
                     fragmentIndex[inst.geometry] = it->second;
                 }
+                if (fragmentTexPath[inst.geometry].empty())
+                    fragmentTexPath[inst.geometry] = fm.texPath;
             }
         }
         // (::tour::asset — the leading :: is required inside smvk::project,
@@ -797,6 +815,41 @@ static bool BakePlanSdfs(const Project& project,
                                             err)) {
                 err = "SDF bake '" + name + "#" + entry.fragment + "': " + err;
                 return false;
+            }
+            // Texture bake: sample the base-color source image into a
+            // per-voxel RGB565 grid (linear), so reflections are textured
+            // rather than flat. Missing/broken textures degrade to the flat
+            // palette color (indexed per fragment).
+            if (!fragmentTexPath[gi].empty()) {
+                const fs::path texAbs = source.parent_path() / fragmentTexPath[gi];
+                int tw = 0, th = 0, channels = 0;
+                stbi_uc* tex = stbi_load(texAbs.string().c_str(), &tw, &th, &channels, 4);
+                if (tex) {
+                    std::vector<glm::vec2> uvs;
+                    uvs.reserve(geometry.shading.size());
+                    for (const auto& s : geometry.shading)
+                        uvs.push_back(glm::unpackHalf2x16(s.uv));
+                    ::tour::asset::SdfColorInput colorIn;
+                    colorIn.uvs = uvs.data();
+                    colorIn.texel = tex;
+                    colorIn.texWidth = uint32_t(tw);
+                    colorIn.texHeight = uint32_t(th);
+                    std::string colorErr;
+                    if (!::tour::asset::BakeMeshSdfColors(positions.data(),
+                                                          positions.size(),
+                                                          uvs.data(),
+                                                          geometry.indices.data(),
+                                                          geometry.indices.size(),
+                                                          colorIn,
+                                                          entry.volume,
+                                                          entry.volume.colors,
+                                                          colorErr)) {
+                        stbi_image_free(tex);
+                        err = "SDF color bake '" + name + "#" + entry.fragment + "': " + colorErr;
+                        return false;
+                    }
+                    stbi_image_free(tex);
+                }
             }
             baked.meshes.push_back(std::move(entry));
         }

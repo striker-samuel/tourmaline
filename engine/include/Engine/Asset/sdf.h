@@ -17,7 +17,7 @@
 
 namespace tour::asset {
 
-inline constexpr uint32_t kSdfVersion = 2;
+inline constexpr uint32_t kSdfVersion = 3;
 
 // Bit-packed static material (32 bits) carried by the SDF sidecar so
 // reflections can sample a small PBR set without the runtime material
@@ -57,6 +57,19 @@ inline void UnpackSdfMaterial(uint32_t packed,
     emissive = float((packed >> 26) & 63u) / 63.0f;
 }
 
+// RGB565 for the per-voxel texture-baked base color (linear, see
+// BakeMeshSdfColors). HLSL mirror: UnpackStaticSdfRgb565.
+inline uint16_t PackRgb565(glm::vec3 linear) {
+    auto q = [](float v, uint32_t levels) {
+        return uint32_t(glm::clamp(v, 0.0f, 1.0f) * float(levels - 1u) + 0.5f);
+    };
+    return uint16_t(q(linear.r, 32u) | (q(linear.g, 64u) << 5) | (q(linear.b, 32u) << 11));
+}
+inline glm::vec3 UnpackRgb565(uint16_t c) {
+    return glm::vec3(
+        float(c & 31u) / 31.0f, float((c >> 5) & 63u) / 63.0f, float((c >> 11) & 31u) / 31.0f);
+}
+
 struct SdfVolume {
     uint32_t resolution = 0; // cubic grid, x fastest
     glm::vec3 origin{0.0f};  // center of first voxel, mesh-local units
@@ -64,6 +77,17 @@ struct SdfVolume {
     float maxDistance = 0.0f; // saturating narrow band, mesh-local units
     bool signedDistance = false;
     std::vector<int16_t> samples;
+    // Optional per-voxel texture-baked base color (RGB565, parallel to
+    // samples; empty when the sidecar was baked without color).
+    std::vector<uint16_t> colors;
+};
+
+// Input for the optional per-voxel texture bake (BakeMeshSdfColors).
+struct SdfColorInput {
+    const glm::vec2* uvs = nullptr; // per-vertex (parallel to positions)
+    const uint8_t* texel = nullptr; // RGBA8, texWidth * texHeight, linear
+    uint32_t texWidth = 0;
+    uint32_t texHeight = 0;
 };
 
 struct SdfMesh {
@@ -104,6 +128,22 @@ bool BakeMeshSdf(const glm::vec3* positions,
                  const SdfBakeOptions& options,
                  SdfVolume& out,
                  std::string& err);
+
+// Texture bake: fill `out.colors` (RGB565, parallel to out.samples) with
+// the base-color texture sampled at each voxel's closest surface point.
+// Consumes the ALREADY-BAKED `volume` (the caller runs BakeMeshSdf first),
+// re-searches the triangles for the closest point + barycentric, and
+// bilinearly samples `color.texel` at the interpolated UV. Voxels outside
+// the narrow band keep 0. Returns false (with err) on invalid input.
+bool BakeMeshSdfColors(const glm::vec3* positions,
+                       size_t positionCount,
+                       const glm::vec2* uvs,
+                       const uint32_t* indices,
+                       size_t indexCount,
+                       const SdfColorInput& color,
+                       const SdfVolume& volume,
+                       std::vector<uint16_t>& outColors,
+                       std::string& err);
 
 // TSDF v1, little-endian, bounds-checked, no struct padding or host
 // endianness dependencies. A single sidecar groups a .geometry family's

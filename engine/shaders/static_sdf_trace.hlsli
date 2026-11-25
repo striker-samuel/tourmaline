@@ -16,6 +16,7 @@
 #define STATIC_SDF_MAX_INSTANCES 128u
 #define STATIC_SDF_MAX_SAMPLE_WORDS 2097152u
 #define STATIC_SDF_MAX_MATERIALS 4096u
+#define STATIC_SDF_MAX_COLOR_WORDS 2097152u
 
 struct StaticSdfGpuInstance
 {
@@ -23,7 +24,8 @@ struct StaticSdfGpuInstance
     float4 invRow1;       // ROW 1
     float4 invRow2;       // ROW 2
     float4 originVoxel;   // xyz first voxel center, w voxel width
-    uint4 material;       // x = index into the shared packed-material palette
+    uint4 material;       // x = packed-material palette index,
+                          // y = color word offset, z = 1 if per-voxel colors
     uint4 meta;           // x resolution, y packed sample WORD offset,
                           // z signedDistance, w asuint(maxDistance)
 }; // 96 bytes; C++ static_assert in static_sdf_gpu.h
@@ -40,6 +42,10 @@ struct StaticSdfMaterialWords
 {
     uint words[STATIC_SDF_MAX_MATERIALS];
 };
+struct StaticSdfColorWords
+{
+    uint words[STATIC_SDF_MAX_COLOR_WORDS];
+};
 
 // Scene descriptor uploaded by StaticSdfGpuScene. A single pointer in the
 // SSR push fits Vulkan's guaranteed 128-byte minimum.
@@ -48,12 +54,21 @@ struct StaticSdfSceneHeader
     GPU_PTR_READ(StaticSdfInstanceBuffer) instances;
     GPU_PTR_READ(StaticSdfSampleWords) samples;
     GPU_PTR_READ(StaticSdfMaterialWords) materials;
+    GPU_PTR_READ(StaticSdfColorWords) colors;
     uint instanceCount;
     uint materialCount;
+    uint colorCount;
     uint maxSteps;
     float epsilon;
     float originBias;
 };
+
+// Decode a PackRgb565 word (see Engine/Asset/sdf.h). Returns linear color.
+float3 UnpackStaticSdfRgb565(uint c)
+{
+    return float3(float(c & 31u), float((c >> 5) & 63u), float((c >> 11) & 31u)) /
+           float3(31.0, 63.0, 31.0);
+}
 
 // Decode a PackSdfMaterial word (see Engine/Asset/sdf.h). Emissive color
 // is the base color scaled by the emissive scalar (compact approximation).
@@ -191,12 +206,48 @@ float3 StaticSdfGradient(StaticSdfGpuInstance instance, float3 p,
         StaticSdfDistance(instance, p - dz, samples));
 }
 
+float3 StaticSdfColorTap(uint linearIndex, uint colorWordOffset,
+    GPU_PTR_READ(StaticSdfColorWords) colors)
+{
+    uint packed = colors.Get().words[colorWordOffset + (linearIndex >> 1u)];
+    uint shift = (linearIndex & 1u) * 16u;
+    return UnpackStaticSdfRgb565((packed >> shift) & 0xFFFFu);
+}
+
+// Trilinear texture-baked base color at p (mirrors StaticSdfDistance's grid
+// addressing; the per-voxel RGB565 grid is parallel to the distance samples).
+float3 StaticSdfColor(StaticSdfGpuInstance instance, float3 p,
+    GPU_PTR_READ(StaticSdfColorWords) colors)
+{
+    const uint r = instance.meta.x;
+    const float3 g = clamp((p - instance.originVoxel.xyz) /
+        instance.originVoxel.w, 0.0f, float(r - 1u));
+    uint3 i = uint3(g);
+    uint3 i1 = min(i + 1u, uint3(r - 1u, r - 1u, r - 1u));
+    float3 f = g - float3(i);
+    const uint off = instance.material.y;
+    uint idx000 = i.x + r * (i.y + r * i.z);
+    uint idx100 = i1.x + r * (i.y + r * i.z);
+    uint idx010 = i.x + r * (i1.y + r * i.z);
+    uint idx110 = i1.x + r * (i1.y + r * i.z);
+    uint idx001 = i.x + r * (i.y + r * i1.z);
+    uint idx101 = i1.x + r * (i.y + r * i1.z);
+    uint idx011 = i.x + r * (i1.y + r * i1.z);
+    uint idx111 = i1.x + r * (i1.y + r * i1.z);
+    float3 a = lerp(StaticSdfColorTap(idx000, off, colors), StaticSdfColorTap(idx100, off, colors), f.x);
+    float3 b = lerp(StaticSdfColorTap(idx010, off, colors), StaticSdfColorTap(idx110, off, colors), f.x);
+    float3 c = lerp(StaticSdfColorTap(idx001, off, colors), StaticSdfColorTap(idx101, off, colors), f.x);
+    float3 d = lerp(StaticSdfColorTap(idx011, off, colors), StaticSdfColorTap(idx111, off, colors), f.x);
+    return lerp(lerp(a, b, f.y), lerp(c, d, f.y), f.z);
+}
+
 StaticSdfRayHit StaticSdfTrace(float3 worldOrigin, float3 worldDir,
     float maxWorldDistance, float worldEpsilon, uint stepBudget,
-    uint instanceCount, uint materialCount,
+    uint instanceCount, uint materialCount, uint colorCount,
     GPU_PTR_READ(StaticSdfInstanceBuffer) instances,
     GPU_PTR_READ(StaticSdfSampleWords) samples,
-    GPU_PTR_READ(StaticSdfMaterialWords) materials)
+    GPU_PTR_READ(StaticSdfMaterialWords) materials,
+    GPU_PTR_READ(StaticSdfColorWords) colors)
 {
     StaticSdfRayHit best = (StaticSdfRayHit)0;
     best.t = maxWorldDistance;
@@ -255,6 +306,8 @@ StaticSdfRayHit StaticSdfTrace(float3 worldOrigin, float3 worldDir,
                 float3 bc;
                 float ro, me, em;
                 UnpackStaticSdfMaterial(materials.Get().words[matIdx], bc, ro, me, em);
+                if (v.material.z != 0u && colorCount > 0u)
+                    bc = StaticSdfColor(v, p, colors);
                 best.baseColor = max(bc, 0.0f);
                 best.roughness = ro;
                 best.metallic = me;

@@ -30,6 +30,10 @@ add_library(project_pipeline STATIC
 target_include_directories(project_pipeline
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+    PRIVATE
+        # stb_image.h for the SDF base-color texture bake (decode the
+        # source image next to the .geometry before BakeMeshSdfColors).
+        ${TOURMALINE_SOURCE_DIR}/external/stb
 )
 
 target_link_libraries(project_pipeline
