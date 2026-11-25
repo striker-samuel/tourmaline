@@ -121,6 +121,8 @@ RunConfig RunConfig::Parse() {
         c.camFovDeg = static_cast<float>(std::strtod(v, nullptr));
     if ((v = Get("TOURMALINE_SKY_COLOR")) != nullptr)
         c.skyColor = v;
+    if ((v = Get("TOURMALINE_PLANAR_REFLECTION")) != nullptr)
+        c.planarReflection = v;
 
     // AA pin (validated once here; the snapshot re-applies after every
     // scene seed). Accepts both historical spellings (msaa2x|msaa,
@@ -754,6 +756,7 @@ void RunConfig::Log() const {
     if (normalFixDebug)
         std::fprintf(stderr, " NORMAL_FIX_DEBUG=%s", onOffStr(*normalFixDebug));
     opt(ambient, "AMBIENT");
+    opt(planarReflection, "PLANAR_REFLECTION");
     if (capture >= 0)
         std::fprintf(stderr, " CAPTURE=%d", capture);
     if (ssrDump >= 0)
