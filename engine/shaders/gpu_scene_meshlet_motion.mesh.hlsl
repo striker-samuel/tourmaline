@@ -52,20 +52,20 @@ void mainMS(uint3 gid : SV_GroupID,
     GpuSceneInstance inst = (GpuSceneInstance)0;
     GsCluster c = (GsCluster)0;
     if (valid) {
-        work = p.work.Get().rows[task.workSlot];
+        work = pc.work.Get().rows[task.workSlot];
         valid = work.identity.y != 0u && work.identity.x < p.instanceCount &&
                 work.identity.x < GS_MAX_INSTANCES &&
                 work.detail.z == pc.rasterClass;
     }
     if (valid) {
-        const GpuSceneInstanceRow row = p.instances.Get().rows[work.identity.x];
+        const GpuSceneInstanceRow row = pc.instances.Get().rows[work.identity.x];
         valid = row.identity.y == 1u && row.identity.x == work.identity.y;
         if (valid) inst = row.value;
     }
     if (valid) {
         const uint clusterId = task.clusterIds[gid.x];
         valid = clusterId < p.clusterCount && clusterId < GS_MAX_CLUSTERS;
-        if (valid) c = p.clusters.Get().rows[clusterId];
+        if (valid) c = pc.clusters.Get().rows[clusterId];
     }
     uint vertexCount = valid ? c.a.w : 0u;
     uint triCount = valid ? c.a.y : 0u;
@@ -78,7 +78,7 @@ void mainMS(uint3 gid : SV_GroupID,
     SetMeshOutputCounts(vertexCount, triCount);
     if (vertexCount == 0u || triCount == 0u) return;
 
-    const GsRasterView view = p.rasterView.Get();
+    const GsRasterView view = pc.rasterView.Get();
     const uint slot = work.identity.x;
     const uint generation = work.identity.y;
 
@@ -114,12 +114,12 @@ void mainMS(uint3 gid : SV_GroupID,
     const uint triBase = c.e.x;
 
     for (uint v = tid.x; v < vertexCount; v += GS_MESH_THREADS) {
-        const uint globalId = p.meshletVertices.Get().id[vertexBase + v];
+        const uint globalId = pc.meshletVertices.Get().id[vertexBase + v];
         const uint pb = globalId * 3u, sb = globalId * 4u;
         float3 local = float3(
-            asfloat(p.positions.Get().word[pb]),
-            asfloat(p.positions.Get().word[pb + 1u]),
-            asfloat(p.positions.Get().word[pb + 2u]));
+            asfloat(pc.positions.Get().word[pb]),
+            asfloat(pc.positions.Get().word[pb + 1u]),
+            asfloat(pc.positions.Get().word[pb + 2u]));
         // Skinned fetch: swap the bind-pose position for the frame's DEFORMED
         // words. A null BDA / unknown base means the frame ran no skinning pass
         // and the bind pose is the honest answer.
@@ -130,7 +130,7 @@ void mainMS(uint3 gid : SV_GroupID,
                 asfloat(pc.skinDeformed.Get().word[d + 1u]),
                 asfloat(pc.skinDeformed.Get().word[d + 2u]));
         }
-        const uint uvword = p.shading.Get().word[sb + 1u];
+        const uint uvword = pc.shading.Get().word[sb + 1u];
         const float2 uv = float2(f16tof32(uvword & 65535u), f16tof32(uvword >> 16u));
 
         const float3 relative =
@@ -149,7 +149,7 @@ void mainMS(uint3 gid : SV_GroupID,
     }
 
     for (uint t = tid.x; t < triCount; t += GS_MESH_THREADS) {
-        const uint packed = p.meshletTriangles.Get().tri[triBase + t];
+        const uint packed = pc.meshletTriangles.Get().tri[triBase + t];
         tris[t] = uint3(packed & 255u, (packed >> 8u) & 255u, (packed >> 16u) & 255u);
         prims[t].cull = false;
     }
