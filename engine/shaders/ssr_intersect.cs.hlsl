@@ -130,8 +130,8 @@ float4 SsrStaticSdfMiss(FrameUniforms frame, float3 viewPos,
         return float4(0.0f, 0.0f, 0.0f, 0.0f);
     StaticSdfRayHit hit = StaticSdfTrace(worldOrigin + bias * worldDir,
         worldDir, maxTrace, scene.epsilon,
-        scene.maxSteps, scene.instanceCount, scene.materialCount, scene.colorCount,
-        scene.instances, scene.samples, scene.materials, scene.colors);
+        scene.maxSteps, scene.instanceCount, scene.materialCount,
+        scene.instances, scene.nodes, scene.children, scene.leaves, scene.materials);
     if (!hit.valid)
         return float4(0.0f, 0.0f, 0.0f, 0.0f);
 

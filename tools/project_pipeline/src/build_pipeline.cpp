@@ -801,6 +801,7 @@ static bool BakePlanSdfs(const Project& project,
             // resolving ~3x thinner features.
             ::tour::asset::SdfBakeOptions sdfOpts{};
             sdfOpts.resolution = 64;
+            sdfOpts.maxDepth = 6; // lowest brick = extent / 2^6 (== 64 uniform voxels)
             // Thin-feature exclusion: a fitted (oriented) box thin in TWO
             // axes is a wire/rod — sub-voxel at this grid, it smears into a
             // column. Thin-in-one-axis features (walls, panels, slabs) stay:
@@ -818,53 +819,42 @@ static bool BakePlanSdfs(const Project& project,
                 if (fitted.y < 2.0f * voxel)
                     continue; // too thin in two axes (wire/rod)
             }
-            if (!::tour::asset::BakeMeshSdf(positions.data(),
-                                            positions.size(),
-                                            geometry.indices.data(),
-                                            geometry.indices.size(),
-                                            sdfOpts,
-                                            entry.volume,
-                                            err,
-                                            bakePool.get())) {
-                err = "SDF bake '" + name + "#" + entry.fragment + "': " + err;
-                return false;
-            }
-            // Texture bake: sample the base-color source image into a
-            // per-voxel RGB565 grid (linear), so reflections are textured
-            // rather than flat. Missing/broken textures degrade to the flat
-            // palette color (indexed per fragment).
+            // Adaptive octree bake: distance + texture color in one pass.
+            ::tour::asset::SdfColorInput colorIn;
+            const ::tour::asset::SdfColorInput* colorPtr = nullptr;
+            std::vector<glm::vec2> uvs;
+            stbi_uc* tex = nullptr;
             if (!fragmentTexPath[gi].empty()) {
                 const fs::path texAbs = source.parent_path() / fragmentTexPath[gi];
                 int tw = 0, th = 0, channels = 0;
-                stbi_uc* tex = stbi_load(texAbs.string().c_str(), &tw, &th, &channels, 4);
+                tex = stbi_load(texAbs.string().c_str(), &tw, &th, &channels, 4);
                 if (tex) {
-                    std::vector<glm::vec2> uvs;
                     uvs.reserve(geometry.shading.size());
                     for (const auto& s : geometry.shading)
                         uvs.push_back(glm::unpackHalf2x16(s.uv));
-                    ::tour::asset::SdfColorInput colorIn;
                     colorIn.uvs = uvs.data();
                     colorIn.texel = tex;
                     colorIn.texWidth = uint32_t(tw);
                     colorIn.texHeight = uint32_t(th);
-                    std::string colorErr;
-                    if (!::tour::asset::BakeMeshSdfColors(positions.data(),
-                                                          positions.size(),
-                                                          uvs.data(),
-                                                          geometry.indices.data(),
-                                                          geometry.indices.size(),
-                                                          colorIn,
-                                                          entry.volume,
-                                                          entry.volume.colors,
-                                                          colorErr,
-                                                          bakePool.get())) {
-                        stbi_image_free(tex);
-                        err = "SDF color bake '" + name + "#" + entry.fragment + "': " + colorErr;
-                        return false;
-                    }
-                    stbi_image_free(tex);
+                    colorPtr = &colorIn;
                 }
             }
+            if (!::tour::asset::BakeMeshSdfOctree(positions.data(),
+                                                  positions.size(),
+                                                  geometry.indices.data(),
+                                                  geometry.indices.size(),
+                                                  colorPtr,
+                                                  sdfOpts,
+                                                  entry.octree,
+                                                  err,
+                                                  bakePool.get())) {
+                if (tex)
+                    stbi_image_free(tex);
+                err = "SDF octree bake '" + name + "#" + entry.fragment + "': " + err;
+                return false;
+            }
+            if (tex)
+                stbi_image_free(tex);
             baked.meshes.push_back(std::move(entry));
         }
         baked.materials = std::move(palette);

@@ -27,41 +27,43 @@ namespace smvk {
 
 // Matches engine/shaders/static_sdf_trace.hlsli StaticSdfGpuInstance.
 // Explicit float4 inverse rows avoid cross-compiler matrix packing.
-// meta: x=resolution, y=packed-word offset, z=signed, w=maxDistance bits.
+// originSize: xyz=root AABB min, w=root half-extent. meta: x=node offset,
+// y=child offset, z=leaf offset, w=maxDistance bits.
 struct StaticSdfGpuInstance {
     glm::vec4 inverseRow0{0.0f};
     glm::vec4 inverseRow1{0.0f};
     glm::vec4 inverseRow2{0.0f};
-    glm::vec4 originVoxel{0.0f}; // xyz=voxel zero CENTER, w=voxel edge
-    glm::uvec4 material{0u};     // x=index into the shared packed-material palette
+    glm::vec4 originSize{0.0f};
+    glm::uvec4 material{0u}; // x=packed-material palette index, y=maxDepth
     glm::uvec4 meta{0u};
 };
 static_assert(sizeof(StaticSdfGpuInstance) == 96);
 static_assert(offsetof(StaticSdfGpuInstance, material) == 64);
 static_assert(offsetof(StaticSdfGpuInstance, meta) == 80);
 
-// Matches StaticSdfSceneHeader in static_sdf_trace.hlsli (48 B).
+// Matches StaticSdfSceneHeader in static_sdf_trace.hlsli (64 B).
 // Publishing the descriptor through one BDA keeps the SSR push
 // constants within Vulkan's guaranteed 128-byte minimum.
 struct StaticSdfSceneHeader {
     uint64_t instancesAddress = 0;
-    uint64_t samplesAddress = 0;
+    uint64_t nodesAddress = 0;
+    uint64_t childrenAddress = 0;
+    uint64_t leavesAddress = 0;
     uint64_t materialsAddress = 0;
-    uint64_t colorsAddress = 0;
     uint32_t instanceCount = 0;
     uint32_t materialCount = 0;
-    uint32_t colorCount = 0;
     uint32_t maxSteps = 64;
     float epsilon = 0.02f;
     float originBias = 0.05f;
 };
-static_assert(sizeof(StaticSdfSceneHeader) == 56);
-static_assert(offsetof(StaticSdfSceneHeader, instanceCount) == 32);
+static_assert(sizeof(StaticSdfSceneHeader) == 64);
+static_assert(offsetof(StaticSdfSceneHeader, instanceCount) == 40);
 
 inline constexpr uint32_t kStaticSdfMaxInstances = 128;
-inline constexpr uint32_t kStaticSdfMaxSampleWords = 32u * 1024u * 1024u;
+inline constexpr uint32_t kStaticSdfMaxNodeWords = 32u * 1024u * 1024u;
+inline constexpr uint32_t kStaticSdfMaxChildWords = 32u * 1024u * 1024u;
+inline constexpr uint32_t kStaticSdfMaxLeafWords = 32u * 1024u * 1024u;
 inline constexpr uint32_t kStaticSdfMaxMaterials = 4096;
-inline constexpr uint32_t kStaticSdfMaxColorWords = 32u * 1024u * 1024u;
 
 // Pure CPU packer for the shader's x-fastest R16_SNORM word layout.
 // Low 16 bits = even sample; high 16 bits = odd sample (zero-padded).
@@ -89,15 +91,16 @@ class StaticSdfGpuScene {
     uint64_t SceneAddress(ResourceManager& ctx) const;
     bool Ready() const {
         return m_instanceCount != 0 && !m_header.empty() && !m_instances.empty() &&
-               !m_samples.empty() && !m_materials.empty() && !m_colors.empty();
+               !m_nodes.empty() && !m_children.empty() && !m_leaves.empty() && !m_materials.empty();
     }
 
   private:
     Holder<BufferHandle> m_header;
     Holder<BufferHandle> m_instances;
-    Holder<BufferHandle> m_samples;
+    Holder<BufferHandle> m_nodes;
+    Holder<BufferHandle> m_children;
+    Holder<BufferHandle> m_leaves;
     Holder<BufferHandle> m_materials;
-    Holder<BufferHandle> m_colors;
     uint32_t m_instanceCount = 0;
     uint64_t m_generation = 0; // republished static SDF scene generation
     const ::tour::World* m_world = nullptr;

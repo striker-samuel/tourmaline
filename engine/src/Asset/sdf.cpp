@@ -7,6 +7,7 @@
 #include <bit>
 #include <cmath>
 #include <cstddef>
+#include <functional>
 #include <future>
 #include <limits>
 #include <map>
@@ -500,6 +501,144 @@ bool BakeMeshSdfColors(const glm::vec3* positionData,
     return true;
 }
 
+bool BakeMeshSdfOctree(const glm::vec3* positionData,
+                       size_t positionCount,
+                       const uint32_t* indexData,
+                       size_t indexCount,
+                       const SdfColorInput* color,
+                       const SdfBakeOptions& options,
+                       SdfOctree& out,
+                       std::string& err,
+                       smvk::ThreadPool* pool) {
+    (void)pool; // recursive subdivision is sequential; parallelized later
+    err.clear();
+    std::span<const glm::vec3> positions(positionData, positionCount);
+    std::span<const uint32_t> indices(indexData, indexCount);
+    if (positions.empty() || indices.empty() || indices.size() % 3 != 0) {
+        err = "octree SDF requires a nonempty triangle mesh";
+        return false;
+    }
+    if (options.maxDepth < 1 || options.maxDepth > 12) {
+        err = "invalid octree maxDepth [1,12]";
+        return false;
+    }
+    struct Tri {
+        Triangle t;
+        size_t base;
+    };
+    std::vector<Tri> tris;
+    tris.reserve(indices.size() / 3);
+    glm::vec3 lo(std::numeric_limits<float>::max());
+    glm::vec3 hi(-std::numeric_limits<float>::max());
+    for (size_t i = 0; i < indices.size(); i += 3) {
+        const glm::vec3 a = positions[indices[i]], b = positions[indices[i + 1]],
+                        c = positions[indices[i + 2]];
+        if (glm::dot(glm::cross(b - a, c - a), glm::cross(b - a, c - a)) <= 1e-20f)
+            continue;
+        Tri t{Triangle{a, b, c, glm::min(glm::min(a, b), c), glm::max(glm::max(a, b), c)}, i};
+        lo = glm::min(lo, t.t.lo);
+        hi = glm::max(hi, t.t.hi);
+        tris.push_back(t);
+    }
+    if (tris.empty()) {
+        err = "octree SDF: no nondegenerate triangles";
+        return false;
+    }
+
+    const float extent = std::max({hi.x - lo.x, hi.y - lo.y, hi.z - lo.z});
+    const float finest = extent / float(uint32_t(1) << options.maxDepth);
+    const float maxDistance = finest * float(options.bandVoxels);
+
+    const bool hasColor =
+        color && color->uvs && color->texel && color->texWidth && color->texHeight;
+    const uint32_t tw = hasColor ? color->texWidth : 0;
+    const uint32_t th = hasColor ? color->texHeight : 0;
+    const uint8_t* tex = hasColor ? color->texel : nullptr;
+    const glm::vec2* uvs = hasColor ? color->uvs : nullptr;
+
+    out = SdfOctree{};
+    out.origin = lo;
+    out.size = extent * 0.5f;
+    out.maxDistance = maxDistance;
+    out.maxDepth = options.maxDepth;
+
+    auto closest = [&](const glm::vec3& p, size_t& outTri, float& outDist) {
+        float bestSq = std::numeric_limits<float>::max();
+        size_t best = 0;
+        for (size_t k = 0; k < tris.size(); ++k) {
+            if (AabbDistanceSquared(p, tris[k].t) >= bestSq)
+                continue;
+            const float d = PointTriangleDistanceSquared(p, tris[k].t);
+            if (d < bestSq) {
+                bestSq = d;
+                best = k;
+            }
+        }
+        outTri = best;
+        outDist = std::sqrt(std::max(0.0f, bestSq));
+    };
+
+    auto sampleColor = [&](size_t triIdx, const glm::vec3& p) -> uint16_t {
+        float u, v, w;
+        ClosestPointBarycentric(p, tris[triIdx].t, u, v, w);
+        const size_t base = tris[triIdx].base;
+        const glm::vec2 uv =
+            u * uvs[indices[base]] + v * uvs[indices[base + 1]] + w * uvs[indices[base + 2]];
+        const float fx = (uv.x - std::floor(uv.x)) * float(tw) - 0.5f;
+        const float fy = (uv.y - std::floor(uv.y)) * float(th) - 0.5f;
+        int x0 = int(std::floor(fx)), y0 = int(std::floor(fy));
+        const float tx = fx - float(x0), ty = fy - float(y0);
+        x0 = (x0 % int(tw) + int(tw)) % int(tw);
+        y0 = (y0 % int(th) + int(th)) % int(th);
+        const int x1 = (x0 + 1) % int(tw), y1 = (y0 + 1) % int(th);
+        auto px = [&](int px, int py) {
+            const uint8_t* s = tex + 4 * (size_t(py) * tw + size_t(px));
+            auto srgb = [](float c) {
+                return c <= 0.04045f ? c / 12.92f : std::pow((c + 0.055f) / 1.055f, 2.4f);
+            };
+            return glm::vec3(
+                srgb(float(s[0]) / 255.0f), srgb(float(s[1]) / 255.0f), srgb(float(s[2]) / 255.0f));
+        };
+        const glm::vec3 c = glm::mix(
+            glm::mix(px(x0, y0), px(x1, y0), tx), glm::mix(px(x0, y1), px(x1, y1), tx), ty);
+        return PackRgb565(c);
+    };
+
+    std::function<int32_t(const glm::vec3&, float, int)> build =
+        [&](const glm::vec3& center, float half, int depth) -> int32_t {
+        const uint32_t nodeIndex = uint32_t(out.nodes.size());
+        out.nodes.push_back(0u);
+
+        size_t bestTri;
+        float dist;
+        closest(center, bestTri, dist);
+        if (depth < int(options.maxDepth) && dist < half * 1.7320508f) {
+            const uint32_t childBase = uint32_t(out.children.size());
+            out.children.resize(childBase + 8, -1);
+            out.nodes[nodeIndex] = childBase;
+            for (int i = 0; i < 8; ++i) {
+                glm::vec3 c = center;
+                c.x += (i & 1) ? half * 0.5f : -half * 0.5f;
+                c.y += (i & 2) ? half * 0.5f : -half * 0.5f;
+                c.z += (i & 4) ? half * 0.5f : -half * 0.5f;
+                out.children[childBase + uint32_t(i)] = build(c, half * 0.5f, depth + 1);
+            }
+        } else {
+            const int16_t d =
+                int16_t(std::lround(std::clamp(dist / maxDistance, -1.0f, 1.0f) * 32767.0f));
+            const uint16_t col = hasColor ? sampleColor(bestTri, center) : 0u;
+            const uint32_t leafIndex = uint32_t(out.leaves.size());
+            out.leaves.push_back((uint32_t(uint16_t(d)) << 16) | col);
+            out.nodes[nodeIndex] = leafIndex | 0x80000000u;
+        }
+        return int32_t(nodeIndex);
+    };
+
+    const glm::vec3 rootCenter = lo + glm::vec3(extent) * 0.5f;
+    build(rootCenter, extent * 0.5f, 0);
+    return true;
+}
+
 std::vector<uint8_t> WriteSdfAsset(const SdfAsset& asset) {
     std::vector<uint8_t> out{'T', 'S', 'D', 'F'};
     PutU32(out, kSdfVersion);
@@ -526,6 +665,24 @@ std::vector<uint8_t> WriteSdfAsset(const SdfAsset& asset) {
             out.push_back(uint8_t(c >> 8));
         }
         PutU32(out, mesh.materialIndex);
+        const SdfOctree& o = mesh.octree;
+        PutU32(out, uint32_t(o.nodes.size()));
+        if (!o.nodes.empty()) {
+            PutF32(out, o.origin.x);
+            PutF32(out, o.origin.y);
+            PutF32(out, o.origin.z);
+            PutF32(out, o.size);
+            PutF32(out, o.maxDistance);
+            PutU32(out, o.maxDepth);
+            PutU32(out, uint32_t(o.children.size()));
+            PutU32(out, uint32_t(o.leaves.size()));
+            for (uint32_t n : o.nodes)
+                PutU32(out, n);
+            for (int32_t c : o.children)
+                PutU32(out, uint32_t(c));
+            for (uint32_t l : o.leaves)
+                PutU32(out, l);
+        }
     }
     PutU32(out, uint32_t(asset.materials.size()));
     for (uint32_t packed : asset.materials)
@@ -559,12 +716,13 @@ bool ParseSdfAsset(const uint8_t* byteData, size_t byteCount, SdfAsset& out, std
         mesh.fragment.assign(reinterpret_cast<const char*>(bytes.data() + at), len);
         at += len;
         SdfVolume& v = mesh.volume;
-        if (!GetU32(bytes, at, res) || res < 8 || res > 128)
+        if (!GetU32(bytes, at, res) || res > 128)
             return fail("invalid SDF resolution");
         v.resolution = res;
         if (!GetF32(bytes, at, v.origin.x) || !GetF32(bytes, at, v.origin.y) ||
             !GetF32(bytes, at, v.origin.z) || !GetF32(bytes, at, v.voxelSize) ||
-            !GetF32(bytes, at, v.maxDistance) || v.voxelSize <= 0 || v.maxDistance <= 0)
+            !GetF32(bytes, at, v.maxDistance) ||
+            (res != 0 && (v.voxelSize <= 0 || v.maxDistance <= 0)))
             return fail("invalid SDF transform/band");
         if (!GetU32(bytes, at, sign) || sign > 1 || !GetU32(bytes, at, count) ||
             count != res * res * res || count > (bytes.size() - at) / 2)
@@ -589,6 +747,43 @@ bool ParseSdfAsset(const uint8_t* byteData, size_t byteCount, SdfAsset& out, std
         }
         if (version >= 2 && !GetU32(bytes, at, mesh.materialIndex))
             return fail("invalid SDF material index");
+        if (version >= 4) {
+            uint32_t nodeCount = 0;
+            if (!GetU32(bytes, at, nodeCount) || nodeCount > (bytes.size() - at) / 4)
+                return fail("invalid SDF octree");
+            if (nodeCount) {
+                SdfOctree& o = mesh.octree;
+                if (!GetF32(bytes, at, o.origin.x) || !GetF32(bytes, at, o.origin.y) ||
+                    !GetF32(bytes, at, o.origin.z) || !GetF32(bytes, at, o.size) ||
+                    !GetF32(bytes, at, o.maxDistance) || !GetU32(bytes, at, o.maxDepth))
+                    return fail("invalid SDF octree header");
+                uint32_t childCount = 0, leafCount = 0;
+                if (!GetU32(bytes, at, childCount) || !GetU32(bytes, at, leafCount) ||
+                    childCount > (bytes.size() - at) / 4 || leafCount > (bytes.size() - at) / 4)
+                    return fail("invalid SDF octree arrays");
+                o.nodes.reserve(nodeCount);
+                for (uint32_t i = 0; i < nodeCount; ++i) {
+                    uint32_t v;
+                    if (!GetU32(bytes, at, v))
+                        return fail("bad octree node");
+                    o.nodes.push_back(v);
+                }
+                o.children.reserve(childCount);
+                for (uint32_t i = 0; i < childCount; ++i) {
+                    uint32_t v;
+                    if (!GetU32(bytes, at, v))
+                        return fail("bad octree child");
+                    o.children.push_back(int32_t(v));
+                }
+                o.leaves.reserve(leafCount);
+                for (uint32_t i = 0; i < leafCount; ++i) {
+                    uint32_t v;
+                    if (!GetU32(bytes, at, v))
+                        return fail("bad octree leaf");
+                    o.leaves.push_back(v);
+                }
+            }
+        }
         for (const SdfMesh& other : parsed.meshes)
             if (other.fragment == mesh.fragment)
                 return fail("duplicate SDF fragment");

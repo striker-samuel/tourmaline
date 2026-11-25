@@ -21,7 +21,7 @@ class ThreadPool;
 
 namespace tour::asset {
 
-inline constexpr uint32_t kSdfVersion = 3;
+inline constexpr uint32_t kSdfVersion = 4;
 
 // Bit-packed static material (32 bits) carried by the SDF sidecar so
 // reflections can sample a small PBR set without the runtime material
@@ -94,9 +94,28 @@ struct SdfColorInput {
     uint32_t texHeight = 0;
 };
 
+// Adaptive octree distance field: a sparse, variable-depth octree refined
+// only near the surface. The finest cell (the "brick") is size * 2^(1-maxDepth);
+// empty space and flat slabs stay coarse, so the same finest resolution as a
+// uniform grid costs a fraction of the memory. Leaves carry a signed
+// distance (int16, normalized by maxDistance) + an optional texture-baked
+// color (RGB565). Linear flat arrays for the GPU trace.
+struct SdfOctree {
+    glm::vec3 origin{0.0f}; // root AABB min corner (mesh-local)
+    float size = 0.0f;      // root half-extent (world units)
+    float maxDistance = 0.0f;
+    uint32_t maxDepth = 6;         // finest brick = size * 2^(1-maxDepth)
+    std::vector<uint32_t> nodes;   // [31]=leaf; [30:0]=childBase (internal) or leafIndex (leaf)
+    std::vector<int32_t> children; // 8 per internal node, -1 = empty
+    std::vector<uint32_t> leaves;  // [31:16]=dist int16, [15:0]=color RGB565
+};
+
 struct SdfMesh {
     std::string fragment; // .geometry URI fragment, e.g. "mesh.0/prim.0"
     SdfVolume volume;
+    // Adaptive octree field (preferred when present). Empty (nodes empty)
+    // when the sidecar was baked with the legacy uniform grid only.
+    SdfOctree octree;
     // Index into SdfAsset::materials (the shared bit-packed palette).
     // Constant per primitive — the color is the material's flat base-color
     // factor, not a texture bake (see SdfMaterial).
@@ -114,6 +133,10 @@ struct SdfBakeOptions {
     uint32_t resolution = 24; // [8,128], including padding on all sides
     uint32_t padding = 2;     // voxels on each edge, >=1
     uint32_t bandVoxels = 8;  // max distance encoded, >=1
+    // Octree depth (the adaptive field's finest "brick" = extent / 2^maxDepth).
+    // Lower = coarser bricks (less memory, blockier); higher = finer. The
+    // uniform-grid path treats resolution = 2^maxDepth.
+    uint32_t maxDepth = 6;
     // Experimental meshoptimizer 1.3 remesher: reconstructs topology first.
     // OFF by default: it can close gaps/erase thin wires and change signs.
     bool voxelRemesh = false;
@@ -148,6 +171,20 @@ bool BakeMeshSdfColors(const glm::vec3* positions,
                        const SdfColorInput& color,
                        const SdfVolume& volume,
                        std::vector<uint16_t>& outColors,
+                       std::string& err,
+                       smvk::ThreadPool* pool = nullptr);
+
+// Adaptive octree bake: builds a sparse, surface-refined octree (see
+// SdfOctree) instead of a uniform grid. When `color` is non-null, leaves
+// also carry the texture-baked base color (sampled at the leaf's closest
+// surface point). `options.maxDepth` is the finest brick depth.
+bool BakeMeshSdfOctree(const glm::vec3* positions,
+                       size_t positionCount,
+                       const uint32_t* indices,
+                       size_t indexCount,
+                       const SdfColorInput* color,
+                       const SdfBakeOptions& options,
+                       SdfOctree& out,
                        std::string& err,
                        smvk::ThreadPool* pool = nullptr);
 

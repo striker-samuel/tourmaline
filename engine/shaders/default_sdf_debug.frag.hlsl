@@ -115,9 +115,8 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     StaticSdfRayHit hit = StaticSdfTrace(rayOrigin, rayDir, maxTrace,
                                          sdfScene.epsilon, sdfScene.maxSteps,
                                          sdfScene.instanceCount, sdfScene.materialCount,
-                                         sdfScene.colorCount,
-                                         sdfScene.instances, sdfScene.samples,
-                                         sdfScene.materials, sdfScene.colors);
+                                         sdfScene.instances, sdfScene.nodes,
+                                         sdfScene.children, sdfScene.leaves, sdfScene.materials);
 
     float3 color;
     if (hit.valid)

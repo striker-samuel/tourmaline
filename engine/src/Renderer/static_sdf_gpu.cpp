@@ -58,7 +58,10 @@ void StaticSdfGpuScene::Clear() {
     ++m_generation; // old temporal reflection history is invalid
     m_header = {};
     m_instances = {};
-    m_samples = {};
+    m_nodes = {};
+    m_children = {};
+    m_leaves = {};
+    m_materials = {};
     m_instanceCount = 0;
     m_world = nullptr;
     m_worldRevision = std::numeric_limits<uint64_t>::max();
@@ -85,11 +88,14 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
     // groups all base primitives in one .geometry family; fragment names
     // match the suffix of the cooked mesh URI (before optional /lodN).
     std::unordered_map<std::string, ::tour::asset::SdfAsset> families;
-    std::unordered_map<std::string, uint32_t> wordOffsets;
+    struct OctreeOffsets {
+        uint32_t node = 0, child = 0, leaf = 0;
+    };
+    std::unordered_map<std::string, OctreeOffsets> octreeOffsets;
     std::vector<StaticSdfGpuInstance> instances;
-    std::vector<uint32_t> words;
-    std::vector<uint32_t> colorWords; // packed per-voxel RGB565 (2 per word)
-    std::unordered_map<std::string, uint32_t> colorWordOffsets;
+    std::vector<uint32_t> nodes;
+    std::vector<int32_t> children;
+    std::vector<uint32_t> leaves;
     std::vector<uint32_t> materials; // concatenated packed-material palettes
     std::unordered_map<std::string, uint32_t> familyMaterialBase;
     instances.reserve(std::min(world.drawItems.size(), size_t(kStaticSdfMaxInstances)));
@@ -180,48 +186,29 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
             std::find_if(familyIt->second.meshes.begin(),
                          familyIt->second.meshes.end(),
                          [&](const ::tour::asset::SdfMesh& m) { return m.fragment == fragment; });
-        if (it == familyIt->second.meshes.end() || !ValidVolume(it->volume))
+        if (it == familyIt->second.meshes.end() || it->octree.nodes.empty())
             continue;
         const glm::mat4& model = world.scene.globalTransform[item.node];
         if (!ValidTransform(model))
             continue;
 
-        uint32_t wordOffset = 0;
-        if (const auto found = wordOffsets.find(uri); found != wordOffsets.end()) {
-            wordOffset = found->second;
+        // Pack the octree (nodes/children/leaves) once per fragment.
+        OctreeOffsets off{};
+        if (const auto found = octreeOffsets.find(uri); found != octreeOffsets.end()) {
+            off = found->second;
         } else {
-            const auto& v = it->volume;
-            const size_t newWords = (v.samples.size() + 1u) / 2u;
-            if (newWords > kStaticSdfMaxSampleWords - words.size())
+            const auto& o = it->octree;
+            if (o.nodes.size() > kStaticSdfMaxNodeWords - nodes.size() ||
+                o.children.size() > kStaticSdfMaxChildWords - children.size() ||
+                o.leaves.size() > kStaticSdfMaxLeafWords - leaves.size())
                 continue;
-            wordOffset = uint32_t(words.size());
-            const auto packed = PackStaticSdfWords(v.samples);
-            words.insert(words.end(), packed.begin(), packed.end());
-            wordOffsets.emplace(uri, wordOffset);
-        }
-
-        // Pack the optional per-voxel color grid (texture bake), 2 RGB565
-        // per word. A volume without colors shares no color offset (0).
-        uint32_t colorOffset = 0u;
-        bool hasColors = !it->volume.colors.empty();
-        if (hasColors) {
-            if (const auto found = colorWordOffsets.find(uri); found != colorWordOffsets.end()) {
-                colorOffset = found->second;
-            } else {
-                const size_t newColorWords = (it->volume.colors.size() + 1u) / 2u;
-                if (newColorWords > kStaticSdfMaxColorWords - colorWords.size())
-                    hasColors = false;
-                else {
-                    colorOffset = uint32_t(colorWords.size());
-                    for (size_t i = 0; i < it->volume.colors.size(); i += 2) {
-                        uint32_t w = it->volume.colors[i];
-                        if (i + 1 < it->volume.colors.size())
-                            w |= uint32_t(it->volume.colors[i + 1]) << 16;
-                        colorWords.push_back(w);
-                    }
-                    colorWordOffsets.emplace(uri, colorOffset);
-                }
-            }
+            off.node = uint32_t(nodes.size());
+            off.child = uint32_t(children.size());
+            off.leaf = uint32_t(leaves.size());
+            nodes.insert(nodes.end(), o.nodes.begin(), o.nodes.end());
+            children.insert(children.end(), o.children.begin(), o.children.end());
+            leaves.insert(leaves.end(), o.leaves.begin(), o.leaves.end());
+            octreeOffsets.emplace(uri, off);
         }
 
         const glm::mat4 inverse = glm::inverse(model);
@@ -229,37 +216,38 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
         gpu.inverseRow0 = {inverse[0][0], inverse[1][0], inverse[2][0], inverse[3][0]};
         gpu.inverseRow1 = {inverse[0][1], inverse[1][1], inverse[2][1], inverse[3][1]};
         gpu.inverseRow2 = {inverse[0][2], inverse[1][2], inverse[2][2], inverse[3][2]};
-        const auto& v = it->volume;
-        gpu.originVoxel = glm::vec4(v.origin, v.voxelSize);
+        const auto& o = it->octree;
+        gpu.originSize = glm::vec4(o.origin, o.size);
         const uint32_t matBase = familyMaterialBase[family] + it->materialIndex;
-        gpu.material = glm::uvec4(matBase, colorOffset, hasColors ? 1u : 0u, 0u);
-        gpu.meta = {v.resolution,
-                    wordOffset,
-                    v.signedDistance ? 1u : 0u,
-                    std::bit_cast<uint32_t>(v.maxDistance)};
+        gpu.material = glm::uvec4(matBase, o.maxDepth, 0u, 0u);
+        gpu.meta = {off.node, off.child, off.leaf, std::bit_cast<uint32_t>(o.maxDistance)};
         instances.push_back(gpu);
     }
 
     // A failed build must not leave stale buffers from a previous world.
-    Holder<BufferHandle> headerBuffer, instanceBuffer, sampleBuffer, materialBuffer, colorBuffer;
+    Holder<BufferHandle> headerBuffer, instanceBuffer, nodeBuffer, childBuffer, leafBuffer,
+        materialBuffer;
     if (!instances.empty()) {
         instanceBuffer = ctx.CreateBuffer(instances.size() * sizeof(StaticSdfGpuInstance),
                                           BufferType_Storage,
                                           "Static SDF reflection instances");
-        sampleBuffer = ctx.CreateBuffer(
-            words.size() * sizeof(uint32_t), BufferType_Storage, "Static SDF reflection samples");
+        nodeBuffer = ctx.CreateBuffer(std::max(nodes.size(), size_t(1)) * sizeof(uint32_t),
+                                      BufferType_Storage,
+                                      "Static SDF reflection nodes");
+        childBuffer = ctx.CreateBuffer(std::max(children.size(), size_t(1)) * sizeof(uint32_t),
+                                       BufferType_Storage,
+                                       "Static SDF reflection children");
+        leafBuffer = ctx.CreateBuffer(std::max(leaves.size(), size_t(1)) * sizeof(uint32_t),
+                                      BufferType_Storage,
+                                      "Static SDF reflection leaves");
         const uint32_t matCount = uint32_t(materials.size());
         materialBuffer = ctx.CreateBuffer(std::max(matCount, 1u) * sizeof(uint32_t),
                                           BufferType_Storage,
                                           "Static SDF reflection materials");
-        const uint32_t colCount = uint32_t(colorWords.size());
-        colorBuffer = ctx.CreateBuffer(std::max(colCount, 1u) * sizeof(uint32_t),
-                                       BufferType_Storage,
-                                       "Static SDF reflection colors");
         headerBuffer = ctx.CreateBuffer(
             sizeof(StaticSdfSceneHeader), BufferType_Storage, "Static SDF reflection descriptor");
-        if (instanceBuffer.empty() || sampleBuffer.empty() || materialBuffer.empty() ||
-            colorBuffer.empty() || headerBuffer.empty()) {
+        if (instanceBuffer.empty() || nodeBuffer.empty() || childBuffer.empty() ||
+            leafBuffer.empty() || materialBuffer.empty() || headerBuffer.empty()) {
             Clear();
             m_world = &world;
             m_worldRevision = world.gpuSceneTopologyRevision;
@@ -272,9 +260,24 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
                                instances.size() * sizeof(StaticSdfGpuInstance),
                                PipelineStageBit_Compute,
                                AccessFlags::ShaderRead);
-        ctx.UploadDataToBuffer(sampleBuffer,
-                               words.data(),
-                               words.size() * sizeof(uint32_t),
+        const uint32_t zero = 0u;
+        const uint32_t* nodeData = nodes.empty() ? &zero : nodes.data();
+        ctx.UploadDataToBuffer(nodeBuffer,
+                               nodeData,
+                               std::max(nodes.size(), size_t(1)) * sizeof(uint32_t),
+                               PipelineStageBit_Compute,
+                               AccessFlags::ShaderRead);
+        const int32_t zeroChild = -1;
+        const int32_t* childData = children.empty() ? &zeroChild : children.data();
+        ctx.UploadDataToBuffer(childBuffer,
+                               childData,
+                               std::max(children.size(), size_t(1)) * sizeof(uint32_t),
+                               PipelineStageBit_Compute,
+                               AccessFlags::ShaderRead);
+        const uint32_t* leafData = leaves.empty() ? &zero : leaves.data();
+        ctx.UploadDataToBuffer(leafBuffer,
+                               leafData,
+                               std::max(leaves.size(), size_t(1)) * sizeof(uint32_t),
                                PipelineStageBit_Compute,
                                AccessFlags::ShaderRead);
         const uint32_t neutral = ::tour::asset::PackSdfMaterial(glm::vec3(0.7f), 0.5f, 0.0f, 0.0f);
@@ -283,21 +286,15 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
                                std::max(matCount, 1u) * sizeof(uint32_t),
                                PipelineStageBit_Compute,
                                AccessFlags::ShaderRead);
-        const uint32_t neutralColor = ::tour::asset::PackRgb565(glm::vec3(0.7f));
-        ctx.UploadDataToBuffer(colorBuffer,
-                               colCount ? colorWords.data() : &neutralColor,
-                               std::max(colCount, 1u) * sizeof(uint32_t),
-                               PipelineStageBit_Compute,
-                               AccessFlags::ShaderRead);
         StaticSdfSceneHeader gpuHeader{};
         gpuHeader.instancesAddress = ctx.GetBufferDeviceAddress(instanceBuffer);
-        gpuHeader.samplesAddress = ctx.GetBufferDeviceAddress(sampleBuffer);
+        gpuHeader.nodesAddress = ctx.GetBufferDeviceAddress(nodeBuffer);
+        gpuHeader.childrenAddress = ctx.GetBufferDeviceAddress(childBuffer);
+        gpuHeader.leavesAddress = ctx.GetBufferDeviceAddress(leafBuffer);
         gpuHeader.materialsAddress = ctx.GetBufferDeviceAddress(materialBuffer);
-        gpuHeader.colorsAddress = ctx.GetBufferDeviceAddress(colorBuffer);
-        // A non-BDA storage allocation cannot be published as a valid
-        // scene: a zero address would cause an unsafe shader dereference.
-        if (gpuHeader.instancesAddress == 0 || gpuHeader.samplesAddress == 0 ||
-            gpuHeader.materialsAddress == 0 || gpuHeader.colorsAddress == 0) {
+        if (gpuHeader.instancesAddress == 0 || gpuHeader.nodesAddress == 0 ||
+            gpuHeader.childrenAddress == 0 || gpuHeader.leavesAddress == 0 ||
+            gpuHeader.materialsAddress == 0) {
             Clear();
             m_world = &world;
             m_worldRevision = world.gpuSceneTopologyRevision;
@@ -307,7 +304,6 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
         }
         gpuHeader.instanceCount = uint32_t(instances.size());
         gpuHeader.materialCount = matCount;
-        gpuHeader.colorCount = colCount;
         ctx.UploadDataToBuffer(headerBuffer,
                                &gpuHeader,
                                sizeof(gpuHeader),
@@ -316,9 +312,10 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
     }
     m_header = std::move(headerBuffer);
     m_instances = std::move(instanceBuffer);
-    m_samples = std::move(sampleBuffer);
+    m_nodes = std::move(nodeBuffer);
+    m_children = std::move(childBuffer);
+    m_leaves = std::move(leafBuffer);
     m_materials = std::move(materialBuffer);
-    m_colors = std::move(colorBuffer);
     m_instanceCount = uint32_t(instances.size());
     ++m_generation;
     m_world = &world;
@@ -326,12 +323,14 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
     m_cachedEye = cameraWorldPos;
     m_cachedEyeValid = eyeFinite;
     if (m_instanceCount)
-        std::fprintf(
-            stderr,
-            "[StaticSdf] GPU resident: %u frozen opaque instances, %zu packed words (%.2f MiB)\n",
-            m_instanceCount,
-            words.size(),
-            double(words.size() * sizeof(uint32_t)) / (1024.0 * 1024.0));
+        std::fprintf(stderr,
+                     "[StaticSdf] GPU resident: %u frozen opaque instances, %zu octree nodes, "
+                     "%zu leaves (%.2f MiB)\n",
+                     m_instanceCount,
+                     nodes.size(),
+                     leaves.size(),
+                     double((nodes.size() + children.size() + leaves.size()) * sizeof(uint32_t)) /
+                         (1024.0 * 1024.0));
     return Ready();
 }
 

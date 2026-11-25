@@ -4,47 +4,49 @@
 #pragma once
 #include "gpu_platform.hlsli"
 
-// Static-only TSDF geometry fallback for the SSSR intersect pass. The
-// CPU uploader packs samples (two signed 16-bit SNORMs per uint) and
-// immutable inverse transforms from the mesh-local .geometry.sdf assets.
-// All distances/epsilons outside the helper are WORLD metres.
-//
-// In contrast to screen-space depth traversal, ray/AABB and narrow-band
-// sphere tracing can find geometry outside the camera frustum. The
-// returned hit carries an approximate normal plus the mesh's constant
-// material base-color factor; shading is handled by the SSR caller.
+// Static-only adaptive-octree distance field (ADF) fallback for the SSSR
+// intersect pass. The CPU uploader packs a linear octree (nodes/children/
+// leaves) + immutable inverse transforms from the mesh-local .geometry.sdf
+// assets. Leaves carry a signed distance (int16, normalized by maxDistance)
+// and an optional texture-baked RGB565 base color. All distances/epsilons
+// outside the helper are WORLD metres.
+
 #define STATIC_SDF_MAX_INSTANCES 128u
-#define STATIC_SDF_MAX_SAMPLE_WORDS 33554432u
+#define STATIC_SDF_MAX_NODE_WORDS 33554432u
+#define STATIC_SDF_MAX_CHILD_WORDS 33554432u
+#define STATIC_SDF_MAX_LEAF_WORDS 33554432u
 #define STATIC_SDF_MAX_MATERIALS 4096u
-#define STATIC_SDF_MAX_COLOR_WORDS 33554432u
 
 struct StaticSdfGpuInstance
 {
-    float4 invRow0;       // inverse mesh-to-world ROW 0 (incl translation)
-    float4 invRow1;       // ROW 1
-    float4 invRow2;       // ROW 2
-    float4 originVoxel;   // xyz first voxel center, w voxel width
-    uint4 material;       // x = packed-material palette index,
-                          // y = color word offset, z = 1 if per-voxel colors
-    uint4 meta;           // x resolution, y packed sample WORD offset,
-                          // z signedDistance, w asuint(maxDistance)
+    float4 invRow0;    // inverse mesh-to-world ROW 0 (incl translation)
+    float4 invRow1;    // ROW 1
+    float4 invRow2;    // ROW 2
+    float4 originSize; // xyz = root AABB min corner, w = root half-extent
+    uint4 material;    // x = packed-material palette index, y = maxDepth
+    uint4 meta;        // x = node offset, y = child offset, z = leaf offset,
+                       // w = asuint(maxDistance)
 }; // 96 bytes; C++ static_assert in static_sdf_gpu.h
 
 struct StaticSdfInstanceBuffer
 {
     StaticSdfGpuInstance items[STATIC_SDF_MAX_INSTANCES];
 };
-struct StaticSdfSampleWords
+struct StaticSdfNodeWords
 {
-    uint words[STATIC_SDF_MAX_SAMPLE_WORDS];
+    uint words[STATIC_SDF_MAX_NODE_WORDS];
+};
+struct StaticSdfChildWords
+{
+    int words[STATIC_SDF_MAX_CHILD_WORDS];
+};
+struct StaticSdfLeafWords
+{
+    uint words[STATIC_SDF_MAX_LEAF_WORDS];
 };
 struct StaticSdfMaterialWords
 {
     uint words[STATIC_SDF_MAX_MATERIALS];
-};
-struct StaticSdfColorWords
-{
-    uint words[STATIC_SDF_MAX_COLOR_WORDS];
 };
 
 // Scene descriptor uploaded by StaticSdfGpuScene. A single pointer in the
@@ -52,12 +54,12 @@ struct StaticSdfColorWords
 struct StaticSdfSceneHeader
 {
     GPU_PTR_READ(StaticSdfInstanceBuffer) instances;
-    GPU_PTR_READ(StaticSdfSampleWords) samples;
+    GPU_PTR_READ(StaticSdfNodeWords) nodes;
+    GPU_PTR_READ(StaticSdfChildWords) children;
+    GPU_PTR_READ(StaticSdfLeafWords) leaves;
     GPU_PTR_READ(StaticSdfMaterialWords) materials;
-    GPU_PTR_READ(StaticSdfColorWords) colors;
     uint instanceCount;
     uint materialCount;
-    uint colorCount;
     uint maxSteps;
     float epsilon;
     float originBias;
@@ -154,107 +156,61 @@ bool StaticSdfRayAabb(float3 origin, float3 dir,
     return true;
 }
 
-float StaticSdfTap(uint linearIndex, uint sampleWordOffset,
-    GPU_PTR_READ(StaticSdfSampleWords) samples)
+// Descend the octree to the leaf containing `local`, returning the leaf's
+// signed distance (normalized * maxDistance) and texture-baked color. Empty
+// cells (no surface) return maxDistance.
+void StaticSdfOctreeSample(StaticSdfGpuInstance v, float3 local,
+    GPU_PTR_READ(StaticSdfNodeWords) nodes,
+    GPU_PTR_READ(StaticSdfChildWords) children,
+    GPU_PTR_READ(StaticSdfLeafWords) leaves,
+    out float dist, out float3 color)
 {
-    uint packed = samples.Get().words[sampleWordOffset + (linearIndex >> 1u)];
-    uint shift = (linearIndex & 1u) * 16u;
-    // Sign-extend the chosen two's-complement R16 word.
-    int signedSample = asint(packed << (16u - shift)) >> 16;
-    return float(signedSample) / 32767.0f;
-}
-
-float StaticSdfDistance(StaticSdfGpuInstance instance, float3 p,
-    GPU_PTR_READ(StaticSdfSampleWords) samples)
-{
-    const uint r = instance.meta.x;
-    const float3 g = clamp((p - instance.originVoxel.xyz) /
-        instance.originVoxel.w, 0.0f, float(r - 1u));
-    uint3 i = uint3(g);
-    uint3 i1 = min(i + 1u, uint3(r - 1u, r - 1u, r - 1u));
-    float3 f = g - float3(i);
-    const uint off = instance.meta.y;
-    uint idx000 = i.x + r * (i.y + r * i.z);
-    uint idx100 = i1.x + r * (i.y + r * i.z);
-    uint idx010 = i.x + r * (i1.y + r * i.z);
-    uint idx110 = i1.x + r * (i1.y + r * i.z);
-    uint idx001 = i.x + r * (i.y + r * i1.z);
-    uint idx101 = i1.x + r * (i.y + r * i1.z);
-    uint idx011 = i.x + r * (i1.y + r * i1.z);
-    uint idx111 = i1.x + r * (i1.y + r * i1.z);
-    float a = lerp(StaticSdfTap(idx000, off, samples), StaticSdfTap(idx100, off, samples), f.x);
-    float b = lerp(StaticSdfTap(idx010, off, samples), StaticSdfTap(idx110, off, samples), f.x);
-    float c = lerp(StaticSdfTap(idx001, off, samples), StaticSdfTap(idx101, off, samples), f.x);
-    float d = lerp(StaticSdfTap(idx011, off, samples), StaticSdfTap(idx111, off, samples), f.x);
-    return lerp(lerp(a, b, f.y), lerp(c, d, f.y), f.z) *
-        asfloat(instance.meta.w);
-}
-
-float3 StaticSdfGradient(StaticSdfGpuInstance instance, float3 p,
-    GPU_PTR_READ(StaticSdfSampleWords) samples)
-{
-    float h = instance.originVoxel.w * 0.5f;
-    float3 dx = float3(h, 0.0f, 0.0f);
-    float3 dy = float3(0.0f, h, 0.0f);
-    float3 dz = float3(0.0f, 0.0f, h);
-    return float3(
-        StaticSdfDistance(instance, p + dx, samples) -
-        StaticSdfDistance(instance, p - dx, samples),
-        StaticSdfDistance(instance, p + dy, samples) -
-        StaticSdfDistance(instance, p - dy, samples),
-        StaticSdfDistance(instance, p + dz, samples) -
-        StaticSdfDistance(instance, p - dz, samples));
-}
-
-float3 StaticSdfColorTap(uint linearIndex, uint colorWordOffset,
-    GPU_PTR_READ(StaticSdfColorWords) colors)
-{
-    uint packed = colors.Get().words[colorWordOffset + (linearIndex >> 1u)];
-    uint shift = (linearIndex & 1u) * 16u;
-    return UnpackStaticSdfRgb565((packed >> shift) & 0xFFFFu);
-}
-
-// Trilinear texture-baked base color at p (mirrors StaticSdfDistance's grid
-// addressing; the per-voxel RGB565 grid is parallel to the distance samples).
-float3 StaticSdfColor(StaticSdfGpuInstance instance, float3 p,
-    GPU_PTR_READ(StaticSdfColorWords) colors)
-{
-    const uint r = instance.meta.x;
-    const float3 g = clamp((p - instance.originVoxel.xyz) /
-        instance.originVoxel.w, 0.0f, float(r - 1u));
-    uint3 i = uint3(g);
-    uint3 i1 = min(i + 1u, uint3(r - 1u, r - 1u, r - 1u));
-    float3 f = g - float3(i);
-    const uint off = instance.material.y;
-    uint idx000 = i.x + r * (i.y + r * i.z);
-    uint idx100 = i1.x + r * (i.y + r * i.z);
-    uint idx010 = i.x + r * (i1.y + r * i.z);
-    uint idx110 = i1.x + r * (i1.y + r * i.z);
-    uint idx001 = i.x + r * (i.y + r * i1.z);
-    uint idx101 = i1.x + r * (i.y + r * i1.z);
-    uint idx011 = i.x + r * (i1.y + r * i1.z);
-    uint idx111 = i1.x + r * (i1.y + r * i1.z);
-    float3 a = lerp(StaticSdfColorTap(idx000, off, colors), StaticSdfColorTap(idx100, off, colors), f.x);
-    float3 b = lerp(StaticSdfColorTap(idx010, off, colors), StaticSdfColorTap(idx110, off, colors), f.x);
-    float3 c = lerp(StaticSdfColorTap(idx001, off, colors), StaticSdfColorTap(idx101, off, colors), f.x);
-    float3 d = lerp(StaticSdfColorTap(idx011, off, colors), StaticSdfColorTap(idx111, off, colors), f.x);
-    return lerp(lerp(a, b, f.y), lerp(c, d, f.y), f.z);
+    const float maxDist = asfloat(v.meta.w);
+    float3 c = v.originSize.xyz + v.originSize.w; // root center
+    float h = v.originSize.w;
+    uint node = 0u;
+    dist = maxDist;
+    color = float3(0.0f, 0.0f, 0.0f);
+    for (uint depth = 0u; depth <= v.material.y; ++depth)
+    {
+        const uint data = nodes.Get().words[v.meta.x + node];
+        if ((data & 0x80000000u) != 0u)
+        {
+            const uint leaf = leaves.Get().words[v.meta.z + (data & 0x7FFFFFFFu)];
+            int d = int(leaf >> 16);
+            d = d >= 32768 ? d - 65536 : d; // sign-extend the int16 distance
+            dist = float(d) / 32767.0f * maxDist;
+            color = UnpackStaticSdfRgb565(uint(leaf & 0xFFFFu));
+            return;
+        }
+        const uint childBase = v.meta.y + (data & 0x7FFFFFFFu);
+        const uint octant = (local.x >= c.x ? 1u : 0u) |
+                            (local.y >= c.y ? 2u : 0u) |
+                            (local.z >= c.z ? 4u : 0u);
+        const int child = children.Get().words[childBase + octant];
+        if (child < 0)
+            return; // empty cell: no surface along this branch
+        node = uint(child);
+        c.x += (octant & 1u) ? h * 0.5f : -h * 0.5f;
+        c.y += (octant & 2u) ? h * 0.5f : -h * 0.5f;
+        c.z += (octant & 4u) ? h * 0.5f : -h * 0.5f;
+        h *= 0.5f;
+    }
 }
 
 StaticSdfRayHit StaticSdfTrace(float3 worldOrigin, float3 worldDir,
     float maxWorldDistance, float worldEpsilon, uint stepBudget,
-    uint instanceCount, uint materialCount, uint colorCount,
+    uint instanceCount, uint materialCount,
     GPU_PTR_READ(StaticSdfInstanceBuffer) instances,
-    GPU_PTR_READ(StaticSdfSampleWords) samples,
-    GPU_PTR_READ(StaticSdfMaterialWords) materials,
-    GPU_PTR_READ(StaticSdfColorWords) colors)
+    GPU_PTR_READ(StaticSdfNodeWords) nodes,
+    GPU_PTR_READ(StaticSdfChildWords) children,
+    GPU_PTR_READ(StaticSdfLeafWords) leaves,
+    GPU_PTR_READ(StaticSdfMaterialWords) materials)
 {
     StaticSdfRayHit best = (StaticSdfRayHit)0;
     best.t = maxWorldDistance;
     if (instanceCount == 0u || maxWorldDistance <= 0.0f) return best;
 
-    // Broad-phase AABBs are cheap; narrow-band steps run only on
-    // intersecting boxes. Shortest world-space hit wins.
     [loop] for (uint index = 0; index < min(instanceCount, STATIC_SDF_MAX_INSTANCES); ++index)
     {
         StaticSdfGpuInstance v = instances.Get().items[index];
@@ -262,35 +218,44 @@ StaticSdfRayHit StaticSdfTrace(float3 worldOrigin, float3 worldDir,
         float3 dir = StaticSdfDirLocal(v, worldDir);
         float speed = length(dir);
         if (speed < 1e-10f || !isfinite(speed)) continue;
-        const float extent = float(v.meta.x - 1u) * v.originVoxel.w;
-        float3 boxMin = v.originVoxel.xyz;
-        float3 boxMax = boxMin + extent;
+        const float extent = v.originSize.w * 2.0f;
+        const float3 boxMin = v.originSize.xyz;
+        const float3 boxMax = boxMin + extent;
         float beginT, endT;
         if (!StaticSdfRayAabb(origin, dir, boxMin, boxMax, beginT, endT))
             continue;
         endT = min(endT, best.t);
-        // Trilinear, int16-quantized fields need a 0.75-voxel
-        // convergence floor (matching the CPU reference); otherwise
-        // surface samples between voxel planes never hit.
-        const float epsLocal = max(worldEpsilon * speed,
-            0.75f * v.originVoxel.w);
+        // Finest leaf cell drives the convergence floor (the quantized
+        // leaf distance converges to ~0.75 of the finest cell).
+        const float finest = v.originSize.w / float(uint(1) << v.material.y);
+        const float epsLocal = max(worldEpsilon * speed, 0.75f * finest);
         float t = beginT;
-        // The SDF is trilinear/quantized and distances saturate outside
-        // its narrow band. Use a conservative factor and a voxel floor;
-        // the AABB clips every step to the actually represented domain.
         [loop] for (uint step = 0u; step < stepBudget && t <= endT; ++step)
         {
             float3 p = origin + t * dir;
-            float sd = StaticSdfDistance(v, p, samples);
-            float absSd = abs(sd); // unsigned sidecars are valid, too
+            float sd;
+            float3 col;
+            StaticSdfOctreeSample(v, p, nodes, children, leaves, sd, col);
+            const float absSd = abs(sd);
             if (absSd <= epsLocal)
             {
-                // Avoid immediately reflecting the receiver's own SDF
-                // shell (baked fields are coarse relative to the SSR
-                // origin bias). Continue to other static instances.
-                if (t <= 0.5f * v.originVoxel.w / speed)
-                    break;
-                float3 grad = StaticSdfGradient(v, p, samples);
+                if (t <= 0.5f * finest / speed)
+                    break; // receiver's own shell
+                // Central-difference normal from the octree field.
+                const float h = finest * 0.5f;
+                float dx, cx;
+                StaticSdfOctreeSample(v, p + float3(h, 0, 0), nodes, children, leaves, dx, cx);
+                float dy, cy;
+                StaticSdfOctreeSample(v, p + float3(0, h, 0), nodes, children, leaves, dy, cy);
+                float dz, cz;
+                StaticSdfOctreeSample(v, p + float3(0, 0, h), nodes, children, leaves, dz, cz);
+                float sx, sxx;
+                StaticSdfOctreeSample(v, p - float3(h, 0, 0), nodes, children, leaves, sx, sxx);
+                float sy, syy;
+                StaticSdfOctreeSample(v, p - float3(0, h, 0), nodes, children, leaves, sy, syy);
+                float sz, szz;
+                StaticSdfOctreeSample(v, p - float3(0, 0, h), nodes, children, leaves, sz, szz);
+                float3 grad = float3(dx - sx, dy - sy, dz - sz);
                 float3 n = grad.x * v.invRow0.xyz +
                            grad.y * v.invRow1.xyz +
                            grad.z * v.invRow2.xyz;
@@ -306,18 +271,20 @@ StaticSdfRayHit StaticSdfTrace(float3 worldOrigin, float3 worldDir,
                 float3 bc;
                 float ro, me, em;
                 UnpackStaticSdfMaterial(materials.Get().words[matIdx], bc, ro, me, em);
-                if (v.material.z != 0u && colorCount > 0u)
-                    bc = StaticSdfColor(v, p, colors);
+                // Prefer the leaf's texture-baked color; the leaf carries 0
+                // when the sidecar was baked without color.
+                if (dot(col, col) > 1e-6f)
+                    bc = col;
                 best.baseColor = max(bc, 0.0f);
                 best.roughness = ro;
                 best.metallic = me;
                 best.emissive = em;
                 best.materialIndex = matIdx;
                 best.instanceIndex = index;
-                best.worldVoxel = v.originVoxel.w / speed;
+                best.worldVoxel = finest / speed;
                 break;
             }
-            float safeDistance = max((absSd - 0.25f * v.originVoxel.w) * 0.75f,
+            float safeDistance = max((absSd - 0.25f * finest) * 0.75f,
                 epsLocal * 0.25f);
             t += safeDistance / speed;
         }
