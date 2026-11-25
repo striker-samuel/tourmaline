@@ -10048,6 +10048,62 @@ void WorldRenderer::RecordMotion(smvk::CommandBuffer& cmd,
         drawDitheredMotion();
     }
 }
+void WorldRenderer::RecordPlanarCapture(smvk::CommandBuffer& cmd,
+                                        const smvk::FrameContext& fc,
+                                        const smvk::PassData& pd) {
+    auto* self = const_cast<WorldRenderer*>(static_cast<const WorldRenderer*>(pd.config));
+    const auto& f = fc.rg->FrameData().Get<PlanarCaptureFrame>(pd.frameSlot);
+    if (!self->m_world)
+        return;
+    cmd.BindStaticVertexFmt();
+    uint32_t draws = 0;
+    self->m_world->forEachRenderItem(
+        smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
+            smvk::IteratorFlagBit_StaticVertexFmt,
+        [&](const smvk::World::RenderItem& item) {
+            if (draws >= f.maxDraws || item.material == smvk::World::kInvalidIndex ||
+                (item.flags & smvk::IteratorFlagBit_Masked) != 0)
+                return;
+            auto* mesh = self->LodMeshForNode(item.node, item.mesh);
+            if (!mesh || mesh->skinned)
+                return;
+            const auto& model = self->m_world->scene.globalTransform[item.node];
+            glm::vec3 center{};
+            float radius = 0;
+            smvk::MeshBoundsToWorld(model, mesh->geometry.aabbMin,
+                                   mesh->geometry.aabbMax, center, radius);
+            if (!smvk::RenderViewIntersectsSphere(f.cullView, center, radius) ||
+                glm::length(center - f.eye) > f.maxDistance + radius)
+                return;
+            const auto* mat = static_cast<const smvk::World&>(*self->m_world).GetMaterial(item.material);
+            if (!mat)
+                return;
+            smvk::RasterSettings raster = mat->pipeline.raster;
+            if (raster.cullMode == smvk::CullMode::Back)
+                raster.cullMode = smvk::CullMode::Front;
+            else if (raster.cullMode == smvk::CullMode::Front)
+                raster.cullMode = smvk::CullMode::Back;
+            cmd.BindRenderPipeline(self->m_resources.vertexLitProgram,
+                ::tour::vertex_layouts::Static,
+                smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                    .writeEnable = true, .depthTestEnable = true},
+                smvk::StencilSettings{}, smvk::BlendSettings::Opaque(),
+                smvk::MSAASettings::Count1(), raster);
+            auto pc = f.pc;
+            std::copy_n(glm::value_ptr(model), 16, pc.model);
+            pc.materialId = item.material;
+            pc.padEnd_[2] = item.node < self->m_world->scene.metadata.size()
+                ? self->m_world->scene.metadata[item.node].lightLayerMask : 0xffffffffu;
+            cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
+            for (const auto& surface : mesh->geometry.surfaces) {
+                if (draws >= f.maxDraws)
+                    break;
+                cmd.DrawIndexed(surface.indexCount, 1, surface.firstIndex, surface.baseVertex);
+                ++draws;
+            }
+        });
+}
+
 void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
                                const smvk::FrameContext& fc,
                                const smvk::PassData& pd) {
@@ -15130,6 +15186,55 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         m_casterContributionView = smvk::MakeCasterContributionView(
             m_renderViews.Get(mainRenderView),
             glm::vec3(dirLight.direction[0], dirLight.direction[1], dirLight.direction[2]));
+    }
+    std::optional<smvk::PlanarReflectionCapture> internalPlanarCapture;
+    uint32_t planarView = smvk::RenderViewSet::kInvalidIndex;
+    smvk::Extent2D planarExtent{};
+    glm::vec3 planarEye{};
+    if (m_planarReflectionSettings && !m_planarReflectionCapture && m_world &&
+        !DebugVisualizationActive() && m_resources.vertexLitProgram.shaderCount == 2 &&
+        mainRenderView != smvk::RenderViewSet::kInvalidIndex) {
+        const auto& cfg = *m_planarReflectionSettings;
+        glm::vec4 plane{};
+        const bool visible = cfg.receiverRadius <= 0 ||
+            smvk::RenderViewIntersectsSphere(m_renderViews.Get(mainRenderView),
+                                             cfg.receiverCenter, cfg.receiverRadius);
+        if (visible && cfg.strength > 0 && cfg.maxDraws > 0 && cfg.maxDistance > 0 &&
+            smvk::NormalizePlanarPlane(cfg.receiverPlane, plane)) {
+            if (glm::dot(plane, glm::vec4(frameData.cameraPos, 1)) < 0)
+                plane = -plane;
+            smvk::PlanarReflectionCamera camera{};
+            glm::mat4 clipped{};
+            glm::vec4 keepPlane = plane;
+            keepPlane.w -= 0.005f; // exclude the receiver itself
+            if (smvk::MakePlanarReflectionCamera(frameData.view, frameData.proj,
+                    frameData.cameraPos, plane, camera) &&
+                smvk::MakePlanarObliqueProjection(camera.view, frameData.proj, keepPlane, clipped)) {
+                planarExtent = smvk::PlanarCaptureExtent(renderExtent, cfg.resolutionDivisor);
+                auto& planar = m_viewportResources.planarReflections;
+                if (planar.EnsureCapture(*m_context, *m_rendergraph, planarExtent,
+                                         m_viewportResources.renderDepth.format)) {
+                    planarView = m_renderViews.AllocateView(clipped * camera.view,
+                        {float(planarExtent.width), float(planarExtent.height)},
+                        smvk::RenderViewFlagBit_Custom);
+                    if (planarView != smvk::RenderViewSet::kInvalidIndex) {
+                        planarEye = camera.eye;
+                        smvk::PlanarReflectionCapture capture{};
+                        capture.logicalView = planar.internalColor.logicalView;
+                        capture.bindlessIndex = planar.internalColor.bindlessIndex;
+                        // The biased near plane excludes the receiver in raster;
+                        // use the unbiased VP for receiver depth testing (same XY/W).
+                        capture.viewProjection = camera.viewProjection;
+                        capture.receiverPlane = plane;
+                        capture.thickness = cfg.thickness;
+                        capture.strength = cfg.strength;
+                        capture.f0 = cfg.f0;
+                        capture.coverageAlpha = true;
+                        internalPlanarCapture = capture;
+                    }
+                }
+            }
+        }
     }
     m_renderViews.Upload(*m_context, fb.frameIndex);
     rfTPreA1 = bench_clk::now();
@@ -20661,6 +20766,27 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         }
     }
 
+    if (internalPlanarCapture) {
+        auto& planar = m_viewportResources.planarReflections;
+        auto& pass = m_rendergraph->AddPass("PlanarReflectionCapture");
+        pass.SetOffset(0, 0).SetExtent(planarExtent)
+            .SetColor({planar.internalColor.logicalView}, smvk::AttachmentLoadOp::Clear,
+                      smvk::AttachmentStoreOp::Store, smvk::ClearColor(0, 0, 0, 0))
+            .SetDepth(planar.internalDepth.logicalView, smvk::AttachmentLoadOp::Clear,
+                      smvk::AttachmentStoreOp::DontCare, smvk::ClearDepthStencil(0, 0));
+        auto& f = m_rendergraph->PassFrameData<PlanarCaptureFrame>(pass);
+        f.pc = pc;
+        f.pc.mainRenderView = planarView;
+        f.pc.renderViewIndex = planarView;
+        f.cullView = m_renderViews.Get(planarView);
+        f.eye = planarEye;
+        f.maxDistance = m_planarReflectionSettings->maxDistance;
+        f.maxDraws = m_planarReflectionSettings->maxDraws;
+        pass.SetRecordFn(&WorldRenderer::RecordPlanarCapture, this);
+    }
+    const auto& activePlanarCapture = m_planarReflectionCapture
+        ? m_planarReflectionCapture : internalPlanarCapture;
+
     // Optional planar mirror composite. The host renders a reflected
     // camera into an independent sampled HDR image and registers its
     // logical view in THIS rendergraph. This pass simply resolves
@@ -20668,31 +20794,31 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // into the supplied capture. After SSR, before motion blur/DOF:
     // mirror reflections participate in the rest of the post chain.
     // Absent capture: no shader, target allocation or graph work.
-    if (m_planarReflectionCapture && !DebugVisualizationActive() &&
-        m_planarReflectionCapture->strength > 0.0f &&
-        m_planarReflectionCapture->logicalView != sceneHdrView &&
-        m_planarReflectionCapture->bindlessIndex != UINT32_MAX &&
+    if (activePlanarCapture && !DebugVisualizationActive() &&
+        activePlanarCapture->strength > 0.0f &&
+        activePlanarCapture->logicalView != sceneHdrView &&
+        activePlanarCapture->bindlessIndex != UINT32_MAX &&
         !m_viewportResources.renderDepth.logicalView.empty() &&
         m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX) {
         auto& planar = m_viewportResources.planarReflections;
         // Allow the normal host integration to supply a physical image
         // view, not just a view already registered in this private graph.
         // Cache aliases; keep old ones through in-flight GPU work.
-        smvk::LogicalImageViewHandle captureLogical = m_planarReflectionCapture->logicalView;
-        if (captureLogical.empty() && !m_planarReflectionCapture->physicalView.empty()) {
+        smvk::LogicalImageViewHandle captureLogical = activePlanarCapture->logicalView;
+        if (captureLogical.empty() && !activePlanarCapture->physicalView.empty()) {
             for (const auto& imported : m_planarCaptureImports) {
-                if (imported.first == m_planarReflectionCapture->physicalView) {
+                if (imported.first == activePlanarCapture->physicalView) {
                     captureLogical = imported.second;
                     break;
                 }
             }
             if (captureLogical.empty()) {
                 captureLogical =
-                    m_rendergraph->AddExternalImageView(m_planarReflectionCapture->physicalView,
-                                                        m_planarReflectionCapture->format,
+                    m_rendergraph->AddExternalImageView(activePlanarCapture->physicalView,
+                                                        activePlanarCapture->format,
                                                         "planarCaptureExternal");
                 if (!captureLogical.empty())
-                    m_planarCaptureImports.emplace_back(m_planarReflectionCapture->physicalView,
+                    m_planarCaptureImports.emplace_back(activePlanarCapture->physicalView,
                                                         captureLogical);
             }
         }
@@ -20701,12 +20827,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                     sceneHdrView,
                                     sceneHdrBindless,
                                     captureLogical,
-                                    m_planarReflectionCapture->bindlessIndex,
+                                    activePlanarCapture->bindlessIndex,
                                     m_viewportResources.renderDepth.logicalView,
                                     m_viewportResources.renderDepth.bindlessIndex,
                                     frameUniformsAddress,
                                     linearSampler,
-                                    *m_planarReflectionCapture)) {
+                                    *activePlanarCapture)) {
             sceneHdrView = planar.OutputView();
             sceneHdrBindless = planar.OutputBindless();
         }
