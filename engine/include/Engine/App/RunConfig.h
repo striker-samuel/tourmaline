@@ -75,6 +75,13 @@ struct RunConfig {
     // are the independent neighbors). The chain defaults OFF, so
     // headless captures opt IN with =1.
     std::optional<OnOffPin> ssgi;
+    // ddgi: 1|on|0|off (unset = OFF). The probe-based DYNAMIC diffuse GI
+    // (Rendergraph/ddgi.h — bounded probe grid, octahedral irradiance +
+    // distance moments, per-frame ray-query updates). Opt-in; requires a
+    // ray-query device + the scene TLAS (falls back to the existing
+    // diffuse ambient otherwise). Default OFF, so headless captures opt
+    // IN with =1.
+    std::optional<OnOffPin> ddgi;
     // bloomThreshold: 0..16000 pre-exposure HDR (unset = authored wins)
     std::optional<float> bloomThreshold;
     // bloomIntensity: 0..4 tonemap add scale (unset = authored wins)

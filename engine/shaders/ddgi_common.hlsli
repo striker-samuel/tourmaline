@@ -14,6 +14,30 @@ struct DdgiRay {
 struct DdgiRayBuffer { DdgiRay values[1]; };
 struct DdgiIrrBuffer { float4 values[1]; };
 struct DdgiDistanceBuffer { float2 values[1]; };
+// One probe volume's lookup descriptor (mirror of smvk::ddgi::VolumeDesc,
+// 64 bytes). Carries both history-slot BDAs; the lit shader picks the
+// published slot via DdgiParams::slot.
+struct DdgiVolumeDesc {
+    GPU_PTR_READ(DdgiIrrBuffer) irradiance[2];
+    GPU_PTR_READ(DdgiDistanceBuffer) distance[2];
+    float originX, originY, originZ;
+    float spacing;
+    uint dimX, dimY, dimZ;
+    uint pad;
+};
+struct DdgiVolumeDescBuffer { DdgiVolumeDesc values[1]; };
+// The lit shader's DDGI sampling params (mirror of smvk::ddgi::DdgiParams,
+// 32 bytes) — reached through FrameUniforms::ddgiParams.Get().
+struct DdgiParams {
+    GPU_PTR_READ(DdgiVolumeDescBuffer) volumes;
+    uint volumeCount;
+    uint slot;
+    float strength;
+    uint enabled;
+    uint debug;
+    uint pad;
+};
+
 
 float2 DdgiSign(float2 v) {
     return float2(v.x >= 0 ? 1 : -1, v.y >= 0 ? 1 : -1);

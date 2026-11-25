@@ -89,6 +89,11 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     // scale (mesh simplification errors are authored in local units).
     // Near/inside bounds, invalid view data, or disabled LOD use the finest
     // available LOD. This first GPU selection has no previous-LOD hysteresis.
+    // Radius uses the max column length (exact for rotation / pure scale /
+    // uniform scale+rotation). FUTURE (not implemented): the tight AND
+    // always-conservative radius is sigma_max (largest singular value) of
+    // the basis — replace `scale` below with it in BOTH legs (here + the
+    // CPU World::LodDistanceForNode) if rotated non-uniform scale ever pops.
     const float3 bx = inst.value.basisX.xyz;
     const float3 by = inst.value.basisY.xyz;
     const float3 bz = inst.value.basisZ.xyz;
@@ -98,8 +103,7 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
         inst.value.worldPosition.low.xyz +
         bx * inst.value.localSphere.x + by * inst.value.localSphere.y +
         bz * inst.value.localSphere.z;
-    const float radius = inst.value.localSphere.w *
-                         sqrt(max(dot(bx,bx) + dot(by,by) + dot(bz,bz), 0.0f));
+    const float radius = inst.value.localSphere.w * scale;
     const float distance = max(length(center) - radius, 0.0f);
     const bool useError = pcW.lodProjection.z != 0.0f &&
         pcW.lodEyeBudget.w >= 0.0f && isfinite(pcW.lodEyeBudget.w) &&

@@ -10,6 +10,7 @@
 // array bounds) — single source: engine/shaders/engine_limits.hlsli.
 // The C++ side bridges the same file via Engine/Core/Limits.h.
 #include "engine_limits.hlsli"
+#include "ddgi_common.hlsli"
 
 // Specialization constant IDs (driver will constant-fold these)
 // Must match CPU-side pipeline creation (App::CreatePipelines)
@@ -1044,6 +1045,19 @@ uint decalCount;                                         // 776 0 = decals off
     uint giVolumeSpecLayers[32];                                   // 3220 atlas slots (4 roughness layers x 8 volumes)
     uint giVolumeSpecDims[8];                                      // 3348 packed cols | rows << 16
     uint giVolumeClassSlots[8];                                    // 3380 debug R8 classification slots (GI_DEBUG mode 7)
+    // ---- DDGI (dynamic diffuse GI, Rendergraph/ddgi.h): ONE BDA to the
+    // small per-view DdgiParams slab (volume list + slot + strength +
+    // enable + debug), uploaded per frame like FramePSHot. Kept OUT of this
+    // struct (the slab is reached via ddgiParams.Get()). ----
+    GPU_PTR_READ(DdgiParams) ddgiParams;                             // 3416 DdgiParams slab BDA (0 = off)
+    // Motion-vector pass: the camera-relative view-projection (proj * view
+    // rotation, camera at the origin) + the double-precision camera origin
+    // (split high/low). The direct motion leg re-rasterises with the SAME
+    // double-float relative transform the GPU-scene prepass used, so its
+    // depth matches bit-for-bit (no GreaterEqual rejection holes).
+    float4x4 relativeViewProj;   // 3424
+    float4 cameraOriginHigh;     // 3488 (double origin .high)
+    float4 cameraOriginLow;      // 3504 (double origin .low)
 };
 
 // Deferred-shadow push constants + shared helpers (needs FrameUniforms

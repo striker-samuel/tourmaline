@@ -16,6 +16,47 @@ inline constexpr uint32_t kDistanceBins = kDistanceResolution * kDistanceResolut
 inline constexpr uint32_t kMaxProbes = 32768;
 inline constexpr uint32_t kMaxRays = 512;
 
+// ---- Multi-volume (per-world-subcell) layout. Each occupied 64 m world
+// subcell owns ONE probe volume: a dense grid over the subcell's XZ
+// footprint + the local geometry's Y range. The lit shader walks the
+// VolumeDesc list (a GPU buffer published through FrameUniforms) to find
+// the volume containing a world point. The trace/blend passes carry each
+// volume's grid + BDAs in their OWN push block; VolumeDesc is the lit
+// shader's lookup table. ----
+inline constexpr uint32_t kDdgiMaxVolumes = 128;
+
+// GPU descriptor of one probe volume (mirrored in ddgi_common.hlsli as
+// DdgiVolumeDesc; 64 bytes, 16-aligned). Carries BOTH history-slot BDAs —
+// the lit shader picks the published slot via DdgiParams::slot, so
+// the descriptor list is uploaded ONCE per world (no per-frame re-upload
+// hazard on the persistent buffer).
+struct alignas(16) VolumeDesc {
+    uint64_t irradiance[2] = {}; // per-history-slot irradiance BDAs
+    uint64_t distance[2] = {};   // per-history-slot distance-moment BDAs
+    float origin[3] = {};        // grid min corner
+    float spacing = 0.0f;        // probe spacing (m)
+    uint32_t dims[3] = {};       // probe grid dims
+    uint32_t pad = 0;
+};
+static_assert(sizeof(VolumeDesc) == 64 && offsetof(VolumeDesc, dims) == 48);
+
+// The lit shader's DDGI sampling params — a small per-view slab (the
+// FramePSHot pattern), uploaded per frame and reached through
+// FrameUniforms::ddgiParams.Get(). Kept OUT of the monolithic FrameUniforms
+// (a 6-field growth there would recompile every shader and bloat the
+// per-flight uniform buffer; the single BDA fits the struct's tail pad).
+// Mirrored in ddgi_common.hlsli as DdgiParams (32 bytes).
+struct alignas(16) DdgiParams {
+    uint64_t volumes = 0;     // 0  VolumeDesc[] BDA (0 = off)
+    uint32_t volumeCount = 0; // 8  live volumes
+    uint32_t slot = 0;        // 12 published history slot (0/1)
+    float strength = 0.0f;    // 16 blend strength (0..1)
+    uint32_t enabled = 0;     // 20 1 = sample + blend
+    uint32_t debug = 0;       // 24 1 = flat irradiance view
+    uint32_t pad = 0;         // 28
+};
+static_assert(sizeof(DdgiParams) == 32);
+
 struct Grid {
     float origin[3] = {};
     float spacing = 2.0f;
@@ -49,16 +90,14 @@ struct Sizes {
 // Reject malformed grids and allocations above the caller's device/budget limit.
 inline bool CalculateSizes(const Grid& g, size_t byteBudget, Sizes& out) {
     out = {};
-    if (!std::isfinite(g.spacing) || g.spacing <= 0 ||
-        !std::isfinite(g.maxDistance) || g.maxDistance <= 0.001f ||
-        g.maxDistance > 1.0e8f || !std::isfinite(g.hysteresis) ||
-        g.hysteresis < 0 || g.hysteresis >= 1 ||
-        g.rays == 0 || g.rays > kMaxRays)
+    if (!std::isfinite(g.spacing) || g.spacing <= 0 || !std::isfinite(g.maxDistance) ||
+        g.maxDistance <= 0.001f || g.maxDistance > 1.0e8f || !std::isfinite(g.hysteresis) ||
+        g.hysteresis < 0 || g.hysteresis >= 1 || g.rays == 0 || g.rays > kMaxRays)
         return false;
     uint64_t count = 1;
     for (unsigned i = 0; i < 3; ++i) {
-        if (!std::isfinite(g.origin[i]) || g.dims[i] < 2 ||
-            g.dims[i] > kMaxProbes || count > kMaxProbes / g.dims[i] ||
+        if (!std::isfinite(g.origin[i]) || g.dims[i] < 2 || g.dims[i] > kMaxProbes ||
+            count > kMaxProbes / g.dims[i] ||
             !std::isfinite(g.origin[i] + (g.dims[i] - 1) * g.spacing))
             return false;
         count *= g.dims[i];
@@ -69,8 +108,10 @@ inline bool CalculateSizes(const Grid& g, size_t byteBudget, Sizes& out) {
     const uint64_t total = scratch + 2 * (irr + dist);
     if (total > byteBudget || total > std::numeric_limits<size_t>::max())
         return false;
-    out = {static_cast<uint32_t>(count), static_cast<size_t>(scratch),
-           static_cast<size_t>(irr), static_cast<size_t>(dist)};
+    out = {static_cast<uint32_t>(count),
+           static_cast<size_t>(scratch),
+           static_cast<size_t>(irr),
+           static_cast<size_t>(dist)};
     return true;
 }
 

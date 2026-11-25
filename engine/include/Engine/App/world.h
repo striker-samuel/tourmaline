@@ -62,6 +62,12 @@ struct LodFrameInputs {
     float viewportHeight = 1080.0f;
     float fovY = 0.7853982f; // 45 deg
     float pixelBudget = 1.0f;
+    // LOD-selection hysteresis (SelectLodIndexForDistance). 0 = the
+    // stateless threshold walk (the GPU-scene canonical selection —
+    // coarsest in-budget level, no history). kLodSelectHysteresis (0.2)
+    // restores the sticky CPU band for anti-flicker. Shared shape: the
+    // CPU and GPU selectors agree exactly when this is 0.
+    float hysteresis = 0.0f;
 };
 
 // ---- Shader LODs (per-material shading programs) ---------------
@@ -1063,17 +1069,19 @@ struct World {
     // the pick multiplies by the node's own world scale here -
     // per-instance exact, including multi-instance meshes. Returns 0
     // (full mesh) when no chain was cooked or nothing coarser is in
-    // budget. currentLod anchors the hysteresis band
-    // (kLodSelectHysteresis): levels within the band of the current one
-    // are sticky, so switch distances don't flip siblings frame to
-    // frame.
+    // budget. currentLod anchors the hysteresis band: levels within the
+    // band of the current one are sticky, so switch distances don't flip
+    // siblings frame to frame. `hysteresis` is the pluggable selector —
+    // 0 is the stateless threshold walk (the GPU-scene canonical
+    // selection), kLodSelectHysteresis restores the sticky CPU band.
     uint32_t SelectLodIndex(uint32_t meshIndex,
                             float distance,
                             float viewportHeightPx,
                             float fovYRadians,
                             float maxPixelError,
                             uint32_t currentLod = 0,
-                            float instanceWorldScale = 1.0f) const;
+                            float instanceWorldScale = 1.0f,
+                            float hysteresis = 0.0f) const;
 
     // ---- Geometry LOD streaming (Renderer/geometry_streamer.h) ------
     // Consume the accumulated per-frame DEMAND: (world mesh, level)

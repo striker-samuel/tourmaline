@@ -50,10 +50,25 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
         result.flags = q.CommittedTriangleFrontFace() ? 1 : 2;
     } else {
         FrameUniforms frame = sp.frameUniforms.Get();
-        float t = pow(saturate(direction.y), max(frame.env.skyHorizon.w, 0.001));
-        // Diagnostic gradient; the final tracer must share Main's sky evaluation.
-        result.radiance = max(0, lerp(frame.env.skyHorizon.rgb,
-                                      frame.env.skyZenith.rgb, t) * frame.env.skyZenith.w);
+        // Miss: evaluate the environment radiance in this direction. Sky up,
+        // ground down, scaled by the UNGATED sky scale (ground.w =
+        // iblIntensity = skyIntensity), never skyZenith.w (the specular sky
+        // intensity) AND never fogEndAndFlags.w: that flag is the
+        // diffuse-IBL-isolation gate, and it is 0 while DDGI owns the
+        // ambient (IblWanted() is false) — folding it in would zero the
+        // field this tracer is supposed to produce. EvaluateSpecularEnv
+        // makes the same call (ungated ground.w). The DDGI field REPLACES
+        // the gated analytic ambient, so it must capture the sky itself.
+        const float ibl = max(frame.env.ground.w, 0.0f);
+        const float exponent = max(frame.env.skyHorizon.w, 0.001f);
+        const float up = saturate(direction.y);
+        const float dn = saturate(-direction.y);
+        const float3 skyPart =
+            lerp(frame.env.skyHorizon.rgb, frame.env.skyZenith.rgb, pow(up, exponent));
+        const float3 gndPart =
+            lerp(frame.env.skyHorizon.rgb, frame.env.ground.rgb, saturate(dn * 1.5f));
+        const float3 hemi = lerp(gndPart, skyPart, saturate(direction.y * 0.5f + 0.5f));
+        result.radiance = max(0, hemi * ibl);
     }
     sp.scratch.Get().values[probe * sp.rays + rayIndex] = result;
 }

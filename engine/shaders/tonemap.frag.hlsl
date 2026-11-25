@@ -48,6 +48,8 @@ struct TonemapPush
     float displayBlueGain;
     float displayBrightness;
     uint displayTestPattern;
+    uint pointSamplerIndex;   // nearest/clamp sampler for the motion texture (debugView 1)
+    float2 motionTexelSize;   // motion image size in texels (UV -> pixels scale)
 };
 
 GPU_PUSH(TonemapPush, tp);
@@ -267,10 +269,16 @@ PSOut mainPS(PSIn IN)
     // view shows TRUE motion only.
     if (tp.debugView == 1 && tp.motionTextureIndex != 0xffffffff && tp.motionTextureIndex < 100000)
     {
+        // Point-sample the velocity buffer at the FULL-frame uv (the motion
+        // image is always full-extent; the HDR srcUvWindow remap is wrong
+        // for it on stacked/sub-rect layers, and a linear tap bleeds motion
+        // across depth silhouettes - the "misaligned texture" artifact).
         float2 v = textures[NonUniformResourceIndex(tp.motionTextureIndex)]
-            .Sample(samplers[NonUniformResourceIndex(smpIdx)], uv).rg;
-        v = (v - tp.jitterDelta) * tp.motionDebugScale;
-        float mag = saturate(length(v));
+            .Sample(samplers[NonUniformResourceIndex(tp.pointSamplerIndex)], IN.uv).rg;
+        v = v - tp.jitterDelta;
+        // UV delta -> screen pixels, then a readable magnitude ramp. The
+        // scale slider is now "max pixels shown at full brightness".
+        float mag = saturate(length(v * tp.motionTexelSize) / tp.motionDebugScale);
         float hue = atan2(v.y, v.x) * 0.15915494 + 0.5; // /2pi + 0.5
         float3 rgb = HsvToRgb(float3(hue, 1.0, mag));
         OUT.outColor = float4(tp.gammaEncode ? SrgbEncode(rgb) : rgb, 1.0f);

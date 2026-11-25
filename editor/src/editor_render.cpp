@@ -595,14 +595,17 @@ void EditorApp::UploadMaterials(uint32_t flight) {
     }
     const size_t stride = sizeof(smvk::MaterialValues) * kMaxMaterials;
     const bool ok = m_editorMaterialRows.Publish(
-        flight, m_editorMaterialFull[flight],
-        [&](size_t offset, const void* bytes, size_t count) {
+        flight, m_editorMaterialFull[flight], [&](size_t offset, const void* bytes, size_t count) {
             if (offset > stride || count > stride - offset)
                 return false;
-            m_context->UploadDataToBuffer(
-                m_materialsBuf, bytes, count,
-                smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment,
-                smvk::AccessFlags::ShaderRead, 0, size_t(flight) * stride + offset);
+            m_context->UploadDataToBuffer(m_materialsBuf,
+                                          bytes,
+                                          count,
+                                          smvk::PipelineStageBit_Vertex |
+                                              smvk::PipelineStageBit_Fragment,
+                                          smvk::AccessFlags::ShaderRead,
+                                          0,
+                                          size_t(flight) * stride + offset);
             return true;
         });
     if (!ok) {
@@ -1416,6 +1419,9 @@ void EditorApp::RecordViewportTonemap(smvk::LogicalImageViewHandle swapView,
                                     .addressV = smvk::AddressMode::ClampToEdge,
                                     .addressW = smvk::AddressMode::ClampToEdge,
                                     .maxAnisotropy = 1.0f}), // dedupes to slot 0 (EnsureShaders)
+        0u,   // pointSamplerIndex (no motion-vector debug layer here)
+        0.0f, // motionTexelSizeX
+        0.0f, // motionTexelSizeY
         previewSwapViews,
         smvk::Extent2D{uint32_t(rect.w), uint32_t(rect.h)},
         d,
@@ -1567,9 +1573,8 @@ void EditorApp::RecordInset(smvk::CommandBuffer& cmd,
         self->HasDrawItems() ? ::tour::vertex_layouts::Static : ::tour::vertex_layouts::Empty;
     if (&fmt == &::tour::vertex_layouts::Static)
         cmd.BindStaticVertexFmt();
-    const smvk::DepthSettings depth{.depthFunc = smvk::CompareOp::GreaterEqual,
-                                    .writeEnable = true,
-                                    .depthTestEnable = true};
+    const smvk::DepthSettings depth{
+        .depthFunc = smvk::CompareOp::GreaterEqual, .writeEnable = true, .depthTestEnable = true};
     for (int masked = 0; masked <= 1; ++masked) {
         const bool maskedPhase = (masked == 1);
         cmd.BindRenderPipeline(prog,
@@ -1642,17 +1647,16 @@ void EditorApp::RecordMainDraw(smvk::CommandBuffer& cmd,
         // Still show the selection highlight on top.
         if (selectedWireOverlay && self->m_selected != UINT32_MAX &&
             self->m_wireProgram.shaderCount == 2) {
-            cmd.BindRenderPipeline(
-                self->m_wireProgram,
-                ::tour::vertex_layouts::Static,
-                smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
-                                    .writeEnable = false,
-                                    .depthTestEnable = true},
-                smvk::StencilSettings{},
-                smvk::BlendSettings{},
-                smvk::MSAASettings{},
-                smvk::RasterSettings{.polygonMode = smvk::PolygonMode::Line,
-                                     .cullMode = smvk::CullMode::None});
+            cmd.BindRenderPipeline(self->m_wireProgram,
+                                   ::tour::vertex_layouts::Static,
+                                   smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                                       .writeEnable = false,
+                                                       .depthTestEnable = true},
+                                   smvk::StencilSettings{},
+                                   smvk::BlendSettings{},
+                                   smvk::MSAASettings{},
+                                   smvk::RasterSettings{.polygonMode = smvk::PolygonMode::Line,
+                                                        .cullMode = smvk::CullMode::None});
             cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
             self->DrawWorldNodes(cmd, pc, false, true, false);
             self->DrawWorldNodes(cmd, pc, true, true, false);
@@ -1664,9 +1668,8 @@ void EditorApp::RecordMainDraw(smvk::CommandBuffer& cmd,
         self->HasDrawItems() ? ::tour::vertex_layouts::Static : ::tour::vertex_layouts::Empty;
     if (&fmt == &::tour::vertex_layouts::Static)
         cmd.BindStaticVertexFmt();
-    const smvk::DepthSettings depth{.depthFunc = smvk::CompareOp::GreaterEqual,
-                                    .writeEnable = true,
-                                    .depthTestEnable = true};
+    const smvk::DepthSettings depth{
+        .depthFunc = smvk::CompareOp::GreaterEqual, .writeEnable = true, .depthTestEnable = true};
     const bool wireAll = self->m_wireframeAll && self->m_wireProgram.shaderCount == 2;
     smvk::ShaderProgram& scene = wireAll ? self->m_wireProgram : prog;
     for (int masked = 0; masked <= 1; ++masked) {
@@ -1686,18 +1689,18 @@ void EditorApp::RecordMainDraw(smvk::CommandBuffer& cmd,
         self->DrawWorldNodes(cmd, pc, maskedPhase, false, false, bakedOnly);
     }
     {
-        cmd.BindRenderPipeline(
-            scene,
-            fmt,
-            smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
-                                .writeEnable = false,
-                                .depthTestEnable = true},
-            smvk::StencilSettings{},
-            smvk::BlendSettings::AlphaBlend(),
-            smvk::MSAASettings{},
-            smvk::RasterSettings{.polygonMode = wireAll ? smvk::PolygonMode::Line
-                                                        : smvk::PolygonMode::Fill,
-                                 .cullMode = smvk::CullMode::None});
+        cmd.BindRenderPipeline(scene,
+                               fmt,
+                               smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                                   .writeEnable = false,
+                                                   .depthTestEnable = true},
+                               smvk::StencilSettings{},
+                               smvk::BlendSettings::AlphaBlend(),
+                               smvk::MSAASettings{},
+                               smvk::RasterSettings{.polygonMode = wireAll
+                                                                       ? smvk::PolygonMode::Line
+                                                                       : smvk::PolygonMode::Fill,
+                                                    .cullMode = smvk::CullMode::None});
         engine::IRenderer::PushConstants tpc = pc;
         tpc.pad_pc = 1; // classic alpha blend
         cmd.PushConstants(0, sizeof(tpc), &tpc, smvk::ShaderStage::All);

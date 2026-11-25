@@ -287,13 +287,13 @@ struct SceneEnv {
     float sunIntensity = 10000.0f; // lux (the runtime sun default)
     float exposure = 1.0f;
     // Fog quality tiers (authored; the App renders the selected one):
-    //   0 = off (no fog at all)
+    //   0 = off (no fog at all) — the default
     //   1 = analytic (exp2 distance fog — the cheap fallback tier)
-    //   2 = volumetric (the raymarched GI-lit pass — the default; falls
-    //       back to the analytic tier at runtime when the pass cannot
-    //       run — pass off/density 0/target missing — so fog never
-    //       silently disappears)
-    int fogQuality = 2;
+    //   2 = volumetric (the raymarched GI-lit pass; falls back to the
+    //       analytic tier at runtime when the pass cannot run — pass
+    //       off/density 0/target missing — so fog never silently
+    //       disappears)
+    int fogQuality = 0;
     // Analytic tier settings (fogMode 1 = exp2 in the frame env).
     float fogDensity = 0.0f;
     glm::vec3 fogColor{0.6f, 0.7f, 0.8f};

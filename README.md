@@ -36,7 +36,7 @@ The framework is under active development. APIs and asset formats are evolving, 
 
 - **Vulkan renderer:** Custom resource management, bindless descriptors, render graph, GPU synchronization, and HLSL shaders compiled to SPIR-V with DXC.
 - **GPU-driven geometry:** Hierarchical-Z occlusion, GPU culling/filtering, meshlets, LOD chains, skinning, and geometry/texture streaming paths.
-- **Lighting and effects:** Clustered Forward+ lighting; directional, spot, EVSM, and experimental deferred shadows; SSR, ambient occlusion, volumetrics, exposure, bloom, depth of field, motion blur, and SMAA. Optional DLSS-SR/Reflex integration is available on supported Windows/NVIDIA setups.
+- **Lighting and effects:** Clustered Forward+ lighting; directional, spot, EVSM, and experimental deferred shadows; SSR, ambient occlusion, volumetrics, exposure, bloom, depth of field, motion blur, and SMAA. A probe-based dynamic diffuse GI (**DDGI**) path is present but **not a working implementation** — see [Current limitations](#current-limitations). Optional DLSS-SR/Reflex integration is available on supported Windows/NVIDIA setups.
 - **Authored worlds:** A Maya-inspired, text-based `.tour` scene overlay with references, overrides, editable nodes, and replayable operations. `.tourAnim` provides skeletal clips.
 - **Content as code:** `Project.exe` resolves `.tourrecipe` builds, cooks and verifies multiple `.pak` files, publishes a `.tapp` runtime manifest, and generates a typed, `constexpr` `project.h` catalog of persistent asset IDs.
 - **C++-first runtime:** Scene loading by asset ID, additive scene instances, asset prefetch, typed generational handles for mesh instances/animators/audio emitters, and scene-aware spatial audio. Game code owns the gameplay objects.
@@ -357,6 +357,7 @@ Tourmaline is still a research-and-development engine. In particular:
 
 - **No API or asset-format stability guarantee.** Breaking changes can require recooking assets; legacy format readers are not a standing commitment.
 - **Terrain and GI are experimental.** Heightfields, placement, baked probes, and volume GI work for development scenes but are not production-hardened; visual defects or incomplete bakes are possible.
+- **DDGI (dynamic diffuse GI) is not a working implementation.** The probe-grid, ray-query-traced diffuse GI path is under heavy development and does not yet produce correct lighting. It is not enabled by default, requires a ray-query-capable GPU and a scene TLAS, and may be broken or removed at any moment.
 - **The editor is not a complete DCC replacement.** It has custom scene-authoring workflows, but its viewport is not identical to the full game renderer.
 - **Runtime systems are intentionally scoped.** Some asset kinds remain scene/cluster-internal; multiple independent animated instances do not yet have independent rendered palettes within one cluster.
 - **Jolt integration is incomplete.** The dependency and isolated simulation tests are present, not a full scene-driven physics runtime.

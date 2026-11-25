@@ -17,6 +17,8 @@
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <limits>
+#include <map>
 #include <memory>
 #include <span>
 #include <stdexcept> // std::runtime_error throws (GI bake loads)
@@ -605,6 +607,36 @@ void WorldRenderer::ApplyRunConfig(const RunConfig& run) {
         if (std::atoi(mvEnv) == 0)
             m_passes.motionVectors = false;
     }
+    // Headless motion-blur override (TOURMALINE_MOTION_BLUR=0): disables the
+    // HDR velocity-gather blur (the pass flag AND the runtime enable). Used
+    // with TOURMALINE_MOTION=0 to prove the color output carries no residual
+    // motion-vector contamination: the gather would otherwise sample the
+    // un-written motion target along stale vectors.
+    if (const char* mbEnv = std::getenv("TOURMALINE_MOTION_BLUR")) {
+        if (std::atoi(mbEnv) == 0) {
+            m_passes.motionBlur = false;
+            m_motionBlurEnabled = false;
+        }
+    }
+    // Headless DOF override (TOURMALINE_DOF=0): kills the HDR CoC blur
+    // (pass flag AND runtime enable).
+    if (const char* dofEnv = std::getenv("TOURMALINE_DOF")) {
+        if (std::atoi(dofEnv) == 0) {
+            m_passes.dof = false;
+            m_dofEnabled = false;
+        }
+    }
+    // Headless skydome override (TOURMALINE_SKYDOME=0): hides the sky dome
+    // (pass flag AND visibility) WITHOUT touching the scene environment —
+    // the sky COLOR still drives ambient/IBL/GI. Used with
+    // TOURMALINE_CLEAR_COLOR to get a flat background (where no geometry is
+    // drawn) while geometry stays lit normally by sun + GI.
+    if (const char* skyEnv = std::getenv("TOURMALINE_SKYDOME")) {
+        if (std::atoi(skyEnv) == 0) {
+            m_passes.skydome = false;
+            m_skyEnabled = false;
+        }
+    }
     // Heightfield shadows (terrain frag tail): 0 off | 1 receive |
     // 2 receive + raymarched distant. Unset = receive-only; steps
     // default 16 (4..64 validated at parse).
@@ -765,6 +797,8 @@ static std::optional<AmbientMode> AmbientModeFromPin(std::string_view v) {
         return AmbientMode::SkyIbl;
     if (v == "off" || v == "none")
         return AmbientMode::Off;
+    if (v == "ddgi" || v == "dynamic")
+        return AmbientMode::Ddgi;
     return std::nullopt;
 }
 // Legacy TOURMALINE_GI overlap: 1/on -> All; 0/off demotes the baked
@@ -824,6 +858,13 @@ void WorldRenderer::ApplyHeadlessPostfxOverrides() {
     // defaults OFF (experimental v1), so captures opt IN with =1.
     if (pins.ssgi.has_value())
         m_ssgiDiffuseEnabled = (*pins.ssgi == OnOffPin::On);
+    // DDGI pin (TOURMALINE_DDGI=0|1): selects the DDGI ambient mode (the
+    // probe-based dynamic diffuse GI, Rendergraph/ddgi.h). The GI source is
+    // mutually exclusive — selecting DDGI turns the baked GI + sky IBL
+    // diffuse off. Default is the baked/IBL mode. A non-ray-query device
+    // degrades to the sky IBL mode at the emission site (DdgiActive).
+    if (pins.ddgi.has_value() && *pins.ddgi == OnOffPin::On)
+        m_ambientMode = AmbientMode::Ddgi;
     // Bloom tuning pins (threshold is pre-exposure HDR, same units as
     // the ImGui sliders; intensity is the tonemap add scale). The
     // ImGui sliders stay live after.
@@ -973,6 +1014,15 @@ bool WorldRenderer::onAttach() {
         const float b = float(std::atof(trimEnv(lodBudgetEnv).data()));
         if (b >= 0.05f && b <= 256.0f)
             m_lodPixelBudget = b;
+    }
+    // Headless LOD-hysteresis pin (TOURMALINE_LOD_HYSTERESIS=<0..1>): 0 =
+    // the GPU-scene canonical stateless threshold (CPU + GPU select the
+    // SAME level); the historical kLodSelectHysteresis (0.2) restores the
+    // sticky anti-flicker band on the CPU legs. Clamped to [0, 0.5].
+    if (const char* lodHystEnv = std::getenv("TOURMALINE_LOD_HYSTERESIS")) {
+        const float h = float(std::atof(trimEnv(lodHystEnv).data()));
+        if (h >= 0.0f && h <= 0.5f)
+            m_lodHysteresis = h;
     }
     // Headless LOD cadence kill (TOURMALINE_LODFULL=0 restores the old
     // halfrate refresh: parity-split, 1-frame-stale decisions).
@@ -1606,6 +1656,10 @@ bool WorldRenderer::onAttach() {
         m_context->CreateBuffer(sizeof(FramePSHot) * m_swapchain->framesInFlight() * viewSlabs,
                                 smvk::BufferType_Uniform,
                                 "frame hot uniforms");
+    m_resources.ddgiParams = m_context->CreateBuffer(sizeof(smvk::ddgi::DdgiParams) *
+                                                         m_swapchain->framesInFlight() * viewSlabs,
+                                                     smvk::BufferType_Uniform,
+                                                     "ddgi params");
     m_resources.lightsBuffer = m_context->CreateBuffer(
         sizeof(smvk::Light) * engine::renderer::limits::MaxSimultaneousLights *
             m_swapchain->framesInFlight() * viewSlabs,
@@ -3180,6 +3234,15 @@ void WorldRenderer::onDetach() {
     }
     m_meshParticleDraw.Destroy();
     m_viewportResources.meshParticles.Destroy(*m_rendergraph);
+    for (auto& v : m_ddgiVolumes)
+        v.Destroy(*m_rendergraph);
+    m_ddgiVolumes.clear();
+    m_ddgiVolumeDescs.clear();
+    m_ddgiVolumeDescBuf = {};
+    m_ddgiVolumeDescBda = 0;
+    m_ddgiCachedWorld = nullptr;
+    m_ddgiReset = true;
+    m_ddgiProbesDirty = true;
     if (!m_gpuPlacementViewLogical.empty())
         m_rendergraph->FreeBuffer(m_gpuPlacementViewLogical);
     m_gpuPlacementViewLogical = {};
@@ -4881,7 +4944,189 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
         // a broken bake, so the one-liner keeps the diagnosis obvious.
         std::cerr << "[Scene] Baked mode: no baked sources loaded - "
                      "direct-only everywhere (bake the scene or switch modes)\n";
+    } else if (m_ambientMode == AmbientMode::Ddgi &&
+               !(m_context && m_context->SupportsRayQueries())) {
+        // DDGI needs hardware ray queries; a non-supporting device
+        // degrades to the analytic sky IBL rather than rendering black.
+        m_ambientMode = AmbientMode::SkyIbl;
+        std::cerr << "[Scene] DDGI needs ray queries - ambient degraded to "
+                  << AmbientModeName(m_ambientMode) << "\n";
     }
+}
+
+// DDGI probe-volume discovery: bucket the world's opaque static meshes
+// into 64 m subcells (XZ), clip each subcell's AABB to its footprint,
+// compute a dense grid per occupied subcell within a shared probe budget,
+// create one Volume per subcell and publish the GPU VolumeDesc list
+// (uploaded ONCE — it carries BOTH history-slot BDAs; the lit shader picks
+// the published slot via FrameUniforms::ddgiSlot).
+void WorldRenderer::RebuildDdgiVolumes() {
+    for (auto& v : m_ddgiVolumes)
+        v.Destroy(*m_rendergraph);
+    m_ddgiVolumes.clear();
+    m_ddgiVolumeDescs.clear();
+    m_ddgiVolumeDescBuf = {};
+    m_ddgiVolumeDescBda = 0;
+    m_ddgiWriteSlot = 0;
+    m_ddgiUpdateIndex = 0;
+    m_ddgiReset = true;
+    m_ddgiProbesDirty = true;
+
+    if (!m_world || !m_context || !m_context->SupportsRayQueries())
+        return;
+
+    // ---- Bucket meshes into 64 m subcells. ----
+    constexpr double kSub = 64.0; // WorldPartition subcell (XZ, m)
+    std::map<std::pair<int64_t, int64_t>, tour::Aabb> cells;
+    const float inf = std::numeric_limits<float>::infinity();
+    m_world->forEachRenderItem(
+        smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow,
+        [&](const smvk::World::RenderItem& item) {
+            const smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
+            if (!mesh || item.node >= m_world->scene.globalTransform.size())
+                return;
+            // CPU-authoritative DOUBLE world transform: the float
+            // globalTransform is the quantized legacy ABI and loses precision
+            // on large-world scenes (the Lumberyard Bistro), which would place
+            // the probe volumes offset from the geometry. globalTransformDouble
+            // holds the pak's authoritative double transforms for static nodes.
+            const glm::dmat4 model =
+                tour::transformhierarchy::GlobalTransformDouble(m_world->scene, item.node);
+            const glm::vec3 mn = mesh->geometry.aabbMin;
+            const glm::vec3 mx = mesh->geometry.aabbMax;
+            glm::vec3 wmin(inf), wmax(-inf);
+            for (int c = 0; c < 8; ++c) {
+                const glm::vec3 corner(
+                    (c & 1) ? mx.x : mn.x, (c & 2) ? mx.y : mn.y, (c & 4) ? mx.z : mn.z);
+                const glm::dvec3 w = model * glm::dvec4(glm::dvec3(corner), 1.0);
+                wmin = glm::min(wmin, glm::vec3(w));
+                wmax = glm::max(wmax, glm::vec3(w));
+            }
+            const int64_t sx0 = int64_t(std::floor(wmin.x / kSub));
+            const int64_t sx1 = int64_t(std::floor(wmax.x / kSub));
+            const int64_t sz0 = int64_t(std::floor(wmin.z / kSub));
+            const int64_t sz1 = int64_t(std::floor(wmax.z / kSub));
+            for (int64_t sx = sx0; sx <= sx1; ++sx)
+                for (int64_t sz = sz0; sz <= sz1; ++sz) {
+                    auto [it, inserted] = cells.try_emplace(std::make_pair(sx, sz));
+                    tour::Aabb& cell = it->second;
+                    if (inserted)
+                        cell = tour::Aabb::empty();
+                    cell.mn = glm::min(cell.mn, wmin);
+                    cell.mx = glm::max(cell.mx, wmax);
+                    // Clip XZ to the subcell footprint (tight, tiled, no
+                    // cross-subcell overlap; Y stays the mesh-union range).
+                    cell.mn.x = std::max(cell.mn.x, float(sx * kSub));
+                    cell.mx.x = std::min(cell.mx.x, float((sx + 1) * kSub));
+                    cell.mn.z = std::max(cell.mn.z, float(sz * kSub));
+                    cell.mx.z = std::min(cell.mx.z, float((sz + 1) * kSub));
+                }
+        });
+
+    if (cells.empty())
+        return;
+
+    // ---- Adaptive spacing: densest uniform spacing whose TOTAL probe
+    // count across every subcell volume fits the budget. ----
+    constexpr uint64_t kBudget = 24576;
+    float spacing = 2.0f;
+    for (int guard = 0; guard < 64; ++guard) {
+        uint64_t total = 0;
+        for (const auto& [key, cell] : cells) {
+            const glm::vec3 ext = cell.mx - cell.mn;
+            // +2 = +1 probe beyond the far corner (the original margin) AND
+            // +1 for the half-spacing origin offset below (probes must reach
+            // one spacing PAST the AABB min so boundary surfaces sample
+            // open-space probes, never a probe embedded in the wall).
+            const uint32_t dx = std::max(2u, uint32_t(std::ceil(ext.x / spacing)) + 2u);
+            const uint32_t dy = std::max(2u, uint32_t(std::ceil(ext.y / spacing)) + 2u);
+            const uint32_t dz = std::max(2u, uint32_t(std::ceil(ext.z / spacing)) + 2u);
+            total += uint64_t(dx) * dy * dz;
+        }
+        if (total <= kBudget || spacing >= 128.0f)
+            break;
+        spacing *= 1.15f;
+    }
+
+    // ---- Create one Volume per subcell; collect descriptors. Fail-closed:
+    // any failed volume drops the whole feature (baked/sky ambient stands).
+    m_ddgiVolumes.reserve(cells.size());
+    m_ddgiVolumeDescs.reserve(cells.size());
+    for (const auto& [key, cell] : cells) {
+        const glm::vec3 ext = cell.mx - cell.mn;
+        smvk::ddgi::Grid grid{};
+        // Offset the grid one probe spacing OUTSIDE the mesh AABB: a probe
+        // on the AABB min corner sits inside/on the boundary wall and reads
+        // invalid, so every surface at the AABB edge would sample embedded
+        // probes and the whole field comes back magenta. Shifting the origin
+        // one spacing below the min corner (and extending dims to match)
+        // surrounds the mesh with open-space probes on all six sides.
+        grid.origin[0] = cell.mn.x - spacing;
+        grid.origin[1] = cell.mn.y - spacing;
+        grid.origin[2] = cell.mn.z - spacing;
+        grid.spacing = spacing;
+        grid.dims[0] = std::max(2u, uint32_t(std::ceil(ext.x / spacing)) + 2u);
+        grid.dims[1] = std::max(2u, uint32_t(std::ceil(ext.y / spacing)) + 2u);
+        grid.dims[2] = std::max(2u, uint32_t(std::ceil(ext.z / spacing)) + 2u);
+        grid.rays = 128u;
+        grid.maxDistance = 20.0f;
+        grid.hysteresis = 0.95f;
+
+        smvk::ddgi::Volume vol{};
+        if (!vol.Create(*m_context, *m_rendergraph, grid, size_t(128u) << 20)) {
+            std::cerr << "[DDGI] a probe volume failed to create - DDGI disabled\n";
+            for (auto& v : m_ddgiVolumes)
+                v.Destroy(*m_rendergraph);
+            m_ddgiVolumes.clear();
+            m_ddgiVolumeDescs.clear();
+            return;
+        }
+        smvk::ddgi::VolumeDesc desc{};
+        for (int s = 0; s < 2; ++s) {
+            desc.irradiance[s] = vol.history[s].irradiance.address;
+            desc.distance[s] = vol.history[s].distance.address;
+        }
+        desc.origin[0] = grid.origin[0];
+        desc.origin[1] = grid.origin[1];
+        desc.origin[2] = grid.origin[2];
+        desc.spacing = grid.spacing;
+        desc.dims[0] = grid.dims[0];
+        desc.dims[1] = grid.dims[1];
+        desc.dims[2] = grid.dims[2];
+        m_ddgiVolumes.push_back(std::move(vol));
+        m_ddgiVolumeDescs.push_back(desc);
+    }
+
+    // ---- Publish the GPU descriptor list. ----
+    if (!m_ddgiVolumeDescs.empty()) {
+        m_ddgiVolumeDescBuf =
+            m_context->CreateBuffer(m_ddgiVolumeDescs.size() * sizeof(smvk::ddgi::VolumeDesc),
+                                    smvk::BufferType_Storage,
+                                    "ddgi volume descriptors");
+        if (m_ddgiVolumeDescBuf.empty()) {
+            std::cerr << "[DDGI] descriptor buffer creation failed - DDGI disabled\n";
+            for (auto& v : m_ddgiVolumes)
+                v.Destroy(*m_rendergraph);
+            m_ddgiVolumes.clear();
+            m_ddgiVolumeDescs.clear();
+            return;
+        }
+        m_ddgiVolumeDescBda = m_context->GetBufferDeviceAddress(m_ddgiVolumeDescBuf);
+        m_context->UploadDataToBuffer(m_ddgiVolumeDescBuf,
+                                      m_ddgiVolumeDescs.data(),
+                                      m_ddgiVolumeDescs.size() * sizeof(smvk::ddgi::VolumeDesc),
+                                      smvk::PipelineStageBit_Fragment,
+                                      smvk::AccessFlags::ShaderRead,
+                                      0,
+                                      0);
+    }
+    std::cerr << "[DDGI] " << m_ddgiVolumes.size() << " subcell volume(s), spacing " << spacing
+              << " m";
+    for (const auto& d : m_ddgiVolumeDescs) {
+        std::cerr << "\n[DDGI]   origin=(" << d.origin[0] << "," << d.origin[1] << ","
+                  << d.origin[2] << ") dims=" << d.dims[0] << "x" << d.dims[1] << "x" << d.dims[2];
+    }
+    std::cerr << "\n";
 }
 
 // One env-zone look derived from a scene env block. The map stores the
@@ -5115,6 +5360,21 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
     // Motion vector pass: previous frame's viewProj. First frame falls
     // back to the current one (zero motion instead of garbage).
     data.prevViewProj = m_prevViewProjValid ? m_prevViewProj : viewProj;
+
+    // Motion vector pass: camera-relative view-projection + double camera
+    // origin, so the direct motion leg re-rasterises with the SAME
+    // double-float relative transform the GPU-scene prepass used (its depth
+    // must match bit-for-bit under the GreaterEqual test). Mirrors
+    // RasterViewPublisher::relativeViewProjection / origin.
+    {
+        glm::dmat4 camTrans(1.0);
+        camTrans[3] = glm::dvec4(m_cameraPositioner.cameraPosition_, 1.0);
+        data.relativeViewProj = glm::mat4(glm::dmat4(viewProj) * camTrans);
+        const auto camOrigin =
+            tour::math::SplitDoubleFloat(glm::dvec3(m_cameraPositioner.cameraPosition_));
+        data.cameraOriginHigh = camOrigin.high;
+        data.cameraOriginLow = camOrigin.low;
+    }
 
     data.time = m_timeSinceStart;
     data.viewportSize = {width_, height_};
@@ -5692,6 +5952,29 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
     data.contactShadowIndex =
         ContactShadowsActive() ? m_viewportResources.contactShadows.OutputIndex() : UINT32_MAX;
 
+    // DDGI publish (Rendergraph/ddgi.h): fill + upload the small per-view
+    // DdgiParams slab and publish its BDA (the lit body reads
+    // frame.ddgiParams.Get()). Always uploaded so the BDA stays valid;
+    // enabled=0 when inactive -> the lit body keeps the baked/sky slice.
+    smvk::ddgi::DdgiParams ddgiParams{};
+    if (DdgiActive()) {
+        ddgiParams.volumes = m_ddgiVolumeDescBda;
+        ddgiParams.volumeCount = uint32_t(m_ddgiVolumeDescs.size());
+        ddgiParams.slot = m_ddgiWriteSlot;
+        ddgiParams.strength = m_ddgiStrength;
+        ddgiParams.enabled = 1u;
+        ddgiParams.debug = (m_debugView == ViewMode::DdgiIrradiance) ? 1u : 0u;
+    }
+    m_context->UploadDataToBuffer(m_resources.ddgiParams,
+                                  &ddgiParams,
+                                  sizeof(ddgiParams),
+                                  kFrameUploadStages,
+                                  smvk::AccessFlags::ShaderRead,
+                                  0,
+                                  currentFrame * sizeof(smvk::ddgi::DdgiParams));
+    data.ddgiParams = m_context->GetBufferDeviceAddress(m_resources.ddgiParams) +
+                      currentFrame * sizeof(smvk::ddgi::DdgiParams);
+
     m_context->UploadDataToBuffer(m_resources.frameUniforms,
                                   &data,
                                   sizeof(FrameUniforms) /* * 1*/,
@@ -6150,10 +6433,76 @@ void WorldRenderer::UpdateMaterials(uint32_t currentFrame) {
         // reading: that would spuriously mark every row dirty.
         return static_cast<const smvk::World&>(*m_world).GetMaterial(i);
     };
+    const auto ensureChecker = [&]() {
+        if (m_debugTexBindlessIndex != UINT32_MAX)
+            return;
+        constexpr uint32_t W = 64, H = 64;
+        std::vector<uint8_t> px(size_t(W) * H * 4);
+        for (uint32_t y = 0; y < H; ++y)
+            for (uint32_t x = 0; x < W; ++x) {
+                const bool c = (((x / 8) + (y / 8)) & 1u) != 0u;
+                uint8_t* p = &px[(size_t(y) * W + x) * 4];
+                const uint8_t v = c ? 255u : 0u;
+                p[0] = v;
+                p[1] = v;
+                p[2] = v;
+                // Checker ALPHA (phase-shifted from RGB) so the MASK alpha
+                // test leaves a checker-shaped cutout in the motion/depth
+                // buffers wherever a material is alpha-tested.
+                p[3] = ((((x / 8) + (y / 8) + 1) & 1u) != 0u) ? 255u : 0u;
+            }
+        smvk::ImageCreateInfo ci{};
+        ci.type = smvk::ImageType::Image2D;
+        ci.extent = {W, H, 1};
+        ci.format = smvk::Format::RGBA8_UNorm;
+        ci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::TransferDst;
+        ci.mipLevels = 1;
+        ci.name = "debugChecker";
+        m_debugTexImage = m_context->CreateImage(ci, px.data());
+        if (m_debugTexImage.empty())
+            return;
+        smvk::ImageViewCreateInfo vci{};
+        vci.viewType = smvk::ImageViewType::View2D;
+        vci.format = smvk::Format::Undefined;
+        vci.subresourceRange = {smvk::ImageAspect::Color, 0, 1, 0, 1};
+        vci.name = "debugCheckerView";
+        m_debugTexView = m_context->CreateImageView(m_debugTexImage, vci);
+        if (m_debugTexView.empty())
+            return;
+        m_debugTexBindless = m_context->CreateBindlessImage(
+            m_debugTexView, smvk::ImageLayout::ShaderReadOnlyOptimal);
+        if (m_debugTexBindless.empty())
+            return;
+        m_debugTexBindlessIndex = m_context->GetBindlessIndex(m_debugTexBindless);
+        std::fprintf(
+            stderr, "[TexOverride] checker bindless index = %u\n", m_debugTexBindlessIndex);
+    };
+    const bool texOverride = std::getenv("TOURMALINE_TEX_OVERRIDE") != nullptr;
+    if (texOverride)
+        ensureChecker();
     const auto resolve = [&](uint32_t i) -> smvk::MaterialValues {
         smvk::MaterialValues row{};
         if (const smvk::Material* mat = sourceMaterial(i)) {
             row = mat->values;
+            if (texOverride && m_debugTexBindlessIndex != UINT32_MAX) {
+                const int idx = static_cast<int>(m_debugTexBindlessIndex);
+                row.textures.x = idx;
+                row.textures.y = idx;
+                row.textures.z = idx;
+                row.textures.w = idx;
+                row.textures2.x = idx;
+                return row;
+            }
+            if (std::getenv("TOURMALINE_MAT_AUDIT") && (i == 70u || i == 220u)) {
+                std::fprintf(
+                    stderr,
+                    "[MatAudit] i=%u shadingModel=%.0f alphaMode=%.0f texBase=%d remap=%d\n",
+                    i,
+                    row.params.w,
+                    row.params2.w,
+                    mat->values.textures.x,
+                    remapSlot(mat->values.textures.x));
+            }
             row.textures.x = remapSlot(row.textures.x);
             row.textures.y = remapSlot(row.textures.y);
             row.textures.z = remapSlot(row.textures.z);
@@ -6264,8 +6613,7 @@ void WorldRenderer::UpdateMaterials(uint32_t currentFrame) {
     // still incomplete or failed since its previous use invalidates that
     // flight's material snapshot: replay the full table.
     auto& outstanding = m_materialUploadTickets[currentFrame];
-    if (outstanding &&
-        m_context->PollUpload(outstanding) != smvk::UploadStatus::Completed)
+    if (outstanding && m_context->PollUpload(outstanding) != smvk::UploadStatus::Completed)
         m_materialForceFull[currentFrame] = true;
     outstanding = {};
 
@@ -6275,11 +6623,13 @@ void WorldRenderer::UpdateMaterials(uint32_t currentFrame) {
             if (offset > MATERIAL_FRAME_STRIDE || count > MATERIAL_FRAME_STRIDE - offset)
                 return false;
             const smvk::UploadRequest req = m_context->RequestBufferUpload(
-                m_resources.materialsBuffer, bytes, count,
-                smvk::PipelineStageBit_Vertex |
-                    smvk::PipelineStageBit_Fragment |
+                m_resources.materialsBuffer,
+                bytes,
+                count,
+                smvk::PipelineStageBit_Vertex | smvk::PipelineStageBit_Fragment |
                     smvk::PipelineStageBit_Compute,
-                smvk::AccessFlags::ShaderRead, frameOffset + offset);
+                smvk::AccessFlags::ShaderRead,
+                frameOffset + offset);
             if (!req.accepted())
                 return false; // preserve the table's dirty journal
             // The latest timeline point covers all earlier material writes
@@ -6586,7 +6936,10 @@ bool WorldRenderer::ExposureMeteringActive() const {
     // The clipping views are EXCLUDED: they annotate the real scene
     // image (the tonemap's debug branch), so adaptation must keep
     // running — freezing it would change the image being inspected.
-    if (m_debugView != ViewMode::Lit && !IsClippingDebugView(m_debugView))
+    // The motion view likewise renders through the tonemap's debug branch
+    // and must not change the scene being inspected.
+    if (m_debugView != ViewMode::Lit && !IsClippingDebugView(m_debugView) &&
+        m_debugView != ViewMode::MotionVectors)
         return false;
 #if defined(DS_DEBUG_VIZ)
     if (m_dsDebugMode != DsDebugViz::Off)
@@ -6611,11 +6964,14 @@ bool WorldRenderer::DebugVisualizationActive() const {
     // effects must stay off their readout exactly like the flat
     // views'); their LIT-PATH inputs stay live via
     // FlatDebugViewActive (see its header note).
-    // The clipping views are EXCLUDED: they inspect the FINAL image
-    // in the tonemap pass — SSR, volumetric fog, bloom and friends
-    // must stay live or the view would inspect a different image than
-    // the player sees (the IsSsgiDiffuseDebugView precedent).
-    if (m_debugView != ViewMode::Lit && !IsClippingDebugView(m_debugView))
+    // The clipping views AND the motion-vector view are EXCLUDED: they
+    // inspect the FINAL image in the tonemap pass — SSR, volumetric fog,
+    // bloom and friends must stay live or the view would inspect a
+    // different image than the player sees (the IsSsgiDiffuseDebugView
+    // precedent). The motion view replaces the tonemap's pixels rather
+    // than Main's lit fragment path, so the lit path must stay live too.
+    if (m_debugView != ViewMode::Lit && !IsClippingDebugView(m_debugView) &&
+        m_debugView != ViewMode::MotionVectors)
         return true;
     if (m_giDebug != 0)
         return true;
@@ -8716,7 +9072,9 @@ struct DsPhaseFrame {
     uint32_t x = 0;
     uint32_t y = 0;
 };
-void RecordDsPhase(smvk::CommandBuffer& cmd, const smvk::FrameContext& fc, const smvk::PassData& pd) {
+void RecordDsPhase(smvk::CommandBuffer& cmd,
+                   const smvk::FrameContext& fc,
+                   const smvk::PassData& pd) {
     const DsPhaseFrame& f = fc.rg->FrameData().Get<DsPhaseFrame>(pd.frameSlot);
     cmd.BindComputePipeline(*const_cast<smvk::ShaderProgram*>(f.program));
     cmd.PushConstants(0, sizeof(f.push), &f.push, smvk::ShaderStage::All);
@@ -8749,7 +9107,9 @@ struct HizGateFrame {
     tour::gpu_scene::RasterHizCullPush push{};
     bool timestamp = false; // raster-cull stage begin (temporal leg only)
 };
-void RecordHizGate(smvk::CommandBuffer& cmd, const smvk::FrameContext& fc, const smvk::PassData& pd) {
+void RecordHizGate(smvk::CommandBuffer& cmd,
+                   const smvk::FrameContext& fc,
+                   const smvk::PassData& pd) {
     const HizGateFrame& f = fc.rg->FrameData().Get<HizGateFrame>(pd.frameSlot);
     if (f.timestamp)
         cmd.WriteStageTimestamp(smvk::kGpuStageSceneCull, true);
@@ -8761,7 +9121,9 @@ struct HistoryFrame {
     smvk::ShaderProgram* program = nullptr;
     tour::gpu_scene::RasterHistoryPush push{};
 };
-void RecordHistory(smvk::CommandBuffer& cmd, const smvk::FrameContext& fc, const smvk::PassData& pd) {
+void RecordHistory(smvk::CommandBuffer& cmd,
+                   const smvk::FrameContext& fc,
+                   const smvk::PassData& pd) {
     const HistoryFrame& f = fc.rg->FrameData().Get<HistoryFrame>(pd.frameSlot);
     // Same pipeline, two legs: clear (mode 0) zeroes the flight's snapshot,
     // the barrier orders it before the atomic commit writes (mode 1).
@@ -8869,14 +9231,14 @@ void RecordGpuSceneProd(smvk::CommandBuffer& cmd,
 }
 struct GpuSceneCullChainFrame {
     smvk::ShaderProgram* program = nullptr;
-    smvk::ShaderProgram* compactPrograms = nullptr;   // [3]
-    smvk::ShaderProgram* workPrograms = nullptr;      // [3]
-    smvk::ShaderProgram* workScanPrograms = nullptr;  // [3]
+    smvk::ShaderProgram* compactPrograms = nullptr;  // [3]
+    smvk::ShaderProgram* workPrograms = nullptr;     // [3]
+    smvk::ShaderProgram* workScanPrograms = nullptr; // [3]
     smvk::ShaderProgram* rasterProgram = nullptr;
-    smvk::ShaderProgram* indirectPrograms = nullptr;  // [2]
-    smvk::ShaderProgram* meshletPrograms = nullptr;   // [4]
+    smvk::ShaderProgram* indirectPrograms = nullptr; // [2]
+    smvk::ShaderProgram* meshletPrograms = nullptr;  // [4]
     smvk::ShaderProgram* psoScanProgram = nullptr;
-    smvk::ShaderProgram* taskPrograms = nullptr;      // [3]
+    smvk::ShaderProgram* taskPrograms = nullptr; // [3]
     bool taskReady = false;
     tour::gpu_scene::TaskMeshDispatchPlan taskPlan{};
     tour::gpu_scene::InstanceCullGpuPush gpuPush{};
@@ -8905,8 +9267,7 @@ struct GpuSceneCullChainFrame {
 void RecordGpuSceneCullChain(smvk::CommandBuffer& cmd,
                              const smvk::FrameContext& fc,
                              const smvk::PassData& pd) {
-    const GpuSceneCullChainFrame& f =
-        fc.rg->FrameData().Get<GpuSceneCullChainFrame>(pd.frameSlot);
+    const GpuSceneCullChainFrame& f = fc.rg->FrameData().Get<GpuSceneCullChainFrame>(pd.frameSlot);
     cmd.BindComputePipeline(*f.program);
     cmd.PushConstants(0, sizeof(f.gpuPush), &f.gpuPush, smvk::ShaderStage::Compute);
     cmd.Dispatch(f.groups, 1, 1);
@@ -8955,7 +9316,8 @@ void RecordGpuSceneCullChain(smvk::CommandBuffer& cmd,
     if (f.taskReady) {
         cmd.EmitGlobalMemoryBarrier();
         cmd.BindComputePipeline(f.taskPrograms[0]);
-        cmd.PushConstants(0, sizeof(f.taskPlan.count), &f.taskPlan.count, smvk::ShaderStage::Compute);
+        cmd.PushConstants(
+            0, sizeof(f.taskPlan.count), &f.taskPlan.count, smvk::ShaderStage::Compute);
         cmd.Dispatch((f.taskPlan.workCapacity + 255u) / 256u, 1, 1);
         cmd.EmitGlobalMemoryBarrier();
         cmd.BindComputePipeline(f.workScanPrograms[0]);
@@ -8990,13 +9352,17 @@ void RecordGpuSceneCullChain(smvk::CommandBuffer& cmd,
         cmd.Dispatch((f.meshletPlan.workCapacity + 255u) / 256u, 1, 1);
         cmd.EmitGlobalMemoryBarrier();
         cmd.BindComputePipeline(f.workScanPrograms[0]);
-        cmd.PushConstants(
-            0, sizeof(f.meshletPlan.scanBlock), &f.meshletPlan.scanBlock, smvk::ShaderStage::Compute);
+        cmd.PushConstants(0,
+                          sizeof(f.meshletPlan.scanBlock),
+                          &f.meshletPlan.scanBlock,
+                          smvk::ShaderStage::Compute);
         cmd.Dispatch((f.meshletPlan.scanBlock.candidateCount + 255u) / 256u, 1, 1);
         cmd.EmitGlobalMemoryBarrier();
         cmd.BindComputePipeline(f.workScanPrograms[1]);
-        cmd.PushConstants(
-            0, sizeof(f.meshletPlan.scanGroups), &f.meshletPlan.scanGroups, smvk::ShaderStage::Compute);
+        cmd.PushConstants(0,
+                          sizeof(f.meshletPlan.scanGroups),
+                          &f.meshletPlan.scanGroups,
+                          smvk::ShaderStage::Compute);
         cmd.Dispatch(1, 1, 1);
         cmd.EmitGlobalMemoryBarrier();
         cmd.BindComputePipeline(f.workScanPrograms[2]);
@@ -9020,8 +9386,10 @@ void RecordGpuSceneCullChain(smvk::CommandBuffer& cmd,
         cmd.Dispatch(1, 1, 1);
         cmd.EmitGlobalMemoryBarrier();
         cmd.BindComputePipeline(f.meshletPrograms[3]);
-        cmd.PushConstants(
-            0, sizeof(f.meshletPlan.psoScatter), &f.meshletPlan.psoScatter, smvk::ShaderStage::Compute);
+        cmd.PushConstants(0,
+                          sizeof(f.meshletPlan.psoScatter),
+                          &f.meshletPlan.psoScatter,
+                          smvk::ShaderStage::Compute);
         cmd.Dispatch(f.meshletPlan.psoBlocks, 1, 1);
     }
     if (f.rasterReady && !f.meshletCompactReady) {
@@ -9043,9 +9411,9 @@ void RecordGpuSceneCullChain(smvk::CommandBuffer& cmd,
 }
 struct GpuSceneCascadeBuildFrame {
     smvk::ShaderProgram* cullProgram = nullptr;
-    smvk::ShaderProgram* compactPrograms = nullptr;   // [3]
-    smvk::ShaderProgram* workPrograms = nullptr;      // [3]
-    smvk::ShaderProgram* workScanPrograms = nullptr;  // [3]
+    smvk::ShaderProgram* compactPrograms = nullptr;  // [3]
+    smvk::ShaderProgram* workPrograms = nullptr;     // [3]
+    smvk::ShaderProgram* workScanPrograms = nullptr; // [3]
     smvk::ShaderProgram* rasterProgram = nullptr;
     tour::gpu_scene::InstanceCullGpuPush cull{};
     tour::gpu_scene::CompactCountPush count{};
@@ -9107,9 +9475,9 @@ void RecordGpuSceneCascadeBuild(smvk::CommandBuffer& cmd,
 }
 struct GpuSceneCascadeBuildFusedFrame {
     smvk::ShaderProgram* expandProgram = nullptr;
-    smvk::ShaderProgram* compactPrograms = nullptr;   // [3]
-    smvk::ShaderProgram* workPrograms = nullptr;      // [3]
-    smvk::ShaderProgram* workScanPrograms = nullptr;  // [3]
+    smvk::ShaderProgram* compactPrograms = nullptr;  // [3]
+    smvk::ShaderProgram* workPrograms = nullptr;     // [3]
+    smvk::ShaderProgram* workScanPrograms = nullptr; // [3]
     smvk::ShaderProgram* rasterProgram = nullptr;
     tour::gpu_scene::FusedExpandPush expandPush{};
     tour::gpu_scene::CompactCountPush countPush{};
@@ -9219,7 +9587,8 @@ void WorldRenderer::RecordMeshParticlesBuild(smvk::CommandBuffer& cmd,
                                              const smvk::FrameContext& fc,
                                              const smvk::PassData& pd) {
     auto* self = const_cast<WorldRenderer*>(static_cast<const WorldRenderer*>(pd.config));
-    const MeshParticlesBuildFrame& f = fc.rg->FrameData().Get<MeshParticlesBuildFrame>(pd.frameSlot);
+    const MeshParticlesBuildFrame& f =
+        fc.rg->FrameData().Get<MeshParticlesBuildFrame>(pd.frameSlot);
     smvk::MeshParticles::PushAndDispatchDrawBuild(
         cmd, self->m_viewportResources.meshParticles.buildProgram, f.push);
 }
@@ -9313,9 +9682,8 @@ void WorldRenderer::RecordGpuCascade(smvk::CommandBuffer& cmd,
                                      const smvk::MSAASettings& msaa) {
     if (!sub.ready)
         return;
-    const smvk::DepthSettings depth{.depthFunc = smvk::CompareOp::LessEqual,
-                                    .writeEnable = true,
-                                    .depthTestEnable = true};
+    const smvk::DepthSettings depth{
+        .depthFunc = smvk::CompareOp::LessEqual, .writeEnable = true, .depthTestEnable = true};
     cmd.BindStaticVertexFmt();
     const auto bind = [&](smvk::ShaderProgram& program, smvk::CullMode cull) {
         cmd.BindRenderPipeline(program,
@@ -9326,21 +9694,18 @@ void WorldRenderer::RecordGpuCascade(smvk::CommandBuffer& cmd,
                                msaa,
                                smvk::RasterSettings{.cullMode = cull});
         cmd.PushConstants(0, sizeof(scenePC), &scenePC, smvk::ShaderStage::All);
-        cmd.PushConstants(tour::gpu_scene::kRasterVsPushOffset,
-                          sizeof(sub.vs),
-                          &sub.vs,
-                          smvk::ShaderStage::All);
+        cmd.PushConstants(
+            tour::gpu_scene::kRasterVsPushOffset, sizeof(sub.vs), &sub.vs, smvk::ShaderStage::All);
     };
     const uint32_t stride = sub.capacity / tour::gpu_scene::kRasterPipelineClassCount;
     const auto drawBin = [&](uint32_t bin) {
         constexpr uint32_t kChunk = 65535u;
         for (uint32_t first = 0; first < stride; first += kChunk)
-            cmd.DrawIndexedIndirect(
-                sub.commands,
-                uint64_t(bin * stride + first) *
-                    sizeof(tour::gpu_scene::RasterIndirectCommand),
-                std::min(kChunk, stride - first),
-                sizeof(tour::gpu_scene::RasterIndirectCommand));
+            cmd.DrawIndexedIndirect(sub.commands,
+                                    uint64_t(bin * stride + first) *
+                                        sizeof(tour::gpu_scene::RasterIndirectCommand),
+                                    std::min(kChunk, stride - first),
+                                    sizeof(tour::gpu_scene::RasterIndirectCommand));
     };
     bind(m_gpuSceneShadowDepthProgram, smvk::CullMode::Front);
     drawBin(0);
@@ -9373,8 +9738,7 @@ void WorldRenderer::RecordShadowCascade(smvk::CommandBuffer& cmd,
     auto* self = const_cast<WorldRenderer*>(static_cast<const WorldRenderer*>(pd.config));
     const ShadowCascadeFrame& f = fc.rg->FrameData().Get<ShadowCascadeFrame>(pd.frameSlot);
     const uint32_t stage = f.evsm ? smvk::kGpuStageEvsmCasters : smvk::kGpuStagePcfRaster;
-    const smvk::MSAASettings msaa =
-        f.evsm ? smvk::MSAASettings::Count2() : smvk::MSAASettings{};
+    const smvk::MSAASettings msaa = f.evsm ? smvk::MSAASettings::Count2() : smvk::MSAASettings{};
     if (f.tsBegin)
         cmd.WriteStageTimestamp(stage, /*begin=*/true);
     self->RecordGpuCascade(cmd, f.cascadePC, f.gpuCascade, msaa);
@@ -9394,12 +9758,15 @@ void WorldRenderer::RecordShadowCaster(smvk::CommandBuffer& cmd,
     auto* self = const_cast<WorldRenderer*>(static_cast<const WorldRenderer*>(pd.config));
     const ShadowCasterFrame& f = fc.rg->FrameData().Get<ShadowCasterFrame>(pd.frameSlot);
     const uint32_t stage = f.evsm ? smvk::kGpuStageEvsmCasters : smvk::kGpuStagePcfRaster;
-    const smvk::MSAASettings msaa =
-        f.evsm ? smvk::MSAASettings::Count2() : smvk::MSAASettings{};
+    const smvk::MSAASettings msaa = f.evsm ? smvk::MSAASettings::Count2() : smvk::MSAASettings{};
     if (f.tsBegin)
         cmd.WriteStageTimestamp(stage, /*begin=*/true);
-    self->RecordShadowCastersDirect(cmd, *f.program, f.pc, f.casterViewIndex,
-                                    /*skipFiltered=*/false, msaa);
+    self->RecordShadowCastersDirect(cmd,
+                                    *f.program,
+                                    f.pc,
+                                    f.casterViewIndex,
+                                    /*skipFiltered=*/false,
+                                    msaa);
     if (f.tsEnd)
         cmd.WriteStageTimestamp(stage, /*begin=*/false);
 }
@@ -9412,6 +9779,16 @@ void WorldRenderer::RecordMotion(smvk::CommandBuffer& cmd,
         .depthFunc = smvk::CompareOp::GreaterEqual,
         .writeEnable = false,
         .depthTestEnable = true,
+        // The motion pass re-rasterises the visible surface against the
+        // prepass depth. The re-rasterised geometry is not bit-identical to
+        // the prepass (different shader, different float operand order), so a
+        // bare GreaterEqual rejects a stippled subset that lands a hair
+        // behind. A small positive reversed-Z bias (closer) absorbs that
+        // sub-ULP residual — the standard shadow-map answer. (A bit-exact
+        // spelling of the transform exists but is fragile across compilers.)
+        .depthBiasEnable = true,
+        .depthBiasConstantFactor = 2.0f,
+        .depthBiasSlopeFactor = 2.0f,
     };
     if (f.gpuSceneMotionActive) {
         const auto drawBin = [&](uint32_t cls, smvk::CullMode cull) {
@@ -9422,7 +9799,8 @@ void WorldRenderer::RecordMotion(smvk::CommandBuffer& cmd,
                                    smvk::BlendSettings::Opaque(),
                                    smvk::MSAASettings::Count1(),
                                    smvk::RasterSettings{.cullMode = cull});
-            cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &f.motionPC, smvk::ShaderStage::All);
+            cmd.PushConstants(
+                0, sizeof(IRenderer::PushConstants), &f.motionPC, smvk::ShaderStage::All);
             auto push = f.taskMeshPush;
             push.rasterClass = cls;
             cmd.PushConstants(192u, sizeof(push), &push, smvk::ShaderStage::All);
@@ -9493,6 +9871,14 @@ void WorldRenderer::RecordMotion(smvk::CommandBuffer& cmd,
         smvk::StaticMesh* meshDesc = self->LodMeshForNode(item.node, item.mesh);
         if (!meshDesc)
             return;
+        if (maskedPhase && std::getenv("TOURMALINE_MASK_AUDIT")) {
+            std::fprintf(stderr,
+                         "[MotionMaskAudit] node=%u mat=%u verts=%u maskedFlag=%u\n",
+                         static_cast<unsigned>(item.node),
+                         item.material,
+                         meshDesc->geometry.vertexCount,
+                         (item.flags & smvk::IteratorFlagBit_Masked) ? 1u : 0u);
+        }
         DepthSkinTail skinTail{};
         if (meshDesc->skinned && self->m_gfxRenderer.State().skinDeformedBda != 0 &&
             self->m_gfxRenderer.State().skinDeformedBase != UINT32_MAX &&
@@ -9504,7 +9890,33 @@ void WorldRenderer::RecordMotion(smvk::CommandBuffer& cmd,
         cmd.PushConstants(
             kDepthSkinTailOffset, sizeof(DepthSkinTail), &skinTail, smvk::ShaderStage::All);
         IRenderer::PushConstants objectPC{};
-        std::copy_n(glm::value_ptr(model), 16, objectPC.model);
+        // Double-float camera-relative instance data (the SAME basis +
+        // world-position split the GPU-scene prepass rasterised with), packed
+        // into the model slot so the motion VS re-rasterises with a matching
+        // depth under the GreaterEqual test. model[0..2].xyz = basis X/Y/Z,
+        // model[0..2].w = worldHigh x/y/z, model[3].xyz = worldLow.
+        {
+            const glm::dmat4 globalModel =
+                tour::transformhierarchy::GlobalTransformDouble(self->m_world->scene, item.node);
+            const auto worldPos = tour::math::SplitDoubleFloat(glm::dvec3(globalModel[3]));
+            const glm::vec3 bx(globalModel[0]), by(globalModel[1]), bz(globalModel[2]);
+            objectPC.model[0] = bx.x;
+            objectPC.model[1] = bx.y;
+            objectPC.model[2] = bx.z;
+            objectPC.model[3] = worldPos.high.x;
+            objectPC.model[4] = by.x;
+            objectPC.model[5] = by.y;
+            objectPC.model[6] = by.z;
+            objectPC.model[7] = worldPos.high.y;
+            objectPC.model[8] = bz.x;
+            objectPC.model[9] = bz.y;
+            objectPC.model[10] = bz.z;
+            objectPC.model[11] = worldPos.high.z;
+            objectPC.model[12] = worldPos.low.x;
+            objectPC.model[13] = worldPos.low.y;
+            objectPC.model[14] = worldPos.low.z;
+            objectPC.model[15] = 0.0f;
+        }
         const bool prevValid =
             !self->m_cameraCutThisFrame &&
             self->m_prevGlobalTransforms.size() == self->m_world->scene.globalTransform.size();
@@ -9537,13 +9949,11 @@ void WorldRenderer::RecordMotion(smvk::CommandBuffer& cmd,
                                smvk::RasterSettings{.cullMode = smvk::CullMode::Back});
         cmd.PushConstants(0, sizeof(IRenderer::PushConstants), &f.motionPC, smvk::ShaderStage::All);
         for (uint32_t bin : {0u, 1u, 4u, 5u, 8u, 9u, 12u, 13u})
-            self->m_world->forEachPsoBin(bin, [&](const smvk::World::RenderItem& item) {
-                drawMotionNode(item, false);
-            });
+            self->m_world->forEachPsoBin(
+                bin, [&](const smvk::World::RenderItem& item) { drawMotionNode(item, false); });
         for (uint32_t bin : {2u, 3u, 6u, 7u, 10u, 11u, 14u, 15u})
-            self->m_world->forEachPsoBin(bin, [&](const smvk::World::RenderItem& item) {
-                drawMotionNode(item, true);
-            });
+            self->m_world->forEachPsoBin(
+                bin, [&](const smvk::World::RenderItem& item) { drawMotionNode(item, true); });
     }
     if (self->m_transparentMode == smvk::TransparentMode::Dithered && !self->m_hideTransparent) {
         auto drawDitheredMotion = [&]() {
@@ -9554,8 +9964,7 @@ void WorldRenderer::RecordMotion(smvk::CommandBuffer& cmd,
                     if (item.material == smvk::World::kInvalidIndex)
                         return;
                     {
-                        const glm::mat4& model =
-                            self->m_world->scene.globalTransform[item.node];
+                        const glm::mat4& model = self->m_world->scene.globalTransform[item.node];
                         const uint32_t lodIdx = self->LodIndexForNode(item.node, item.mesh);
                         smvk::StaticMesh* baseDesc = self->m_world->GetMesh(item.mesh);
                         smvk::StaticMesh* selDesc = self->m_world->GetLodMesh(item.mesh, lodIdx);
@@ -9575,8 +9984,8 @@ void WorldRenderer::RecordMotion(smvk::CommandBuffer& cmd,
                                                         selDesc->geometry.aabbMax,
                                                         c,
                                                         r);
-                                visible = smvk::RenderViewIntersectsSphere(
-                                    f.liveMainCullView, c, r);
+                                visible =
+                                    smvk::RenderViewIntersectsSphere(f.liveMainCullView, c, r);
                             }
                             if (!visible)
                                 return;
@@ -9665,12 +10074,12 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
             kDepthSkinTailOffset, sizeof(DepthSkinTail), &skinTail, smvk::ShaderStage::All);
         IRenderer::PushConstants pc{};
         pc.materialId = materialId;
-        pc.padEnd_[0] = (DitherCloseupStateFor(self->m_world->scene,
-                                               int(node),
-                                               self->m_cameraPositioner.cameraPosition_) ==
-                         DitherCloseupState::Fade)
-                            ? 1u
-                            : 0u;
+        pc.padEnd_[0] =
+            (DitherCloseupStateFor(
+                 self->m_world->scene, int(node), self->m_cameraPositioner.cameraPosition_) ==
+             DitherCloseupState::Fade)
+                ? 1u
+                : 0u;
         pc.padEnd_[1] = userData;
         pc.padEnd_[2] = node < self->m_world->scene.metadata.size()
                             ? self->m_world->scene.metadata[node].lightLayerMask
@@ -9893,11 +10302,10 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
         auto& sceneTaskLit =
             (self->m_debugView == ViewMode::Meshlets || self->m_debugView == ViewMode::Lods)
                 ? self->m_gpuSceneTaskDebugProgram
-                : (sceneTaskDbgValid
-                       ? self->m_gpuSceneTaskDebugPrograms[size_t(*sceneTaskDbg)]
-                       : (f.sceneGiVariant == 0u
-                              ? self->m_gpuSceneTaskMainProgram
-                              : self->m_gpuSceneTaskGiPrograms[f.sceneGiVariant]));
+                : (sceneTaskDbgValid ? self->m_gpuSceneTaskDebugPrograms[size_t(*sceneTaskDbg)]
+                                     : (f.sceneGiVariant == 0u
+                                            ? self->m_gpuSceneTaskMainProgram
+                                            : self->m_gpuSceneTaskGiPrograms[f.sceneGiVariant]));
         drawTaskBin(0u, sceneTaskLit, smvk::CullMode::Back, msaaSettings);
         if (f.sceneRasterTwoSided)
             drawTaskBin(1u, sceneTaskLit, smvk::CullMode::None, msaaSettings);
@@ -9953,14 +10361,13 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
             f.sceneRasterCommandCount / tour::gpu_scene::kRasterPipelineClassCount;
         const auto drawBin = [&](uint32_t bin) {
             if (sceneRasterCompact) {
-                cmd.DrawIndexedIndirectCount(
-                    f.sceneRasterCommands,
-                    uint64_t(self->m_gpuSceneMeshletBinOffsets[bin]) *
-                        sizeof(tour::gpu_scene::RasterIndirectCommand),
-                    self->m_gpuSceneMeshletClassCounts,
-                    uint64_t(bin) * sizeof(uint32_t),
-                    self->m_gpuSceneMeshletBinCapacities[bin],
-                    sizeof(tour::gpu_scene::RasterIndirectCommand));
+                cmd.DrawIndexedIndirectCount(f.sceneRasterCommands,
+                                             uint64_t(self->m_gpuSceneMeshletBinOffsets[bin]) *
+                                                 sizeof(tour::gpu_scene::RasterIndirectCommand),
+                                             self->m_gpuSceneMeshletClassCounts,
+                                             uint64_t(bin) * sizeof(uint32_t),
+                                             self->m_gpuSceneMeshletBinCapacities[bin],
+                                             sizeof(tour::gpu_scene::RasterIndirectCommand));
                 return;
             }
             const uint32_t base = bin * binStride;
@@ -10085,9 +10492,14 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
     const bool shadingDbg = shadingDbgFs.has_value();
     const bool bypassFilter = effView == ViewMode::SsrContribution;
     static const float kLodPalette[8][3] = {
-        {0.20f, 0.90f, 0.30f}, {0.95f, 0.85f, 0.20f}, {1.00f, 0.55f, 0.15f},
-        {1.00f, 0.20f, 0.20f}, {1.00f, 0.20f, 1.00f}, {1.00f, 0.20f, 1.00f},
-        {1.00f, 0.20f, 1.00f}, {1.00f, 0.20f, 1.00f},
+        {0.20f, 0.90f, 0.30f},
+        {0.95f, 0.85f, 0.20f},
+        {1.00f, 0.55f, 0.15f},
+        {1.00f, 0.20f, 0.20f},
+        {1.00f, 0.20f, 1.00f},
+        {1.00f, 0.20f, 1.00f},
+        {1.00f, 0.20f, 1.00f},
+        {1.00f, 0.20f, 1.00f},
     };
     const float flatExposure = self->FrameExposure();
     const float flatGain = (flatExposure > 1e-9f) ? 1.0f / flatExposure : 1.0f;
@@ -10106,18 +10518,18 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
                 tail.skinned = 1;
             }
         }
-        cmd.PushConstants(
-            kMeshDebugSkinTailOffset, sizeof(tail), &tail, smvk::ShaderStage::All);
+        cmd.PushConstants(kMeshDebugSkinTailOffset, sizeof(tail), &tail, smvk::ShaderStage::All);
     };
     if (meshletDbg && (self->m_gpuSceneTaskDebugProgram.shaderCount != 3 ||
                        self->m_gpuSceneRasterLegacyCount != 0)) {
-        cmd.BindRenderPipeline(self->m_gfxRenderer.MeshDebugProgram(),
-                               ::tour::vertex_layouts::Static,
-                               opaqueDepth,
-                               noStencil,
-                               smvk::BlendSettings::Opaque(),
-                               msaaSettings,
-                               wireframeRaster(smvk::RasterSettings{.cullMode = smvk::CullMode::None}));
+        cmd.BindRenderPipeline(
+            self->m_gfxRenderer.MeshDebugProgram(),
+            ::tour::vertex_layouts::Static,
+            opaqueDepth,
+            noStencil,
+            smvk::BlendSettings::Opaque(),
+            msaaSettings,
+            wireframeRaster(smvk::RasterSettings{.cullMode = smvk::CullMode::None}));
         cmd.BindStaticVertexFmt();
         const smvk::gfx::State& dbgState = self->m_gfxRenderer.State();
         MeshDebugPush dp{};
@@ -10128,9 +10540,8 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
             smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
                 smvk::IteratorFlagBit_StaticVertexFmt,
             [&](const smvk::World::RenderItem& item) {
-                if (f.sceneRasterActive &&
-                    self->m_gpuSceneRasterOwnership.OwnsGpu(
-                        self->m_gpuSceneSync.SourceForNode(item.node)))
+                if (f.sceneRasterActive && self->m_gpuSceneRasterOwnership.OwnsGpu(
+                                               self->m_gpuSceneSync.SourceForNode(item.node)))
                     return;
                 if (item.material == smvk::World::kInvalidIndex)
                     return;
@@ -10143,9 +10554,10 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
                 const bool heatSkinned = heatMeshDesc && heatMeshDesc->skinned &&
                                          stHeat.skinDeformedBda != 0 &&
                                          stHeat.skinDeformedBase != UINT32_MAX;
-                const uint32_t gfxMesh = smvk::gfx::GfxMeshForLod(
-                    self->m_gfxRenderer.State(), worldMesh,
-                    self->LodIndexForNode(item.node, worldMesh));
+                const uint32_t gfxMesh =
+                    smvk::gfx::GfxMeshForLod(self->m_gfxRenderer.State(),
+                                             worldMesh,
+                                             self->LodIndexForNode(item.node, worldMesh));
                 if (gfxMesh == UINT32_MAX || gfxMesh >= dbgState.meshes.size()) {
                     dp.color[0] = dp.color[1] = dp.color[2] = 0.9f * dbgGain;
                     dp.color[3] = 1.0f;
@@ -10176,20 +10588,22 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
                     dp.color[2] = rgba[2] * dbgGain;
                     dp.color[3] = rgba[3];
                     cmd.PushConstants(0, sizeof(dp), &dp, smvk::ShaderStage::All);
-                    const uint32_t firstIndex = smvk::gfx::ClusterIndexBase(dbgState) + cl.indexOffset;
+                    const uint32_t firstIndex =
+                        smvk::gfx::ClusterIndexBase(dbgState) + cl.indexOffset;
                     cmd.DrawIndexed(cl.triCount * 3, 1, firstIndex, 0);
                 }
             });
     }
     if (lodDbg && (self->m_gpuSceneTaskDebugProgram.shaderCount != 3 ||
                    self->m_gpuSceneRasterLegacyCount != 0)) {
-        cmd.BindRenderPipeline(self->m_gfxRenderer.MeshDebugProgram(),
-                               ::tour::vertex_layouts::Static,
-                               opaqueDepth,
-                               noStencil,
-                               smvk::BlendSettings::Opaque(),
-                               msaaSettings,
-                               wireframeRaster(smvk::RasterSettings{.cullMode = smvk::CullMode::None}));
+        cmd.BindRenderPipeline(
+            self->m_gfxRenderer.MeshDebugProgram(),
+            ::tour::vertex_layouts::Static,
+            opaqueDepth,
+            noStencil,
+            smvk::BlendSettings::Opaque(),
+            msaaSettings,
+            wireframeRaster(smvk::RasterSettings{.cullMode = smvk::CullMode::None}));
         cmd.BindStaticVertexFmt();
         MeshDebugPush lp2{};
         std::copy_n(glm::value_ptr(f.frameViewProj), 16, lp2.viewProj);
@@ -10197,9 +10611,8 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
             smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
                 smvk::IteratorFlagBit_StaticVertexFmt,
             [&](const smvk::World::RenderItem& item) {
-                if (f.sceneRasterActive &&
-                    self->m_gpuSceneRasterOwnership.OwnsGpu(
-                        self->m_gpuSceneSync.SourceForNode(item.node)))
+                if (f.sceneRasterActive && self->m_gpuSceneRasterOwnership.OwnsGpu(
+                                               self->m_gpuSceneSync.SourceForNode(item.node)))
                     return;
                 if (item.material == smvk::World::kInvalidIndex)
                     return;
@@ -10211,9 +10624,9 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
                 if (!meshDesc)
                     return;
                 static const float kLodVertexLit[3] = {1.0f, 1.0f, 1.0f};
-                const bool vlitLevel = self->ShaderLodActive() && self->m_world &&
-                                       !self->m_world->FarShadingAt(item.mesh, lod, item.material)
-                                            .isDefault();
+                const bool vlitLevel =
+                    self->ShaderLodActive() && self->m_world &&
+                    !self->m_world->FarShadingAt(item.mesh, lod, item.material).isDefault();
                 const float* pal = vlitLevel ? kLodVertexLit : kLodPalette[lod < 8 ? lod : 4];
                 lp2.color[0] = pal[0] * flatGain;
                 lp2.color[1] = pal[1] * flatGain;
@@ -10237,9 +10650,8 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
             [&](const smvk::World::RenderItem& item) {
                 if (item.material == smvk::World::kInvalidIndex)
                     return;
-                if (f.sceneRasterActive &&
-                    self->m_gpuSceneRasterOwnership.OwnsGpu(
-                        self->m_gpuSceneSync.SourceForNode(item.node)))
+                if (f.sceneRasterActive && self->m_gpuSceneRasterOwnership.OwnsGpu(
+                                               self->m_gpuSceneSync.SourceForNode(item.node)))
                     return;
                 if (smvk::StaticMesh* cullBase = self->m_world->GetMesh(item.mesh)) {
                     const glm::mat4& cullModel = self->m_world->scene.globalTransform[item.node];
@@ -10264,31 +10676,26 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
                     DitherCloseupState::Hidden)
                     return;
                 const smvk::World::FarShading farShading =
-                    shaderLodOn
-                        ? self->FarShadingForNode(item.node, item.mesh, item.material)
-                        : smvk::World::FarShading{};
+                    shaderLodOn ? self->FarShadingForNode(item.node, item.mesh, item.material)
+                                : smvk::World::FarShading{};
                 const bool vertexLitLevel = farShading.vertexLit;
                 FarSpecPrograms* farSpec = (!vertexLitLevel && !farShading.isDefault())
                                                ? self->FarSpecProgramsFor(farShading.quality)
                                                : nullptr;
                 const uint32_t materialId = item.material;
-                const bool itemProjectLit = !shadingDbg && !vertexLitLevel &&
-                                            self->MaterialUsesProjectLit(materialId);
+                const bool itemProjectLit =
+                    !shadingDbg && !vertexLitLevel && self->MaterialUsesProjectLit(materialId);
                 smvk::ShaderProgram& baseProg =
-                    shadingDbg
-                        ? self->m_resources.debugPrograms[size_t(*shadingDbgFs)].direct
-                        : vertexLitLevel
-                              ? self->m_resources.vertexLitProgram
-                              : (farSpec && farSpec->main.shaderCount == 2)
-                                    ? farSpec->main
-                                    : self->MainLitProgramFor(materialId);
+                    shadingDbg       ? self->m_resources.debugPrograms[size_t(*shadingDbgFs)].direct
+                    : vertexLitLevel ? self->m_resources.vertexLitProgram
+                    : (farSpec && farSpec->main.shaderCount == 2)
+                        ? farSpec->main
+                        : self->MainLitProgramFor(materialId);
                 smvk::ShaderProgram& baseA2c =
-                    (shadingDbg || vertexLitLevel)
-                        ? noA2CProgram
-                        : (farSpec && farSpec->a2c.shaderCount == 2)
-                              ? farSpec->a2c
-                              : itemProjectLit ? self->m_resources.mainProjectProgramA2C
-                                               : self->m_resources.mainProgramA2C;
+                    (shadingDbg || vertexLitLevel)               ? noA2CProgram
+                    : (farSpec && farSpec->a2c.shaderCount == 2) ? farSpec->a2c
+                    : itemProjectLit ? self->m_resources.mainProjectProgramA2C
+                                     : self->m_resources.mainProgramA2C;
                 smvk::ShaderProgram& prog = baseProg;
                 smvk::ShaderProgram& progA2c = baseA2c;
                 if (materialId != boundMaterial ||
@@ -10300,8 +10707,8 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
                 }
                 if (vertexLitLevel && !shadingDbg)
                     ++self->m_lodShaderDraws;
-                drawNode(item.node, item.mesh, materialId,
-                         self->m_world->ResolvedItemUserData(item));
+                drawNode(
+                    item.node, item.mesh, materialId, self->m_world->ResolvedItemUserData(item));
             });
     }
 
@@ -10360,11 +10767,11 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
                         smvk::BlendSettings::Opaque(),
                         msaaSettings,
                         wireframeRaster(smvk::RasterSettings{
-                            .cullMode = (std::getenv("TOURMALINE_LODVIEW_CULLBACK") &&
-                                         std::strcmp(std::getenv("TOURMALINE_LODVIEW_CULLBACK"),
-                                                     "1") == 0)
-                                            ? smvk::CullMode::Back
-                                            : smvk::CullMode::None}));
+                            .cullMode =
+                                (std::getenv("TOURMALINE_LODVIEW_CULLBACK") &&
+                                 std::strcmp(std::getenv("TOURMALINE_LODVIEW_CULLBACK"), "1") == 0)
+                                    ? smvk::CullMode::Back
+                                    : smvk::CullMode::None}));
                     cmd.BindStaticVertexFmt();
                     boundMaterial = d.materialId;
                 }
@@ -10374,8 +10781,8 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
                 const bool vlitLevelTrans =
                     self->ShaderLodActive() && self->m_world &&
                     !self->m_world->FarShadingAt(d.meshId, lod, d.materialId).isDefault();
-                const float* pal = vlitLevelTrans ? kLodVertexLitTrans
-                                                  : kLodPalette[lod < 8 ? lod : 4];
+                const float* pal =
+                    vlitLevelTrans ? kLodVertexLitTrans : kLodPalette[lod < 8 ? lod : 4];
                 transLp.color[0] = pal[0] * flatGain;
                 transLp.color[1] = pal[1] * flatGain;
                 transLp.color[2] = pal[2] * flatGain;
@@ -10389,16 +10796,13 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
                 continue;
             }
             const smvk::World::FarShading farShadingTrans =
-                transShaderLodOn
-                    ? self->FarShadingForNode(d.node, d.meshId, d.materialId)
-                    : smvk::World::FarShading{};
+                transShaderLodOn ? self->FarShadingForNode(d.node, d.meshId, d.materialId)
+                                 : smvk::World::FarShading{};
             const bool vlitTrans = farShadingTrans.vertexLit;
-            FarSpecPrograms* farSpecTrans =
-                (!vlitTrans && !farShadingTrans.isDefault())
-                    ? self->FarSpecProgramsFor(farShadingTrans.quality)
-                    : nullptr;
-            const bool farSpecTransValid =
-                farSpecTrans && farSpecTrans->main.shaderCount == 2;
+            FarSpecPrograms* farSpecTrans = (!vlitTrans && !farShadingTrans.isDefault())
+                                                ? self->FarSpecProgramsFor(farShadingTrans.quality)
+                                                : nullptr;
+            const bool farSpecTransValid = farSpecTrans && farSpecTrans->main.shaderCount == 2;
             if (vlitTrans) {
                 if (d.materialId != boundMaterial ||
                     boundProgram != &self->m_resources.vertexLitProgram) {
@@ -10406,8 +10810,8 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
                         smvk::BlendSettings opaqueBlend = smvk::BlendSettings::Opaque();
                         smvk::RasterSettings raster{};
                         if (const smvk::Material* mat =
-                                static_cast<const smvk::World&>(*self->m_world).GetMaterial(
-                                    d.materialId)) {
+                                static_cast<const smvk::World&>(*self->m_world)
+                                    .GetMaterial(d.materialId)) {
                             raster = mat->pipeline.raster;
                         }
                         cmd.BindRenderPipeline(wireTwinOf(self->m_resources.vertexLitProgram),
@@ -10449,8 +10853,8 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
                         smvk::BlendSettings opaqueBlend = smvk::BlendSettings::Opaque();
                         smvk::RasterSettings raster{};
                         if (const smvk::Material* mat =
-                                static_cast<const smvk::World&>(*self->m_world).GetMaterial(
-                                    d.materialId)) {
+                                static_cast<const smvk::World&>(*self->m_world)
+                                    .GetMaterial(d.materialId)) {
                             raster = mat->pipeline.raster;
                         }
                         cmd.BindRenderPipeline(wireTwinOf(farSpecTrans->main),
@@ -10492,9 +10896,8 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
                 if (ditheredTransp) {
                     smvk::BlendSettings opaqueBlend = smvk::BlendSettings::Opaque();
                     smvk::RasterSettings raster{};
-                    if (const smvk::Material* mat =
-                            static_cast<const smvk::World&>(*self->m_world).GetMaterial(
-                                d.materialId)) {
+                    if (const smvk::Material* mat = static_cast<const smvk::World&>(*self->m_world)
+                                                        .GetMaterial(d.materialId)) {
                         raster = mat->pipeline.raster;
                     }
                     cmd.BindRenderPipeline(wireTwinOf(*prog),
@@ -10514,8 +10917,7 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
                 boundMaterial = d.materialId;
                 boundProgram = prog;
             }
-            drawNode(d.node, d.meshId, d.materialId,
-                     self->m_world->MaterialUserData(d.materialId));
+            drawNode(d.node, d.meshId, d.materialId, self->m_world->MaterialUserData(d.materialId));
         }
     }
 
@@ -10526,18 +10928,18 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
         const float gain = exposure > 1e-9f ? 1.0f / exposure : 1.0f;
         for (const auto& r : f.debugDrawRanges) {
             const bool tested = r.depth == tour::DebugDepthMode::Tested;
-            cmd.BindRenderPipeline(
-                self->m_gfxRenderer.LineProgram(),
-                ::tour::vertex_layouts::DebugLine,
-                tested ? transparentDepth
-                       : smvk::DepthSettings{.depthFunc = smvk::CompareOp::Always,
-                                             .writeEnable = false,
-                                             .depthTestEnable = false},
-                noStencil,
-                smvk::BlendSettings::Opaque(),
-                msaaSettings,
-                smvk::RasterSettings{.cullMode = smvk::CullMode::None},
-                r.topology);
+            cmd.BindRenderPipeline(self->m_gfxRenderer.LineProgram(),
+                                   ::tour::vertex_layouts::DebugLine,
+                                   tested
+                                       ? transparentDepth
+                                       : smvk::DepthSettings{.depthFunc = smvk::CompareOp::Always,
+                                                             .writeEnable = false,
+                                                             .depthTestEnable = false},
+                                   noStencil,
+                                   smvk::BlendSettings::Opaque(),
+                                   msaaSettings,
+                                   smvk::RasterSettings{.cullMode = smvk::CullMode::None},
+                                   r.topology);
             LineDebugPush lp{};
             std::copy_n(glm::value_ptr(f.frameViewProj), 16, lp.viewProj);
             lp.color[0] = r.color.x * gain;
@@ -11007,10 +11409,12 @@ void WorldRenderer::DumpDeferredShadows(uint32_t frameIndex) {
 // LodProjectedPixelError() and the coarsest in-budget LOD wins.
 // Decisions are cached per node in the World and refreshed EVERY frame
 // by default (halfrate parity opt-out; see World::LodIndexForNode and
-// m_lodFullRate). Selection is hysteretic around the pixel budget
-// (kLodSelectHysteresis): a node keeps its level while the projected
-// error stays inside the budget band, so switch distances don't flip
-// siblings frame to frame while the camera moves.
+// m_lodFullRate). Selection matches the GPU-scene work-select (see
+// gpu_scene_work_select.cs.hlsl): stateless threshold (hysteresis 0) with
+// the Frobenius-scaled bounding radius, so the direct and GPU-scene legs
+// pick the SAME level. TOURMALINE_LOD_HYSTERESIS>0 restores the sticky
+// anti-flicker band on the CPU legs (the GPU selector stays stateless
+// until persistent GPU LOD history lands).
 uint32_t WorldRenderer::LodIndexForNode(NodeId node, uint32_t worldMesh) const {
     if (!m_lodEnabled || !m_world)
         return 0;
@@ -13644,8 +14048,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // index heaps and TLAS from opaque world-space shadow casters.
     // Source geometry is finished streaming at this point. An unchanged
     // list is a fast no-op; moving casters trigger an expensive but
-    // correct blocking rebuild (see the RHI's v1 limitations).
-    if (m_rayTracedSunShadowsEnabled && m_context->SupportsRayQueries() && m_world) {
+    // correct blocking rebuild (see the RHI's v1 limitations). DDGI
+    // (dynamic diffuse GI) shares the SAME TLAS for its probe ray
+    // queries, so the build also runs when DDGI is enabled even without
+    // ray-traced sun shadows.
+    if ((m_rayTracedSunShadowsEnabled || m_ambientMode == AmbientMode::Ddgi) &&
+        m_context->SupportsRayQueries() && m_world) {
         tour::mem::FrameVector<smvk::RayTracingInstance> rtInstances{
             tour::mem::LinearAllocatorSTL<smvk::RayTracingInstance>{&tour::mem::FrameAllocator()}};
         // MaterialValues.tex stores pool IDs, NOT sampled descriptor
@@ -14762,7 +15170,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
           m_gpuSceneRasterMaskedGbufferProgram.shaderCount == 2)) &&
         !ShaderLodActive() && !m_wireframe &&
         (m_debugView == ViewMode::Lit || m_debugView == ViewMode::Meshlets ||
-         m_debugView == ViewMode::Lods || DebugFsForView(m_debugView).has_value()) &&
+         m_debugView == ViewMode::Lods || m_debugView == ViewMode::DdgiIrradiance ||
+         m_debugView == ViewMode::MotionVectors || DebugFsForView(m_debugView).has_value()) &&
         gpuSceneGiReady;
     // KD diagnostic: the full raster-mode breakdown (the temporal gate
     // downstream only names its own conditions - this names every reason
@@ -16703,6 +17112,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     m_lodFrameInputs.viewportHeight = m_lodViewportHeight;
     m_lodFrameInputs.fovY = glm::radians(kCameraFovYDegrees);
     m_lodFrameInputs.pixelBudget = m_lodPixelBudget;
+    m_lodFrameInputs.hysteresis = m_lodHysteresis;
     if (m_world) {
         m_world->SetLodFullRate(m_lodFullRate);
         if (m_lodBudgetApplied != m_lodPixelBudget) {
@@ -17254,7 +17664,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // faces follow the spot tiles).
             const bool pcfTsBegin = (si == 0) && !m_passes.directionalShadows;
             const bool pcfTsEnd = (si == spotCount - 1) && !pointPassesOn;
-            ShadowCasterFrame& spotFrame = m_rendergraph->PassFrameData<ShadowCasterFrame>(spotPass);
+            ShadowCasterFrame& spotFrame =
+                m_rendergraph->PassFrameData<ShadowCasterFrame>(spotPass);
             spotFrame.program = &m_viewportResources.spotShadows.program;
             spotFrame.pc = spotPC;
             spotFrame.casterViewIndex = casterViewIndex;
@@ -17348,7 +17759,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // earlier raster shadow pass did, the LAST face closes it.
             const bool pcfTsBegin = (fi == 0) && !m_passes.directionalShadows && !spotPassesOn;
             const bool pcfTsEnd = (fi == faceCount - 1);
-            ShadowCasterFrame& faceFrame = m_rendergraph->PassFrameData<ShadowCasterFrame>(facePass);
+            ShadowCasterFrame& faceFrame =
+                m_rendergraph->PassFrameData<ShadowCasterFrame>(facePass);
             faceFrame.program = &m_viewportResources.spotShadows.program;
             faceFrame.pc = facePC;
             faceFrame.casterViewIndex = casterViewIndex;
@@ -18514,7 +18926,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         sim.dt = dt;
         sim.maxParticles = meshPs.desc.maxParticles;
         auto& simPass = meshPs.AddSimPass(*m_rendergraph);
-        MeshParticlesSimFrame& simFrame = m_rendergraph->PassFrameData<MeshParticlesSimFrame>(simPass);
+        MeshParticlesSimFrame& simFrame =
+            m_rendergraph->PassFrameData<MeshParticlesSimFrame>(simPass);
         simFrame.push = sim;
         simPass.SetRecordFn(&WorldRenderer::RecordMeshParticlesSim, this);
     }
@@ -18548,11 +18961,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // streams with the motion VS, so the admitted opaque+MASK set submits
         // in a few indirect draws instead of a per-node walk. Skinned/legacy/
         // transparent sources stay on the direct path below.
-        // OFF by default: it still device-losts in the MotionVectors pass
-        // (fault checkpoint stage=1/8192, frame 0 — a missing barrier on the
-        // shared raster streams, not the prev-slot OOB which is already
-        // fenced). TOURMALINE_GPU_SCENE_MOTION=1 re-enables it for the A/B
-        // bisect; the direct per-node path is the proven fallback.
+        // Opt-in (TOURMALINE_GPU_SCENE_MOTION=1): the frame-0 device-lost is
+        // fixed — the motion pass now declares the prev-frame transform + view
+        // buffer reads (AddBufferHint, below) so the graph inserts the missing
+        // write->read barrier on the shared raster streams. Still off by
+        // default until the batched leg is the default path; the direct
+        // per-node path remains the fallback.
         static const bool s_gpuSceneMotion = [] {
             const char* e = std::getenv("TOURMALINE_GPU_SCENE_MOTION");
             return e && std::strcmp(e, "1") == 0;
@@ -18602,6 +19016,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             motionPass.AddBufferHint(m_gpuSceneTaskMeshPlan.groupLogical, taskRead);
             motionPass.AddBufferHint(m_gpuSceneTaskMeshPlan.offsetLogical, taskRead);
             motionPass.AddBufferHint(m_gpuSceneRasterWorkLogical[fb.frameIndex], taskRead);
+            // The prev-frame transform + view buffers are motion-unique reads:
+            // without these hints the graph inserts no write->read barrier and
+            // the motion mesh shader can sample a stale/partial snapshot (the
+            // frame-0 device-lost). Empty on the first frame / camera cut
+            // (no history), so only hint them when they exist.
+            if (!m_gpuScenePrevTransformLogicals[fb.frameIndex].empty())
+                motionPass.AddBufferHint(m_gpuScenePrevTransformLogicals[fb.frameIndex], taskRead);
+            if (!m_gpuScenePrevViewLogicals[fb.frameIndex].empty())
+                motionPass.AddBufferHint(m_gpuScenePrevViewLogicals[fb.frameIndex], taskRead);
         }
         MotionFrame& motionFrame = m_rendergraph->PassFrameData<MotionFrame>(motionPass);
         motionFrame.motionPC = motionPC;
@@ -18682,6 +19105,37 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                                    hardwareRay);
     }
 
+    // ---------------------------------------------------------------------
+    // DDGI (dynamic diffuse GI, Rendergraph/ddgi.h): one probe VOLUME per
+    // occupied 64 m world subcell. The trace + blend passes are emitted
+    // BEFORE Main so the lit body samples the freshly-written
+    // irradiance/moments; the volume set is (re)built once per world. The
+    // Main-side READ hints are attached below after mainPass.
+    // ---------------------------------------------------------------------
+    const bool ddgiWants = m_ambientMode == AmbientMode::Ddgi && m_context &&
+                           m_context->SupportsRayQueries() && m_world;
+    if (ddgiWants) {
+        if (m_ddgiCachedWorld != m_world) {
+            m_ddgiCachedWorld = m_world;
+            RebuildDdgiVolumes();
+        }
+        // One trace + blend pair per volume; the shared write slot +
+        // update index ping-pong the double-buffered history across every
+        // volume (m_ddgiReset clears history on the first frame).
+        for (auto& vol : m_ddgiVolumes) {
+            vol.AddPasses(*m_rendergraph,
+                          frameUniformsAddress,
+                          m_ddgiWriteSlot,
+                          m_ddgiUpdateIndex,
+                          m_ddgiReset);
+        }
+        if (!m_ddgiVolumes.empty()) {
+            m_ddgiWriteSlot ^= 1u;
+            ++m_ddgiUpdateIndex;
+            m_ddgiReset = false;
+        }
+    }
+
     // useMsaa is hoisted above the fc fill (the stencil layer gate + the
     // pane layer below + Main's attachments here all key on it).
     std::array<smvk::LogicalImageViewHandle, 2> mainInputs{};
@@ -18710,10 +19164,26 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         csRead.layout = smvk::ImageLayout::ShaderReadOnlyOptimal;
         mainPass.AddImageHint(m_viewportResources.contactShadows.OutputLogical(), csRead);
     }
+    // DDGI: the paired READ half of the probe-field write->read edge.
+    // Main's lit body fetches the published irradiance/moments through
+    // FrameUniforms BDAs (invisible to CollectPassUsages) — without these
+    // buffer hints Main could sort BEFORE the DDGIBlend write and sample
+    // stale history. The published slot is the one AddPasses just wrote
+    // (m_ddgiWriteSlot already flipped past it).
+    if (DdgiActive()) {
+        for (auto& vol : m_ddgiVolumes)
+            vol.AddMainReadHints(mainPass, m_ddgiWriteSlot ^ 1u);
+    }
     // Shader failure and missing multisample sampling support degrade to hardware AVERAGE.
     const bool customMsaaResolve = useMsaa && m_aaMode == AaMode::Msaa2xCustom &&
                                    m_viewportResources.msaa.CustomResolveInputValid() &&
                                    m_viewportResources.msaaCustomResolve.Ensure(*m_context);
+    // Debug clear-color override (TOURMALINE_CLEAR_COLOR=R,G,B): paint the
+    // background (where no geometry is drawn) a flat color so bg vs geometry
+    // is unmistakable. 0,0,0 = the normal black clear.
+    glm::vec3 clearRgb(0.0f, 0.0f, 0.0f);
+    if (const char* cc = std::getenv("TOURMALINE_CLEAR_COLOR"))
+        std::sscanf(cc, "%f,%f,%f", &clearRgb.x, &clearRgb.y, &clearRgb.z);
     if (useMsaa) {
         // 2x MSAA color resolves into the 1x HDR intermediate; the
         // aoTerm MRT twin rides the SAME resolve (AVERAGE) so the
@@ -18745,7 +19215,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 a.loadOp = smvk::AttachmentLoadOp::Clear;
                 a.storeOp =
                     i == 0 ? smvk::AttachmentStoreOp::Store : smvk::AttachmentStoreOp::DontCare;
-                a.clearColor = smvk::ClearColor(0, 0, 0, 1);
+                a.clearColor = smvk::ClearColor(clearRgb.x, clearRgb.y, clearRgb.z, 1.0f);
                 a.resolveView = i == 0 ? smvk::LogicalImageViewHandle{} : resolveViews[i];
                 attachments[i] = a;
             }
@@ -18757,7 +19227,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 std::span<const smvk::LogicalImageViewHandle>(resolveViews.data(), msaaViewCount),
                 smvk::AttachmentLoadOp::Clear,
                 smvk::AttachmentStoreOp::DontCare,
-                smvk::ClearColor(0, 0, 0, 1));
+                smvk::ClearColor(clearRgb.x, clearRgb.y, clearRgb.z, 1.0f));
         }
         mainPass
             // Transient 2x depth: cleared here, written by Main.
@@ -18771,7 +19241,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             .SetColor(hdrColors, // HDR intermediate - tonemapper will resolve to swap
                       smvk::AttachmentLoadOp::Clear,
                       smvk::AttachmentStoreOp::Store,
-                      smvk::ClearColor(0, 0, 0, 1))
+                      smvk::ClearColor(clearRgb.x, clearRgb.y, clearRgb.z, 1.0f))
             // Depth was filled by the Forward+ prepass: load it, test
             // read-only (GreaterEqual = reversed-Z near-wins).
             // StoreOp MUST be Store, never DontCare: SSR/volumetric/DS
@@ -20685,6 +21155,82 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     }
 
     // ---------------------------------------------------------------------
+    // DDGI probe-grid visualization (the "Probe debug view"): the dynamic
+    // probe positions as lattice markers (giprobe.h mode 2 — no bake fetch,
+    // just the grid coverage). Strided across ALL subcell volumes to the
+    // draw cap; rebuilt when the volume set changes.
+    // ---------------------------------------------------------------------
+    if (m_ddgiShowProbes && !m_ddgiVolumes.empty()) {
+        if (m_ddgiProbesDirty) {
+            m_ddgiProbesDirty = false;
+            constexpr uint32_t kCap = smvk::giprobe::kGiProbeMaxInstances;
+            uint64_t total = 0;
+            for (const auto& vol : m_ddgiVolumes)
+                total += uint64_t(vol.grid.dims[0]) * vol.grid.dims[1] * vol.grid.dims[2];
+            const uint64_t stride = std::max<uint64_t>(1, (total + kCap - 1) / kCap);
+            std::vector<smvk::giprobe::GiProbeInstance> rows;
+            rows.reserve(kCap);
+            uint64_t g = 0;
+            for (const auto& vol : m_ddgiVolumes) {
+                const uint32_t dx = vol.grid.dims[0], dy = vol.grid.dims[1], dz = vol.grid.dims[2];
+                const uint64_t n = uint64_t(dx) * dy * dz;
+                const glm::vec3 origin(vol.grid.origin[0], vol.grid.origin[1], vol.grid.origin[2]);
+                for (uint64_t p = 0; p < n && rows.size() < kCap; ++p, ++g) {
+                    if (g % stride != 0)
+                        continue;
+                    const uint32_t ix = uint32_t(p % dx);
+                    const uint32_t iy = uint32_t((p / dx) % dy);
+                    const uint32_t iz = uint32_t(p / (uint64_t(dx) * dy));
+                    smvk::giprobe::GiProbeInstance row{};
+                    row.pos = origin + (glm::vec3(ix, iy, iz) + 0.5f) * vol.grid.spacing;
+                    row.grid[0] = ix;
+                    row.grid[1] = iy;
+                    row.grid[2] = iz;
+                    rows.push_back(row);
+                }
+            }
+            if (!rows.empty()) {
+                if (m_ddgiProbeInstances.empty())
+                    m_ddgiProbeInstances =
+                        m_context->CreateBuffer(kCap * sizeof(smvk::giprobe::GiProbeInstance),
+                                                smvk::BufferType_Storage,
+                                                "ddgi probe instances");
+                if (!m_ddgiProbeInstances.empty()) {
+                    m_context->UploadDataToBuffer(m_ddgiProbeInstances,
+                                                  rows.data(),
+                                                  rows.size() * sizeof(rows[0]),
+                                                  smvk::PipelineStageBit_Vertex,
+                                                  smvk::AccessFlags::ShaderRead,
+                                                  0,
+                                                  0);
+                    m_ddgiProbeBda = m_context->GetBufferDeviceAddress(m_ddgiProbeInstances);
+                    m_ddgiProbeCount = uint32_t(rows.size());
+                }
+            }
+        }
+        if (m_ddgiProbeCount > 0 && m_ddgiProbeBda != 0) {
+            smvk::giprobe::GiProbeVolumeRow ddgiRow{};
+            ddgiRow.instances = m_ddgiProbeInstances;
+            ddgiRow.instancesBda = m_ddgiProbeBda;
+            ddgiRow.instanceCount = m_ddgiProbeCount;
+            ddgiRow.volumeIndex = 0; // unused in lattice mode
+            const float markerGain = frameExposure > 1e-9f ? 1.0f / frameExposure : 1.0f;
+            m_giProbeVisual.AppendPass(*m_rendergraph,
+                                       sceneHdrView,
+                                       m_viewportResources.renderDepth.logicalView,
+                                       renderExtent,
+                                       frameData.viewProj,
+                                       m_cameraPositioner.cameraPosition_,
+                                       std::max(m_giProbePointMaxDist, 1.0f),
+                                       &ddgiRow,
+                                       1,
+                                       0, // frame BDA unused in lattice mode
+                                       smvk::giprobe::kGiProbeModeLattice,
+                                       markerGain);
+        }
+    }
+
+    // ---------------------------------------------------------------------
     // Exposure histogram
     //
     // Log2-luminance meter for the scene HDR (see exposure.h).
@@ -21042,6 +21588,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             bloomBindless,
             bloomIntensity,
             linearSampler,
+            pointSampler,
+            static_cast<float>(m_viewportResources.motionVectors.target.extent.width),
+            static_cast<float>(m_viewportResources.motionVectors.target.extent.height),
             tonemapTargets,
             outExtent,
             tonemapDesc,
@@ -21077,6 +21626,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 bloomBindless,
                 bloomIntensity,
                 linearSampler,
+                pointSampler,
+                static_cast<float>(m_viewportResources.motionVectors.target.extent.width),
+                static_cast<float>(m_viewportResources.motionVectors.target.extent.height),
                 std::span<const smvk::LogicalImageViewHandle>(captureViews),
                 outExtent,
                 tonemapDesc,
@@ -21949,6 +22501,39 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 std::fprintf(stderr, "[MotionDump] readback failed\n");
             }
         }
+    }
+    // One-shot depth dumps (TOURMALINE_DEPTH_DUMP / TOURMALINE_HIZ_DUMP=<path>):
+    // raw reversed-Z D32F readbacks of the depth buffers the motion pass
+    // depth-tests against, so a corrupted depth can be separated from a
+    // geometry/precision mismatch. Dev tool, inert unless armed.
+    {
+        const auto dumpDepth = [&](const smvk::DepthTarget& t, const char* env, const char* label) {
+            if (const char* path = std::getenv(env)) {
+                if (t.Valid() && t.extent.width != 0 && t.extent.height != 0) {
+                    const size_t bytes = (size_t)t.extent.width * t.extent.height * 4u;
+                    std::vector<uint8_t> px(bytes);
+                    if (m_context->DownloadDataFromImage(
+                            t.image,
+                            smvk::ImageLayout::DepthStencilReadOnlyOptimal,
+                            px.data(),
+                            bytes)) {
+                        std::ofstream out(path, std::ios::binary);
+                        out.write(reinterpret_cast<const char*>(px.data()), (std::streamsize)bytes);
+                        std::fprintf(stderr,
+                                     "[DepthDump:%s] wrote %s (%ux%u, %zu bytes)\n",
+                                     label,
+                                     path,
+                                     t.extent.width,
+                                     t.extent.height,
+                                     bytes);
+                    } else {
+                        std::fprintf(stderr, "[DepthDump:%s] readback failed\n", label);
+                    }
+                }
+            }
+        };
+        dumpDepth(m_viewportResources.renderDepth, "TOURMALINE_DEPTH_DUMP", "renderDepth");
+        dumpDepth(m_viewportResources.hizDepth, "TOURMALINE_HIZ_DUMP", "hizDepth");
     }
     // SMAA T2x global toggle: the neighborhood pass wrote
     // history[parity] during Execute (when the T2x chain ran), so the

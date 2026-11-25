@@ -31,11 +31,10 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     float3 sumIrr = 0;
     float2 sumMoments = 0;
     float sumWeight = 0;
-    uint backfaces = 0;
+    float sumDist = 0;
 
     for (uint r = 0; r < sp.rays; ++r) {
         DdgiRay ray = sp.scratch.Get().values[probe * sp.rays + r];
-        if (ray.flags == 2) ++backfaces;
         if (writeIrr && ray.flags != 2 && all(isfinite(ray.radiance))) {
             sumIrr += max(ray.radiance, 0) * max(dot(irrDir, ray.direction), 0);
         }
@@ -43,9 +42,17 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
         float d = isfinite(ray.distance) ? clamp(ray.distance, 0, sp.maxDistance) : 0;
         sumMoments += float2(d, d*d) * w;
         sumWeight += w;
+        sumDist += d;
     }
 
-    bool valid = backfaces * 4 <= sp.rays;
+    // Probe validity: a probe is "inside geometry" only when its mean ray
+    // distance collapses (surrounded on all sides). The old backface-count
+    // test (backfaces*4 <= rays) wrongly rejected interior room probes — a
+    // ceiling is a legitimate back-face hit from below, not proof the probe
+    // is embedded. Distance-based validity keeps room probes valid while
+    // rejecting probes buried in walls/floors (mean dist ~0).
+    const float meanDist = sumDist / float(max(sp.rays, 1u));
+    const bool valid = meanDist > sp.maxDistance * 0.025f;
     float h = sp.reset != 0 ? 0 : saturate(sp.hysteresis);
     uint distIndex = probe * DDGI_DIST_RES * DDGI_DIST_RES + bin;
     float2 moments = sumWeight > 1e-8 ? sumMoments / sumWeight :
