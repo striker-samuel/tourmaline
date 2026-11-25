@@ -80,6 +80,49 @@ inline bool MakePlanarReflectionCamera(const glm::mat4& view,
     return true;
 }
 
+// Replace the near plane of a Vulkan reversed-Z projection (0 <= z <= w).
+// keepPlane is in world space; its positive half-space remains visible.
+// The reflected eye must be on the negative side. This works with finite
+// and infinite far perspective projections; it changes the far clip plane.
+// Use the resulting VP for both capture rendering and compositing.
+inline bool MakePlanarObliqueProjection(const glm::mat4& view,
+                                        const glm::mat4& projection,
+                                        const glm::vec4& keepPlane,
+                                        glm::mat4& out) {
+    glm::vec4 plane{};
+    if (!NormalizePlanarPlane(keepPlane, plane))
+        return false;
+    const glm::vec4 cameraPlane = glm::transpose(glm::inverse(view)) * plane;
+    if (!(cameraPlane.w < -1e-6f) || !std::isfinite(cameraPlane.w))
+        return false;
+
+    // Pick the far clip corner most deeply inside the retained half-space.
+    // Evaluating all four corners also accommodates flipped/asymmetric projections.
+    const glm::mat4 invProjection = glm::inverse(projection);
+    float best = 0.0f;
+    for (int x : {-1, 1}) {
+        for (int y : {-1, 1}) {
+            const glm::vec4 q = invProjection * glm::vec4(float(x), float(y), 0.0f, 1.0f);
+            const float distance = glm::dot(cameraPlane, q);
+            if (std::isfinite(distance))
+                best = std::max(best, distance);
+        }
+    }
+    if (!(best > 1e-6f))
+        return false;
+
+    // Near clipping in reversed Z is w - z >= 0. Set w - z to the
+    // scaled camera plane, preserving x, y and w (and thus projected UV).
+    glm::mat4 candidate = projection;
+    for (int column = 0; column < 4; ++column) {
+        candidate[column][2] = projection[column][3] - cameraPlane[column] / best;
+        if (!std::isfinite(candidate[column][2]))
+            return false;
+    }
+    out = candidate;
+    return true;
+}
+
 // External capture owned by the host. Supply a physicalView (the renderer
 // imports it) or a logicalView already registered in its graph. The source
 // view must stay alive through all in-flight frames; 'bindlessIndex' is a shader-readable Texture2D
