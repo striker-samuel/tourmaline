@@ -20312,7 +20312,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // SdfScene debug view, so publish it independently of the SSR gate:
         // a debug view sets DebugVisualizationActive() (which turns SSR off),
         // and the SdfScene view would otherwise never get its residency.
-        if (m_staticSdfReflectionsEnabled && m_world) {
+        // The SSR reflections FALLBACK (the per-ray octree trace) is gated
+        // separately on m_staticSdfReflectionsEnabled so F1 Lit doesn't pay
+        // the SDF cost just because the residency exists for a debug view.
+        const bool sdfResidencyWanted =
+            m_staticSdfReflectionsEnabled || m_debugView == ViewMode::SdfScene;
+        if (sdfResidencyWanted && m_world) {
             const bool sdfReady = m_staticSdfGpu.Update(
                 *m_context, *m_world, glm::vec3(m_cameraPositioner.cameraPosition_));
             // Camera-cell republishing changes the set of reflected objects;
@@ -20322,7 +20327,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 m_staticSdfSeenGeneration = m_staticSdfGpu.Generation();
                 smvk::SsrTaaInvalidateHistory(m_ssrTaa);
             }
-            if (sdfReady) {
+            if (sdfReady && m_staticSdfReflectionsEnabled) {
                 // One scene-header BDA, keeping SSR at 128 B.
                 ssrDesc.staticSdfSceneAddr = m_staticSdfGpu.SceneAddress(*m_context);
             }
