@@ -10083,8 +10083,19 @@ void WorldRenderer::RecordPlanarCapture(smvk::CommandBuffer& cmd,
     const auto& f = fc.rg->FrameData().Get<PlanarCaptureFrame>(pd.frameSlot);
     if (!self->m_world)
         return;
-    cmd.BindStaticVertexFmt();
     uint32_t draws = 0;
+    auto& planar = self->m_viewportResources.planarReflections;
+    if (self->m_passes.terrain && self->m_terrainEnabled && self->m_terrain.valid &&
+        planar.terrainNearProgram.shaderCount == 2 && planar.terrainFarProgram.shaderCount == 2) {
+        draws = self->m_terrain.RecordBlocks(cmd, f.cullView.m_viewProjectionMatrix,
+            f.eye, f.pc,
+            smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                .writeEnable = true, .depthTestEnable = true},
+            smvk::StencilSettings{}, smvk::BlendSettings::Opaque(),
+            smvk::MSAASettings::Count1(), 0, 0, true, f.maxDistance,
+            f.maxDraws, &planar.terrainNearProgram, &planar.terrainFarProgram);
+    }
+    cmd.BindStaticVertexFmt();
     self->m_world->forEachRenderItem(
         smvk::IteratorFlagBit_Renderable | smvk::IteratorFlagBit_Opaque |
             smvk::IteratorFlagBit_StaticVertexFmt,
@@ -10095,9 +10106,12 @@ void WorldRenderer::RecordPlanarCapture(smvk::CommandBuffer& cmd,
             auto* mesh = self->m_world->GetMesh(item.mesh);
             const uint32_t levels = self->m_world->LodChainLength(item.mesh);
             if (levels > 1) {
-                const uint32_t lod = std::min(f.lodBias, levels - 1);
-                if (auto* cheaper = self->m_world->GetLodMesh(item.mesh, lod))
-                    mesh = cheaper;
+                for (uint32_t lod = levels - 1; lod > 0; --lod) {
+                    if (auto* cheaper = self->m_world->GetLodMesh(item.mesh, lod)) {
+                        mesh = cheaper;
+                        break;
+                    }
+                }
             }
             if (!mesh || mesh->skinned)
                 return;
@@ -15248,10 +15262,16 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     frameData.cameraPos, plane, camera) &&
                 smvk::MakePlanarObliqueProjection(camera.view, frameData.proj, keepPlane, clipped)) {
                 planarExtent = smvk::PlanarCaptureExtent(renderExtent, cfg.resolutionDivisor);
+                smvk::PlanarReceiverCrop crop{};
+                const bool cropVisible = smvk::MakePlanarReceiverCrop(camera.viewProjection,
+                    plane, cfg.receiverCenter, cfg.receiverRadius, planarExtent, crop);
+                planarExtent = crop.extent;
                 auto& planar = m_viewportResources.planarReflections;
-                if (planar.EnsureCapture(*m_context, *m_rendergraph, planarExtent,
+                if (cropVisible && planar.EnsureCapture(*m_context, *m_rendergraph, planarExtent,
                                          m_viewportResources.renderDepth.format)) {
-                    planarView = m_renderViews.AllocateView(clipped * camera.view,
+                    if (m_passes.terrain && m_terrainEnabled && m_terrain.valid)
+                        planar.EnsureTerrainShaders(*m_context);
+                    planarView = m_renderViews.AllocateView(crop.transform * clipped * camera.view,
                         {float(planarExtent.width), float(planarExtent.height)},
                         smvk::RenderViewFlagBit_Custom);
                     if (planarView != smvk::RenderViewSet::kInvalidIndex) {
@@ -15261,7 +15281,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         capture.bindlessIndex = planar.internalColor.bindlessIndex;
                         // The biased near plane excludes the receiver in raster;
                         // use the unbiased VP for receiver depth testing (same XY/W).
-                        capture.viewProjection = camera.viewProjection;
+                        capture.viewProjection = crop.transform * camera.viewProjection;
                         capture.receiverPlane = plane;
                         capture.thickness = cfg.thickness;
                         capture.strength = cfg.strength;
@@ -20821,7 +20841,6 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         f.eye = planarEye;
         f.maxDistance = m_planarReflectionSettings->maxDistance;
         f.maxDraws = m_planarReflectionSettings->maxDraws;
-        f.lodBias = m_planarReflectionSettings->lodBias;
         f.includeMasked = m_planarReflectionSettings->includeMasked;
         pass.SetRecordFn(&WorldRenderer::RecordPlanarCapture, this);
     }
