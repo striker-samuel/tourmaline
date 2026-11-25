@@ -386,10 +386,15 @@ uint32_t TerrainField::RecordBlocks(CommandBuffer& cmd,
                                     const BlendSettings& blend,
                                     const MSAASettings& msaa,
                                     int hfShadow,
-                                    int hfSteps) {
+                                    int hfSteps,
+                                    bool reflection,
+                                    float reflectionDistance,
+                                    uint32_t maxBlocks,
+                                    ShaderProgram* reflectionNear,
+                                    ShaderProgram* reflectionFar) {
     if (!valid || blocks.empty() || vertexBuffer.empty())
         return 0;
-    if (!ShadersValid())
+    if (reflection ? (!reflectionNear || !reflectionFar) : !ShadersValid())
         return 0; // built but shaders missing: nothing to draw
 
     glm::vec4 planes[6];
@@ -401,7 +406,11 @@ uint32_t TerrainField::RecordBlocks(CommandBuffer& cmd,
     const float near2 = desc.lodNearFull * desc.lodNearFull;
     const float mid2 = desc.lodMid * desc.lodMid;
     const float far2 = desc.lodFar * desc.lodFar;
-    const float maxD2 = desc.maxDrawDistance * desc.maxDrawDistance;
+    const float maxD = reflection ? reflectionDistance : desc.maxDrawDistance;
+    const float maxD2 = maxD * maxD;
+    const bool useFarReflection = reflection && !farVertexBuffer.empty() &&
+        !farIndexBuffer.empty() && reflectionFar->shaderCount == 2;
+    uint32_t accepted = 0;
     for (uint32_t bi = 0; bi < blocks.size(); ++bi) {
         const TerrainBlockInfo& b = blocks[bi];
         if (!AabbInFrustum(b.min, b.max, planes))
@@ -410,7 +419,12 @@ uint32_t TerrainField::RecordBlocks(CommandBuffer& cmd,
         const float d2 = glm::dot(d, d);
         if (d2 > maxD2)
             continue;
-        lodBlocks[d2 > far2 ? 3 : (d2 > mid2 ? 2 : (d2 > near2 ? 1 : 0))].push_back(bi);
+        if (accepted >= maxBlocks)
+            break;
+        const int lod = reflection ? (useFarReflection ? 3 : 2) :
+            (d2 > far2 ? 3 : (d2 > mid2 ? 2 : (d2 > near2 ? 1 : 0)));
+        lodBlocks[lod].push_back(bi);
+        ++accepted;
     }
     if (lodBlocks[0].empty() && lodBlocks[1].empty() && lodBlocks[2].empty() &&
         lodBlocks[3].empty())
@@ -445,13 +459,13 @@ uint32_t TerrainField::RecordBlocks(CommandBuffer& cmd,
         if (lodBlocks[l].empty() || indexBuffers[l].empty())
             continue;
         cmd.BindIndexBuffer(indexBuffers[l], 0);
-        cmd.BindRenderPipeline(program,
+        cmd.BindRenderPipeline(reflection ? *reflectionNear : program,
                                ::tour::vertex_layouts::TerrainFull,
                                depth,
                                stencil,
                                blend,
                                msaa,
-                               RasterSettings{} /* back-face cull, CCW front (block winding) */);
+                               RasterSettings{.cullMode = reflection ? CullMode::Front : CullMode::Back});
         pushPcTail();
         for (uint32_t bi : lodBlocks[l]) {
             cmd.DrawIndexed(indicesPerLod[size_t(l)], 1, 0, blocks[bi].vertexBase[size_t(l)], 0);
@@ -461,19 +475,19 @@ uint32_t TerrainField::RecordBlocks(CommandBuffer& cmd,
     // Far phase: VS-fetch verts, one tail push per block (identical words
     // except hfShadow forced FULL on) + block id via firstInstance.
     if (!lodBlocks[3].empty() && !farVertexBuffer.empty() && !farIndexBuffer.empty() &&
-        FarShadersValid()) {
+        (reflection ? useFarReflection : FarShadersValid())) {
         cmd.BindVertexBuffer(farVertexBuffer, 0, 0);
         cmd.BindIndexBuffer(farIndexBuffer, 0);
-        cmd.BindRenderPipeline(farProgram,
+        cmd.BindRenderPipeline(reflection ? *reflectionFar : farProgram,
                                ::tour::vertex_layouts::TerrainFarGrid,
                                depth,
                                stencil,
                                blend,
                                msaa,
-                               RasterSettings{});
+                               RasterSettings{.cullMode = reflection ? CullMode::Front : CullMode::Back});
         pushPcTail();
         TerrainBlockPush farTail = tail;
-        farTail.hfShadow = 2;
+        farTail.hfShadow = reflection ? 0 : 2;
         for (uint32_t bi : lodBlocks[3]) {
             cmd.PushConstants(0, sizeof(engine::IRenderer::PushConstants), &push, ShaderStage::All);
             cmd.PushConstants(
