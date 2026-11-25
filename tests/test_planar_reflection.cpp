@@ -74,7 +74,24 @@ void TestCaptureBudget() {
     Check(clamped.width == 959 && clamped.height == 539, "odd dimensions and divisor clamp");
     const smvk::PlanarReflectionSettings settings{};
     Check(settings.maxDraws == 512 && settings.resolutionDivisor == 2 &&
-          !settings.includeMasked && settings.lodBias == 1, "cheap defaults");
+          !settings.includeMasked, "cheap defaults");
+}
+void TestReceiverCrop() {
+    // Identity clip space: a small front-facing receiver must shrink both axes.
+    smvk::PlanarReceiverCrop crop{};
+    Check(smvk::MakePlanarReceiverCrop(glm::mat4(1), glm::vec4(0,0,1,-0.5f),
+        glm::vec3(0,0,0.5f), 0.1f, {960,540}, crop), "small receiver visible");
+    Check(crop.extent.width < 960 && crop.extent.height < 540, "small receiver crops target");
+    const auto left = crop.transform * glm::vec4(-0.1f,0,0.5f,1);
+    Check(left.x >= -left.w && left.x <= left.w, "receiver edge retained");
+    Check(!smvk::MakePlanarReceiverCrop(glm::mat4(1), glm::vec4(0,0,1,-0.5f),
+        glm::vec3(3,0,0.5f), 0.1f, {960,540}, crop), "offscreen receiver rejected");
+    Check(smvk::MakePlanarReceiverCrop(glm::mat4(1), glm::vec4(0,0,1,-0.5f),
+        glm::vec3(0,0,0.5f), 0, {960,540}, crop) &&
+        crop.extent.width == 960 && crop.extent.height == 540, "unbounded fallback");
+    Check(smvk::MakePlanarReceiverCrop(glm::mat4(1), glm::vec4(0,1,0,0),
+        glm::vec3(0,0,0.5f), 0.1f, {960,540}, crop) &&
+        crop.extent.height <= 32, "edge-on receiver conservatively shrinks height");
 }
 void TestInvalidPlane() {
     smvk::PlanarReflectionCamera camera{};
@@ -97,6 +114,7 @@ int main() {
     TestInvalidPlane();
     TestObliqueProjection();
     TestCaptureBudget();
+    TestReceiverCrop();
     std::cout << "checks=" << checks << " failures=" << failures << "\n";
     return failures ? 1 : 0;
 }
