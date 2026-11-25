@@ -17,6 +17,7 @@
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/hdr.h>
+#include <Engine/Rendergraph/depth.h>
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/Rendergraph/renderer.h>
 #include <Engine/Utils/shader_library.h>
@@ -128,6 +129,24 @@ inline bool MakePlanarObliqueProjection(const glm::mat4& view,
 // view must stay alive through all in-flight frames; 'bindlessIndex' is a shader-readable Texture2D
 // slot in the SAME ResourceManager. viewProjection must match the capture's camera (including its
 // Vulkan Y flip). A producer must not sample the output of this pass.
+// One opt-in, bounded-cost internal capture. A positive receiverRadius
+// enables conservative receiver visibility culling (world-space sphere).
+struct PlanarReflectionSettings {
+    glm::vec4 receiverPlane{0, 1, 0, 0};
+    glm::vec3 receiverCenter{0};
+    float receiverRadius = 0;
+    float maxDistance = 80;
+    uint32_t maxDraws = 512;
+    uint32_t resolutionDivisor = 2;
+    float thickness = 0.05f;
+    float strength = 1;
+    float f0 = 0.04f;
+};
+inline Extent2D PlanarCaptureExtent(Extent2D main, uint32_t divisor) {
+    divisor = std::clamp(divisor, 2u, 4u);
+    return {std::max(1u, main.width / divisor), std::max(1u, main.height / divisor)};
+}
+
 struct PlanarReflectionCapture {
     // Optional ready-to-use logical view. Otherwise WorldRenderer imports the
     // host's physical image view once into its own rendergraph.
@@ -140,6 +159,7 @@ struct PlanarReflectionCapture {
     float thickness = 0.05f; // receiver depth distance tolerance, meters
     float strength = 1.0f;   // 0 = off; 1 = physically weighted Fresnel
     float f0 = 1.0f;         // 1 = mirror, ~0.04 = dielectric
+    bool coverageAlpha = false; // internal capture: alpha zero leaves SSR/IBL intact
 };
 
 // Must match planar_reflection.frag.hlsl. 128 bytes = minimum Vulkan
@@ -170,6 +190,8 @@ inline constexpr const char* kPlanarReflectionPs =
 
 struct PlanarReflections {
     HdrTarget output;
+    HdrTarget internalColor;
+    DepthTarget internalDepth;
     Holder<ShaderModuleHandle> vsModule;
     Holder<ShaderModuleHandle> psModule;
     ShaderProgram program{};
@@ -222,6 +244,20 @@ struct PlanarReflections {
         return true;
     }
 
+    bool EnsureCapture(ResourceManager& ctx, RenderGraph& rg, Extent2D extent, Format depthFormat) {
+        HdrDesc color{};
+        color.name = "planarCapture";
+        color.viewName = "planarCaptureView";
+        color.logicalName = "planarCaptureLogical";
+        DepthDesc depth{};
+        depth.format = depthFormat;
+        depth.name = "planarCaptureDepth";
+        depth.viewName = "planarCaptureDepthView";
+        depth.logicalName = "planarCaptureDepthLogical";
+        return internalColor.Ensure(ctx, rg, extent, color) &&
+               internalDepth.Ensure(ctx, rg, extent, depth);
+    }
+
     bool Ensure(ResourceManager& ctx, RenderGraph& rg, Extent2D extent) {
         HdrDesc desc{};
         desc.name = "planarReflection";
@@ -262,6 +298,7 @@ struct PlanarReflections {
         push.strength = std::clamp(capture.strength, 0.0f, 1.0f);
         push.thickness = std::max(0.001f, capture.thickness);
         push.f0 = std::clamp(capture.f0, 0.0f, 1.0f);
+        push.pad0 = capture.coverageAlpha ? 1.0f : 0.0f;
 
         auto& pass = rg.AddPass("PlanarReflectionComposite");
         pass.SetOffset(0, 0)
@@ -290,6 +327,8 @@ struct PlanarReflections {
     }
 
     void Destroy(RenderGraph& rg) {
+        internalDepth.Destroy(rg);
+        internalColor.Destroy(rg);
         output.Destroy(rg);
         program = ShaderProgram{};
         vsModule = {};
