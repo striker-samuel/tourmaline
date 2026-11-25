@@ -138,6 +138,8 @@ struct PlanarReflectionSettings {
     float maxDistance = 80;
     uint32_t maxDraws = 512;
     uint32_t resolutionDivisor = 2;
+    bool includeMasked = false;
+    uint32_t lodBias = 1;
     float thickness = 0.05f;
     float strength = 1;
     float f0 = 0.04f;
@@ -195,6 +197,9 @@ struct PlanarReflections {
     Holder<ShaderModuleHandle> vsModule;
     Holder<ShaderModuleHandle> psModule;
     ShaderProgram program{};
+    Holder<ShaderModuleHandle> captureVsModule;
+    Holder<ShaderModuleHandle> capturePsModule;
+    ShaderProgram captureProgram{};
 
     struct Frame {
         ShaderProgram* program = nullptr;
@@ -244,6 +249,28 @@ struct PlanarReflections {
         return true;
     }
 
+    bool EnsureCaptureShaders(ResourceManager& ctx) {
+        if (captureProgram.shaderCount == 2)
+            return true;
+        try {
+            if (captureVsModule.empty())
+                captureVsModule = ctx.CreateShaderModule(
+                    shaders::Read("content/shaders/default.vert.hlsl.spv"), "planarCaptureVS");
+            if (capturePsModule.empty())
+                capturePsModule = ctx.CreateShaderModule(
+                    shaders::Read("content/shaders/planar_capture.frag.hlsl.spv"), "planarCapturePS");
+        } catch (...) {
+            return false;
+        }
+        if (captureVsModule.empty() || capturePsModule.empty())
+            return false;
+        captureProgram = {.shaders = {
+            Shader{.module = captureVsModule, .entryPoint = "mainVS", .stage = ShaderStage::Vertex},
+            Shader{.module = capturePsModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment}},
+            .shaderCount = 2};
+        return true;
+    }
+
     bool EnsureCapture(ResourceManager& ctx, RenderGraph& rg, Extent2D extent, Format depthFormat) {
         HdrDesc color{};
         color.name = "planarCapture";
@@ -254,7 +281,7 @@ struct PlanarReflections {
         depth.name = "planarCaptureDepth";
         depth.viewName = "planarCaptureDepthView";
         depth.logicalName = "planarCaptureDepthLogical";
-        return internalColor.Ensure(ctx, rg, extent, color) &&
+        return EnsureCaptureShaders(ctx) && internalColor.Ensure(ctx, rg, extent, color) &&
                internalDepth.Ensure(ctx, rg, extent, depth);
     }
 
@@ -323,10 +350,25 @@ struct PlanarReflections {
             program = ShaderProgram{};
             EnsureShaders(ctx);
         }
+        if (captureProgram.shaderCount == 2) {
+            bool captureChanged = false;
+            captureChanged |= SwapShaderModule(ctx, "content/shaders/default.vert.hlsl.spv",
+                                                "planarCaptureVS", captureVsModule, retired);
+            captureChanged |= SwapShaderModule(ctx, "content/shaders/planar_capture.frag.hlsl.spv",
+                                                "planarCapturePS", capturePsModule, retired);
+            if (captureChanged) {
+                captureProgram = {};
+                EnsureCaptureShaders(ctx);
+            }
+            changed |= captureChanged;
+        }
         return changed;
     }
 
     void Destroy(RenderGraph& rg) {
+        captureProgram = {};
+        captureVsModule = {};
+        capturePsModule = {};
         internalDepth.Destroy(rg);
         internalColor.Destroy(rg);
         output.Destroy(rg);
