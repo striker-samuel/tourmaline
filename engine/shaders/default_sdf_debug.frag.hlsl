@@ -108,9 +108,9 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     }
     rayDir /= rayLen;
 
-    // Trace at least to the rasterized fragment, and never less than a
-    // modest world distance so nearby SDF surfaces past the fragment resolve.
-    const float maxTrace = max(rayLen, 10.0f);
+    // Trace at least to the rasterized fragment, and out to the debug
+    // view's configurable max distance so the full SDF scene resolves.
+    const float maxTrace = max(rayLen, frame.staticSdfMaxTrace);
 
     StaticSdfRayHit hit = StaticSdfTrace(rayOrigin, rayDir, maxTrace,
                                          sdfScene.epsilon, sdfScene.maxSteps,
@@ -124,7 +124,33 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         const float3 L = normalize(-light.direction);
         const float NdotL = saturate(dot(hit.normal, L));
         const float3 albedo = max(hit.baseColor, 0.0f);
-        color = albedo * (0.15f + 0.85f * NdotL) + albedo * hit.emissive;
+        switch (frame.staticSdfColorMode)
+        {
+        case 1u: // material id: stable color from the packed-material palette index
+            color = StaticSdfHashColor(hit.materialIndex);
+            break;
+        case 2u: // mesh id: stable color from the instance index
+            color = StaticSdfHashColor(hit.instanceIndex);
+            break;
+        case 3u: // world normal
+            color = hit.normal * 0.5f + 0.5f;
+            break;
+        case 4u: // ray distance
+            color = (hit.t / max(maxTrace, 1e-6f)).xxx;
+            break;
+        case 5u: // roughness
+            color = hit.roughness.xxx;
+            break;
+        case 6u: // metallic
+            color = hit.metallic.xxx;
+            break;
+        case 7u: // emissive
+            color = hit.emissive.xxx;
+            break;
+        default: // base color, simple sun term
+            color = albedo * (0.15f + 0.85f * NdotL) + albedo * hit.emissive;
+            break;
+        }
     }
     else
     {

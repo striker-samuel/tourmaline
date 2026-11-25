@@ -1061,6 +1061,8 @@ uint decalCount;                                         // 776 0 = decals off
     float4 cameraOriginLow;      // 3504 (double origin .low)
     GPU_PTR_READ(StaticSdfSceneHeader) staticSdfScene; // 3520 StaticSdfSceneHeader BDA (0 = off)
     uint staticSdfEnabled;                              // 3528 1 = the BDA above is valid
+    float staticSdfMaxTrace;                            // 3532 SdfScene debug max trace (world)
+    uint staticSdfColorMode;                            // 3536 SdfScene debug color mode
 };
 
 // Deferred-shadow push constants + shared helpers (needs FrameUniforms

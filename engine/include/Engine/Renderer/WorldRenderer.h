@@ -1245,6 +1245,10 @@ struct FrameUniforms {
     // keeps its own push copy (this is the lit-FS-readable twin). 0 = off.
     uint64_t staticSdfScene = 0;   // 3520 StaticSdfSceneHeader BDA
     uint32_t staticSdfEnabled = 0; // 3528 1 = the BDA above is valid
+    // SdfScene debug-view controls (see ViewMode::SdfScene / RenderSettingsUi):
+    float staticSdfMaxTrace = 50.0f; // 3532 max sphere-trace distance (world units)
+    uint32_t staticSdfColorMode = 0; // 3536 0=baseColor,1=materialId,2=meshId,
+                                     //      3=normal,4=distance,5=roughness,6=metallic,7=emissive
 };
 // FrameUniforms layout insurance: the HLSL mirror (common.hlsli) reads
 // every field by absolute offset — any drift desyncs the GPU reads.
@@ -1369,11 +1373,18 @@ static_assert(offsetof(FrameUniforms, contactShadowIndex) == 2152,
               "contactShadowIndex offset: HLSL mirror (the old tail pad's first word)");
 static_assert(offsetof(FrameUniforms, staticSdfScene) == 3520,
               "staticSdfScene offset: HLSL mirror");
-static_assert(sizeof(FrameUniforms) == 3536,
+static_assert(offsetof(FrameUniforms, staticSdfEnabled) == 3528,
+              "staticSdfEnabled offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, staticSdfMaxTrace) == 3532,
+              "staticSdfMaxTrace offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, staticSdfColorMode) == 3536,
+              "staticSdfColorMode offset: HLSL mirror");
+static_assert(sizeof(FrameUniforms) == 3552,
               "FrameUniforms size: HLSL mirror (the motion tail appended "
               "relativeViewProj + cameraOriginHigh/Low 3424 -> 3520, then the "
               "staticSdfScene BDA 8-aligns to 3520 -> 3528 and the 16-byte "
-              "struct pad rounds it to 3536); "
+              "struct pad rounds it to 3536; the SdfScene debug controls "
+              "append 3536 -> 3540 and the 16-byte pad rounds it to 3552); "
               "the GI-blend tail grew the struct 2160 -> 2500; "
               "the §1.1 layer tables append 2500 -> 3140, the 64-bit telemetry BDA 8-aligns to "
               "3144 -> 3152, the octahedral atlas tail appends 3156 -> 3220, the compact "
@@ -4846,6 +4857,10 @@ class WorldRenderer : public IRenderer {
     bool m_staticSdfLastEnabled = false;
     uint64_t m_staticSdfSeenGeneration = 0;
     smvk::StaticSdfGpuScene m_staticSdfGpu;
+    // SdfScene debug-view controls (published to FrameUniforms; edited by
+    // RenderSettingsUi when the SdfScene view is active).
+    float m_sdfDebugMaxTrace = 50.0f;
+    uint32_t m_sdfDebugColorMode = 0;
     int m_ssrSteps = 32;              // raymarch steps 1..128 (half-res trace)
     int m_ssrRefineSteps = 4;         // binary refine iterations 0..8
     float m_ssrMaxDistance = 50.0f;   // ray length (m)

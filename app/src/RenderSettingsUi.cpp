@@ -1012,6 +1012,22 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                         ImGui::SliderFloat(
                             "SSGI debug exposure (+EV)", &m_ssgiDebugEv, 0.0f, 12.0f, "%.1f");
                     }
+                    // SDF scene view controls (trace distance + color mode).
+                    if (m_debugView == ViewMode::SdfScene) {
+                        ImGui::SliderFloat(
+                            "SDF trace distance", &m_sdfDebugMaxTrace, 5.0f, 300.0f, "%.0f m");
+                        const char* sdfColorModes[] = {"Base color",
+                                                       "Material id",
+                                                       "Mesh id",
+                                                       "Normal",
+                                                       "Distance",
+                                                       "Roughness",
+                                                       "Metallic",
+                                                       "Emissive"};
+                        int sdfMode = static_cast<int>(m_sdfDebugColorMode);
+                        if (ImGui::Combo("SDF color mode", &sdfMode, sdfColorModes, 8))
+                            m_sdfDebugColorMode = static_cast<uint32_t>(sdfMode);
+                    }
                     // Motion vectors (V): the tonemap's debug view —
                     // direction -> hue, magnitude -> intensity, jitter
                     // stripped (TRUE motion). Gated on the motion pass

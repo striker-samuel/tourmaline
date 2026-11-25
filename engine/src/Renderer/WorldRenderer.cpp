@@ -1382,6 +1382,12 @@ bool WorldRenderer::onAttach() {
     // Opt-in until SDF resolution/performance are validated on GPU.
     if (const char* sdfEnv = std::getenv("TOURMALINE_SDF_REFLECTIONS"))
         m_staticSdfReflectionsEnabled = std::atoi(sdfEnv) != 0;
+    // SdfScene debug-view headless pins (the ImGui controls, for capture
+    // sweeps without UI): trace distance (world units) + color mode.
+    if (const char* sdfTraceEnv = std::getenv("TOURMALINE_SDF_MAX_TRACE"))
+        m_sdfDebugMaxTrace = glm::clamp(float(std::atof(sdfTraceEnv)), 1.0f, 1000.0f);
+    if (const char* sdfColorEnv = std::getenv("TOURMALINE_SDF_COLOR_MODE"))
+        m_sdfDebugColorMode = static_cast<uint32_t>(std::atoi(sdfColorEnv));
 
     if (const char* iblEnv = std::getenv("TOURMALINE_IBL")) {
         // Mute the analytic sky ambient (any ambient mode -> off;
@@ -6006,6 +6012,8 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
     const uint64_t staticSdfAddr = m_staticSdfGpu.SceneAddress(*m_context);
     data.staticSdfScene = staticSdfAddr;
     data.staticSdfEnabled = staticSdfAddr != 0u ? 1u : 0u;
+    data.staticSdfMaxTrace = m_sdfDebugMaxTrace;
+    data.staticSdfColorMode = m_sdfDebugColorMode;
 
     m_context->UploadDataToBuffer(m_resources.frameUniforms,
                                   &data,

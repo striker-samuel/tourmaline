@@ -72,6 +72,17 @@ void UnpackStaticSdfMaterial(uint packed,
     emissive = float((packed >> 26) & 63u) / 63.0;
 }
 
+// Stable pseudo-random color for an integer id (material / mesh id debug
+// modes). Deterministic across frames, distinct for nearby ids.
+float3 StaticSdfHashColor(uint n)
+{
+    uint h = n;
+    h = (h ^ 61u) ^ (h >> 16u);
+    h = h * 0x27d4eb2du;
+    h = h ^ (h >> 15u);
+    return float3(float(h & 255u), float((h >> 8) & 255u), float((h >> 16) & 255u)) / 255.0f;
+}
+
 struct StaticSdfRayHit
 {
     float t;
@@ -82,6 +93,8 @@ struct StaticSdfRayHit
     float metallic;
     float emissive;
     float worldVoxel;
+    uint materialIndex; // global packed-material palette index
+    uint instanceIndex; // StaticSdfGpuInstance array index
     bool valid;
 };
 
@@ -246,6 +259,8 @@ StaticSdfRayHit StaticSdfTrace(float3 worldOrigin, float3 worldDir,
                 best.roughness = ro;
                 best.metallic = me;
                 best.emissive = em;
+                best.materialIndex = matIdx;
+                best.instanceIndex = index;
                 best.worldVoxel = v.originVoxel.w / speed;
                 break;
             }
