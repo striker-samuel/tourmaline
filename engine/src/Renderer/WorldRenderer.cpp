@@ -9803,7 +9803,10 @@ void WorldRenderer::RecordMotion(smvk::CommandBuffer& cmd,
                 0, sizeof(IRenderer::PushConstants), &f.motionPC, smvk::ShaderStage::All);
             auto push = f.taskMeshPush;
             push.rasterClass = cls;
-            cmd.PushConstants(192u, sizeof(push), &push, smvk::ShaderStage::All);
+            cmd.PushConstants(tour::gpu_scene::kTaskMeshPrefixOffset,
+                              sizeof(push.prefix), &push.prefix, smvk::ShaderStage::All);
+            cmd.PushConstants(tour::gpu_scene::kTaskMeshTailOffset,
+                              tour::gpu_scene::kTaskMeshTailSize, &push, smvk::ShaderStage::All);
             cmd.DrawMeshTasksIndirect(f.taskMeshIndirect,
                                       uint64_t(cls) *
                                           sizeof(tour::gpu_scene::TaskMeshIndirectCommand),
@@ -10288,7 +10291,10 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
             auto push = f.sceneTaskPlan.graphics;
             push.rasterClass = cls;
             push.temporalPhase = f.sceneTaskTemporalActive ? 3u : 0u;
-            cmd.PushConstants(192u, sizeof(push), &push, smvk::ShaderStage::All);
+            cmd.PushConstants(tour::gpu_scene::kTaskMeshPrefixOffset,
+                              sizeof(push.prefix), &push.prefix, smvk::ShaderStage::All);
+            cmd.PushConstants(tour::gpu_scene::kTaskMeshTailOffset,
+                              tour::gpu_scene::kTaskMeshTailSize, &push, smvk::ShaderStage::All);
             cmd.DrawMeshTasksIndirect(f.sceneTaskPlan.indirectHandle,
                                       uint64_t(cls) *
                                           sizeof(tour::gpu_scene::TaskMeshIndirectCommand),
