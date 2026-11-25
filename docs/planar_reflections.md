@@ -21,6 +21,14 @@ renderer.SetPlanarReflectionSettings(settings);
 
 The receiver sphere gates visibility and bounds the compositor. It is not an exact mesh or material mask: coplanar surfaces inside the circle are still receivers. Settings are runtime C++ API; scene serialization and editor controls are not included. A host-provided capture, if installed, takes precedence.
 
+For a reproducible App/headless run without editing host code, set the startup pin:
+
+```sh
+TOURMALINE_PLANAR_REFLECTION=0,1,0,0,0,0,0,20,2,80,512,1
+```
+
+Values are normal XYZ, plane d, receiver center XYZ, radius, resolution divisor (2 or 4), maximum distance, draw cap and F0. Example: a mirror at y=0. The pin is read once through RunConfig and logged; invalid values are rejected. Unset for the baseline.
+
 ## Capture and performance
 
 The internal pass creates its own reduced-resolution HDR color and depth targets, appends a custom reflected RenderView before the view slab upload, reverses material culling and applies biased reversed-Z oblique clipping. The unbiased reflected VP is used for receiver sampling (identical projected XY/W). It traverses resident static render items independently of the main view, selects a coarser cooked LOD, sphere-culls against the reflected frustum, rejects distant objects and caps submitted surface draws. It reuses the shared static vertex/index heaps and flight-local material/light/view publications. It does not consume or write main-view indirect commands, temporal culling or Hi-Z.
