@@ -33,6 +33,7 @@
 
 #include <set>
 
+#include <Engine/Asset/impostor_depth_bake.h>
 #include <Engine/Asset/mesh_optimizer.h>
 #include <Engine/Asset/meshlet.h>
 #include <Engine/Asset/tour.h>
@@ -830,7 +831,7 @@ constexpr uint32_t kMeshMagic = ('M' << 24) | ('E' << 16) | ('S' << 8) | 'H';
 // PackedVertexLightmap stream (count-gated; empty = uncharted). Older
 // .mesh files fail closed — reimport from zero per the no-conversion
 // policy.
-constexpr uint32_t kMeshVersion = 3;
+constexpr uint32_t kMeshVersion = 4;
 
 } // namespace
 
@@ -910,6 +911,17 @@ void WriteMeshAsset(const std::filesystem::path& path, const MeshAsset& m, std::
         if (!g.lightmap.empty())
             PutBytes(b, g.lightmap.data(), g.lightmap.size() * sizeof(smvk::PackedVertexLightmap));
         PutBytes(b, g.indices.data(), g.indices.size() * sizeof(uint32_t));
+        // v4: OPTIONAL impostor ray-tracing proxy, count-gated (empty =
+        // no proxy). Positions are the PackedVertexPosition stream, indices
+        // are u32 — the exact heap layout the RT builder uploads verbatim.
+        PutU32(b, uint32_t(g.impostorPositions.size()));
+        if (!g.impostorPositions.empty())
+            PutBytes(b,
+                     g.impostorPositions.data(),
+                     g.impostorPositions.size() * sizeof(smvk::PackedVertexPosition));
+        PutU32(b, uint32_t(g.impostorIndices.size()));
+        if (!g.impostorIndices.empty())
+            PutBytes(b, g.impostorIndices.data(), g.impostorIndices.size() * sizeof(uint32_t));
     }
     // --- Trailing REGISTRY (v1.1; v1.0 files end above and load with
     // no meshlets/LODs — the reader tolerates the absence) --------------
@@ -1139,6 +1151,31 @@ bool LoadMeshAssetBytes(const uint8_t* data, size_t size, MeshAsset& out, std::s
                 g.lightmap.data(), lm, size_t(lmCount) * sizeof(smvk::PackedVertexLightmap));
         }
         std::memcpy(g.indices.data(), idx, size_t(icount) * sizeof(uint32_t));
+        // v4: OPTIONAL impostor ray-tracing proxy (count-gated, absent in
+        // v3-and-older files — those load above and fail closed on the
+        // version gate anyway, so this is always present in a v4 file).
+        const uint32_t impV = r.U32();
+        g.impostorPositions.resize(impV);
+        if (impV) {
+            const void* impP = r.Skip(size_t(impV) * sizeof(smvk::PackedVertexPosition));
+            if (!r.ok) {
+                err = "truncated .mesh impostor proxy positions";
+                return false;
+            }
+            std::memcpy(g.impostorPositions.data(),
+                        impP,
+                        size_t(impV) * sizeof(smvk::PackedVertexPosition));
+        }
+        const uint32_t impI = r.U32();
+        g.impostorIndices.resize(impI);
+        if (impI) {
+            const void* impIdx = r.Skip(size_t(impI) * sizeof(uint32_t));
+            if (!r.ok) {
+                err = "truncated .mesh impostor proxy indices";
+                return false;
+            }
+            std::memcpy(g.impostorIndices.data(), impIdx, size_t(impI) * sizeof(uint32_t));
+        }
     }
     if (!r.ok) {
         err = "corrupt .mesh asset";
@@ -1739,6 +1776,35 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
                         // retained upload; the .geometry carries it so
                         // cooks/paks/bakes see the same skin.
                         g.skin = up->skin;
+                        // Impostor ray-tracing proxy (opt-in; static opaque
+                        // triangle geometry only): bake the six-view depth
+                        // proxy into the blob so the runtime can swap it in
+                        // for the full mesh in the TLAS at far distance. The
+                        // maxDepthJump discontinuity gate scales with the mesh
+                        // extent so a flat slab still reconstructs while a
+                        // deep jump (a disjoint surface) is rejected.
+                        if (config.impostorProxy && g.skin.empty() && !g.indices.empty() &&
+                            !g.positions.empty()) {
+                            std::vector<glm::vec3> proxyPos;
+                            proxyPos.reserve(g.positions.size());
+                            for (const smvk::PackedVertexPosition& p : g.positions)
+                                proxyPos.push_back(p.pos);
+                            const float extent = glm::length(g.aabbMax - g.aabbMin);
+                            const float maxJump =
+                                extent > 0.0f ? std::max(extent * 0.02f, 1e-4f) : 1e-3f;
+                            const ::tour::impostor::TriangleProxy proxy =
+                                ::tour::impostor::BakeImpostorProxy(
+                                    proxyPos,
+                                    g.indices,
+                                    std::min(std::max(config.impostorResolution, 2u), 512u),
+                                    maxJump);
+                            if (!proxy.positions.empty() && !proxy.indices.empty()) {
+                                g.impostorPositions.resize(proxy.positions.size());
+                                for (size_t v = 0; v < proxy.positions.size(); ++v)
+                                    g.impostorPositions[v].pos = proxy.positions[v];
+                                g.impostorIndices = proxy.indices;
+                            }
+                        }
                     }
                     // LOD chain: the registered siblings ("<fragment>/lodK")
                     // with their own streams + meshlets + LodInfo.
@@ -2564,7 +2630,9 @@ std::string ImportFingerprintFor(const DeriveConfig& config) {
     s << "meshlets=" << (config.meshlets ? 1 : 0) << ";lods=" << (config.lods ? 1 : 0)
       << ";shaderLods=" << (config.shaderLods ? 1 : 0) << ";lodError=" << std::fixed
       << std::setprecision(4) << config.lodTargetError << ";meshletSplit=" << std::setprecision(3)
-      << config.meshletSplitFactor << ";meshletMinTris=" << config.meshletMinTris << ";lodRatios=";
+      << config.meshletSplitFactor << ";meshletMinTris=" << config.meshletMinTris
+      << ";impostor=" << (config.impostorProxy ? 1 : 0)
+      << ";impostorRes=" << config.impostorResolution << ";lodRatios=";
     for (size_t i = 0; i < config.lodRatios.size(); ++i)
         s << (i ? "," : "") << std::setprecision(4) << config.lodRatios[i];
     // Implementation identity: the pipeline revision + the fixed meshlet

@@ -97,6 +97,13 @@ set_target_properties(ImpostorTests PROPERTIES
 add_test(NAME impostor_tests COMMAND ImpostorTests)
 
 
+add_executable(ImpostorAssetTests test_impostor_asset.cpp)
+target_link_libraries(ImpostorAssetTests PRIVATE engine source_import)
+set_target_properties(ImpostorAssetTests PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+add_test(NAME impostor_asset_tests COMMAND ImpostorAssetTests)
+
+
 add_executable(EditorGameSessionTests test_editor_game_session.cpp)
 target_link_libraries(EditorGameSessionTests PRIVATE tourmaline::editor_entry)
 set_target_properties(EditorGameSessionTests PROPERTIES

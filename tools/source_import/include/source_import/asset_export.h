@@ -296,6 +296,13 @@ struct MeshAsset {
         // (the runtime skinning slice owns per-LOD skin propagation).
         // Empty = a static mesh.
         std::vector<smvk::PackedSkinInfluences> skin;
+        // Optional impostor ray-tracing proxy: a view-independent triangle
+        // soup (BakeImpostorProxy — six orthographic depth views combined)
+        // that can replace the full mesh in the TLAS at far distance. The
+        // streams are the exact heap layout (PackedVertexPosition + u32
+        // indices) the RT builder uploads; empty = no proxy (the default).
+        std::vector<smvk::PackedVertexPosition> impostorPositions;
+        std::vector<uint32_t> impostorIndices;
     };
     std::vector<Geometry> geometry;
     // The cluster's skeletal skin (the FIRST glTF skin won; the import
@@ -351,6 +358,15 @@ struct DeriveConfig {
     // relative meshopt_simplify budget (fraction of extents).
     std::vector<float> lodRatios{0.75f, 0.5f, 0.3f, 0.15f};
     float lodTargetError = 0.01f;
+    // Opt-in impostor ray-tracing proxy (default OFF). When enabled, the
+    // derivation bakes a six-view depth proxy (BakeImpostorProxy) into each
+    // static opaque geometry blob at `impostorResolution` per atlas tile; the
+    // runtime may then swap the full mesh for the proxy in the ray-query TLAS
+    // at far distance. The flag rides the derive fingerprint, so toggling it
+    // re-derives. Gate is OFF because the RT selection + BLAS upload are
+    // still behind TOURMALINE_IMPOSTOR at runtime (experimental).
+    bool impostorProxy = false;
+    uint32_t impostorResolution = 64; // per-view atlas tile (2..512)
 };
 
 struct DeriveStats {
