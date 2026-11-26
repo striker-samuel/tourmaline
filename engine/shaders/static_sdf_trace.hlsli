@@ -11,7 +11,7 @@
 // and an optional texture-baked RGB565 base color. All distances/epsilons
 // outside the helper are WORLD metres.
 
-#define STATIC_SDF_MAX_INSTANCES 128u
+#define STATIC_SDF_MAX_INSTANCES 8192u
 #define STATIC_SDF_MAX_NODE_WORDS 33554432u
 #define STATIC_SDF_MAX_CHILD_WORDS 33554432u
 #define STATIC_SDF_MAX_LEAF_WORDS 33554432u

@@ -4858,7 +4858,8 @@ class WorldRenderer : public IRenderer {
         uint32_t maxDraws = 0;
         bool includeMasked = false;
     };
-    static void RecordPlanarCapture(smvk::CommandBuffer&, const smvk::FrameContext&,
+    static void RecordPlanarCapture(smvk::CommandBuffer&,
+                                    const smvk::FrameContext&,
                                     const smvk::PassData&);
     // Keep imported aliases alive until teardown: an in-flight graph may
     // still reference a previous physical capture after a host swap.
@@ -4872,6 +4873,10 @@ class WorldRenderer : public IRenderer {
     bool m_staticSdfLastEnabled = false;
     uint64_t m_staticSdfSeenGeneration = 0;
     smvk::StaticSdfGpuScene m_staticSdfGpu;
+    // Whole-scene SDF residency for the DDGI probe trace (sibling to the
+    // camera-centric m_staticSdfGpu): every static opaque instance, so
+    // probes far from the camera trace the real scene.
+    smvk::StaticSdfGpuScene m_ddgiSdfGpu;
     // SdfScene debug-view controls (published to FrameUniforms; edited by
     // RenderSettingsUi when the SdfScene view is active).
     float m_sdfDebugMaxTrace = 50.0f;

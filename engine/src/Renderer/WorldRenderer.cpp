@@ -3368,6 +3368,7 @@ void WorldRenderer::onDetach() {
     m_viewportResources.dof.Destroy(*m_rendergraph);
     m_viewportResources.ssr.Destroy(*m_rendergraph);
     m_staticSdfGpu.Clear();
+    m_ddgiSdfGpu.Clear();
     m_viewportResources.planarReflections.Destroy(*m_rendergraph);
     for (const auto& imported : m_planarCaptureImports)
         m_rendergraph->FreeImageView(imported.second);
@@ -5136,7 +5137,7 @@ void WorldRenderer::RebuildDdgiVolumes() {
     // Backend: prefer the StaticSdf trace when the SDF residency is ready
     // (material-aware: emissive + direct sun + E_indirect color bleed);
     // fall back to hardware RT (sky-only) for un-baked scenes.
-    const smvk::ddgi::TraceBackend ddgiBackend = m_staticSdfGpu.Ready()
+    const smvk::ddgi::TraceBackend ddgiBackend = m_ddgiSdfGpu.Ready()
                                                      ? smvk::ddgi::TraceBackend::StaticSdf
                                                      : smvk::ddgi::TraceBackend::HardwareRT;
     m_ddgiVolumes.reserve(cells.size());
@@ -19446,19 +19447,20 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     }
 
     // ---------------------------------------------------------------------
-    // Static-SDF scene residency is SHARED by the DDGI SDF trace backend,
-    // the SSSR trace, and the SdfScene debug view. It is updated HERE —
-    // BEFORE the DDGI passes schedule — so the DDGI SDF backend has a
-    // resident scene on its first frame too (not a frame late). The SSR
-    // block below reuses this result and only adds its own gating.
+    // Static-SDF scene residency. TWO residencies, both updated BEFORE the
+    // DDGI passes schedule (so the DDGI SDF backend has a resident scene on
+    // its first frame too):
+    //   - m_staticSdfGpu (camera-centric) feeds SSR + the SdfScene debug view.
+    //   - m_ddgiSdfGpu (whole-scene, sibling) feeds the DDGI probe trace so
+    //     probes far from the camera trace the real scene.
+    // The SSR block below reuses `sdfReady` and only adds its own gating.
     // ---------------------------------------------------------------------
-    const bool sdfResidencyWanted = m_ambientMode == AmbientMode::Ddgi ||
-                                    m_staticSdfReflectionsEnabled ||
-                                    m_debugView == ViewMode::SdfScene;
+    const glm::vec3 sdfEye = glm::vec3(m_cameraPositioner.cameraPosition_);
+    const bool sdfResidencyWanted =
+        m_staticSdfReflectionsEnabled || m_debugView == ViewMode::SdfScene;
     bool sdfReady = false;
     if (sdfResidencyWanted && m_world) {
-        sdfReady = m_staticSdfGpu.Update(
-            *m_context, *m_world, glm::vec3(m_cameraPositioner.cameraPosition_));
+        sdfReady = m_staticSdfGpu.Update(*m_context, *m_world, sdfEye);
         // Camera-cell republishing changes the set of reflected objects;
         // old SSSR temporal history is not compatible with a different
         // instance list.
@@ -19466,6 +19468,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             m_staticSdfSeenGeneration = m_staticSdfGpu.Generation();
             smvk::SsrTaaInvalidateHistory(m_ssrTaa);
         }
+    }
+    bool ddgiSdfReady = false;
+    if (m_ambientMode == AmbientMode::Ddgi && m_world) {
+        m_ddgiSdfGpu.SetWholeScene(true);
+        ddgiSdfReady = m_ddgiSdfGpu.Update(*m_context, *m_world, sdfEye);
     }
 
     // ---------------------------------------------------------------------
@@ -19488,10 +19495,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         for (auto& vol : m_ddgiVolumes) {
             smvk::ddgi::Volume::SdfTraceInput sdfInput;
             const smvk::ddgi::Volume::SdfTraceInput* sdfPtr = nullptr;
-            if (vol.backend == smvk::ddgi::TraceBackend::StaticSdf && sdfReady) {
-                // Resident SDF scene (stable-upload residency, no per-frame
-                // read hints — see the AddPasses contract).
-                sdfInput.sceneAddress = m_staticSdfGpu.SceneAddress(*m_context);
+            if (vol.backend == smvk::ddgi::TraceBackend::StaticSdf && ddgiSdfReady) {
+                // Whole-scene resident SDF scene (stable-upload residency,
+                // no per-frame read hints — see the AddPasses contract).
+                sdfInput.sceneAddress = m_ddgiSdfGpu.SceneAddress(*m_context);
                 sdfPtr = &sdfInput;
             }
             vol.AddPasses(*m_rendergraph,

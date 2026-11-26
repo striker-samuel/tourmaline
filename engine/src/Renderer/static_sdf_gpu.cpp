@@ -75,14 +75,15 @@ uint64_t StaticSdfGpuScene::SceneAddress(ResourceManager& ctx) const {
 bool StaticSdfGpuScene::Update(ResourceManager& ctx,
                                const ::tour::World& world,
                                const glm::vec3& cameraWorldPos) {
-    // Keep a bounded set near the camera instead of the first 128
-    // material-sorted scene items. A frozen world only needs republishing
-    // after a topology edit or an 8 m camera-cell move.
+    // Camera-centric mode keeps a bounded set near the camera (8 m republish
+    // cell); whole-scene mode (DDGI) republishes on world topology only.
     const bool eyeFinite = std::isfinite(cameraWorldPos.x) && std::isfinite(cameraWorldPos.y) &&
                            std::isfinite(cameraWorldPos.z);
-    if (m_world == &world && m_worldRevision == world.gpuSceneTopologyRevision &&
-        m_cachedEyeValid && eyeFinite && glm::distance(m_cachedEye, cameraWorldPos) < 8.0f)
-        return Ready();
+    if (m_world == &world && m_worldRevision == world.gpuSceneTopologyRevision) {
+        if (m_wholeScene ||
+            (m_cachedEyeValid && eyeFinite && glm::distance(m_cachedEye, cameraWorldPos) < 8.0f))
+            return Ready();
+    }
 
     // De-duplicate SDF grids across instanced static meshes. Each sidecar
     // groups all base primitives in one .geometry family; fragment names
@@ -100,9 +101,12 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
     std::unordered_map<std::string, uint32_t> familyMaterialBase;
     instances.reserve(std::min(world.drawItems.size(), size_t(kStaticSdfMaxInstances)));
 
-    // Deterministic closest-first upload order. Selecting from a scene's
-    // material-sorted draw list would often fill the cap with invisible
-    // distant geometry before any nearby reflective object is reached.
+    // Deterministic closest-first upload order (camera-centric). Whole-scene
+    // mode keeps drawItems order (every static opaque instance, not the
+    // camera-closest set) so DDGI probes far from the camera trace the real
+    // scene. Selecting from a scene's material-sorted draw list would fill
+    // the camera-centric cap with invisible distant geometry before any
+    // nearby reflective object is reached.
     std::vector<std::pair<float, const ::tour::World::RenderItem*>> candidates;
     for (const auto& item : world.drawItems) {
         if ((item.flags & (::tour::IteratorFlagBit_Static | ::tour::IteratorFlagBit_Opaque |
@@ -116,19 +120,23 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
         const StaticMesh* mesh = world.GetMesh(item.mesh);
         if (!mesh || mesh->skinned)
             continue;
-        const glm::vec3 localCenter = (mesh->geometry.aabbMin + mesh->geometry.aabbMax) * 0.5f;
-        const glm::vec3 worldCenter =
-            glm::vec3(world.scene.globalTransform[item.node] * glm::vec4(localCenter, 1.0f));
-        const float distance2 =
-            glm::dot(worldCenter - cameraWorldPos, worldCenter - cameraWorldPos);
-        candidates.emplace_back(
-            std::isfinite(distance2) ? distance2 : std::numeric_limits<float>::max(), &item);
+        float distance2 = 0.0f;
+        if (!m_wholeScene) {
+            const glm::vec3 localCenter = (mesh->geometry.aabbMin + mesh->geometry.aabbMax) * 0.5f;
+            const glm::vec3 worldCenter =
+                glm::vec3(world.scene.globalTransform[item.node] * glm::vec4(localCenter, 1.0f));
+            distance2 = glm::dot(worldCenter - cameraWorldPos, worldCenter - cameraWorldPos);
+            if (!std::isfinite(distance2))
+                distance2 = std::numeric_limits<float>::max();
+        }
+        candidates.emplace_back(distance2, &item);
     }
-    std::sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) {
-        if (a.first != b.first)
-            return a.first < b.first;
-        return a.second->node < b.second->node;
-    });
+    if (!m_wholeScene)
+        std::sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) {
+            if (a.first != b.first)
+                return a.first < b.first;
+            return a.second->node < b.second->node;
+        });
     for (const auto& [distance2, itemPtr] : candidates) {
         if (instances.size() >= kStaticSdfMaxInstances)
             break;

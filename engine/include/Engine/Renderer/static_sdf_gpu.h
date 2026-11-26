@@ -59,7 +59,7 @@ struct StaticSdfSceneHeader {
 static_assert(sizeof(StaticSdfSceneHeader) == 64);
 static_assert(offsetof(StaticSdfSceneHeader, instanceCount) == 40);
 
-inline constexpr uint32_t kStaticSdfMaxInstances = 128;
+inline constexpr uint32_t kStaticSdfMaxInstances = 8192;
 inline constexpr uint32_t kStaticSdfMaxNodeWords = 32u * 1024u * 1024u;
 inline constexpr uint32_t kStaticSdfMaxChildWords = 32u * 1024u * 1024u;
 inline constexpr uint32_t kStaticSdfMaxLeafWords = 32u * 1024u * 1024u;
@@ -93,6 +93,13 @@ class StaticSdfGpuScene {
         return m_instanceCount != 0 && !m_header.empty() && !m_instances.empty() &&
                !m_nodes.empty() && !m_children.empty() && !m_leaves.empty() && !m_materials.empty();
     }
+    // Whole-scene mode (the DDGI probe-trace sibling): resident EVERY static
+    // opaque instance (not the camera-closest 128) so probes far from the
+    // camera trace the real scene. No camera-distance cache — republishes on
+    // world topology only.
+    void SetWholeScene(bool v) {
+        m_wholeScene = v;
+    }
 
   private:
     Holder<BufferHandle> m_header;
@@ -107,6 +114,7 @@ class StaticSdfGpuScene {
     uint64_t m_worldRevision = std::numeric_limits<uint64_t>::max();
     glm::vec3 m_cachedEye{0.0f};
     bool m_cachedEyeValid = false;
+    bool m_wholeScene = false;
 };
 
 } // namespace smvk
