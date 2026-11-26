@@ -779,6 +779,11 @@ int main() {
              17,
              0}, // -2 (the #251-era core
                  // memory extraction retired two; see the R7 shrink rule)
+            // using ::tour::World (FrameContext::world pointer): the
+            // placement/post-effect headers include renderer.h for the
+            // FrameContext without pulling world.h's placement cycle, so
+            // World is forward-declared and compat-reexported through smvk.
+            {"Rendergraph/renderer.h", 1, 0},
             {"Utils/shader_library.h", 0, 1}, // namespace shaders = ::tour::shaders
             {"Renderer/geometry_streamer.h", 10, 0},
             {"Renderer/texture_streamer.h", 4, 0},
@@ -884,8 +889,8 @@ int main() {
             {"App/Element.h", 10, 1}, // ElementFrame::fb
             {"ImGui/imgui_overlay.h", 7, 1},
             {"ImGui/imgui_overlay.h", 8, 1},
-            {"Memory/pool.h", 7, 8}, // RHI pools (shared infra, smvk-scope)
-            {"Renderer/CpuIndirectBackend.h", 7, 1}, // ResourceManager*
+            {"Memory/pool.h", 7, 8},                   // RHI pools (shared infra, smvk-scope)
+            {"Renderer/CpuIndirectBackend.h", 7, 1},   // ResourceManager*
             {"Renderer/GeometryBackendTypes.h", 7, 1}, // ResourceManager*
             {"Renderer/GeometryBackendTypes.h", 9, 1}, // RenderGraph*
             {"Renderer/geometry_upload.h", 7, 1},
@@ -983,7 +988,10 @@ int main() {
         };
         static const ReexportBaseline kBaseline[] = {
             {"App/input.h", 120, 0},
-            {"Scene/scene.h", 66, 0},
+            {"Scene/scene.h", 69, 0}, // +3: the SDF-bake exclusion trio
+                                      // (Clear/Mark/IsIgnoreSdfBake) added to
+                                      // the global transformhierarchy compat
+                                      // bridge (per-node "ignore SDF bake").
             {"Scene/scene_tables.h", 60, 0},
             {"Scene/scene_payloads.h", 13, 0},
             {"Scene/scene_node_id.h", 11, 0},

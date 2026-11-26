@@ -11,6 +11,8 @@
 // are UNSIGNED; consumers must not interpret them as interior occupancy.
 #include <cstddef>
 #include <cstdint>
+#include <glm/common.hpp> // glm::clamp
+#include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 #include <string>
 #include <vector>

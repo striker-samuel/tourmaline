@@ -2424,8 +2424,13 @@ void TestLodSelection() {
             const float dW13 = LodSwitchDistance(1.5f, h, fov, 1.3f);
             Check(world.SelectLodIndex(0, dW11, h, fov, 1.0f, 0, sc) == 0,
                   "lod.world.hyst.stateless");
-            Check(world.SelectLodIndex(0, dW11, h, fov, 1.0f, 1, sc) == 1, "lod.world.hyst.sticky");
-            Check(world.SelectLodIndex(0, dW13, h, fov, 1.0f, 1, sc) == 0, "lod.world.hyst.refine");
+            // The sticky band is opt-in via the hysteresis selector (the
+            // default 0 is the stateless threshold walk the GPU scene uses),
+            // so the band checks pass kLodSelectHysteresis explicitly.
+            Check(world.SelectLodIndex(0, dW11, h, fov, 1.0f, 1, sc, kLodSelectHysteresis) == 1,
+                  "lod.world.hyst.sticky");
+            Check(world.SelectLodIndex(0, dW13, h, fov, 1.0f, 1, sc, kLodSelectHysteresis) == 0,
+                  "lod.world.hyst.refine");
         }
 
         // ---- Shader LODs (per-material far-level shading) -----------
