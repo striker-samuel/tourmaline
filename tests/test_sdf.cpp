@@ -7,12 +7,14 @@
 #include <Engine/Renderer/ray_tracing_debug.h>
 #include <Engine/Renderer/static_sdf_gpu.h>
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cmath>
 #include <cstdint>
 #include <glm/vec4.hpp>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -26,6 +28,37 @@ static void Check(bool ok, const char* name) {
 
 int main() {
     using namespace tour::asset;
+    // Mirror the shader's terminal-path bounds: each split contributes an
+    // inclusive lower or exclusive upper constraint, not a reconstructed
+    // geometric cell. Normal taps outside the root retain the same routing.
+    {
+        const float inf = std::numeric_limits<float>::infinity();
+        glm::vec3 lo(-inf), hi(inf);
+        const auto split = [&](glm::vec3 center, glm::vec3 p) {
+            for (int axis = 0; axis < 3; ++axis) {
+                if (p[axis] >= center[axis])
+                    lo[axis] = std::max(lo[axis], center[axis]);
+                else
+                    hi[axis] = std::min(hi[axis], center[axis]);
+            }
+        };
+        const auto cached = [&](glm::vec3 p) {
+            for (int axis = 0; axis < 3; ++axis)
+                if (!(p[axis] >= lo[axis] && p[axis] < hi[axis])) return false;
+            return true;
+        };
+        const glm::vec3 p(0.25f, -0.75f, 0.75f);
+        split(glm::vec3(0), p);
+        split(glm::vec3(0.5f, -0.5f, 0.5f), p);
+        Check(cached(p) && cached(glm::vec3(0, -2, 2)),
+              "SDF terminal cache preserves split path outside root");
+        Check(!cached(glm::vec3(0.5f, -0.75f, 0.75f)),
+              "SDF terminal cache excludes upper split equality");
+        Check(cached(glm::vec3(0, -0.75f, 0.5f)),
+              "SDF terminal cache includes lower split equality");
+        Check(!cached(glm::vec3(0.25f, -0.5f, 0.75f)),
+              "SDF terminal cache invalidates on single-axis crossing");
+    }
     // Outward-facing closed cube, with two triangles per side.
     const std::vector<glm::vec3> p = {{-1, -1, -1},
                                       {1, -1, -1},
