@@ -6,6 +6,7 @@
 #include <Engine/Asset/sdf_reflections.h>
 #include <Engine/Renderer/ray_tracing_debug.h>
 #include <Engine/Renderer/static_sdf_gpu.h>
+#include <Engine/Renderer/sdf_radiance_cache.h>
 
 #include <algorithm>
 #include <array>
@@ -230,6 +231,39 @@ int main() {
                 PakAssetKind::Sdf, reader->Payload(*entry), "content/models/cube.geometry.sdf");
             Check(raw.has_value() && *raw == bytes, "pak serves verbatim sdf bytes");
         }
+    }
+    {
+        using namespace smvk::sdfgi;
+        Surface a{{0,0,0},{0,1,0},1}, b{{10,0,10},{0,1,0},1};
+        Check(Compatible(a,b,0.1f), "SDF GI planar tile stays together");
+        b.position[1] = 1;
+        Check(!Compatible(a,b,0.1f), "SDF GI separates depth discontinuity");
+        b.position[1] = 0;
+        b.normal = {0,-1,0};
+        Check(!Compatible(a,b,0.1f), "SDF GI separates opposite sides");
+        Check(Cascade(PixelFootprint(16,1,1024,32),0.25f,5)==2,
+              "SDF GI screen footprint selects cascade");
+        Cache cache(2);
+        Key k{1,1,3,0,0,0}, other{2,1,3,0,0,0}, third{3,1,3,0,0,0};
+        Check(cache.Accumulate(k,{2,0,0},0.9f,1), "SDF GI initial accumulation");
+        Check(cache.Accumulate(k,{0,2,0},0.5f,2), "SDF GI temporal accumulation");
+        auto value = cache.Read(k,3);
+        Check(value && (*value)[0]==1 && (*value)[1]==1, "SDF GI blend");
+        Check(!cache.Read(other,3), "SDF GI distinct instances do not share lighting");
+        auto opposite = k; opposite.side = 1;
+        Check(!cache.Read(opposite,3), "SDF GI opposite leaf sides do not alias");
+        auto changed = k; ++changed.generation;
+        Check(!cache.Read(changed,3), "SDF GI generation invalidation");
+        cache.Accumulate(other,{1,1,1},0,4);
+        cache.Accumulate(third,{1,1,1},0,5);
+        Check(!cache.Read(k,6) && cache.Read(other,6), "SDF GI bounded LRU");
+        Budget budget;
+        Check(budget.Valid() && budget.RayCount()==4096 && budget.StepCount()==98304,
+              "SDF GI bounded ray and step budget");
+        budget.updates = budget.maxProbes+1;
+        Check(!budget.Valid() && budget.RayCount()==0, "SDF GI invalid budget rejected");
+        Check(SunVisibility(1,0)==1 && SunVisibility(1,1)==0 &&
+              SunVisibility(~uint64_t(0),0.5f)==1, "SDF GI sun mask endpoints");
     }
     return failures ? 1 : 0;
 }

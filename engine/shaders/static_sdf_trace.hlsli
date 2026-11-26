@@ -112,6 +112,8 @@ struct StaticSdfRayHit
     float worldVoxel;
     uint materialIndex; // global packed-material palette index
     uint instanceIndex; // StaticSdfGpuInstance array index
+    uint localLeafIndex; // mesh-local leaf; not a persistent instance key
+    uint normalSide; // facing flip relative to SDF gradient
     bool valid;
 };
 
@@ -166,6 +168,7 @@ struct StaticSdfSampleCache
     float3 hi;
     float dist;
     float3 color;
+    uint localLeafIndex; // 0xffffffff for absent child
 };
 
 void StaticSdfOctreeSampleCached(StaticSdfGpuInstance v, float3 local,
@@ -184,6 +187,7 @@ void StaticSdfOctreeSampleCached(StaticSdfGpuInstance v, float3 local,
         return;
     }
     cache.live = false;
+    cache.localLeafIndex = 0xffffffffu;
     const float infinity = asfloat(0x7f800000u);
     cache.lo = -infinity;
     cache.hi = infinity;
@@ -198,7 +202,8 @@ void StaticSdfOctreeSampleCached(StaticSdfGpuInstance v, float3 local,
         const uint data = nodes.Get().words[v.meta.x + node];
         if ((data & 0x80000000u) != 0u)
         {
-            const uint leaf = leaves.Get().words[v.meta.z + (data & 0x7FFFFFFFu)];
+            cache.localLeafIndex = data & 0x7FFFFFFFu;
+            const uint leaf = leaves.Get().words[v.meta.z + cache.localLeafIndex];
             int d = int(leaf >> 16);
             d = d >= 32768 ? d - 65536 : d; // sign-extend the int16 distance
             dist = float(d) / 32767.0f * maxDist;
@@ -292,6 +297,8 @@ StaticSdfRayHit StaticSdfTrace(float3 worldOrigin, float3 worldDir,
             {
                 if (t <= 0.5f * finest / speed)
                     break; // receiver's own shell
+                // Normal taps change the cache; capture the actual hit leaf first.
+                const uint hitLeaf = sampleCache.localLeafIndex;
                 // Central-difference normal from the octree field.
                 const float h = finest * 0.5f;
                 float dx, cx;
@@ -312,7 +319,8 @@ StaticSdfRayHit StaticSdfTrace(float3 worldOrigin, float3 worldDir,
                            grad.z * v.invRow2.xyz;
                 float n2 = dot(n, n);
                 n = n2 > 1e-15f ? n * rsqrt(n2) : -worldDir;
-                if (dot(n, worldDir) > 0.0f) n = -n;
+                const bool flipped = dot(n, worldDir) > 0.0f;
+                if (flipped) n = -n;
                 best.valid = true;
                 best.t = t;
                 best.hitPoint = worldOrigin + t * worldDir;
@@ -332,6 +340,8 @@ StaticSdfRayHit StaticSdfTrace(float3 worldOrigin, float3 worldDir,
                 best.emissive = em;
                 best.materialIndex = matIdx;
                 best.instanceIndex = index;
+                best.localLeafIndex = hitLeaf;
+                best.normalSide = flipped ? 1u : 0u;
                 best.worldVoxel = finest / speed;
                 break;
             }
