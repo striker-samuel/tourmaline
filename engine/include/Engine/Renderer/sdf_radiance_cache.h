@@ -145,4 +145,136 @@ inline float SunVisibility(uint64_t mask, float daylight) {
     const float va = float((mask >> a)&1u), vb = float((mask >> b)&1u);
     return va+(vb-va)*(p-float(a));
 }
+
+// Independent payload/visibility options; not a renderer setting until the
+// GPU path is wired. Existing full irradiance path remains the default.
+enum class LightingMode : uint8_t { FullIrradiance, TintOnly };
+struct LightingOptions {
+    LightingMode mode = LightingMode::FullIrradiance;
+    bool interiorDarkening = false;
+    bool sunWeightedTint = false;
+};
+using Chroma = std::array<float, 2>;
+
+// Linear RGB input. Keep absolute chroma (dark materials bleed less).
+// Neutral colors contribute zero; no hue wrap during filtering.
+inline Chroma MaterialChroma(Vec3 albedo) {
+    if (!Finite(albedo)) return {};
+    for (float& v : albedo) v = std::clamp(v,0.0f,1.0f);
+    return {0.5f*(albedo[0]-albedo[2]),
+            0.5f*albedo[1]-0.25f*(albedo[0]+albedo[2])};
+}
+inline Chroma BlendChroma(Chroma oldValue, Chroma estimate, float hysteresis) {
+    if (!std::isfinite(hysteresis)) hysteresis = 0;
+    hysteresis = std::clamp(hysteresis,0.0f,1.0f);
+    for (size_t i=0; i<2; ++i) {
+        if (!std::isfinite(oldValue[i])) oldValue[i] = 0;
+        if (!std::isfinite(estimate[i])) estimate[i] = 0;
+        oldValue[i] = std::clamp(hysteresis*oldValue[i] +
+                                  (1-hysteresis)*estimate[i],-0.5f,0.5f);
+    }
+    return oldValue;
+}
+inline uint8_t EncodeChroma(float v) {
+    if (!std::isfinite(v)) v = 0;
+    const int q = int(std::lround(std::clamp(v,-0.5f,0.5f)*254.0f));
+    return uint8_t(q < 0 ? q+256 : q);
+}
+inline float DecodeChroma(uint8_t v) {
+    const int q = v < 128 ? int(v) : int(v)-256;
+    return float(std::max(q,-127))/254.0f;
+}
+inline uint8_t EncodeSky(float v) {
+    if (!std::isfinite(v)) v = 1; // neutral for unavailable data
+    return uint8_t(std::lround(std::clamp(v,0.0f,1.0f)*255.0f));
+}
+struct TintPayload {
+    uint8_t co = 0, cg = 0, sky = 255;
+};
+static_assert(sizeof(TintPayload)==3);
+inline TintPayload PackTint(Chroma tint, float sky) {
+    return {EncodeChroma(tint[0]),EncodeChroma(tint[1]),EncodeSky(sky)};
+}
+inline Chroma UnpackTint(TintPayload p) {
+    return {DecodeChroma(p.co),DecodeChroma(p.cg)};
+}
+
+// Sum all scheduled cosine-weighted hemisphere samples, not only hits.
+// Misses contribute zero; incomplete traces must be rejected by the caller.
+// Optional sun visibility scales the hit contribution, not the receiver.
+// skyWeight keeps shadowed materials from losing all color under skylight.
+struct TintEstimator {
+    Chroma sum{};
+    uint32_t samples = 0;
+    void AddMiss() { ++samples; }
+    void AddHit(Vec3 albedo, float distanceWeight, float hitSunVisibility = 1,
+                float skyWeight = 1) {
+        ++samples;
+        if (!std::isfinite(distanceWeight) || !std::isfinite(hitSunVisibility) ||
+            !std::isfinite(skyWeight)) return;
+        const auto c = MaterialChroma(albedo);
+        const float w = std::clamp(distanceWeight,0.0f,1.0f) *
+            (std::clamp(skyWeight,0.0f,1.0f) +
+             (1-std::clamp(skyWeight,0.0f,1.0f))*std::clamp(hitSunVisibility,0.0f,1.0f));
+        for (size_t i=0;i<2;++i) sum[i] += c[i]*w;
+    }
+    Chroma Estimate() const {
+        if (!samples) return {};
+        return {sum[0]/float(samples),sum[1]/float(samples)};
+    }
+};
+
+// Weighted visibility to the actual sky, normalized to an unoccluded
+// hemisphere with the SAME directional weights. Unknown is not a sky miss.
+// Return invalid for incomplete coverage; caller chooses cached/baked fallback.
+struct SkyEstimator {
+    float visible = 0, total = 0;
+    bool complete = true;
+    void Add(float weight, bool escaped, bool known = true) {
+        if (!known || !std::isfinite(weight) || weight < 0) {
+            complete = false;
+            return;
+        }
+        total += weight;
+        if (escaped) visible += weight;
+    }
+    std::optional<float> Estimate() const {
+        if (!complete || !(total > 0) || !std::isfinite(total)) return std::nullopt;
+        return std::clamp(visible/total,0.0f,1.0f);
+    }
+};
+
+// Optional large-scale interior term for the sky ambient slice only.
+// AO remains an independent local term. A nonzero floor is artistic,
+// not physical; local lights and emissive must not be darkened by this.
+inline float InteriorSkyScale(float visibility, float strength, float floor) {
+    if (!std::isfinite(visibility) || !std::isfinite(strength) || !std::isfinite(floor))
+        return 1;
+    visibility = std::clamp(visibility,0.0f,1.0f);
+    strength = std::clamp(strength,0.0f,1.0f);
+    floor = std::clamp(floor,0.0f,1.0f);
+    return 1-strength*(1-floor)*(1-visibility);
+}
+
+// Apply tint to existing linear diffuse ambient (before receiver albedo).
+// Normalize to the original Rec.709 luminance; this intentionally cannot
+// add energy or illuminate a black input. Interior scale is applied apart.
+inline Vec3 ApplyTint(Vec3 ambient, Chroma chroma, float strength) {
+    if (!Finite(ambient)) return {};
+    for (auto& v:ambient) v=std::max(v,0.0f);
+    if (!std::isfinite(strength) || !std::isfinite(chroma[0]) ||
+        !std::isfinite(chroma[1])) return ambient;
+    strength=std::clamp(strength,0.0f,1.0f);
+    const float co=std::clamp(chroma[0],-0.5f,0.5f)*strength;
+    const float cg=std::clamp(chroma[1],-0.5f,0.5f)*strength;
+    Vec3 tinted{ambient[0]*std::max(0.0f,1+co-cg),
+                ambient[1]*std::max(0.0f,1+cg),
+                ambient[2]*std::max(0.0f,1-co-cg)};
+    constexpr Vec3 luma{0.2126f,0.7152f,0.0722f};
+    const float before=Dot(ambient,luma), after=Dot(tinted,luma);
+    if (!(after>1e-8f) || !std::isfinite(after) || !std::isfinite(before))
+        return ambient;
+    for(auto& v:tinted) v*=before/after;
+    return tinted;
+}
 } // namespace smvk::sdfgi
