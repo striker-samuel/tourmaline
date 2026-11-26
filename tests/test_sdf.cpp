@@ -265,5 +265,49 @@ int main() {
         Check(SunVisibility(1,0)==1 && SunVisibility(1,1)==0 &&
               SunVisibility(~uint64_t(0),0.5f)==1, "SDF GI sun mask endpoints");
     }
+    {
+        using namespace smvk::sdfgi;
+        LightingOptions defaults;
+        Check(defaults.mode==LightingMode::FullIrradiance &&
+              !defaults.interiorDarkening && !defaults.sunWeightedTint,
+              "SDF GI tint and interior darkening are opt-in");
+        const auto neutral = MaterialChroma({0.5f,0.5f,0.5f});
+        Check(neutral[0]==0 && neutral[1]==0, "SDF GI neutral chroma");
+        const auto packed = PackTint({-0.5f,0.25f},0.5f);
+        const auto decoded = UnpackTint(packed);
+        Check(sizeof(packed)==3 && decoded[0]==-0.5f &&
+              std::abs(decoded[1]-0.25f)<0.004f && packed.sky==128,
+              "SDF GI 3-byte tint and sky payload");
+        const auto mixed=BlendChroma({0.5f,0},{-0.5f,0},0.5f);
+        Check(mixed[0]==0, "SDF GI opposing tints cancel across temporal history");
+        TintEstimator tint;
+        tint.AddHit({1,0,0},1);
+        tint.AddMiss();
+        Check(std::abs(tint.Estimate()[0]-0.25f)<1e-6f,
+              "SDF GI miss dilutes tint rather than renormalizing hits");
+        TintEstimator shaded;
+        shaded.AddHit({1,0,0},1,0,0.25f);
+        Check(std::abs(shaded.Estimate()[0]-0.125f)<1e-6f,
+              "SDF GI sun weighting retains skylit bounce");
+        const Vec3 ambient{0.5f,0.5f,0.5f};
+        constexpr Vec3 luma{0.2126f,0.7152f,0.0722f};
+        const auto red=ApplyTint(ambient,MaterialChroma({1,0,0}),1);
+        Check(red[0]>red[1] && red[0]>red[2] &&
+              std::abs(Dot(red,luma)-Dot(ambient,luma))<1e-6f,
+              "SDF GI tint changes color but preserves luminance");
+        Check(ApplyTint({0,0,0},{0.5f,0},1)==Vec3{0,0,0},
+              "SDF GI tint cannot illuminate a black scene");
+        SkyEstimator outdoor, indoor;
+        outdoor.Add(1,true); outdoor.Add(2,true);
+        indoor.Add(1,false); indoor.Add(2,false);
+        Check(outdoor.Estimate()==1 && indoor.Estimate()==0,
+              "SDF GI open sky and sealed interior");
+        Check(std::abs(InteriorSkyScale(0,1,0.1f)-0.1f)<1e-6f &&
+              InteriorSkyScale(1,1,0.1f)==1 &&
+              InteriorSkyScale(0,0,0.1f)==1,
+              "SDF GI sky attenuation independently configurable");
+        indoor.Add(1,false,false);
+        Check(!indoor.Estimate(), "SDF GI incomplete visibility not classified as dark");
+    }
     return failures ? 1 : 0;
 }
