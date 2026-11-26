@@ -113,6 +113,94 @@ dynamic occluders require runtime shadow correction. Missing or stale
 bake uses bounded shadow trace or conservative fallback, never unconditionally
 visible. A probe's own sun visibility is not the visibility at its ray hit.
 
+## Optional tint-only GI and large-scale interior darkening
+
+Keep FullIrradiance as the default proposed payload; TintOnly is a cheaper,
+mutually exclusive diffuse ambient mode. InteriorDarkening and SunWeightedTint
+are independent opt-in controls (the latter only affects TintOnly). The
+existing renderer AO solutions remain in place. This is not full GI: tint
+alone cannot add brightness, illuminate a black scene, or transport emissive
+energy. Do not feed tint-only history back as physical bounce radiance.
+
+### Compact chroma
+
+Use signed Co/Cg from linear hit albedo rather than angular hue:
+Co=(R-B)/2, Cg=G/2-(R+B)/4. For each cosine-weighted receiver ray that hits
+a diffuse surface, accumulate the chroma weighted by distance falloff,
+diffuse reflectance fraction and optionally the hit's current sun visibility.
+A true miss contributes zero; divide by all scheduled valid samples, not
+just hits. Reject incomplete estimates rather than treating traversal
+exhaustion as a miss. Preserve absolute chroma so dark surfaces bleed less.
+For sun weighting use lerp(skyWeight,1,hitSunVisibility), with skyWeight
+chosen from current relative sky/sun contribution (night should not
+suppress all tint). Optionally multiply by hit NdotL in the direct-sun
+part. Missing bake uses unweighted tint or a separately budgeted shadow
+query. Filter/accumulate decoded signed channels; quantize only at
+publication. Opposing hues cancel, neutral materials yield zero.
+
+Two signed 8-bit channels encode [-0.5,0.5]. A third UNORM8 channel
+stores sky visibility; optionally pack as uint32 with spare byte for
+confidence/flags (avoid requiring 8-bit storage features). Raw payload
+is 3 bytes, practical aligned payload may be 4 bytes, excluding keys,
+validity, history and allocation overhead. Full RGB FP16 uses 6 bytes.
+No SH or directional radiance bins needed at an oriented surface.
+Alternatively bake the tint offline for static geometry and materials:
+no runtime bounce rays, but no accurate response to spatial lighting
+changes. Dynamic tint can reuse the same adaptive probe budget and SDF
+palette; skips expensive hit BRDF and secondary shadows when using bake.
+
+At resolve apply chroma to the existing linear sky diffuse ambient
+before receiver albedo, normalize to its original Rec.709 luminance,
+then apply optional interior scale. Preserve direct light, local
+lights, emissive and specular. A zero ambient input stays zero.
+
+### Interior darkening is not another short-range AO
+
+Use the same offline directional visibility infrastructure but distinguish:
+- current sun visibility Vsun: directional direct light occlusion;
+- sun-path coverage: weighted average across daylight directions, an
+  optional low-confidence proxy for enclosure, not equivalent to sky view;
+- Vsky: long-range cosine/directional-sky-weighted escape fraction
+  normalized by the unoccluded response for the same orientation.
+  A north-facing wall or an outdoor surface shaded by a tree can have
+  Vsun=0 yet substantial Vsky. Night is not an interior.
+
+Bake Vsky per world-instance oriented surface voxel using full static scene
+geometry, or estimate it with separately bounded long-range rays/coarse
+hierarchy. Use only confirmed sky escape; a ray ending at local 12 m
+cutoff, missing resident geometry, or exhausting its budget is unknown.
+For interiors a separate far cutoff (start 64–128 m, scene dependent),
+coarse occupancy/portal connectivity or offline bake is important.
+Short-range tint rays may also supply visibility when they conclusively
+hit an occluder or reach sky, but do not assume all short misses escape.
+A separate long-range visibility interval or offline visibility avoids
+double-counting nearby AO: split near/far occlusion or use a calibrated
+blend when the existing AO already contains the same obstruction.
+Avoid receiver-only sun shadows modulating diffuse ambient directly.
+
+Interior scale = lerp(1, lerp(interiorFloor,1,Vsky), interiorStrength).
+Suggested initial floor 0.1 and strength 1 when enabled; art controls,
+not physical constants. Apply only to the analytic sky ambient slice,
+not baked/full GI that already represents enclosure, nor AO twice.
+In FullIrradiance mode do not multiply already sky-occluded irradiance
+by Vsky; use it only for the analytic fallback/residual sky slice.
+Missing visibility uses valid previous/baked data or neutral scale.
+Sun-path masks can guide a provisional classification, but never force a
+fully dark result from absence of direct sun. Dynamic lights can still
+light interiors even when Vsky is zero.
+
+### Validation
+- Tint disabled and interior disabled preserve existing lighting.
+- Neutral/opposite colors, packing round trip, temporal interpolation,
+  distance weighting and luminance preservation; no light in black input.
+- Open outdoor shade vs sealed cave vs window/door/overhang, daytime and
+  nighttime; avoid darkening local lights and emissive.
+- Long-range visibility vs local AO overlap, missing bake/residency,
+  per-instance side identity, temporal transitions and memory profiling.
+- Compare FullIrradiance, TintOnly dynamic/baked, and visibility-only
+  configurations. CPU reference only in this draft; runtime modes,
+  visibility baking, shader integration and profiling remain TODO.
+
 ## Resolve and graph
 
 Depth/normal prepass -> classify tiles -> compact/deduplicate requests ->
