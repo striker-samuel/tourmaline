@@ -987,6 +987,11 @@ struct World {
 
     smvk::StaticMesh* GetMesh(uint32_t meshIndex);
     const smvk::StaticMesh* GetMesh(uint32_t meshIndex) const;
+    // The mesh's impostor ray-tracing proxy (sparse: null for the vast
+    // majority of meshes — only a small subset carry a baked six-view depth
+    // proxy). The value is the proxy's heap offsets (indexCount != 0). Null
+    // when the index is out of range or the mesh has no proxy.
+    const smvk::ImpostorProxy* GetImpostorProxy(uint32_t meshIndex) const;
     smvk::Material* GetMaterial(uint32_t materialIndex);
     const smvk::Material* GetMaterial(uint32_t materialIndex) const;
     // LOD marker for tooling (LOD0 + cooked "/lodN" siblings with

@@ -2460,6 +2460,15 @@ const StaticMesh* World::GetMesh(uint32_t meshIndex) const {
     return loc.cluster->staticMeshes.get(loc.handle);
 }
 
+const ImpostorProxy* World::GetImpostorProxy(uint32_t meshIndex) const {
+    if (meshIndex >= meshLocations.size())
+        return nullptr;
+    const MeshLocation& loc = meshLocations[meshIndex];
+    if (loc.cluster == nullptr || !loc.handle.valid())
+        return nullptr;
+    return loc.cluster->GetImpostorProxy(loc.handle);
+}
+
 void World::MarkMaterialDirty(uint32_t materialIndex) {
     if (materialIndex >= materialLocations.size())
         return;

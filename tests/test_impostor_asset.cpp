@@ -2,9 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 // CPU-only impostor ASSET integration: the .geometry MeshAsset round-trips
-// the baked six-view proxy (impostorPositions/impostorIndices) and the derive
-// fingerprint gates re-derivation on the impostor settings. No Vulkan.
+// the baked six-view proxy (impostorPositions/impostorIndices), the derive
+// fingerprint gates re-derivation on the impostor settings, and the runtime
+// selection + sparse cluster registration work offline. No Vulkan.
 #include <source_import/asset_export.h>
+
+#include <Engine/App/cluster.h>
+#include <Engine/Renderer/static_impostor_gpu.h>
 
 #include <cstdio>
 #include <iostream>
@@ -112,6 +116,54 @@ int main() {
     otherRes.impostorResolution = 64;
     Check(ImportFingerprintFor(onCfg) != ImportFingerprintFor(otherRes),
           "impostor resolution changes the fingerprint");
+
+    // ---- runtime selection (pure, angular threshold) -------------------
+    Check(!smvk::UseImpostorProxyAt(0.0f, 10.0f), "proxy.gate.zero-radius");
+    Check(!smvk::UseImpostorProxyAt(1.0f, 0.0f), "proxy.gate.zero-distance");
+    // radius/distance below the threshold -> proxy; above -> full mesh.
+    Check(smvk::UseImpostorProxyAt(0.001f, 10.0f), "proxy.select.far");
+    Check(!smvk::UseImpostorProxyAt(1.0f, 10.0f), "proxy.select.near");
+
+    // ---- sparse cluster registration (offline, GPU-free) ----------------
+    // Only a SMALL subset of meshes carry a proxy; the rest resolve to null.
+    {
+        auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
+        cluster->SetOfflineMode(true);
+        smvk::MeshData base{};
+        base.vertices.resize(3);
+        base.vertices[0].pos = glm::vec3(0, 0, 0);
+        base.vertices[1].pos = glm::vec3(1, 0, 0);
+        base.vertices[2].pos = glm::vec3(0, 1, 0);
+        base.indices = {0, 1, 2};
+        base.aabbMin = glm::vec3(0);
+        base.aabbMax = glm::vec3(1);
+        const auto baseH = cluster->UploadMesh(base);
+
+        smvk::MeshData proxy{};
+        proxy.vertices.resize(4); // proxy soup: 4 verts, 2 tris
+        proxy.indices = {0, 1, 2, 2, 1, 3};
+        proxy.aabbMin = glm::vec3(0);
+        proxy.aabbMax = glm::vec3(1);
+        const auto proxyH = cluster->UploadMesh(proxy);
+
+        // No proxy registered yet -> null.
+        Check(cluster->GetImpostorProxy(baseH) == nullptr, "proxy.cluster.none");
+
+        cluster->RegisterImpostorProxy(baseH, proxyH);
+        const smvk::ImpostorProxy* entry = cluster->GetImpostorProxy(baseH);
+        Check(entry != nullptr, "proxy.cluster.registered");
+        Check(entry->indexCount == 6, "proxy.cluster.index-count");
+        Check(entry->vertexCount == 4, "proxy.cluster.vertex-count");
+
+        // A different mesh still has no proxy (sparse).
+        smvk::MeshData other{};
+        other.vertices.resize(3);
+        other.indices = {0, 1, 2};
+        other.aabbMin = glm::vec3(0);
+        other.aabbMax = glm::vec3(1);
+        const auto otherH = cluster->UploadMesh(other);
+        Check(cluster->GetImpostorProxy(otherH) == nullptr, "proxy.cluster.sparse");
+    }
 
     std::cout << "checks=" << checks << " failures=" << failures << "\n";
     return failures == 0 ? 0 : 1;

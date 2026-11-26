@@ -691,6 +691,20 @@ struct Surface {
     int32_t baseVertex = 0;
 };
 
+// OPTIONAL ray-tracing impostor proxy: a compact, sparse record of the
+// six-view depth proxy's heap range. Only a small subset of static meshes
+// carry one (the .geometry baked it via DeriveConfig::impostorProxy); the
+// runtime stores the offsets here rather than on StaticMesh so every mesh
+// does not pay for a feature a handful use. indexCount == 0 means "no
+// proxy" (the sparse sentinel). Mirrors the GPU byte layout (16 B).
+struct ImpostorProxy {
+    uint32_t firstIndex = 0;
+    uint32_t indexCount = 0; // 0 = none
+    int32_t baseVertex = 0;
+    uint32_t vertexCount = 0;
+};
+static_assert(sizeof(ImpostorProxy) == 16);
+
 struct Geometry {
     smvk::PrimitiveTopology topology = smvk::PrimitiveTopology::TriangleList;
 
@@ -757,6 +771,13 @@ struct MeshData {
     // static mesh (the formats/paths gate on the empty stream, never
     // on a separate flag).
     std::vector<PackedSkinInfluences> skin;
+    // OPTIONAL impostor ray-tracing proxy soup (sparse: only a small subset
+    // of static meshes carry one — the .geometry baked it via
+    // DeriveConfig::impostorProxy). Uploaded into the shared static heaps as
+    // a hidden mesh so the RT builder can swap it in for the full mesh at far
+    // distance. Empty = no proxy. Load-time only; never consulted per-frame.
+    std::vector<glm::vec3> impostorPositions;
+    std::vector<uint32_t> impostorIndices;
 };
 
 void AllocateStaticVertexFmt(smvk::ResourceManager& ctx);
@@ -770,6 +791,7 @@ void AllocateStaticVertexFmt(smvk::ResourceManager& ctx);
 namespace smvk {
 using ::tour::AllocateStaticVertexFmt;
 using ::tour::Geometry;
+using ::tour::ImpostorProxy;
 using ::tour::MeshData;
 using ::tour::StaticMesh;
 using ::tour::Surface;

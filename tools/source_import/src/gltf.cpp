@@ -3084,6 +3084,15 @@ size_t BuildFromMeshAsset(
             // carry it (the .geometry's trailing skin section); the upload
             // rides it to the retained upload (the pak serializer's source).
             up.skin = g.skin;
+            // Impostor RT proxy (sparse: only a small subset of meshes carry
+            // one). Unpack the packed-SoA proxy positions back to AoS for the
+            // hidden proxy upload below.
+            if (!g.impostorIndices.empty()) {
+                up.impostorPositions.reserve(g.impostorPositions.size());
+                for (const smvk::PackedVertexPosition& p : g.impostorPositions)
+                    up.impostorPositions.push_back(p.pos);
+                up.impostorIndices = g.impostorIndices;
+            }
             return up;
         };
         std::vector<smvk::MeshData> uploads;
@@ -3301,6 +3310,25 @@ size_t BuildFromMeshAsset(
                 lod.acmr = s.acmr;
                 cluster.RegisterMeshLod(sibUri, lod);
             }
+        }
+        // Impostor RT proxies (sparse): upload each baked proxy as a HIDDEN
+        // sibling mesh (positions + indices only — the BLAS reads positions)
+        // and register its heap offsets against the base mesh. The proxy is
+        // never referenced by a node, so it never raster-draws.
+        for (size_t gi = 0; gi < asset.geometry.size() && gi < baseHandles.size(); ++gi) {
+            const smvk::assets::MeshAsset::Geometry& g = asset.geometry[gi];
+            if (g.impostorPositions.empty() || g.impostorIndices.empty())
+                continue;
+            smvk::MeshData proxyUp{};
+            proxyUp.vertices.resize(g.impostorPositions.size());
+            for (size_t v = 0; v < g.impostorPositions.size(); ++v)
+                proxyUp.vertices[v].pos = g.impostorPositions[v].pos;
+            proxyUp.indices = g.impostorIndices;
+            proxyUp.aabbMin = g.aabbMin;
+            proxyUp.aabbMax = g.aabbMax;
+            const smvk::WorldPageStaticMeshHandle proxyHandle = cluster.UploadMesh(proxyUp);
+            if (!proxyHandle.empty())
+                cluster.RegisterImpostorProxy(baseHandles[gi], proxyHandle);
         }
     }
 

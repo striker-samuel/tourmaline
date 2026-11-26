@@ -787,8 +787,10 @@ int main() {
             {"Utils/shader_library.h", 0, 1}, // namespace shaders = ::tour::shaders
             {"Renderer/geometry_streamer.h", 10, 0},
             {"Renderer/texture_streamer.h", 4, 0},
-            {"Renderer/mesh.h", 35, 0}, // the data model: Material/StaticMesh/packed-vertex
+            {"Renderer/mesh.h", 36, 0}, // the data model: Material/StaticMesh/packed-vertex
                                         // families (vertex layout descriptions are engine-owned)
+                                        // + the ImpostorProxy compact record (sparse RT-proxy
+                                        // heap offsets; +1 over the prior 35)
             {"Renderer/gpu_scene_static.h",
              1,
              1}, // MeshData fwd-becomes-using + namespace gfx = ::tour::gfx

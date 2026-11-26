@@ -511,6 +511,15 @@ struct WorldPage {
     void RegisterMeshMeshlets(smvk::StringViewT uri, const smvk::CookedMeshlets& meshlets);
     std::optional<smvk::CookedMeshlets> GetMeshMeshlets(smvk::StringViewT uri) const;
 
+    // Impostor ray-tracing proxy (sparse: only a small subset of static
+    // meshes carry one). The importer uploads the six-view depth proxy as a
+    // HIDDEN sibling mesh and registers it against the base mesh; the
+    // renderer's RT builder reads the proxy's heap offsets to swap it in for
+    // the full mesh at far distance. Get returns nullptr when the base mesh
+    // has no proxy (the common case — no per-mesh field on StaticMesh).
+    void RegisterImpostorProxy(WorldPageStaticMeshHandle base, WorldPageStaticMeshHandle proxy);
+    const smvk::ImpostorProxy* GetImpostorProxy(WorldPageStaticMeshHandle base) const;
+
     // Enumerates registered texture URIs for serialization
     // ({uri, RHI handle} pairs, sorted by uri for deterministic paks).
     std::vector<std::pair<smvk::StringViewT, smvk::TextureHandle>> ListTextureUris() const;
@@ -660,6 +669,10 @@ struct WorldPage {
     std::vector<std::pair<WorldPageDecalHandle, smvk::StringViewT>> decalUriLedger_;
     bool retainUploads_ = false;
     std::unordered_map<uint32_t, MeshData> retainedUploads_;
+    // Impostor RT proxies keyed by the BASE mesh pool index (sparse — only
+    // meshes with a baked proxy get a record; the value is the proxy's heap
+    // offsets, see RegisterImpostorProxy). Load-time only.
+    std::unordered_map<uint32_t, smvk::ImpostorProxy> impostorProxies_;
     // Pak-image pin for borrowed texture payloads (see PinPakImage).
     std::shared_ptr<const tour::asset::PakImage> pakImagePin_;
     // Bake payloads by VFS path (see the public block): borrowed spans

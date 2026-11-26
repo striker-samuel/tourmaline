@@ -64,6 +64,7 @@
 
 #include <Engine/Renderer/GfxRenderer.h>
 #include <Engine/Renderer/gpu_scene_admission.h> // GpuSceneAdmissionFailure histogram (Epoch 0)
+#include <Engine/Renderer/static_impostor_gpu.h>
 #include <Engine/Renderer/static_vertex_heap.h>
 #include <Engine/Rendergraph/ForwardPlusRenderer.h>
 #include <Engine/Utils/LutIo.h>
@@ -14243,6 +14244,14 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // ray-traced sun shadows.
     if ((m_rayTracedSunShadowsEnabled || m_ambientMode == AmbientMode::Ddgi) &&
         m_context->SupportsRayQueries() && m_world) {
+        // Impostor RT-proxy swap (experimental, opt-in): TOURMALINE_IMPOSTOR=1
+        // swaps distant shadow casters onto their six-view depth proxy BLAS
+        // instead of the full mesh surface. Default OFF — the proxy bake and
+        // the far-distance heuristic are experimental (see static_impostor_gpu.h).
+        static const bool s_impostorEnabled = [] {
+            const char* e = std::getenv("TOURMALINE_IMPOSTOR");
+            return e && std::strcmp(e, "1") == 0;
+        }();
         tour::mem::FrameVector<smvk::RayTracingInstance> rtInstances{
             tour::mem::LinearAllocatorSTL<smvk::RayTracingInstance>{&tour::mem::FrameAllocator()}};
         // MaterialValues.tex stores pool IDs, NOT sampled descriptor
@@ -14278,6 +14287,40 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     maskedTexture = it->second;
                 }
                 const glm::mat4& model = m_world->scene.globalTransform[item.node];
+                // Impostor RT-proxy swap (sparse, gated): a far shadow caster
+                // with a baked proxy uses its tiny triangle soup instead of
+                // the full surface list, keeping BLAS traversal flat. Masked
+                // cutouts always fall back to the full mesh (the proxy is an
+                // opaque reconstruction and has no alpha coverage).
+                if (s_impostorEnabled && !masked) {
+                    const smvk::ImpostorProxy* proxy =
+                        static_cast<const smvk::World&>(*m_world).GetImpostorProxy(item.mesh);
+                    if (proxy) {
+                        const glm::vec3 center =
+                            (mesh->geometry.aabbMin + mesh->geometry.aabbMax) * 0.5f;
+                        const glm::vec3 half =
+                            (mesh->geometry.aabbMax - mesh->geometry.aabbMin) * 0.5f;
+                        const glm::vec3 worldCenter = glm::vec3(model * glm::vec4(center, 1.0f));
+                        const float scale = glm::max(glm::max(glm::length(glm::vec3(model[0])),
+                                                              glm::length(glm::vec3(model[1]))),
+                                                     glm::length(glm::vec3(model[2])));
+                        const float radius = glm::length(half) * scale;
+                        const float dist = glm::distance(
+                            worldCenter, glm::vec3(m_cameraPositioner.cameraPosition_));
+                        if (smvk::UseImpostorProxyAt(radius, dist)) {
+                            smvk::RayTracingInstance inst{};
+                            inst.firstIndex = proxy->firstIndex;
+                            inst.indexCount = proxy->indexCount;
+                            inst.baseVertex = proxy->baseVertex;
+                            inst.vertexCount = proxy->vertexCount;
+                            for (int row = 0; row < 3; ++row)
+                                for (int col = 0; col < 4; ++col)
+                                    inst.transform[row * 4 + col] = model[col][row];
+                            rtInstances.push_back(inst);
+                            return; // proxy replaces the full surface list
+                        }
+                    }
+                }
                 for (const auto& surface : mesh->geometry.surfaces) {
                     if (surface.indexCount < 3 || (surface.indexCount % 3))
                         continue;

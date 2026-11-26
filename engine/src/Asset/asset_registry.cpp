@@ -192,7 +192,8 @@ bool WorldPage::RegisterTextureUri(StringViewT uri, TextureHandle handle) {
     if (n.empty() || !handle.valid())
         return false;
     textureByUri_.Insert(uriArena_.AllocateString(n), handle);
-    if (world) ++world->materialTextureRegistryRevision;
+    if (world)
+        ++world->materialTextureRegistryRevision;
     return true;
 }
 
@@ -206,7 +207,8 @@ void WorldPage::UnregisterUri(StringViewT uri) {
     cameraByUri_.Erase(n);
     decalByUri_.Erase(n);
     textureByUri_.Erase(n);
-    if (world) ++world->materialTextureRegistryRevision;
+    if (world)
+        ++world->materialTextureRegistryRevision;
     textureSamplers_.Erase(n);
     textureSources_.Erase(n);
     meshLods_.Erase(n);
@@ -447,6 +449,35 @@ std::optional<CookedMeshlets> WorldPage::GetMeshMeshlets(StringViewT uri) const 
     if (!hit)
         return std::nullopt;
     return *hit;
+}
+
+void WorldPage::RegisterImpostorProxy(WorldPageStaticMeshHandle base,
+                                      WorldPageStaticMeshHandle proxy) {
+    if (base.empty() || proxy.empty())
+        return;
+    // The proxy is a hidden mesh whose single surface + vertexCount are its
+    // heap offsets (the exact BLAS addressing the RT builder needs). Any
+    // mismatch (degenerate proxy) simply registers nothing — the renderer
+    // falls back to the full mesh.
+    const StaticMesh* pm = staticMeshes.get(proxy);
+    if (!pm || pm->geometry.surfaces.empty())
+        return;
+    const Surface& s = pm->geometry.surfaces[0];
+    if (s.indexCount < 3 || (s.indexCount % 3) != 0 || pm->geometry.vertexCount < 3)
+        return;
+    ImpostorProxy entry{};
+    entry.firstIndex = s.firstIndex;
+    entry.indexCount = s.indexCount;
+    entry.baseVertex = s.baseVertex;
+    entry.vertexCount = pm->geometry.vertexCount;
+    impostorProxies_[base.index()] = entry;
+}
+
+const ImpostorProxy* WorldPage::GetImpostorProxy(WorldPageStaticMeshHandle base) const {
+    if (base.empty())
+        return nullptr;
+    const auto it = impostorProxies_.find(base.index());
+    return it != impostorProxies_.end() ? &it->second : nullptr;
 }
 
 std::vector<std::pair<StringViewT, TextureHandle>> WorldPage::ListTextureUris() const {
