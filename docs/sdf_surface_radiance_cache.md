@@ -113,6 +113,73 @@ dynamic occluders require runtime shadow correction. Missing or stale
 bake uses bounded shadow trace or conservative fallback, never unconditionally
 visible. A probe's own sun visibility is not the visibility at its ray hit.
 
+### Post-SDF scene visibility bake (proposed stage 2.26)
+
+Integrate in `tools/project_pipeline/src/build_pipeline.cpp`, immediately
+after the existing stage 2.25 `BakePlanSdfs(project, plan, options, err)`
+and before stage 2.5/catalog and stage 3/Pak. The distance bake is per shared
+geometry family; this dependent visibility bake is per final placed scene,
+after replaying its .tour overrides and resolving static transforms and pak
+dependencies. Do not bake world visibility into reusable .geometry.sdf
+assets: identical meshes can be indoors and outdoors. Do not put this
+instance-specific result in a shared geometry-only pak.
+
+Proposed independent recipe option `bake sky_visibility on` (opt-in;
+syntax not implemented), requiring SDF baking or compatible existing SDF
+artifacts. Optional sun-path and static tint payloads can reuse the same
+surface enumeration and acceleration. Fail clearly if explicitly requested
+inputs are missing rather than silently publishing stale coverage.
+
+1. Gather the full final static scene, including dependencies and terrain.
+   Construct an offline world-space BVH of instance bounds and reuse parsed
+   mesh-local SDF octrees; never use the camera-limited runtime 128-instance
+   scene. Include occluders omitted from the SDF bake via triangle fallback
+   or mark coverage unknown. Thin roofs/walls and open surfaces warrant
+   conservative/exact triangle fallback; do not trust coarse SDF misses
+   alone when classifying enclosed rooms.
+2. Enumerate only near-surface leaves/brick voxels, generate oriented
+   surface samples (both sides when appropriate), and bias origins by local
+   voxel size. Validate gradient and surface identity. For each sample trace
+   deterministic stratified cosine-weighted hemisphere rays (start 64–128)
+   through the world hierarchy to confirmed escape from the scene's
+   conservative bounds. A finite distance cutoff without proof of escape
+   is unknown, not open sky. For directional sky rather than isotropic
+   ambient, optionally keep an upper-world-hemisphere visibility channel
+   normalized against the equivalent unobstructed directional response.
+3. Compute normalized Vsky = escapedWeight / totalWeight (for a cosine
+   sampling PDF and uniform sky, simply escapedCount / sampleCount).
+   Unknown rays must not enter the numerator as sky or silently count
+   as blocked; retrace/fallback or mark sample invalid. Quantize valid
+   results to UNORM8, optionally filter only across compatible connected
+   same-side surfaces. Avoid borrowing across walls or door gaps.
+4. Optionally trace the 64 baked sun directions and store a separate bit
+   mask. Reuse the same acceleration and samples, not the sky average as
+   a substitute for direct sun visibility. Optional tint can share the
+   sky-ray hits with a separate short-distance weight/cutoff.
+5. Write a versioned scene-owned derived visibility sidecar, keyed by
+   stable scene instance identity, mesh fragment, local leaf/voxel, side,
+   and geometry revision. Keep one byte of sky payload plus separate
+   validity/coverage metadata, optionally compress sparse runs. Cache
+   dependency hash includes placed static geometry/transforms, relevant
+   occluder flags, SDF version, sampling parameters and algorithm version;
+   sun path changes invalidate its mask, not necessarily Vsky.
+6. Add the generated sidecar to the owning scene pak's content set,
+   with an explicitly supported asset kind/serving contract, staged
+   publication and dependency validation. When disabled do not pack stale
+   sidecars. Runtime resolves stable IDs, samples valid Vsky for analytic
+   sky ambient and falls back to neutral or existing baked GI on missing
+   data. Dynamic occluders remain the existing AO/shadow system's job.
+   No runtime visibility rays are necessary for unchanged static scenes.
+
+Parallelize by scene instance/leaf batches with the existing bake thread
+pool; bound working memory and report progress, elapsed time, rays,
+unknown coverage and output bytes. Deterministic output should not depend
+on worker scheduling. Test two instances of the same mesh (one under a
+roof), open shade vs sealed room vs window, thin occluders, cross-pak
+occluders, transformed normals, dependency invalidation, disabled build,
+and pak round trip. This is a proposed integration stage, not implemented
+by this documentation change.
+
 ## Optional tint-only GI and large-scale interior darkening
 
 Keep FullIrradiance as the default proposed payload; TintOnly is a cheaper,
