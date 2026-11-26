@@ -385,6 +385,52 @@ task/mesh or indexed raster over the survivors) → `ForwardPlus`
 (prepass+cull) → shadow atlases (CSM/spot/EVSM/deferred) → `Main` →
 motion/DoF/SSR/volumetric/exposure/bloom/tonemap/AA/UI → swapchain.
 
+## The static render graph (compiled once per permutation)
+
+The monolithic frame graph compiles ONCE per structural permutation into
+an immutable plan (passes → queue-local batches → whole-resource
+timelines → barrier templates → lifetimes). On a cache hit a frame only
+records fresh commands and patches per-flight bindings — no pass
+declaration rebuild, usage collection, sort, heap pack or hazard
+re-analysis.
+
+- **Compiler-side flattening** (implemented in
+  `engine/include/Engine/Rendergraph/static_graph_compiler.h`, pinned by
+  `StaticRenderGraphCompilerTests`): `CompiledGraph` carries a dense,
+  canonical resource order the executor binds per-flight handles into —
+  `resourceIdentities` (dense id → `kind<<32|index`, kind 0 = image,
+  1 = buffer) and `resourceHandles` (dense id → `gen<<32|index` handle
+  key, parallel to identities, so the executor reconstructs the actual
+  pool handle to dereference).
+- **Bind ABI** (accepted maintainer decision —
+  `docs/static_rendergraph_proposal.md`): a universal 32-byte push range
+  of four pass-defined buffer-device-address slots, not four
+  globally-semantic addresses:
+  `struct alignas(8) PassPushConstants { uint64_t bda[4]{}; };`.
+  Each pass/shader family defines the meaning of slots 0..3 through
+  compile-time indices shared with (or checked against) HLSL. Buffers
+  bind by BDA directly; a slot may point at a typed parameter record, a
+  buffer, or an address table when a pass needs more than four
+  addresses. Images and samplers bind through bindless descriptor
+  indices, stored in typed records as needed. Unused slots are zero and
+  never dereferenced.
+- **Per-flight patch**: static addresses resolve once after allocation;
+  the executor patches only dynamic addresses + descriptor indices (and
+  imported boundary states) each flight. No per-frame name lookup, no
+  binding-index allocation.
+- **Constraints**: CPU resource ids exist only for timelines/hazards/
+  aliasing and are NOT exposed as a GPU binding namespace. Declared
+  backing-buffer handles still express dependency for transitive BDA
+  reads — the address itself does not. All migrated pipelines use the
+  compatible 32-byte push range and stage flags; push once when the
+  block is constant, or update a changed 8-byte slot for subsequent
+  draws/dispatches. Never overwrite a record the GPU still reads.
+- **Status**: the CPU compiler (`smvk::rg::Compile`) and the flattening
+  are implemented and tested; the BDA push ABI and the Vulkan
+  executor/binder are the accepted design, not yet a runtime
+  implementation. DDGI plans to ride it (`docs/ddgi_static_rendergraph.md`
+  — keep BDA push structs aligned and assert size/offsets against HLSL).
+
 ## The generated project.h (content as code)
 
 - **Project identity (persistent, never name/path-derived)**: the
