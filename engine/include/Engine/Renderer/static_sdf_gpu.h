@@ -52,7 +52,7 @@ struct StaticSdfSceneHeader {
     uint64_t materialsAddress = 0;
     uint32_t instanceCount = 0;
     uint32_t materialCount = 0;
-    uint32_t maxSteps = 64;
+    uint32_t maxSteps = 128;
     float epsilon = 0.02f;
     float originBias = 0.05f;
 };

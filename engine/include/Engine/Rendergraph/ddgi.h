@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: MIT
 #pragma once
+#include <cstdint>
+#include <vector>
+
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Rendergraph/ddgi_types.h>
 #include <Engine/Rendergraph/renderer.h>
@@ -81,6 +84,25 @@ struct Volume {
                 history[0].distance.Create(ctx, rg, sizes.distance, "ddgi moments A") &&
                 history[1].irradiance.Create(ctx, rg, sizes.irradiance, "ddgi irradiance B") &&
                 history[1].distance.Create(ctx, rg, sizes.distance, "ddgi moments B")) {
+                // Zero the history: Vulkan buffer memory is UNINITIALIZED, and
+                // the trace pass's E_indirect feedback reads history[slot^1]
+                // on the FIRST frame (before any blend). The blend's reset only
+                // guards its own read; the trace would otherwise sample garbage
+                // and flash frame-to-frame. Zeroing makes the field read as
+                // invalid (irradiance .w == 0) + zero distance, so E_indirect
+                // contributes nothing until the first real blend lands.
+                auto zero = [&](const Buffer& b, size_t bytes) {
+                    const std::vector<uint8_t> zeros(bytes, 0);
+                    ctx.UploadDataToBuffer(b.storage,
+                                           zeros.data(),
+                                           zeros.size(),
+                                           PipelineStageBit_Compute,
+                                           AccessFlags::ShaderRead);
+                };
+                zero(history[0].irradiance, sizes.irradiance);
+                zero(history[0].distance, sizes.distance);
+                zero(history[1].irradiance, sizes.irradiance);
+                zero(history[1].distance, sizes.distance);
                 Shader trace{
                     .module = traceModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute};
                 Shader blend{
@@ -143,11 +165,12 @@ struct Volume {
         if (!ready || !frameAddress || writeSlot > 1)
             return false;
         if (backend == TraceBackend::StaticSdf) {
+            // The caller guarantees a resident, covered scene via sceneAddress.
+            // reads[] is OPTIONAL (the StaticSdfGpuScene residency follows the
+            // stable-upload model like SSR — no per-frame hints), so only
+            // non-empty handles are hinted below.
             if (!sdf || !sdf->sceneAddress)
                 return false;
-            for (auto h : sdf->reads)
-                if (h.empty())
-                    return false;
         }
         const History& old = history[writeSlot ^ 1];
         const History& next = history[writeSlot];
@@ -177,7 +200,8 @@ struct Volume {
                 req.barrierMasks.accessMask = AccessFlags::ShaderRead;
                 req.barrierMasks.stageMask = PipelineStageBit_Compute;
                 for (auto h : sdf->reads)
-                    pass.AddBufferHint(h, req);
+                    if (!h.empty())
+                        pass.AddBufferHint(h, req);
                 auto& f = rg.PassFrameData<Frame<SdfTracePush>>(pass);
                 f.program = const_cast<ShaderProgram*>(&traceProgram);
                 f.push = {push, sdf->sceneAddress};

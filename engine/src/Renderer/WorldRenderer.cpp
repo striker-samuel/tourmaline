@@ -5133,6 +5133,12 @@ void WorldRenderer::RebuildDdgiVolumes() {
 
     // ---- Create one Volume per subcell; collect descriptors. Fail-closed:
     // any failed volume drops the whole feature (baked/sky ambient stands).
+    // Backend: prefer the StaticSdf trace when the SDF residency is ready
+    // (material-aware: emissive + direct sun + E_indirect color bleed);
+    // fall back to hardware RT (sky-only) for un-baked scenes.
+    const smvk::ddgi::TraceBackend ddgiBackend = m_staticSdfGpu.Ready()
+                                                     ? smvk::ddgi::TraceBackend::StaticSdf
+                                                     : smvk::ddgi::TraceBackend::HardwareRT;
     m_ddgiVolumes.reserve(cells.size());
     m_ddgiVolumeDescs.reserve(cells.size());
     for (const auto& [key, cell] : cells) {
@@ -5156,7 +5162,7 @@ void WorldRenderer::RebuildDdgiVolumes() {
         grid.hysteresis = 0.95f;
 
         smvk::ddgi::Volume vol{};
-        if (!vol.Create(*m_context, *m_rendergraph, grid, size_t(128u) << 20)) {
+        if (!vol.Create(*m_context, *m_rendergraph, grid, size_t(128u) << 20, ddgiBackend)) {
             std::cerr << "[DDGI] a probe volume failed to create - DDGI disabled\n";
             for (auto& v : m_ddgiVolumes)
                 v.Destroy(*m_rendergraph);
@@ -19440,6 +19446,29 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     }
 
     // ---------------------------------------------------------------------
+    // Static-SDF scene residency is SHARED by the DDGI SDF trace backend,
+    // the SSSR trace, and the SdfScene debug view. It is updated HERE —
+    // BEFORE the DDGI passes schedule — so the DDGI SDF backend has a
+    // resident scene on its first frame too (not a frame late). The SSR
+    // block below reuses this result and only adds its own gating.
+    // ---------------------------------------------------------------------
+    const bool sdfResidencyWanted = m_ambientMode == AmbientMode::Ddgi ||
+                                    m_staticSdfReflectionsEnabled ||
+                                    m_debugView == ViewMode::SdfScene;
+    bool sdfReady = false;
+    if (sdfResidencyWanted && m_world) {
+        sdfReady = m_staticSdfGpu.Update(
+            *m_context, *m_world, glm::vec3(m_cameraPositioner.cameraPosition_));
+        // Camera-cell republishing changes the set of reflected objects;
+        // old SSSR temporal history is not compatible with a different
+        // instance list.
+        if (m_staticSdfGpu.Generation() != m_staticSdfSeenGeneration) {
+            m_staticSdfSeenGeneration = m_staticSdfGpu.Generation();
+            smvk::SsrTaaInvalidateHistory(m_ssrTaa);
+        }
+    }
+
+    // ---------------------------------------------------------------------
     // DDGI (dynamic diffuse GI, Rendergraph/ddgi.h): one probe VOLUME per
     // occupied 64 m world subcell. The trace + blend passes are emitted
     // BEFORE Main so the lit body samples the freshly-written
@@ -19457,11 +19486,20 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // update index ping-pong the double-buffered history across every
         // volume (m_ddgiReset clears history on the first frame).
         for (auto& vol : m_ddgiVolumes) {
+            smvk::ddgi::Volume::SdfTraceInput sdfInput;
+            const smvk::ddgi::Volume::SdfTraceInput* sdfPtr = nullptr;
+            if (vol.backend == smvk::ddgi::TraceBackend::StaticSdf && sdfReady) {
+                // Resident SDF scene (stable-upload residency, no per-frame
+                // read hints — see the AddPasses contract).
+                sdfInput.sceneAddress = m_staticSdfGpu.SceneAddress(*m_context);
+                sdfPtr = &sdfInput;
+            }
             vol.AddPasses(*m_rendergraph,
                           frameUniformsAddress,
                           m_ddgiWriteSlot,
                           m_ddgiUpdateIndex,
-                          m_ddgiReset);
+                          m_ddgiReset,
+                          sdfPtr);
         }
         if (!m_ddgiVolumes.empty()) {
             m_ddgiWriteSlot ^= 1u;
@@ -20585,28 +20623,14 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                            m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX &&
                            m_ssrIntensity > 0.0f && !DebugVisualizationActive();
         // Static-SDF scene residency is shared by the SSSR trace AND the
-        // SdfScene debug view, so publish it independently of the SSR gate:
-        // a debug view sets DebugVisualizationActive() (which turns SSR off),
-        // and the SdfScene view would otherwise never get its residency.
-        // The SSR reflections FALLBACK (the per-ray octree trace) is gated
-        // separately on m_staticSdfReflectionsEnabled so F1 Lit doesn't pay
-        // the SDF cost just because the residency exists for a debug view.
-        const bool sdfResidencyWanted =
-            m_staticSdfReflectionsEnabled || m_debugView == ViewMode::SdfScene;
-        if (sdfResidencyWanted && m_world) {
-            const bool sdfReady = m_staticSdfGpu.Update(
-                *m_context, *m_world, glm::vec3(m_cameraPositioner.cameraPosition_));
-            // Camera-cell republishing changes the set of reflected objects;
-            // old SSSR temporal history is not compatible with a different
-            // instance list.
-            if (m_staticSdfGpu.Generation() != m_staticSdfSeenGeneration) {
-                m_staticSdfSeenGeneration = m_staticSdfGpu.Generation();
-                smvk::SsrTaaInvalidateHistory(m_ssrTaa);
-            }
-            if (sdfReady && m_staticSdfReflectionsEnabled) {
-                // One scene-header BDA, keeping SSR at 128 B.
-                ssrDesc.staticSdfSceneAddr = m_staticSdfGpu.SceneAddress(*m_context);
-            }
+        // SdfScene debug view (and now the DDGI SDF backend). It was already
+        // updated BEFORE the DDGI block above; here we only publish the SSR
+        // half: the per-ray octree FALLBACK is gated on
+        // m_staticSdfReflectionsEnabled so F1 Lit doesn't pay the SDF cost
+        // just because the residency exists for a debug view.
+        if (sdfReady && m_staticSdfReflectionsEnabled) {
+            // One scene-header BDA, keeping SSR at 128 B.
+            ssrDesc.staticSdfSceneAddr = m_staticSdfGpu.SceneAddress(*m_context);
         }
         if (ssrOn) {
             // The frozen volume set is rebuilt on world topology changes.

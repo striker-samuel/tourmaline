@@ -45,8 +45,8 @@ float3 DdgiSampleEIndirect(GPU_PTR_READ(DdgiIrrBuffer) oldIrr,
                            float3 origin, float spacing, uint3 dims,
                            float3 worldPos, float3 normal)
 {
-    const float irrStride = DDGI_IRR_RES * DDGI_IRR_RES;
-    const float distStride = DDGI_DIST_RES * DDGI_DIST_RES;
+    const uint irrStride = DDGI_IRR_RES * DDGI_IRR_RES;
+    const uint distStride = DDGI_DIST_RES * DDGI_DIST_RES;
     const float3 biased = worldPos + normal * (0.25f * spacing);
     const float3 local = (biased - origin) / spacing;
     const int3 base = int3(floor(local));
