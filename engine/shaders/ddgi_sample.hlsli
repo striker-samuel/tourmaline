@@ -8,6 +8,12 @@
 // normal-facing cosine + Chebyshev visibility (from the published
 // distance moments), and returns the directionally-sampled irradiance E
 // (NOT outgoing radiance — the caller multiplies by kD*baseColor/pi).
+//
+// Two normals are taken: the GEOMETRIC normal (geomN) drives every
+// spatial decision (receiver bias, probe selection, facing, visibility);
+// the SHADING normal (N, after normal mapping) only selects the
+// directional irradiance bin. Normal-map detail must not move the
+// receiver or re-weight neighbors, or a brick wall stipples.
 
 #include "ddgi_common.hlsli"
 
@@ -17,10 +23,35 @@ struct DdgiSampleResult
     float valid; // 0 = outside/invalid -> caller keeps the baked/sky slice
 };
 
-static const float DDGI_NORMAL_BIAS = 0.25; // probe-space bias along N (spacing units)
+static const float DDGI_NORMAL_BIAS = 0.25; // probe-space bias along geomN (spacing units)
 
-// Sample ONE volume at worldPos with surface normal N (the 8-probe walk).
-DdgiSampleResult DdgiSampleVolume(DdgiVolumeDesc desc, uint slot, float3 worldPos, float3 N)
+// Bilinear octahedral taps for a direction: the 2x2 bin indices (clamped
+// at the map edge — the octahedron square's corners are unused) and their
+// weights. Bin centers sit at (i + 0.5)/res.
+void DdgiOctBilinearTaps(float3 dir, uint res, out uint bin[4], out float w[4])
+{
+    const float2 uv = DdgiOctEncode(dir);
+    const float2 g = uv * float(res) - 0.5f;
+    const int2 b = int2(floor(g));
+    const float2 f = g - float2(b);
+    const uint x0 = uint(clamp(b.x, 0, int(res) - 1));
+    const uint y0 = uint(clamp(b.y, 0, int(res) - 1));
+    const uint x1 = uint(clamp(b.x + 1, 0, int(res) - 1));
+    const uint y1 = uint(clamp(b.y + 1, 0, int(res) - 1));
+    bin[0] = x0 + y0 * res;
+    bin[1] = x1 + y0 * res;
+    bin[2] = x0 + y1 * res;
+    bin[3] = x1 + y1 * res;
+    w[0] = (1.0f - f.x) * (1.0f - f.y);
+    w[1] = f.x * (1.0f - f.y);
+    w[2] = (1.0f - f.x) * f.y;
+    w[3] = f.x * f.y;
+}
+
+// Sample ONE volume at worldPos with geometric normal geomN and shading
+// normal N (the 8-probe walk).
+DdgiSampleResult DdgiSampleVolume(DdgiVolumeDesc desc, uint slot, float3 worldPos,
+                                  float3 geomN, float3 N)
 {
     DdgiSampleResult r;
     r.irradiance = float3(0.0, 0.0, 0.0);
@@ -29,14 +60,13 @@ DdgiSampleResult DdgiSampleVolume(DdgiVolumeDesc desc, uint slot, float3 worldPo
     const float spacing = max(desc.spacing, 1e-4f);
     const float3 origin = float3(desc.originX, desc.originY, desc.originZ);
     const int3 dims = int3(desc.dimX, desc.dimY, desc.dimZ);
-    // Bias the receiver along N and trilinear on the BIASED position (the
-    // standard DDGI walk). The probes sit at the grid CORNERS (origin +
-    // integer*spacing); a surface lying exactly on the lattice would
-    // otherwise sample two embedded/same-side probes (facing ~0) and read
-    // invalid, never reaching the open-air probe on its normal side. The old
-    // code trilinear'd the unbiased point with a -0.5 center shift, a
-    // different convention than the corner placement.
-    const float3 biasedPos = worldPos + N * (DDGI_NORMAL_BIAS * spacing);
+    // Bias the receiver along the GEOMETRIC normal and trilinear on the
+    // BIASED position (the standard DDGI walk). The probes sit at the grid
+    // CORNERS (origin + integer*spacing); a surface lying exactly on the
+    // lattice would otherwise sample two embedded/same-side probes
+    // (facing ~0) and read invalid, never reaching the open-air probe on
+    // its normal side.
+    const float3 biasedPos = worldPos + geomN * (DDGI_NORMAL_BIAS * spacing);
     const float3 local = (biasedPos - origin) / spacing;
     const int3 base = int3(floor(local));
     const float3 frac = local - float3(base);
@@ -44,11 +74,10 @@ DdgiSampleResult DdgiSampleVolume(DdgiVolumeDesc desc, uint slot, float3 worldPo
     const uint irrStride = DDGI_IRR_RES * DDGI_IRR_RES;
     const uint distStride = DDGI_DIST_RES * DDGI_DIST_RES;
 
-    // Directional oct bin for the surface normal (irradiance) and for the
-    // probe->receiver direction (visibility moments).
-    const float2 nUv = DdgiOctEncode(N);
-    const uint irrBin = min(uint(nUv.x * float(DDGI_IRR_RES)), DDGI_IRR_RES - 1u)
-        + min(uint(nUv.y * float(DDGI_IRR_RES)), DDGI_IRR_RES - 1u) * DDGI_IRR_RES;
+    // Directional irradiance taps for the SHADING normal (computed once).
+    uint irrBin[4];
+    float irrW[4];
+    DdgiOctBilinearTaps(N, DDGI_IRR_RES, irrBin, irrW);
 
     float3 acc = float3(0.0, 0.0, 0.0);
     float wSum = 0.0;
@@ -73,26 +102,31 @@ DdgiSampleResult DdgiSampleVolume(DdgiVolumeDesc desc, uint slot, float3 worldPo
 
         const float3 probePos = origin + float3(coord) * spacing;
 
-        // Irradiance bin toward the surface normal; .w carries validity.
-        const float4 irr = desc.irradiance[slot].Get().values[probe * irrStride + irrBin];
+        // Bilinear irradiance toward the surface normal; .w = validity.
+        float4 irr = float4(0.0, 0.0, 0.0, 0.0);
+        [unroll]
+        for (uint t = 0; t < 4; ++t)
+            irr += desc.irradiance[slot].Get().values[probe * irrStride + irrBin[t]] * irrW[t];
         if (irr.w <= 0.0)
             continue;
 
-        // Chebyshev visibility toward the receiver (from the actual probe).
+        // Chebyshev visibility toward the receiver (from the actual probe),
+        // with bilinear distance moments.
         const float3 toReceiver = biasedPos - probePos;
         const float dist = length(toReceiver);
-        const float3 recDir = dist > 1e-5f ? toReceiver / dist : N;
-        const float2 recUv = DdgiOctEncode(recDir);
-        const uint distBin = min(uint(recUv.x * float(DDGI_DIST_RES)), DDGI_DIST_RES - 1u)
-            + min(uint(recUv.y * float(DDGI_DIST_RES)), DDGI_DIST_RES - 1u) * DDGI_DIST_RES;
-        const float2 moments = desc.distance[slot].Get().values[probe * distStride + distBin];
+        const float3 recDir = dist > 1e-5f ? toReceiver / dist : geomN;
+        uint distBin[4];
+        float distW[4];
+        DdgiOctBilinearTaps(recDir, DDGI_DIST_RES, distBin, distW);
+        float2 moments = float2(0.0, 0.0);
+        [unroll]
+        for (uint t = 0; t < 4; ++t)
+            moments += desc.distance[slot].Get().values[probe * distStride + distBin[t]] * distW[t];
         const float visibility = DdgiVisibility(moments, dist);
 
-        // Normal-facing cosine: probes behind the surface contribute 0.
-        // Measure toward the BIASED receiver (not worldPos) so a probe lying
-        // exactly on the surface (normalize(0) -> NaN) degrades to facing 0
-        // instead of poisoning the weight.
-        const float facing = max(dot(N, normalize(probePos - biasedPos)), 0.0f);
+        // Normal-facing cosine: probes behind the GEOMETRIC surface contribute
+        // 0. recDir is already guarded against a zero probe->receiver vector.
+        const float facing = max(dot(geomN, -recDir), 0.0f);
 
         const float weight = tri * facing * visibility;
         acc += irr.rgb * weight;
@@ -106,10 +140,11 @@ DdgiSampleResult DdgiSampleVolume(DdgiVolumeDesc desc, uint slot, float3 worldPo
     return r;
 }
 
-// Sample the DDGI probe field at worldPos with surface normal N: find the
-// volume whose AABB contains the point and sample it. Returns valid == 0
-// when the point is outside every volume or the weights sum to ~0.
-DdgiSampleResult DdgiSampleIrradiance(DdgiParams params, float3 worldPos, float3 N)
+// Sample the DDGI probe field at worldPos with geometric normal geomN and
+// shading normal N: find the volume whose AABB contains the point and sample
+// it. Returns valid == 0 when the point is outside every volume or the
+// weights sum to ~0.
+DdgiSampleResult DdgiSampleIrradiance(DdgiParams params, float3 worldPos, float3 geomN, float3 N)
 {
     DdgiSampleResult r;
     r.irradiance = float3(0.0, 0.0, 0.0);
@@ -125,11 +160,15 @@ DdgiSampleResult DdgiSampleIrradiance(DdgiParams params, float3 worldPos, float3
     {
         const float3 vmin = float3(params.volumes.Get().values[v].originX,
             params.volumes.Get().values[v].originY, params.volumes.Get().values[v].originZ);
-        const float3 vmax = vmin + float3(params.volumes.Get().values[v].dimX,
-            params.volumes.Get().values[v].dimY, params.volumes.Get().values[v].dimZ)
+        // The last actual probe sits at (dims-1)*spacing, not dims*spacing:
+        // the grid covers [0, (dims-1)*spacing] on each axis. Extending the
+        // AABB by a full spacing made a volume claim the surface beyond its
+        // probe lattice (the dark strip at volume edges).
+        const float3 vmax = vmin + (float3(params.volumes.Get().values[v].dimX,
+            params.volumes.Get().values[v].dimY, params.volumes.Get().values[v].dimZ) - 1.0f)
             * params.volumes.Get().values[v].spacing;
         if (all(worldPos >= vmin) && all(worldPos <= vmax))
-            return DdgiSampleVolume(params.volumes.Get().values[v], params.slot, worldPos, N);
+            return DdgiSampleVolume(params.volumes.Get().values[v], params.slot, worldPos, geomN, N);
     }
     return r;
 }
