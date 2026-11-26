@@ -1875,13 +1875,28 @@ static smvk::source::Primitive DecodeGltfPrimitive(const tinygltf::Model& model,
     }
     if (raw.hasTangents) {
         const auto& a = model.accessors[primitive.attributes.at("TANGENT")];
-        for (size_t i = 0; i < a.count && i < raw.vertices.size(); ++i)
-            raw.vertices[i].tangent = readVec4F(model, a, i);
+        for (size_t i = 0; i < a.count && i < raw.vertices.size(); ++i) {
+            const glm::vec4 t = readVec4F(model, a, i);
+            // Degenerate/non-finite tangents (the Amazon Bistro ships a few)
+            // fall back to a well-defined tangent; a NaN here would poison the
+            // packed tangent and the scene validation would fail the import.
+            raw.vertices[i].tangent = (std::isfinite(t.x) && std::isfinite(t.y) &&
+                                       std::isfinite(t.z) && std::isfinite(t.w))
+                                          ? t
+                                          : glm::vec4(1.0f, 0.0f, 0.0f, 1.0f);
+        }
     }
     if (raw.hasNormals) {
         const auto& a = model.accessors[primitive.attributes.at("NORMAL")];
-        for (size_t i = 0; i < a.count && i < raw.vertices.size(); ++i)
-            raw.vertices[i].normal = glm::normalize(readVec3F(model, a, i));
+        for (size_t i = 0; i < a.count && i < raw.vertices.size(); ++i) {
+            const glm::vec3 n = readVec3F(model, a, i);
+            const float l2 = glm::dot(n, n);
+            // Zero-length (or non-finite) normals normalize to NaN; fall back
+            // to +Z so degenerate authoring data imports instead of failing.
+            raw.vertices[i].normal = (l2 > 1e-20f && std::isfinite(l2))
+                                         ? glm::normalize(n)
+                                         : glm::vec3(0.0f, 0.0f, 1.0f);
+        }
     }
     if (primitive.indices >= 0) {
         const auto& a = model.accessors[primitive.indices];
