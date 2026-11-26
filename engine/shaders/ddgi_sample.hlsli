@@ -118,15 +118,18 @@ DdgiSampleResult DdgiSampleIrradiance(DdgiParams params, float3 worldPos, float3
         return r;
 
     const uint count = min(params.volumeCount, 128u);
-    const DdgiVolumeDescBuffer volBuf = params.volumes.Get();
+    // Index the BDA in place (values[1] is a flexible GPU array view).
+    // Reject using spatial fields before fetching the history pointers.
     [loop]
     for (uint v = 0; v < count; ++v)
     {
-        const DdgiVolumeDesc desc = volBuf.values[v];
-        const float3 vmin = float3(desc.originX, desc.originY, desc.originZ);
-        const float3 vmax = vmin + float3(desc.dimX, desc.dimY, desc.dimZ) * desc.spacing;
+        const float3 vmin = float3(params.volumes.Get().values[v].originX,
+            params.volumes.Get().values[v].originY, params.volumes.Get().values[v].originZ);
+        const float3 vmax = vmin + float3(params.volumes.Get().values[v].dimX,
+            params.volumes.Get().values[v].dimY, params.volumes.Get().values[v].dimZ)
+            * params.volumes.Get().values[v].spacing;
         if (all(worldPos >= vmin) && all(worldPos <= vmax))
-            return DdgiSampleVolume(desc, params.slot, worldPos, N);
+            return DdgiSampleVolume(params.volumes.Get().values[v], params.slot, worldPos, N);
     }
     return r;
 }

@@ -154,6 +154,31 @@ int main() {
         // not refetch per step.
         Check(!tileChanged(kEnvZoneCellOutOfGrid, kEnvZoneCellOutOfGrid),
               "envzone.tile-cache-out-of-grid-sentinel-caches");
+        // Model the metadata-only cache: a resident tile suppresses the
+        // far tier even when no candidate influences this particular point.
+        // A change of either coordinate must clear stale resident metadata.
+        bool live = false;
+        glm::ivec2 cachedCell(0);
+        unsigned first = 0, count = 0, resolves = 0;
+        const auto resolve = [&](glm::ivec2 cell, unsigned newFirst, unsigned newCount) {
+            if (live && !tileChanged(cachedCell, cell)) return;
+            live = true;
+            cachedCell = cell;
+            first = newFirst;
+            count = newCount;
+            ++resolves;
+        };
+        resolve(glm::ivec2(2, 3), 12, 2);
+        resolve(glm::ivec2(2, 3), 99, 0);
+        Check(first == 12 && count == 2 && resolves == 1,
+              "envzone.tile-cache-reuses-candidate-range");
+        resolve(glm::ivec2(3, 3), 0, 0);
+        Check(first == 0 && count == 0 && resolves == 2,
+              "envzone.tile-cache-clears-unresident-range");
+        resolve(kEnvZoneCellOutOfGrid, 0, 0);
+        resolve(kEnvZoneCellOutOfGrid, 0, 0);
+        Check(count == 0 && resolves == 3,
+              "envzone.tile-cache-far-fallback-reuses-miss");
     }
     {
         // Bounds math: cell (-1,-1) spans [-256,0) x [-256,0).

@@ -640,8 +640,50 @@ float EnvShapeFalloff(EnvZoneShape s, float3 p)
     return 1.0 - t*t*(3.0 - 2.0*t);
 }
 
-bool EnvZoneAt(float3 p, FrameUniforms frame, out float weight,
-    out EnvZoneLook z)
+// Cache only immutable lookup metadata, never the position-dependent
+// winning zone or falloff. One cache belongs to one ray/view.
+struct EnvZoneMarchCache
+{
+    bool live;
+    int2 cell;
+    uint firstCandidate;
+    uint candidateCount;
+};
+
+void EnvZoneResolveCell(float3 p, FrameUniforms frame,
+    inout EnvZoneMarchCache cache)
+{
+    int2 cell = int2(floor((p.xz -
+        float2(frame.envTileMinX, frame.envTileMinZ)) / 64.0));
+    const bool inside = all(cell >= int2(0,0)) &&
+        all(cell < int2(frame.envTileDimX, frame.envTileDimZ));
+    // All out-of-grid samples use the same far shortlist.
+    if (!inside) cell = int2(0x7fffffff, 0x7fffffff);
+    if (cache.live && all(cache.cell == cell))
+        return;
+
+    cache.live = true;
+    cache.cell = cell;
+    cache.firstCandidate = 0u;
+    cache.candidateCount = 0u;
+    if (!inside) return;
+
+    const uint2 tile = uint2(cell);
+    const uint rootWidth = (frame.envTileDimX + 3u) / 4u;
+    const uint rootIndex = (tile.y / 4u) * rootWidth + (tile.x / 4u);
+    const uint page = GPU_PTR(uint)(
+        frame.envTilePageTable + uint64_t(rootIndex) * 4u).Get();
+    if (page == 0xffffffffu) return;
+    const uint localCell = (tile.y & 3u) * 4u + (tile.x & 3u);
+    const EnvTileCell c = GPU_PTR(EnvTileCell)(
+        frame.envTileCells +
+        (uint64_t(page) * 16u + uint64_t(localCell)) * 32u).Get();
+    cache.firstCandidate = c.firstCandidate;
+    cache.candidateCount = c.candidateCount;
+}
+
+bool EnvZoneSegment(float3 p, FrameUniforms frame,
+    inout EnvZoneMarchCache cache, out float weight, out EnvZoneLook z)
 {
     weight = 0.0;
     z.skyTint = float3(1,1,1);
@@ -655,37 +697,21 @@ bool EnvZoneAt(float3 p, FrameUniforms frame, out float weight,
         return false;
     uint rec = 0u;
     float w = 1.0;
-    bool detailedResident = false;
-    const int2 cellI = int2(floor((p.xz -
-        float2(frame.envTileMinX, frame.envTileMinZ)) / 64.0));
-    if (all(cellI >= int2(0,0)) &&
-        all(cellI < int2(frame.envTileDimX, frame.envTileDimZ))) {
-        const uint2 tile = uint2(cellI);
-        const uint rootWidth = (frame.envTileDimX + 3u) / 4u;
-        const uint rootIndex = (tile.y / 4u) * rootWidth + (tile.x / 4u);
-        const uint page = GPU_PTR(uint)(
-            frame.envTilePageTable + uint64_t(rootIndex) * 4u).Get();
-        // Unresident root pages contain no cell payload and resolve the
-        // base look. An active page holds 16 x 32B EnvTileCells.
-        if (page != 0xffffffffu) {
-        const uint localCell = (tile.y & 3u) * 4u + (tile.x & 3u);
-        const EnvTileCell c = GPU_PTR(EnvTileCell)(
-            frame.envTileCells +
-            (uint64_t(page) * 16u + uint64_t(localCell)) * 32u).Get();
-        detailedResident = c.candidateCount > 0u;
+    EnvZoneResolveCell(p, frame, cache);
+    const bool detailedResident = cache.candidateCount > 0u;
+    if (detailedResident) {
         [loop]
-        for (uint i = 0; i < c.candidateCount; ++i) {
+        for (uint i = 0; i < cache.candidateCount; ++i) {
             const uint id = GPU_PTR(uint)(
-                frame.envTileIndices + uint64_t(c.firstCandidate + i) * 4u).Get();
+                frame.envTileIndices + uint64_t(cache.firstCandidate + i) * 4u).Get();
             if (id >= n) continue;
-            const EnvZoneShape s = GPU_PTR(EnvZoneShape)(
+            const EnvZoneShape shape = GPU_PTR(EnvZoneShape)(
                 frame.envTileShapes + uint64_t(id) * 144u).Get();
-            const float influence = saturate(s.shape.y) * EnvShapeFalloff(s, p);
+            const float influence = saturate(shape.shape.y) * EnvShapeFalloff(shape, p);
             if (!(influence > 0.0)) continue;
             rec = id;
             w = influence;
             break;
-        }
         }
     }
     if (!detailedResident) {
@@ -717,13 +743,12 @@ bool EnvZoneAt(float3 p, FrameUniforms frame, out float weight,
     return w > 0.0;
 }
 
-// Exact smooth falloff is position-dependent inside the same tile.
-// Do not memoize a sampled record or weight for an entire march cell.
-struct EnvZoneMarchCache { uint rec; };
-bool EnvZoneSegment(float3 p, FrameUniforms frame,
-    inout EnvZoneMarchCache cache, out float weight, out EnvZoneLook z)
+// Surface shading has no previous segment; use the same exact lookup.
+bool EnvZoneAt(float3 p, FrameUniforms frame, out float weight,
+    out EnvZoneLook z)
 {
-    return EnvZoneAt(p, frame, weight, z);
+    EnvZoneMarchCache cache = (EnvZoneMarchCache)0;
+    return EnvZoneSegment(p, frame, cache, weight, z);
 }
 
 // Zone-tinted + zone-intensity ambient irradiance for N (the
