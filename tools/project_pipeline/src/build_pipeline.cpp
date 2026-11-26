@@ -85,6 +85,7 @@ bool ProcessAlive(unsigned long long pid) {
 #include <Engine/Asset/appmanifest.h>
 #include <Engine/Asset/asset_registry.h>
 #include <Engine/Asset/cluster_serializer.h>
+#include <Engine/Asset/ktx_decode.h>
 #include <Engine/Asset/mesh_preparation_policy.h>
 #include <Engine/Asset/pak.h>
 #include <Engine/Asset/sdf.h>
@@ -821,20 +822,45 @@ static bool BakePlanSdfs(const Project& project,
             ::tour::asset::SdfColorInput colorIn;
             const ::tour::asset::SdfColorInput* colorPtr = nullptr;
             std::vector<glm::vec2> uvs;
-            stbi_uc* tex = nullptr;
+            std::vector<uint8_t> ktxTexels; // owned RGBA8 for KTX2 sources
+            stbi_uc* stbiTex = nullptr;     // owned RGBA8 for LDR sources
             if (!fragmentTexPath[gi].empty()) {
                 const fs::path texAbs = source.parent_path() / fragmentTexPath[gi];
-                int tw = 0, th = 0, channels = 0;
-                tex = stbi_load(texAbs.string().c_str(), &tw, &th, &channels, 4);
-                if (tex) {
-                    uvs.reserve(geometry.shading.size());
-                    for (const auto& s : geometry.shading)
-                        uvs.push_back(glm::unpackHalf2x16(s.uv));
-                    colorIn.uvs = uvs.data();
-                    colorIn.texel = tex;
-                    colorIn.texWidth = uint32_t(tw);
-                    colorIn.texHeight = uint32_t(th);
-                    colorPtr = &colorIn;
+                uvs.reserve(geometry.shading.size());
+                for (const auto& s : geometry.shading)
+                    uvs.push_back(glm::unpackHalf2x16(s.uv));
+                colorIn.uvs = uvs.data();
+                if (texAbs.extension() == ".ktx2") {
+                    // Cooked texture: decode KTX2 to RGBA8 (the common
+                    // GI/SDF decode) — stbi_load cannot read KTX2.
+                    std::vector<uint8_t> bytes;
+                    std::ifstream ktxIn(texAbs, std::ios::binary);
+                    if (ktxIn) {
+                        ktxIn.seekg(0, std::ios::end);
+                        const std::streamoff sz = ktxIn.tellg();
+                        ktxIn.seekg(0, std::ios::beg);
+                        bytes.resize(size_t(std::max<std::streamoff>(sz, 0)));
+                        ktxIn.read(reinterpret_cast<char*>(bytes.data()),
+                                   static_cast<std::streamsize>(bytes.size()));
+                    }
+                    if (!bytes.empty()) {
+                        if (auto decoded = ::tour::asset::DecodeKtx2ToRgba8(bytes, 512)) {
+                            colorIn.texWidth = decoded->width;
+                            colorIn.texHeight = decoded->height;
+                            ktxTexels = std::move(decoded->rgba);
+                            colorIn.texel = ktxTexels.data();
+                            colorPtr = &colorIn;
+                        }
+                    }
+                } else {
+                    int tw = 0, th = 0, channels = 0;
+                    stbiTex = stbi_load(texAbs.string().c_str(), &tw, &th, &channels, 4);
+                    if (stbiTex) {
+                        colorIn.texel = stbiTex;
+                        colorIn.texWidth = uint32_t(tw);
+                        colorIn.texHeight = uint32_t(th);
+                        colorPtr = &colorIn;
+                    }
                 }
             }
             if (!::tour::asset::BakeMeshSdfOctree(positions.data(),
@@ -846,13 +872,13 @@ static bool BakePlanSdfs(const Project& project,
                                                   entry.octree,
                                                   err,
                                                   bakePool.get())) {
-                if (tex)
-                    stbi_image_free(tex);
+                if (stbiTex)
+                    stbi_image_free(stbiTex);
                 err = "SDF octree bake '" + name + "#" + entry.fragment + "': " + err;
                 return false;
             }
-            if (tex)
-                stbi_image_free(tex);
+            if (stbiTex)
+                stbi_image_free(stbiTex);
             baked.meshes.push_back(std::move(entry));
         }
         baked.materials = std::move(palette);

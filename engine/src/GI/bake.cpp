@@ -15,6 +15,7 @@
 
 #include <Engine/App/cluster.h>
 #include <Engine/App/world.h>
+#include <Engine/Asset/ktx_decode.h>
 #include <Engine/Scene/scene.h>
 #include <Engine/Utils/thread_pool.h>
 
@@ -824,69 +825,26 @@ std::optional<glm::vec3> GiAverageKtxTexel(std::span<const uint8_t> ktxBytes) {
 
 std::optional<GiTraceTexelData> GiDecodeKtxTexelData(std::span<const uint8_t> ktxBytes,
                                                      uint32_t maxDim) {
-    // Same decode + acceptance rules as GiAverageKtxTexel (libktx CPU
-    // decode; Basis transcoded to RGBA32), but keeps the full capped-res
-    // texels (linear floats) instead of averaging them: the trace
-    // scene's per-hit textured-albedo path (AlbedoAt) samples these at
-    // the interpolated hit UV.
-    if (ktxBytes.empty() || maxDim == 0)
+    // Shared KTX2 -> RGBA8 decode (Engine/Asset/ktx_decode.h), then this
+    // consumer's linear-float conversion: RGB sRGB->linear, alpha RAW (the
+    // MASK-cutout transmission test). The trace scene's per-hit textured-
+    // albedo path (AlbedoAt) samples these at the interpolated hit UV.
+    const auto decoded = ::tour::asset::DecodeKtx2ToRgba8(ktxBytes, maxDim);
+    if (!decoded)
         return std::nullopt;
-    ktxTexture2* raw = nullptr;
-    if (ktxTexture2_CreateFromMemory(reinterpret_cast<const ktx_uint8_t*>(ktxBytes.data()),
-                                     static_cast<ktx_size_t>(ktxBytes.size()),
-                                     KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
-                                     &raw) != KTX_SUCCESS)
-        return std::nullopt;
-    struct Guard {
-        ktxTexture2* t;
-        ~Guard() {
-            if (t)
-                ktxTexture2_Destroy(t);
-        }
-    } guard{raw};
-    if (ktxTexture2_NeedsTranscoding(raw)) {
-        if (ktxTexture2_TranscodeBasis(raw, KTX_TTF_RGBA32, 0) != KTX_SUCCESS)
-            return std::nullopt;
-    }
-    const ktx_uint32_t baseWidth = raw->baseWidth;
-    const ktx_uint32_t baseHeight = std::max<ktx_uint32_t>(raw->baseHeight, 1);
-    const ktx_uint32_t levels = std::max<ktx_uint32_t>(raw->numLevels, 1);
-    // The smallest mip that fits maxDim (mip 0 when the base fits —
-    // never UPSCALE a small texture).
-    ktx_uint32_t level = 0;
-    while (level + 1 < levels && (baseWidth >> (level + 1)) > maxDim)
-        ++level;
-    const ktx_uint32_t w = std::max<ktx_uint32_t>(baseWidth >> level, 1);
-    const ktx_uint32_t h = std::max<ktx_uint32_t>(baseHeight >> level, 1);
-    ktx_size_t offset = 0;
-    if (ktxTexture2_GetImageOffset(raw, level, 0, 0, &offset) != KTX_SUCCESS)
-        return std::nullopt;
-    const ktx_size_t rowPitch = ktxTexture_GetRowPitch(reinterpret_cast<ktxTexture*>(raw), level);
-    const ktx_uint32_t components = ktxTexture2_GetNumComponents(raw);
-    if (components < 3 || rowPitch < ktx_size_t(w) * components)
-        return std::nullopt;
-    const bool srgb = ktxTexture2_GetTransferFunction_e(raw) == KHR_DF_TRANSFER_SRGB;
-    const uint8_t* base = reinterpret_cast<const uint8_t*>(raw->pData) + offset;
     GiTraceTexelData out;
-    out.width = w;
-    out.height = h;
-    out.texels.resize(size_t(w) * size_t(h));
-    size_t k = 0;
-    for (ktx_uint32_t y = 0; y < h; ++y) {
-        const uint8_t* row = base + y * rowPitch;
-        for (ktx_uint32_t x = 0; x < w; ++x, ++k) {
-            const uint8_t* px = row + x * components;
-            auto chan = [&](uint32_t c) {
-                const float v = float(px[c]) / 255.0f;
-                return srgb ? ((v <= 0.04045f) ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f))
-                            : v;
-            };
-            // RGB linear-converted; alpha RAW (0..1, no transfer) — the
-            // MASK-cutout transmission test (weave cloth holes). RGB-only
-            // sources decode alpha 1 (fully covered).
-            out.texels[k] = glm::vec4(
-                chan(0), chan(1), chan(2), components >= 4 ? float(px[3]) / 255.0f : 1.0f);
-        }
+    out.width = decoded->width;
+    out.height = decoded->height;
+    out.texels.resize(size_t(decoded->width) * size_t(decoded->height));
+    for (size_t k = 0; k < out.texels.size(); ++k) {
+        auto chan = [&](uint32_t c) {
+            const float v = float(decoded->rgba[k * 4 + c]) / 255.0f;
+            return decoded->srgb
+                       ? ((v <= 0.04045f) ? v / 12.92f : std::pow((v + 0.055f) / 1.055f, 2.4f))
+                       : v;
+        };
+        out.texels[k] =
+            glm::vec4(chan(0), chan(1), chan(2), float(decoded->rgba[k * 4 + 3]) / 255.0f);
     }
     return out;
 }
