@@ -159,12 +159,34 @@ bool StaticSdfRayAabb(float3 origin, float3 dir,
 // Descend the octree to the leaf containing `local`, returning the leaf's
 // signed distance (normalized * maxDistance) and texture-baked color. Empty
 // cells (no surface) return maxDistance.
-void StaticSdfOctreeSample(StaticSdfGpuInstance v, float3 local,
+struct StaticSdfSampleCache
+{
+    bool live;
+    float3 lo;
+    float3 hi;
+    float dist;
+    float3 color;
+};
+
+void StaticSdfOctreeSampleCached(StaticSdfGpuInstance v, float3 local,
     GPU_PTR_READ(StaticSdfNodeWords) nodes,
     GPU_PTR_READ(StaticSdfChildWords) children,
     GPU_PTR_READ(StaticSdfLeafWords) leaves,
+    inout StaticSdfSampleCache cache,
     out float dist, out float3 color)
 {
+    // Half-open bounds encode exactly the >= split decisions below.
+    // Keep the outer bounds infinite: normal taps may lie outside the root.
+    if (cache.live && all(local >= cache.lo) && all(local < cache.hi))
+    {
+        dist = cache.dist;
+        color = cache.color;
+        return;
+    }
+    cache.live = false;
+    const float infinity = asfloat(0x7f800000u);
+    cache.lo = -infinity;
+    cache.hi = infinity;
     const float maxDist = asfloat(v.meta.w);
     float3 c = v.originSize.xyz + v.originSize.w; // root center
     float h = v.originSize.w;
@@ -181,21 +203,48 @@ void StaticSdfOctreeSample(StaticSdfGpuInstance v, float3 local,
             d = d >= 32768 ? d - 65536 : d; // sign-extend the int16 distance
             dist = float(d) / 32767.0f * maxDist;
             color = UnpackStaticSdfRgb565(uint(leaf & 0xFFFFu));
+            cache.dist = dist;
+            cache.color = color;
+            cache.live = true;
             return;
         }
         const uint childBase = v.meta.y + (data & 0x7FFFFFFFu);
         const uint octant = (local.x >= c.x ? 1u : 0u) |
                             (local.y >= c.y ? 2u : 0u) |
                             (local.z >= c.z ? 4u : 0u);
+        // Accumulate the actual split planes, including the last split
+        // for an absent child. Equality always belongs to the high side.
+        if (octant & 1u) cache.lo.x = max(cache.lo.x, c.x);
+        else             cache.hi.x = min(cache.hi.x, c.x);
+        if (octant & 2u) cache.lo.y = max(cache.lo.y, c.y);
+        else             cache.hi.y = min(cache.hi.y, c.y);
+        if (octant & 4u) cache.lo.z = max(cache.lo.z, c.z);
+        else             cache.hi.z = min(cache.hi.z, c.z);
         const int child = children.Get().words[childBase + octant];
         if (child < 0)
+        {
+            cache.dist = dist;
+            cache.color = color;
+            cache.live = true;
             return; // empty cell: no surface along this branch
+        }
         node = uint(child);
         c.x += (octant & 1u) ? h * 0.5f : -h * 0.5f;
         c.y += (octant & 2u) ? h * 0.5f : -h * 0.5f;
         c.z += (octant & 4u) ? h * 0.5f : -h * 0.5f;
         h *= 0.5f;
     }
+}
+
+// Standalone samples retain the original entry point.
+void StaticSdfOctreeSample(StaticSdfGpuInstance v, float3 local,
+    GPU_PTR_READ(StaticSdfNodeWords) nodes,
+    GPU_PTR_READ(StaticSdfChildWords) children,
+    GPU_PTR_READ(StaticSdfLeafWords) leaves,
+    out float dist, out float3 color)
+{
+    StaticSdfSampleCache cache = (StaticSdfSampleCache)0;
+    StaticSdfOctreeSampleCached(v, local, nodes, children, leaves, cache, dist, color);
 }
 
 StaticSdfRayHit StaticSdfTrace(float3 worldOrigin, float3 worldDir,
@@ -230,12 +279,14 @@ StaticSdfRayHit StaticSdfTrace(float3 worldOrigin, float3 worldDir,
         const float finest = v.originSize.w / float(uint(1) << v.material.y);
         const float epsLocal = max(worldEpsilon * speed, 0.75f * finest);
         float t = beginT;
+        // Cache is scoped to one instance; never reuse it across transforms.
+        StaticSdfSampleCache sampleCache = (StaticSdfSampleCache)0;
         [loop] for (uint step = 0u; step < stepBudget && t <= endT; ++step)
         {
             float3 p = origin + t * dir;
             float sd;
             float3 col;
-            StaticSdfOctreeSample(v, p, nodes, children, leaves, sd, col);
+            StaticSdfOctreeSampleCached(v, p, nodes, children, leaves, sampleCache, sd, col);
             const float absSd = abs(sd);
             if (absSd <= epsLocal)
             {
@@ -244,17 +295,17 @@ StaticSdfRayHit StaticSdfTrace(float3 worldOrigin, float3 worldDir,
                 // Central-difference normal from the octree field.
                 const float h = finest * 0.5f;
                 float dx, cx;
-                StaticSdfOctreeSample(v, p + float3(h, 0, 0), nodes, children, leaves, dx, cx);
+                StaticSdfOctreeSampleCached(v, p + float3(h, 0, 0), nodes, children, leaves, sampleCache, dx, cx);
                 float dy, cy;
-                StaticSdfOctreeSample(v, p + float3(0, h, 0), nodes, children, leaves, dy, cy);
+                StaticSdfOctreeSampleCached(v, p + float3(0, h, 0), nodes, children, leaves, sampleCache, dy, cy);
                 float dz, cz;
-                StaticSdfOctreeSample(v, p + float3(0, 0, h), nodes, children, leaves, dz, cz);
+                StaticSdfOctreeSampleCached(v, p + float3(0, 0, h), nodes, children, leaves, sampleCache, dz, cz);
                 float sx, sxx;
-                StaticSdfOctreeSample(v, p - float3(h, 0, 0), nodes, children, leaves, sx, sxx);
+                StaticSdfOctreeSampleCached(v, p - float3(h, 0, 0), nodes, children, leaves, sampleCache, sx, sxx);
                 float sy, syy;
-                StaticSdfOctreeSample(v, p - float3(0, h, 0), nodes, children, leaves, sy, syy);
+                StaticSdfOctreeSampleCached(v, p - float3(0, h, 0), nodes, children, leaves, sampleCache, sy, syy);
                 float sz, szz;
-                StaticSdfOctreeSample(v, p - float3(0, 0, h), nodes, children, leaves, sz, szz);
+                StaticSdfOctreeSampleCached(v, p - float3(0, 0, h), nodes, children, leaves, sampleCache, sz, szz);
                 float3 grad = float3(dx - sx, dy - sy, dz - sz);
                 float3 n = grad.x * v.invRow0.xyz +
                            grad.y * v.invRow1.xyz +
