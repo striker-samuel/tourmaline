@@ -7489,15 +7489,15 @@ constexpr ErrorEntry kErrorTable[] = {
 static_assert(std::size(kErrorTable) == static_cast<size_t>(smvk::Error::Count));
 } // namespace
 
-const char* smvk::ErrorName(Error code) {
+const char* ErrorName(Error code) {
     const size_t i = static_cast<size_t>(code);
     return i < std::size(kErrorTable) ? kErrorTable[i].name : "<unknown>";
 }
-const char* smvk::ErrorDescription(Error code) {
+const char* ErrorDescription(Error code) {
     const size_t i = static_cast<size_t>(code);
     return i < std::size(kErrorTable) ? kErrorTable[i].description : "<unknown>";
 }
-smvk::Error smvk::FromVkResult(int32_t vkResult) {
+Error FromVkResult(int32_t vkResult) {
     switch (vkResult) {
     case VK_ERROR_OUT_OF_HOST_MEMORY:
         return Error::OutOfHostMemory;
