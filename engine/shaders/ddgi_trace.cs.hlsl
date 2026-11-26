@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: MIT
 #define CONTACT_SHADOW_PASS
-#include "common.hlsli"
-#include "ddgi_common.hlsli"
+#include "ddgi_trace_shared.hlsli"
 
 [[vk::binding(8, 0)]]
 RaytracingAccelerationStructure rayScene;
@@ -40,35 +39,13 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     q.TraceRayInline(rayScene, RAY_FLAG_NONE, 0xff, ray);
     while (q.Proceed()) {}
 
-    DdgiRay result;
-    result.direction = direction;
-    result.distance = sp.maxDistance;
-    result.radiance = 0;
-    result.flags = 0;
+    DdgiRay result = DdgiEmptyRay(direction, sp.maxDistance);
     if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
         result.distance = q.CommittedRayT();
         result.flags = q.CommittedTriangleFrontFace() ? 1 : 2;
     } else {
         FrameUniforms frame = sp.frameUniforms.Get();
-        // Miss: evaluate the environment radiance in this direction. Sky up,
-        // ground down, scaled by the UNGATED sky scale (ground.w =
-        // iblIntensity = skyIntensity), never skyZenith.w (the specular sky
-        // intensity) AND never fogEndAndFlags.w: that flag is the
-        // diffuse-IBL-isolation gate, and it is 0 while DDGI owns the
-        // ambient (IblWanted() is false) — folding it in would zero the
-        // field this tracer is supposed to produce. EvaluateSpecularEnv
-        // makes the same call (ungated ground.w). The DDGI field REPLACES
-        // the gated analytic ambient, so it must capture the sky itself.
-        const float ibl = max(frame.env.ground.w, 0.0f);
-        const float exponent = max(frame.env.skyHorizon.w, 0.001f);
-        const float up = saturate(direction.y);
-        const float dn = saturate(-direction.y);
-        const float3 skyPart =
-            lerp(frame.env.skyHorizon.rgb, frame.env.skyZenith.rgb, pow(up, exponent));
-        const float3 gndPart =
-            lerp(frame.env.skyHorizon.rgb, frame.env.ground.rgb, saturate(dn * 1.5f));
-        const float3 hemi = lerp(gndPart, skyPart, saturate(direction.y * 0.5f + 0.5f));
-        result.radiance = max(0, hemi * ibl);
+        result.radiance = DdgiSkyRadiance(frame, direction);
     }
     sp.scratch.Get().values[probe * sp.rays + rayIndex] = result;
 }

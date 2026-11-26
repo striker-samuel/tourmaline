@@ -70,7 +70,7 @@ struct alignas(16) RaySample {
     float direction[3];
     float distance;
     float radiance[3];
-    uint32_t flags; // 0 miss, 1 front hit, 2 back hit
+    uint32_t flags; // 0 miss, 1 front hit, 2 back hit, 3 incomplete
 };
 struct alignas(16) Irradiance {
     float rgb[3];
@@ -123,6 +123,15 @@ struct TracePush {
     float maxDistance = 0;
     uint32_t updateIndex = 0;
 };
+// Fixed choice per volume/dispatch, not a per-ray switch.
+enum class TraceBackend : uint8_t { HardwareRT, StaticSdf };
+
+struct SdfTracePush {
+    TracePush trace{};
+    uint64_t sceneAddress = 0;
+};
+static_assert(sizeof(SdfTracePush) == 64 && offsetof(SdfTracePush, sceneAddress) == 56);
+
 struct BlendPush {
     uint64_t scratch = 0, oldIrr = 0, oldDistance = 0, newIrr = 0, newDistance = 0;
     uint32_t probes = 0, rays = 0, reset = 1;

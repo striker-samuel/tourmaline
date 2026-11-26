@@ -32,10 +32,12 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     float2 sumMoments = 0;
     float sumWeight = 0;
     float sumDist = 0;
+    bool incomplete = false;
 
     for (uint r = 0; r < sp.rays; ++r) {
         DdgiRay ray = sp.scratch.Get().values[probe * sp.rays + r];
-        if (writeIrr && ray.flags != 2 && all(isfinite(ray.radiance))) {
+        incomplete = incomplete || ray.flags == 3;
+        if (writeIrr && ray.flags < 2 && all(isfinite(ray.radiance))) {
             sumIrr += max(ray.radiance, 0) * max(dot(irrDir, ray.direction), 0);
         }
         float w = pow(saturate(dot(distDir, ray.direction)), 16.0);
@@ -52,7 +54,7 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     // is embedded. Distance-based validity keeps room probes valid while
     // rejecting probes buried in walls/floors (mean dist ~0).
     const float meanDist = sumDist / float(max(sp.rays, 1u));
-    const bool valid = meanDist > sp.maxDistance * 0.025f;
+    const bool valid = !incomplete && meanDist > sp.maxDistance * 0.025f;
     float h = sp.reset != 0 ? 0 : saturate(sp.hysteresis);
     uint distIndex = probe * DDGI_DIST_RES * DDGI_DIST_RES + bin;
     float2 moments = sumWeight > 1e-8 ? sumMoments / sumWeight :
