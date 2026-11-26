@@ -495,11 +495,10 @@ PSOut mainPS(PSIn IN)
     if (volumeGiOn)
         volMask = SgGiVolumeTileMask(vp.frameUniforms, fullPxU);
 
-    // ---- Analytic env zones, PER SEGMENT (the tile cache - unchanged).
+    // ---- Analytic env zones, PER SEGMENT (cache candidate ranges only).
     const bool zonesLive = frame.envZoneCount > 0u
         && (frame.envZoneFlags & 1u) != 0u;
     EnvZoneMarchCache zoneCache = (EnvZoneMarchCache)0;
-    zoneCache.rec = 0xFFFFFFFFu; // force the first record fetch
 
     // GI refresh cadence: CONFIGURABLE (the push's giRefreshDist - was
     // the hardcoded 0.75; the baked world-field/sky GI base is
