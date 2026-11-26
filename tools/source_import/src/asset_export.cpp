@@ -1803,6 +1803,7 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
                                 for (size_t v = 0; v < proxy.positions.size(); ++v)
                                     g.impostorPositions[v].pos = proxy.positions[v];
                                 g.impostorIndices = proxy.indices;
+                                ++stats.impostorProxies;
                             }
                         }
                     }

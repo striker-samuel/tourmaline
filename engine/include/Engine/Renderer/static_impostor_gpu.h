@@ -28,11 +28,14 @@ inline constexpr float kImpostorSwitchAngularRadius = 0.002f;
 
 // True when an instance whose world-space bound radius is `radiusWorld` at
 // `distance` from the camera should use the impostor proxy instead of the
-// full mesh in the ray-query world. Pure + CPU-testable.
-inline bool UseImpostorProxyAt(float radiusWorld, float distance) {
-    if (!(radiusWorld > 0.0f) || !(distance > 0.0f))
+// full mesh in the ray-query world. Pure + CPU-testable. `maxAngularRadius`
+// overrides the default switch threshold (radians).
+inline bool UseImpostorProxyAt(float radiusWorld,
+                               float distance,
+                               float maxAngularRadius = kImpostorSwitchAngularRadius) {
+    if (!(radiusWorld > 0.0f) || !(distance > 0.0f) || !(maxAngularRadius > 0.0f))
         return false;
-    return (radiusWorld / distance) < kImpostorSwitchAngularRadius;
+    return (radiusWorld / distance) < maxAngularRadius;
 }
 
 } // namespace smvk

@@ -164,6 +164,10 @@ struct ProjectRecipe {
     bool importLods = true;
     std::vector<float> importLodRatios{0.75f, 0.5f, 0.3f, 0.15f};
     float importLodError = 0.01f;
+    // Opt-in impostor RT-proxy bake (DeriveConfig::impostorProxy): bakes the
+    // six-view depth proxy into static opaque geometry at import. Default OFF.
+    bool importImpostor = false;
+    uint32_t importImpostorRes = 64; // per-view atlas tile (2..512)
     MaterialPackingRule materialPacking;
     std::vector<RecipePak> paks; // authored order
 

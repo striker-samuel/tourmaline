@@ -934,6 +934,26 @@ bool SerializeClusters(const std::vector<const WorldPage*>& clusters,
                                 reinterpret_cast<const uint8_t*>(skin.data()) +
                                     skin.size() * sizeof(PackedSkinInfluences));
             }
+            // Trailing impostor-proxy section (sparse: only a small subset of
+            // static meshes carry a baked six-view depth proxy). Written ONLY
+            // when a proxy exists so pre-impostor paks load unchanged. Layout:
+            // u32 posCount + posCount * 12 bytes (glm::vec3) + u32 idxCount +
+            // idxCount * 4 bytes (u32). The proxy is positions-only (the BLAS
+            // reads positions; it never raster-draws).
+            if (!upload->impostorIndices.empty()) {
+                static_assert(sizeof(glm::vec3) == 12, "impostor position layout drift");
+                PutU32(blob, static_cast<uint32_t>(upload->impostorPositions.size()));
+                if (!upload->impostorPositions.empty())
+                    blob.insert(blob.end(),
+                                reinterpret_cast<const uint8_t*>(upload->impostorPositions.data()),
+                                reinterpret_cast<const uint8_t*>(upload->impostorPositions.data()) +
+                                    upload->impostorPositions.size() * sizeof(glm::vec3));
+                PutU32(blob, static_cast<uint32_t>(upload->impostorIndices.size()));
+                blob.insert(blob.end(),
+                            reinterpret_cast<const uint8_t*>(upload->impostorIndices.data()),
+                            reinterpret_cast<const uint8_t*>(upload->impostorIndices.data()) +
+                                upload->impostorIndices.size() * sizeof(uint32_t));
+            }
 
             // v4 fast-load layout: packed-SoA mesh streams stored uncompressed
             // (direct pak-image subspans; see the payload section above).
@@ -3302,6 +3322,10 @@ std::unique_ptr<WorldPage> DeserializeCluster(
         LodInfo lod;
         CookedMeshlets meshlets;
         std::vector<PackedSkinInfluences> skin;
+        // Optional impostor RT proxy (sparse): positions-only soup + u32
+        // indices. Empty = no proxy (the common case).
+        std::vector<glm::vec3> impostorPositions;
+        std::vector<uint32_t> impostorIndices;
     };
     std::vector<StaticGeometrySource> directs;
     std::vector<MeshMeta> meshMetas;
@@ -3479,8 +3503,7 @@ std::unique_ptr<WorldPage> DeserializeCluster(
         // Trailing skin-stream section (the Northlight data path; the
         // writer ALWAYS writes it after the meshlet trailer): u32 count +
         // count * 8 raw PackedSkinInfluences bytes. An ABSENT section (a pre-skin
-        // pak, blob ends right after the meshlets) = a static mesh; a
-        // present section must end the blob exactly.
+        // pak, blob ends right after the meshlets) = a static mesh.
         std::vector<PackedSkinInfluences> skin;
         if (c.off < c.img.size()) {
             const uint32_t skinCount = c.u32();
@@ -3491,9 +3514,33 @@ std::unique_ptr<WorldPage> DeserializeCluster(
                         reinterpret_cast<const PackedSkinInfluences*>(c.img.data() + c.off) +
                             skinCount);
             c.off += size_t(skinCount) * sizeof(PackedSkinInfluences);
-            if (c.off != c.img.size())
-                return fail("mesh skin section does not end the blob: " + e->path);
         }
+        // Trailing impostor-proxy section (sparse, optional): present only
+        // when more bytes follow the skin section (a baked six-view depth
+        // proxy). u32 posCount + posCount * 12 bytes (glm::vec3) + u32
+        // idxCount + idxCount * 4 bytes (u32).
+        std::vector<glm::vec3> impostorPositions;
+        std::vector<uint32_t> impostorIndices;
+        if (c.off < c.img.size()) {
+            const uint32_t posCount = c.u32();
+            if (!c.ok || posCount > 16 * 1024 * 1024 ||
+                c.off + uint64_t(posCount) * sizeof(glm::vec3) > c.img.size())
+                return fail("corrupt mesh impostor section: " + e->path);
+            impostorPositions.assign(reinterpret_cast<const glm::vec3*>(c.img.data() + c.off),
+                                     reinterpret_cast<const glm::vec3*>(c.img.data() + c.off) +
+                                         posCount);
+            c.off += size_t(posCount) * sizeof(glm::vec3);
+            const uint32_t idxCount = c.u32();
+            if (!c.ok || idxCount > 64 * 1024 * 1024 ||
+                c.off + uint64_t(idxCount) * sizeof(uint32_t) > c.img.size())
+                return fail("corrupt mesh impostor section: " + e->path);
+            impostorIndices.assign(reinterpret_cast<const uint32_t*>(c.img.data() + c.off),
+                                   reinterpret_cast<const uint32_t*>(c.img.data() + c.off) +
+                                       idxCount);
+            c.off += size_t(idxCount) * sizeof(uint32_t);
+        }
+        if (c.off != c.img.size())
+            return fail("mesh trailer does not end the blob: " + e->path);
         meshMetas.push_back(MeshMeta{std::move(uri),
                                      e->offset,
                                      sphere,
@@ -3501,7 +3548,9 @@ std::unique_ptr<WorldPage> DeserializeCluster(
                                      std::move(lmXforms),
                                      lod,
                                      std::move(cooked),
-                                     std::move(skin)});
+                                     std::move(skin),
+                                     std::move(impostorPositions),
+                                     std::move(impostorIndices)});
     }
     {
         // ---- Geometry LOD streaming split (Renderer/geometry_streamer.h).
@@ -3567,6 +3616,7 @@ std::unique_ptr<WorldPage> DeserializeCluster(
         size_t up = 0; // cursor into handles (upload order == pak order)
         uint64_t deferredBytes = 0;
         size_t deferredCount = 0;
+        size_t impostorLoadedCount = 0;
         for (size_t i = 0; i < meshMetas.size(); ++i) {
             MeshMeta& meta = meshMetas[i];
             if (!meshReferenced[i]) {
@@ -3621,8 +3671,31 @@ std::unique_ptr<WorldPage> DeserializeCluster(
             // scene blob below).
             if (!meta.skin.empty())
                 cluster->SetMeshSkinStream(h, std::move(meta.skin));
+            // Impostor RT proxy (sparse): upload the six-view depth proxy
+            // as a HIDDEN sibling mesh (positions-only — the BLAS reads
+            // positions; it never raster-draws) and register its heap
+            // offsets against the base mesh. Uses the base AABB (the proxy
+            // soup lives within it).
+            if (!meta.impostorIndices.empty()) {
+                MeshData proxyUp{};
+                proxyUp.vertices.resize(meta.impostorPositions.size());
+                for (size_t v = 0; v < meta.impostorPositions.size(); ++v)
+                    proxyUp.vertices[v].pos = meta.impostorPositions[v];
+                proxyUp.indices = std::move(meta.impostorIndices);
+                proxyUp.aabbMin = directs[i].aabbMin;
+                proxyUp.aabbMax = directs[i].aabbMax;
+                const WorldPageStaticMeshHandle proxyH = cluster->UploadMesh(proxyUp);
+                if (!proxyH.empty()) {
+                    cluster->RegisterImpostorProxy(h, proxyH);
+                    ++impostorLoadedCount;
+                }
+            }
             meshByPakId.push_back(h);
         }
+        if (impostorLoadedCount > 0)
+            std::fprintf(stderr,
+                         "[Impostor] loaded %zu impostor proxies from the pak\n",
+                         impostorLoadedCount);
         if (deferredCount > 0)
             std::fprintf(stderr,
                          "[GeometryStreaming] cluster load: %zu meshes resident, "

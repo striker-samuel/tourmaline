@@ -412,6 +412,8 @@ bool RefreshPlanImports(const Project& project,
     importSettings.lods = plan.importLods;
     importSettings.lodRatios = plan.importLodRatios;
     importSettings.lodTargetError = plan.importLodError;
+    importSettings.impostorProxy = plan.importImpostor;
+    importSettings.impostorResolution = plan.importImpostorRes;
     for (const std::string& artifact : families) {
         const fs::path artifactAbs = projectRoot / fs::path(artifact);
         // The family's source (a mesh source format — .gltf/.glb/.obj):

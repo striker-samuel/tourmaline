@@ -1387,6 +1387,14 @@ bool WorldRenderer::onAttach() {
         else
             m_sdsmEnabled = true;
     }
+    // Hardware KHR ray-query sun shadows override (TOURMALINE_RAYTRACED_SHADOWS=1):
+    // the headless/impostor-test path; the UI checkbox is the interactive one.
+    // Requires a ray-query device — the renderer still gates on
+    // SupportsRayQueries() before building the TLAS.
+    if (const char* rtEnv = std::getenv("TOURMALINE_RAYTRACED_SHADOWS")) {
+        if (std::atoi(rtEnv) != 0)
+            m_rayTracedSunShadowsEnabled = true;
+    }
     // Opt-in EVSM atlas dump (TOURMALINE_EVSM_DUMP=<frame>): see header.
     if (const char* dumpEnv = std::getenv("TOURMALINE_EVSM_DUMP")) {
         m_evsmDumpAtFrame = std::atoi(dumpEnv);
@@ -14252,6 +14260,17 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             const char* e = std::getenv("TOURMALINE_IMPOSTOR");
             return e && std::strcmp(e, "1") == 0;
         }();
+        // Optional angular-threshold override (radians) for validation: a
+        // larger value swaps closer instances, exercising the proxy BLAS at
+        // normal distances. Default = kImpostorSwitchAngularRadius.
+        static const float s_impostorRadius = [] {
+            const char* e = std::getenv("TOURMALINE_IMPOSTOR_RADIUS");
+            if (!e || !*e)
+                return smvk::kImpostorSwitchAngularRadius;
+            const float v = std::atof(e);
+            return v > 0.0f ? v : smvk::kImpostorSwitchAngularRadius;
+        }();
+        uint32_t impostorSwapCount = 0;
         tour::mem::FrameVector<smvk::RayTracingInstance> rtInstances{
             tour::mem::LinearAllocatorSTL<smvk::RayTracingInstance>{&tour::mem::FrameAllocator()}};
         // MaterialValues.tex stores pool IDs, NOT sampled descriptor
@@ -14307,7 +14326,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         const float radius = glm::length(half) * scale;
                         const float dist = glm::distance(
                             worldCenter, glm::vec3(m_cameraPositioner.cameraPosition_));
-                        if (smvk::UseImpostorProxyAt(radius, dist)) {
+                        if (smvk::UseImpostorProxyAt(radius, dist, s_impostorRadius)) {
                             smvk::RayTracingInstance inst{};
                             inst.firstIndex = proxy->firstIndex;
                             inst.indexCount = proxy->indexCount;
@@ -14317,6 +14336,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                 for (int col = 0; col < 4; ++col)
                                     inst.transform[row * 4 + col] = model[col][row];
                             rtInstances.push_back(inst);
+                            ++impostorSwapCount;
                             return; // proxy replaces the full surface list
                         }
                     }
@@ -14341,6 +14361,18 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     rtInstances.push_back(inst);
                 }
             });
+        static uint32_t s_impostorSwapLogged = 0;
+        if (s_impostorEnabled && impostorSwapCount != 0 &&
+            impostorSwapCount != s_impostorSwapLogged) {
+            // Diagnostic (validation only): how many distant shadow casters
+            // were swapped onto their impostor proxy. Logs on change only.
+            s_impostorSwapLogged = impostorSwapCount;
+            std::fprintf(stderr,
+                         "[Impostor] swapped %u shadow casters onto their "
+                         "six-view depth proxy (threshold %.4f rad)\n",
+                         impostorSwapCount,
+                         s_impostorRadius);
+        }
         const bool changed =
             !m_rayTracingCacheValid || m_rayTracingCachedWorld != m_world ||
             rtInstances.size() != m_rayTracingCachedInstances.size() ||

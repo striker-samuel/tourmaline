@@ -3314,10 +3314,14 @@ size_t BuildFromMeshAsset(
         // Impostor RT proxies (sparse): upload each baked proxy as a HIDDEN
         // sibling mesh (positions + indices only — the BLAS reads positions)
         // and register its heap offsets against the base mesh. The proxy is
-        // never referenced by a node, so it never raster-draws.
+        // never referenced by a node, so it never raster-draws. Offline/cook
+        // clusters skip this — the impostor soup rides the retained upload
+        // (makeUpload above) into the .geometry/pak serializer, and the PAK
+        // loader uploads its own proxy from the deserialized impostor section
+        // (no hidden mesh blob is written).
         for (size_t gi = 0; gi < asset.geometry.size() && gi < baseHandles.size(); ++gi) {
             const smvk::assets::MeshAsset::Geometry& g = asset.geometry[gi];
-            if (g.impostorPositions.empty() || g.impostorIndices.empty())
+            if (g.impostorPositions.empty() || g.impostorIndices.empty() || cluster.IsOfflineMode())
                 continue;
             smvk::MeshData proxyUp{};
             proxyUp.vertices.resize(g.impostorPositions.size());

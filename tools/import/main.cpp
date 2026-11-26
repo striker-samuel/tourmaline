@@ -64,7 +64,8 @@ bool ParseOnOff(const std::string& v) {
 void Usage() {
     std::cout << "import.exe <input> [--meshlets on|off] [--lods on|off]\n"
               << "    [--meshlet-split-factor 2.0] [--meshlet-min-tris 24]\n"
-              << "    [--shader-lods on|off] [--force]\n"
+              << "    [--shader-lods on|off] [--impostor on|off]\n"
+              << "    [--impostor-res 64] [--force]\n"
               << "  (the raw-source -> engine-format converter:\n"
               << "   .glb/.gltf/.obj derives the .geometry + .material/.anim\n"
               << "   + .meta artifact family next to the source - the SAME\n"
@@ -132,6 +133,16 @@ int main(int argc, char** argv) {
             if (!need(v))
                 return 1;
             config.shaderLods = ParseOnOff(v);
+        } else if (a == "--impostor") {
+            std::string v;
+            if (!need(v))
+                return 1;
+            config.impostorProxy = ParseOnOff(v);
+        } else if (a == "--impostor-res") {
+            std::string v;
+            if (!need(v))
+                return 1;
+            config.impostorResolution = (uint32_t)std::stoul(v);
         } else if (a == "--force") {
             force = true;
         } else if (a == "--help" || a == "-h") {
@@ -220,6 +231,7 @@ int main(int argc, char** argv) {
               << " geometryBlobs=" << stats.geometryBlobs << " instances=" << stats.instances
               << " lights=" << stats.lights << " cameras=" << stats.cameras
               << " nodes=" << (stats.instances + stats.lights + stats.cameras) << "\n"
+              << "  impostorProxies=" << stats.impostorProxies << "\n"
               << "  (deterministic GUIDs: " << stats.newGuids
               << " new; a from-zero re-import is byte-identical)\n"
               << "  cook with: pak.exe <vfs_path> <stem>.geometry [--options]\n";

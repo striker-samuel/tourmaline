@@ -376,6 +376,7 @@ struct DeriveStats {
     uint32_t instances = 0;
     uint32_t lights = 0;
     uint32_t cameras = 0;
+    uint32_t impostorProxies = 0; // baked six-view depth proxies (sparse)
     // The ledger counters: keptGuids = identities CARRIED from the
     // previous manifest (by name); newGuids = fresh deterministic
     // mints (unknown names / from-zero imports); dropped = previous

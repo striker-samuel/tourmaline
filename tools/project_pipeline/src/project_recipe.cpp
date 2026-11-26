@@ -537,12 +537,28 @@ bool ParseText(const std::string& text, ProjectRecipe& out, RecipeDiagnostic& er
                                     toks[1] + "')",
                                 err);
                 out.importLodError = e;
+            } else if (toks[0] == "impostor") {
+                if (toks[1] != "on" && toks[1] != "off")
+                    return Fail(lineNo, "import", "'import impostor' takes 'on' or 'off'", err);
+                out.importImpostor = toks[1] == "on";
+            } else if (toks[0] == "impostor-res") {
+                char* end = nullptr;
+                const unsigned long r = std::strtoul(toks[1].c_str(), &end, 10);
+                if (toks[1].empty() || end == toks[1].c_str() || (end && *end != '\0') || r < 2 ||
+                    r > 512)
+                    return Fail(lineNo,
+                                "import",
+                                "'import impostor-res' takes an integer in"
+                                " [2, 512] (found '" +
+                                    toks[1] + "')",
+                                err);
+                out.importImpostorRes = static_cast<uint32_t>(r);
             } else {
                 return Fail(lineNo,
                             "import",
                             "unknown import setting '" + toks[0] +
-                                "' (only lods, lod-ratios and lod-error"
-                                " exist)",
+                                "' (only lods, lod-ratios, lod-error,"
+                                " impostor and impostor-res exist)",
                             err);
             }
         } else if (directive == "materialChannel") {

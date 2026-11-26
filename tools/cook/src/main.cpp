@@ -4102,6 +4102,16 @@ bool WriteCookedArtifactsBack(const Args& args,
             // slice owns per-LOD skin propagation).
             if (sibN < 1)
                 geo.skin = up->skin;
+            // Impostor RT proxy (sparse): the write-back rebuilds every blob
+            // from the final upload, so the proxy soup must ride it too or the
+            // cooked .geometry silently drops it (the same contract as the
+            // skin stream). Only the BASE blob carries a proxy.
+            if (sibN < 1 && !up->impostorIndices.empty()) {
+                geo.impostorPositions.resize(up->impostorPositions.size());
+                for (size_t pi = 0; pi < up->impostorPositions.size(); ++pi)
+                    geo.impostorPositions[pi].pos = up->impostorPositions[pi];
+                geo.impostorIndices = up->impostorIndices;
+            }
             geo.uriFragment = asset.geometry[bit->second].uriFragment;
             if (auto ml = c.GetMeshMeshlets(uri); ml.has_value())
                 geo.meshlets = *ml;
