@@ -10,7 +10,8 @@ namespace smvk::ddgi {
 
 // Explicit ownership; call Destroy only at a graph/resource retirement
 // boundary. The caller must establish cross-frame history and TLAS ordering.
-// Until that contract is wired, this module is not enabled by WorldRenderer.
+// SDF callers additionally own coverage, upload synchronization and residency.
+// WorldRenderer keeps selecting hardware RT until those are wired.
 struct Volume {
     struct Buffer {
         Holder<BufferHandle> storage;
@@ -44,15 +45,29 @@ struct Volume {
     Holder<ShaderModuleHandle> traceModule, blendModule;
     ShaderProgram traceProgram{}, blendProgram{};
     bool ready = false;
+    TraceBackend backend = TraceBackend::HardwareRT;
 
-    bool Create(ResourceManager& ctx, RenderGraph& rg, const Grid& desc, size_t byteBudget) {
+    // Header, instances, nodes, children, leaves, materials. The caller
+    // guarantees coverage of primary and shadow rays and stable GPU lifetime.
+    struct SdfTraceInput {
+        uint64_t sceneAddress = 0;
+        LogicalBufferHandle reads[6]{};
+    };
+
+    bool Create(ResourceManager& ctx, RenderGraph& rg, const Grid& desc, size_t byteBudget,
+                TraceBackend selected = TraceBackend::HardwareRT) {
         // Reconfiguration requires the owner to retire previous GPU uses.
-        if (ready || !ctx.SupportsRayQueries() || !CalculateSizes(desc, byteBudget, sizes))
+        if (ready || (selected != TraceBackend::HardwareRT && selected != TraceBackend::StaticSdf) ||
+            (selected == TraceBackend::HardwareRT && !ctx.SupportsRayQueries()) ||
+            !CalculateSizes(desc, byteBudget, sizes))
             return false;
         grid = desc;
+        backend = selected;
         try {
             traceModule = ctx.CreateShaderModule(
-                smvk::shaders::Read("content/shaders/ddgi_trace.cs.hlsl.spv"), "ddgiTrace");
+                smvk::shaders::Read(backend == TraceBackend::StaticSdf
+                    ? "content/shaders/ddgi_trace_sdf.cs.hlsl.spv"
+                    : "content/shaders/ddgi_trace.cs.hlsl.spv"), "ddgiTrace");
             blendModule = ctx.CreateShaderModule(
                 smvk::shaders::Read("content/shaders/ddgi_blend.cs.hlsl.spv"), "ddgiBlend");
             if (!traceModule.empty() && !blendModule.empty() &&
@@ -118,31 +133,41 @@ struct Volume {
                    uint64_t frameAddress,
                    uint32_t writeSlot,
                    uint32_t updateIndex,
-                   bool reset) const {
+                   bool reset, const SdfTraceInput* sdf = nullptr) const {
         if (!ready || !frameAddress || writeSlot > 1)
             return false;
+        if (backend == TraceBackend::StaticSdf) {
+            if (!sdf || !sdf->sceneAddress) return false;
+            for (auto h : sdf->reads) if (h.empty()) return false;
+        }
         const History& old = history[writeSlot ^ 1];
         const History& next = history[writeSlot];
         {
             auto& pass = rg.AddComputePass("DDGITrace");
             Hint(pass, scratch, true);
-            auto& f = rg.PassFrameData<Frame<TracePush>>(pass);
-            f.program = const_cast<ShaderProgram*>(&traceProgram);
-            f.push = {frameAddress,
-                      scratch.address,
-                      grid.origin[0],
-                      grid.origin[1],
-                      grid.origin[2],
-                      grid.spacing,
-                      grid.dims[0],
-                      grid.dims[1],
-                      grid.dims[2],
-                      grid.rays,
-                      grid.maxDistance,
-                      updateIndex};
-            f.groupsX = (grid.rays + 63) / 64;
-            f.groupsY = sizes.probes;
-            pass.SetRecordFn(&Record<TracePush>);
+            const TracePush push{frameAddress, scratch.address,
+                grid.origin[0], grid.origin[1], grid.origin[2], grid.spacing,
+                grid.dims[0], grid.dims[1], grid.dims[2], grid.rays,
+                grid.maxDistance, updateIndex};
+            if (backend == TraceBackend::StaticSdf) {
+                BufferSyncRequest req{};
+                req.barrierMasks.accessMask = AccessFlags::ShaderRead;
+                req.barrierMasks.stageMask = PipelineStageBit_Compute;
+                for (auto h : sdf->reads) pass.AddBufferHint(h, req);
+                auto& f = rg.PassFrameData<Frame<SdfTracePush>>(pass);
+                f.program = const_cast<ShaderProgram*>(&traceProgram);
+                f.push = {push, sdf->sceneAddress};
+                f.groupsX = (grid.rays + 63) / 64;
+                f.groupsY = sizes.probes;
+                pass.SetRecordFn(&Record<SdfTracePush>);
+            } else {
+                auto& f = rg.PassFrameData<Frame<TracePush>>(pass);
+                f.program = const_cast<ShaderProgram*>(&traceProgram);
+                f.push = push;
+                f.groupsX = (grid.rays + 63) / 64;
+                f.groupsY = sizes.probes;
+                pass.SetRecordFn(&Record<TracePush>);
+            }
         }
         {
             auto& pass = rg.AddComputePass("DDGIBlend");

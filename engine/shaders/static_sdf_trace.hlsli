@@ -113,6 +113,10 @@ struct StaticSdfRayHit
     uint materialIndex; // global packed-material palette index
     uint instanceIndex; // StaticSdfGpuInstance array index
     bool valid;
+#ifdef STATIC_SDF_DDGI
+    bool frontFace;
+    bool incomplete;
+#endif
 };
 
 float3 StaticSdfPointLocal(StaticSdfGpuInstance instance, float3 worldPos)
@@ -254,10 +258,17 @@ StaticSdfRayHit StaticSdfTrace(float3 worldOrigin, float3 worldDir,
     GPU_PTR_READ(StaticSdfNodeWords) nodes,
     GPU_PTR_READ(StaticSdfChildWords) children,
     GPU_PTR_READ(StaticSdfLeafWords) leaves,
-    GPU_PTR_READ(StaticSdfMaterialWords) materials)
+    GPU_PTR_READ(StaticSdfMaterialWords) materials
+#ifdef STATIC_SDF_DDGI
+    , bool occlusionOnly
+#endif
+    )
 {
     StaticSdfRayHit best = (StaticSdfRayHit)0;
     best.t = maxWorldDistance;
+#ifdef STATIC_SDF_DDGI
+    float unresolvedT = maxWorldDistance;
+#endif
     if (instanceCount == 0u || maxWorldDistance <= 0.0f) return best;
 
     [loop] for (uint index = 0; index < min(instanceCount, STATIC_SDF_MAX_INSTANCES); ++index)
@@ -281,7 +292,8 @@ StaticSdfRayHit StaticSdfTrace(float3 worldOrigin, float3 worldDir,
         float t = beginT;
         // Cache is scoped to one instance; never reuse it across transforms.
         StaticSdfSampleCache sampleCache = (StaticSdfSampleCache)0;
-        [loop] for (uint step = 0u; step < stepBudget && t <= endT; ++step)
+        uint step = 0u;
+        [loop] for (; step < stepBudget && t <= endT; ++step)
         {
             float3 p = origin + t * dir;
             float sd;
@@ -290,8 +302,18 @@ StaticSdfRayHit StaticSdfTrace(float3 worldOrigin, float3 worldDir,
             const float absSd = abs(sd);
             if (absSd <= epsLocal)
             {
+#ifdef STATIC_SDF_DDGI
+                // Probe origins are not SSR receivers. Shadow callers bias.
+                if (occlusionOnly)
+                {
+                    best.valid = true;
+                    best.t = t;
+                    return best;
+                }
+#else
                 if (t <= 0.5f * finest / speed)
                     break; // receiver's own shell
+#endif
                 // Central-difference normal from the octree field.
                 const float h = finest * 0.5f;
                 float dx, cx;
@@ -312,6 +334,11 @@ StaticSdfRayHit StaticSdfTrace(float3 worldOrigin, float3 worldDir,
                            grad.z * v.invRow2.xyz;
                 float n2 = dot(n, n);
                 n = n2 > 1e-15f ? n * rsqrt(n2) : -worldDir;
+#ifdef STATIC_SDF_DDGI
+                best.frontFace = dot(n, worldDir) <= 0.0f;
+                if (n2 <= 1e-15f || !isfinite(n2))
+                    unresolvedT = min(unresolvedT, t);
+#endif
                 if (dot(n, worldDir) > 0.0f) n = -n;
                 best.valid = true;
                 best.t = t;
@@ -339,6 +366,13 @@ StaticSdfRayHit StaticSdfTrace(float3 worldOrigin, float3 worldDir,
                 epsLocal * 0.25f);
             t += safeDistance / speed;
         }
+#ifdef STATIC_SDF_DDGI
+        if (step == stepBudget && t <= endT)
+            unresolvedT = min(unresolvedT, t);
+#endif
     }
+#ifdef STATIC_SDF_DDGI
+    best.incomplete = unresolvedT < maxWorldDistance && unresolvedT <= best.t;
+#endif
     return best;
 }
