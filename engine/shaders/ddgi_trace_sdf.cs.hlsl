@@ -12,6 +12,8 @@ struct DdgiSdfTracePush {
     uint dimX, dimY, dimZ, rays;
     float maxDistance;
     uint updateIndex;
+    GPU_PTR_READ(DdgiIrrBuffer) oldIrr;           // E_indirect feedback (prev frame)
+    GPU_PTR_READ(DdgiDistanceBuffer) oldDistance; // E_indirect visibility moments
     GPU_PTR_READ(StaticSdfSceneHeader) scene;
 };
 GPU_PUSH(DdgiSdfTracePush, sp);
@@ -54,6 +56,14 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
             if (hit.frontFace) {
                 // Compact material: no UV or HDR emission.
                 result.radiance = hit.baseColor * hit.emissive;
+                const float3 diffuse = hit.baseColor * (1.0f - saturate(hit.metallic));
+                // E_indirect: multi-bounce feedback from the previous frame's
+                // irradiance field (the color-bleed + shadow-fill term).
+                const float3 eIndirect = DdgiSampleEIndirect(
+                    sp.oldIrr, sp.oldDistance,
+                    float3(sp.originX, sp.originY, sp.originZ), sp.spacing,
+                    uint3(sp.dimX, sp.dimY, sp.dimZ), hit.hitPoint, hit.normal);
+                result.radiance += diffuse * (eIndirect / DDGI_PI);
                 float3 sunDir = frame.env.sunDirection.xyz;
                 float sunLength2 = dot(sunDir, sunDir);
                 if (sunLength2 > 1e-8f && frame.env.sunColor.w > 0.0f) {
@@ -68,7 +78,6 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
                         if (!shadow.valid && shadow.incomplete) {
                             result.flags = 3;
                         } else if (!shadow.valid) {
-                            float3 diffuse = hit.baseColor * (1.0f - saturate(hit.metallic));
                             result.radiance += diffuse * frame.env.sunColor.rgb *
                                 (frame.env.sunColor.w * ndl / DDGI_PI);
                         }

@@ -122,6 +122,10 @@ struct TracePush {
     uint32_t dimX = 0, dimY = 0, dimZ = 0, rays = 0;
     float maxDistance = 0;
     uint32_t updateIndex = 0;
+    // E_indirect feedback: the PREVIOUS-frame irradiance field + distance
+    // moments of THIS volume, sampled at surface hit points so the field
+    // gathers multi-bounce color (the lit shader's walk, read-only).
+    uint64_t oldIrr = 0, oldDistance = 0;
 };
 // Fixed choice per volume/dispatch, not a per-ray switch.
 enum class TraceBackend : uint8_t { HardwareRT, StaticSdf };
@@ -130,7 +134,8 @@ struct SdfTracePush {
     TracePush trace{};
     uint64_t sceneAddress = 0;
 };
-static_assert(sizeof(SdfTracePush) == 64 && offsetof(SdfTracePush, sceneAddress) == 56);
+static_assert(sizeof(TracePush) == 72 && offsetof(TracePush, oldIrr) == 56);
+static_assert(sizeof(SdfTracePush) == 80 && offsetof(SdfTracePush, sceneAddress) == 72);
 
 struct BlendPush {
     uint64_t scratch = 0, oldIrr = 0, oldDistance = 0, newIrr = 0, newDistance = 0;
@@ -138,7 +143,7 @@ struct BlendPush {
     float hysteresis = 0, maxDistance = 0;
     uint32_t pad = 0;
 };
-static_assert(sizeof(TracePush) == 56 && offsetof(TracePush, maxDistance) == 48);
+static_assert(sizeof(TracePush) == 72 && offsetof(TracePush, maxDistance) == 48);
 static_assert(sizeof(BlendPush) == 64 && offsetof(BlendPush, probes) == 40);
 
 } // namespace smvk::ddgi

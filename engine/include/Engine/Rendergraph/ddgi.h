@@ -54,10 +54,14 @@ struct Volume {
         LogicalBufferHandle reads[6]{};
     };
 
-    bool Create(ResourceManager& ctx, RenderGraph& rg, const Grid& desc, size_t byteBudget,
+    bool Create(ResourceManager& ctx,
+                RenderGraph& rg,
+                const Grid& desc,
+                size_t byteBudget,
                 TraceBackend selected = TraceBackend::HardwareRT) {
         // Reconfiguration requires the owner to retire previous GPU uses.
-        if (ready || (selected != TraceBackend::HardwareRT && selected != TraceBackend::StaticSdf) ||
+        if (ready ||
+            (selected != TraceBackend::HardwareRT && selected != TraceBackend::StaticSdf) ||
             (selected == TraceBackend::HardwareRT && !ctx.SupportsRayQueries()) ||
             !CalculateSizes(desc, byteBudget, sizes))
             return false;
@@ -66,8 +70,9 @@ struct Volume {
         try {
             traceModule = ctx.CreateShaderModule(
                 smvk::shaders::Read(backend == TraceBackend::StaticSdf
-                    ? "content/shaders/ddgi_trace_sdf.cs.hlsl.spv"
-                    : "content/shaders/ddgi_trace.cs.hlsl.spv"), "ddgiTrace");
+                                        ? "content/shaders/ddgi_trace_sdf.cs.hlsl.spv"
+                                        : "content/shaders/ddgi_trace.cs.hlsl.spv"),
+                "ddgiTrace");
             blendModule = ctx.CreateShaderModule(
                 smvk::shaders::Read("content/shaders/ddgi_blend.cs.hlsl.spv"), "ddgiBlend");
             if (!traceModule.empty() && !blendModule.empty() &&
@@ -133,27 +138,46 @@ struct Volume {
                    uint64_t frameAddress,
                    uint32_t writeSlot,
                    uint32_t updateIndex,
-                   bool reset, const SdfTraceInput* sdf = nullptr) const {
+                   bool reset,
+                   const SdfTraceInput* sdf = nullptr) const {
         if (!ready || !frameAddress || writeSlot > 1)
             return false;
         if (backend == TraceBackend::StaticSdf) {
-            if (!sdf || !sdf->sceneAddress) return false;
-            for (auto h : sdf->reads) if (h.empty()) return false;
+            if (!sdf || !sdf->sceneAddress)
+                return false;
+            for (auto h : sdf->reads)
+                if (h.empty())
+                    return false;
         }
         const History& old = history[writeSlot ^ 1];
         const History& next = history[writeSlot];
         {
             auto& pass = rg.AddComputePass("DDGITrace");
             Hint(pass, scratch, true);
-            const TracePush push{frameAddress, scratch.address,
-                grid.origin[0], grid.origin[1], grid.origin[2], grid.spacing,
-                grid.dims[0], grid.dims[1], grid.dims[2], grid.rays,
-                grid.maxDistance, updateIndex};
+            // E_indirect feedback: the trace reads the previous frame's field
+            // (and its distance moments) to gather multi-bounce color at hits.
+            Hint(pass, old.irradiance, false);
+            Hint(pass, old.distance, false);
+            const TracePush push{frameAddress,
+                                 scratch.address,
+                                 grid.origin[0],
+                                 grid.origin[1],
+                                 grid.origin[2],
+                                 grid.spacing,
+                                 grid.dims[0],
+                                 grid.dims[1],
+                                 grid.dims[2],
+                                 grid.rays,
+                                 grid.maxDistance,
+                                 updateIndex,
+                                 old.irradiance.address,
+                                 old.distance.address};
             if (backend == TraceBackend::StaticSdf) {
                 BufferSyncRequest req{};
                 req.barrierMasks.accessMask = AccessFlags::ShaderRead;
                 req.barrierMasks.stageMask = PipelineStageBit_Compute;
-                for (auto h : sdf->reads) pass.AddBufferHint(h, req);
+                for (auto h : sdf->reads)
+                    pass.AddBufferHint(h, req);
                 auto& f = rg.PassFrameData<Frame<SdfTracePush>>(pass);
                 f.program = const_cast<ShaderProgram*>(&traceProgram);
                 f.push = {push, sdf->sceneAddress};

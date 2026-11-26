@@ -57,6 +57,29 @@ float3 DdgiOctDecode(float2 uv) {
 float3 DdgiBinDirection(uint bin, uint resolution) {
     return DdgiOctDecode((float2(bin % resolution, bin / resolution) + 0.5) / resolution);
 }
+// Bilinear octahedral taps for a direction: the 2x2 bin indices (clamped
+// at the map edge — the octahedron square's corners are unused) and their
+// weights. Bin centers sit at (i + 0.5)/res. Shared by the lit-shader
+// sampler and the trace's E_indirect feedback sampler.
+void DdgiOctBilinearTaps(float3 dir, uint res, out uint bin[4], out float w[4])
+{
+    const float2 uv = DdgiOctEncode(dir);
+    const float2 g = uv * float(res) - 0.5f;
+    const int2 b = int2(floor(g));
+    const float2 f = g - float2(b);
+    const uint x0 = uint(clamp(b.x, 0, int(res) - 1));
+    const uint y0 = uint(clamp(b.y, 0, int(res) - 1));
+    const uint x1 = uint(clamp(b.x + 1, 0, int(res) - 1));
+    const uint y1 = uint(clamp(b.y + 1, 0, int(res) - 1));
+    bin[0] = x0 + y0 * res;
+    bin[1] = x1 + y0 * res;
+    bin[2] = x0 + y1 * res;
+    bin[3] = x1 + y1 * res;
+    w[0] = (1.0f - f.x) * (1.0f - f.y);
+    w[1] = f.x * (1.0f - f.y);
+    w[2] = (1.0f - f.x) * f.y;
+    w[3] = f.x * f.y;
+}
 uint3 DdgiGridCoord(uint p, uint3 dims) {
     return uint3(p % dims.x, (p / dims.x) % dims.y, p / (dims.x * dims.y));
 }

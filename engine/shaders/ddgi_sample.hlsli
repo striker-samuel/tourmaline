@@ -25,29 +25,6 @@ struct DdgiSampleResult
 
 static const float DDGI_NORMAL_BIAS = 0.25; // probe-space bias along geomN (spacing units)
 
-// Bilinear octahedral taps for a direction: the 2x2 bin indices (clamped
-// at the map edge — the octahedron square's corners are unused) and their
-// weights. Bin centers sit at (i + 0.5)/res.
-void DdgiOctBilinearTaps(float3 dir, uint res, out uint bin[4], out float w[4])
-{
-    const float2 uv = DdgiOctEncode(dir);
-    const float2 g = uv * float(res) - 0.5f;
-    const int2 b = int2(floor(g));
-    const float2 f = g - float2(b);
-    const uint x0 = uint(clamp(b.x, 0, int(res) - 1));
-    const uint y0 = uint(clamp(b.y, 0, int(res) - 1));
-    const uint x1 = uint(clamp(b.x + 1, 0, int(res) - 1));
-    const uint y1 = uint(clamp(b.y + 1, 0, int(res) - 1));
-    bin[0] = x0 + y0 * res;
-    bin[1] = x1 + y0 * res;
-    bin[2] = x0 + y1 * res;
-    bin[3] = x1 + y1 * res;
-    w[0] = (1.0f - f.x) * (1.0f - f.y);
-    w[1] = f.x * (1.0f - f.y);
-    w[2] = (1.0f - f.x) * f.y;
-    w[3] = f.x * f.y;
-}
-
 // Sample ONE volume at worldPos with geometric normal geomN and shading
 // normal N (the 8-probe walk).
 DdgiSampleResult DdgiSampleVolume(DdgiVolumeDesc desc, uint slot, float3 worldPos,
