@@ -84,8 +84,8 @@ struct Volume {
             h.irradiance.Destroy(rg);
             h.distance.Destroy(rg);
         }
-        traceProgram = {};
-        blendProgram = {};
+        traceProgram = ShaderProgram();
+        blendProgram = ShaderProgram();
         traceModule = {};
         blendModule = {};
         sizes = {};

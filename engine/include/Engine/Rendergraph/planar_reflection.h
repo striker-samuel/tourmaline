@@ -16,10 +16,10 @@
 
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/vertex_layouts.h>
-#include <Engine/Rendergraph/hdr.h>
 #include <Engine/Rendergraph/depth.h>
-#include <Engine/Rendergraph/rendergraph.h>
+#include <Engine/Rendergraph/hdr.h>
 #include <Engine/Rendergraph/renderer.h>
+#include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/Utils/shader_library.h>
 
 #include <glm/glm.hpp>
@@ -159,24 +159,26 @@ struct PlanarReceiverCrop {
     glm::mat4 transform{1.0f};
     Extent2D extent{};
 };
-inline bool MakePlanarReceiverCrop(const glm::mat4& vp, const glm::vec4& plane,
-                                   const glm::vec3& center, float radius,
-                                   Extent2D fullExtent, PlanarReceiverCrop& out) {
+inline bool MakePlanarReceiverCrop(const glm::mat4& vp,
+                                   const glm::vec4& plane,
+                                   const glm::vec3& center,
+                                   float radius,
+                                   Extent2D fullExtent,
+                                   PlanarReceiverCrop& out) {
     out = {glm::mat4(1), fullExtent};
     if (!(radius > 0))
         return true;
     const glm::vec3 n(plane);
     const glm::vec3 c = center - n * (glm::dot(n, center) + plane.w);
-    const glm::vec3 u = glm::normalize(glm::cross(n,
-        std::abs(n.y) < 0.9f ? glm::vec3(0,1,0) : glm::vec3(1,0,0)));
+    const glm::vec3 u = glm::normalize(
+        glm::cross(n, std::abs(n.y) < 0.9f ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0)));
     const glm::vec3 v = glm::cross(n, u);
-    std::vector<glm::vec4> poly{
-        vp * glm::vec4(c - radius*u - radius*v, 1),
-        vp * glm::vec4(c + radius*u - radius*v, 1),
-        vp * glm::vec4(c + radius*u + radius*v, 1),
-        vp * glm::vec4(c - radius*u + radius*v, 1)};
-    const glm::vec4 clipPlanes[] = {{1,0,0,1},{-1,0,0,1},
-        {0,1,0,1},{0,-1,0,1},{0,0,1,0},{0,0,-1,1}};
+    std::vector<glm::vec4> poly{vp * glm::vec4(c - radius * u - radius * v, 1),
+                                vp * glm::vec4(c + radius * u - radius * v, 1),
+                                vp * glm::vec4(c + radius * u + radius * v, 1),
+                                vp * glm::vec4(c - radius * u + radius * v, 1)};
+    const glm::vec4 clipPlanes[] = {
+        {1, 0, 0, 1}, {-1, 0, 0, 1}, {0, 1, 0, 1}, {0, -1, 0, 1}, {0, 0, 1, 0}, {0, 0, -1, 1}};
     for (const auto& p : clipPlanes) {
         if (poly.empty())
             return false;
@@ -186,7 +188,7 @@ inline bool MakePlanarReceiverCrop(const glm::mat4& vp, const glm::vec4& plane,
         for (const auto& curr : poly) {
             const float b = glm::dot(p, curr);
             if ((a >= 0) != (b >= 0))
-                next.push_back(glm::mix(prev, curr, a / (a-b)));
+                next.push_back(glm::mix(prev, curr, a / (a - b)));
             if (b >= 0)
                 next.push_back(curr);
             prev = curr;
@@ -234,9 +236,9 @@ struct PlanarReflectionCapture {
     Format format = Format::RGBA16_Float;
     glm::mat4 viewProjection{1.0f};
     glm::vec4 receiverPlane{0.0f, 1.0f, 0.0f, 0.0f};
-    float thickness = 0.05f; // receiver depth distance tolerance, meters
-    float strength = 1.0f;   // 0 = off; 1 = physically weighted Fresnel
-    float f0 = 1.0f;         // 1 = mirror, ~0.04 = dielectric
+    float thickness = 0.05f;    // receiver depth distance tolerance, meters
+    float strength = 1.0f;      // 0 = off; 1 = physically weighted Fresnel
+    float f0 = 1.0f;            // 1 = mirror, ~0.04 = dielectric
     bool coverageAlpha = false; // internal capture: alpha zero leaves SSR/IBL intact
     glm::vec3 receiverCenter{0};
     float receiverRadius = 0; // optional finite circular receiver bound
@@ -340,16 +342,20 @@ struct PlanarReflections {
                     shaders::Read("content/shaders/default.vert.hlsl.spv"), "planarCaptureVS");
             if (capturePsModule.empty())
                 capturePsModule = ctx.CreateShaderModule(
-                    shaders::Read("content/shaders/planar_capture.frag.hlsl.spv"), "planarCapturePS");
+                    shaders::Read("content/shaders/planar_capture.frag.hlsl.spv"),
+                    "planarCapturePS");
         } catch (...) {
             return false;
         }
         if (captureVsModule.empty() || capturePsModule.empty())
             return false;
-        captureProgram = {.shaders = {
-            Shader{.module = captureVsModule, .entryPoint = "mainVS", .stage = ShaderStage::Vertex},
-            Shader{.module = capturePsModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment}},
-            .shaderCount = 2};
+        captureProgram = {.shaders = {Shader{.module = captureVsModule,
+                                             .entryPoint = "mainVS",
+                                             .stage = ShaderStage::Vertex},
+                                      Shader{.module = capturePsModule,
+                                             .entryPoint = "mainPS",
+                                             .stage = ShaderStage::Fragment}},
+                          .shaderCount = 2};
         return true;
     }
 
@@ -358,19 +364,32 @@ struct PlanarReflections {
             return true;
         try {
             if (terrainVs.empty())
-                terrainVs = ctx.CreateShaderModule(shaders::Read("content/shaders/terrain.vert.hlsl.spv"), "planarTerrainVS");
+                terrainVs = ctx.CreateShaderModule(
+                    shaders::Read("content/shaders/terrain.vert.hlsl.spv"), "planarTerrainVS");
             if (terrainFarVs.empty())
-                terrainFarVs = ctx.CreateShaderModule(shaders::Read("content/shaders/terrainfar.vert.hlsl.spv"), "planarTerrainFarVS");
+                terrainFarVs = ctx.CreateShaderModule(
+                    shaders::Read("content/shaders/terrainfar.vert.hlsl.spv"),
+                    "planarTerrainFarVS");
             if (terrainPs.empty())
-                terrainPs = ctx.CreateShaderModule(shaders::Read("content/shaders/planar_terrain.frag.hlsl.spv"), "planarTerrainPS");
-        } catch (...) { return false; }
+                terrainPs = ctx.CreateShaderModule(
+                    shaders::Read("content/shaders/planar_terrain.frag.hlsl.spv"),
+                    "planarTerrainPS");
+        } catch (...) {
+            return false;
+        }
         if (terrainVs.empty() || terrainFarVs.empty() || terrainPs.empty())
             return false;
         Shader ps{.module = terrainPs, .entryPoint = "mainPS", .stage = ShaderStage::Fragment};
-        terrainNearProgram = {.shaders = {
-            Shader{.module = terrainVs, .entryPoint = "mainVS", .stage = ShaderStage::Vertex}, ps}, .shaderCount = 2};
-        terrainFarProgram = {.shaders = {
-            Shader{.module = terrainFarVs, .entryPoint = "mainVS", .stage = ShaderStage::Vertex}, ps}, .shaderCount = 2};
+        terrainNearProgram = {.shaders = {Shader{.module = terrainVs,
+                                                 .entryPoint = "mainVS",
+                                                 .stage = ShaderStage::Vertex},
+                                          ps},
+                              .shaderCount = 2};
+        terrainFarProgram = {.shaders = {Shader{.module = terrainFarVs,
+                                                .entryPoint = "mainVS",
+                                                .stage = ShaderStage::Vertex},
+                                         ps},
+                             .shaderCount = 2};
         return true;
     }
 
@@ -451,29 +470,47 @@ struct PlanarReflections {
         changed |=
             SwapShaderModule(ctx, kPlanarReflectionPs, "planarReflectionPS", psModule, retired);
         if (changed) {
-            program = ShaderProgram{};
+            program = ShaderProgram();
             EnsureShaders(ctx);
         }
         if (captureProgram.shaderCount == 2) {
             bool captureChanged = false;
-            captureChanged |= SwapShaderModule(ctx, "content/shaders/default.vert.hlsl.spv",
-                                                "planarCaptureVS", captureVsModule, retired);
-            captureChanged |= SwapShaderModule(ctx, "content/shaders/planar_capture.frag.hlsl.spv",
-                                                "planarCapturePS", capturePsModule, retired);
+            captureChanged |= SwapShaderModule(ctx,
+                                               "content/shaders/default.vert.hlsl.spv",
+                                               "planarCaptureVS",
+                                               captureVsModule,
+                                               retired);
+            captureChanged |= SwapShaderModule(ctx,
+                                               "content/shaders/planar_capture.frag.hlsl.spv",
+                                               "planarCapturePS",
+                                               capturePsModule,
+                                               retired);
             if (captureChanged) {
-                captureProgram = {};
+                captureProgram = ShaderProgram();
                 EnsureCaptureShaders(ctx);
             }
             changed |= captureChanged;
         }
         if (terrainNearProgram.shaderCount == 2) {
             bool terrainChanged = false;
-            terrainChanged |= SwapShaderModule(ctx, "content/shaders/terrain.vert.hlsl.spv", "planarTerrainVS", terrainVs, retired);
-            terrainChanged |= SwapShaderModule(ctx, "content/shaders/terrainfar.vert.hlsl.spv", "planarTerrainFarVS", terrainFarVs, retired);
-            terrainChanged |= SwapShaderModule(ctx, "content/shaders/planar_terrain.frag.hlsl.spv", "planarTerrainPS", terrainPs, retired);
+            terrainChanged |= SwapShaderModule(ctx,
+                                               "content/shaders/terrain.vert.hlsl.spv",
+                                               "planarTerrainVS",
+                                               terrainVs,
+                                               retired);
+            terrainChanged |= SwapShaderModule(ctx,
+                                               "content/shaders/terrainfar.vert.hlsl.spv",
+                                               "planarTerrainFarVS",
+                                               terrainFarVs,
+                                               retired);
+            terrainChanged |= SwapShaderModule(ctx,
+                                               "content/shaders/planar_terrain.frag.hlsl.spv",
+                                               "planarTerrainPS",
+                                               terrainPs,
+                                               retired);
             if (terrainChanged) {
-                terrainNearProgram = {};
-                terrainFarProgram = {};
+                terrainNearProgram = ShaderProgram();
+                terrainFarProgram = ShaderProgram();
                 EnsureTerrainShaders(ctx);
             }
             changed |= terrainChanged;
@@ -482,18 +519,18 @@ struct PlanarReflections {
     }
 
     void Destroy(RenderGraph& rg) {
-        terrainNearProgram = {};
-        terrainFarProgram = {};
+        terrainNearProgram = ShaderProgram();
+        terrainFarProgram = ShaderProgram();
         terrainVs = {};
         terrainFarVs = {};
         terrainPs = {};
-        captureProgram = {};
+        captureProgram = ShaderProgram();
         captureVsModule = {};
         capturePsModule = {};
         internalDepth.Destroy(rg);
         internalColor.Destroy(rg);
         output.Destroy(rg);
-        program = ShaderProgram{};
+        program = ShaderProgram();
         vsModule = {};
         psModule = {};
     }
