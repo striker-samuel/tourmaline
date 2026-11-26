@@ -218,7 +218,7 @@ are still required for actual re-simulation.
   recook failure). Every SMP7-or-older pak fails closed at the magic
   (content recooks from zero — standing policy, no compat reader).
   Also: the per-pak `"#schemas"` registry blob, and
-  Cluster::PromoteDeferredMeshLodFromPage reads promote bytes from the
+  WorldPage::PromoteDeferredMeshLodFromPage reads promote bytes from the
   entry's own file range (see docs/pak_vnext.md).
 
 - **THE ASYNC PAK PAGER** (`engine/Asset/pak_pager.h` — docs/pak_vnext.md):
@@ -235,7 +235,7 @@ are still required for actual re-simulation.
 
 
 - **GEOMETRY STAGE 6 — THE PAGER LOD PROMOTE** (docs/pak_vnext.md):
-  `Cluster::PromoteDeferredMeshLodFromPage` promotes deferred siblings
+  `WorldPage::PromoteDeferredMeshLodFromPage` promotes deferred siblings
   from their ENTRY'S OWN BYTES through the pager (every range must FIT
   the page) with the promote tail SHARED with the image-pin lane.
   `smvk::SetLodPageSource` (geometry_streamer.h) is the host-installed
@@ -263,7 +263,7 @@ are still required for actual re-simulation.
   which INSTANCE). The full mesh-entity + animator surface has landed
   (docs/entities_and_animators.md): World::SpawnMeshFromNode/
   DestroyMesh, World::AddAnimator + the Animator facade, the
-  World::Update flush through Cluster::poseExternallyDriven (driven by
+  World::Update flush through WorldPage::poseExternallyDriven (driven by
   the frame's dt, NEVER a second caller). Renderer limit: one POSE per
   cluster (independent STATE for all animators); the per-draw palette
   table + the LoadSkeleton/LoadAnimation asset surface are the
@@ -300,7 +300,8 @@ including/referencing engine-domain headers.
    headers, QUALIFY the RHI types — the engine's public headers are all
    fully qualified now (the recorded lessons: a broad import's
    transitive lookup also collides same-named types — the
-   `tour::gfx::Cluster` vs `tour::Cluster` ambiguity that decided
+   `tour::gfx::Cluster` vs the scene-container (then `tour::Cluster`,
+   now `tour::WorldPage`) ambiguity that decided
    gfx_types.h; and a directive in one placement header silently
    covers every sibling in the same enclosing namespace — the
    placement_pass.h lean). TU-LOCAL using-directives in .cpp files
@@ -358,11 +359,12 @@ findings impossible to grow silently:
   `Framebuffer*` pointer types) is frozen per (file, token).
 - **R9** — the GLOBAL-NAMESPACE gate (the global-namespace cleanup is
   complete: no engine type is declared at global scope anymore —
-  NodeId/scene/Camera/Input/BVH/DXC all live in tour::(scene|dxc|...))
-  with the transitional GLOBAL compat re-export bridges (`using
-  tour::scene::Scene;` etc. in input.h/scene.h/scene_tables.h/
-  camera.h/bvh.h...) confined to exact per-file counts, and any NEW
-  global struct/class/enum declaration failing outright.
+  NodeId/transformhierarchy/Camera/Input/BVH/DXC all live in
+  tour::(transformhierarchy|dxc|...)) with the transitional GLOBAL
+  compat re-export bridges (`using tour::transformhierarchy::addNode;`
+  etc. in input.h/scene.h/scene_tables.h/camera.h/bvh.h...) confined
+  to exact per-file counts, and any NEW global struct/class/enum
+  declaration failing outright.
 
 The baselines are EXACT in both directions: growth or a new site fails
 the suite, and RETIREMENT also fails until the baseline row is deleted
@@ -587,10 +589,10 @@ motion/DoF/SSR/volumetric/exposure/bloom/tonemap/AA/UI → swapchain.
 - **THE ASSET STORE** (`app/src/AssetStore.h/.cpp` — the shared-resource
   OWNERSHIP layer, docs/content_as_code.md): the found-or-loaded
   mesh-family carrier acquire with ASSET-SIDE refs
-  (`Cluster::assetRefs` + `World::RetainCluster`). Scene removal never
+  (`WorldPage::assetRefs` + `World::RetainPage`). Scene removal never
   destroys an independently held asset: `World::UnloadCluster` PARKS a
-  carrier with live refs (alive in `retainedClusters` until the last
-  `ReleaseCluster`); a re-load shares the parked carrier. `keepResident`
+  carrier with live refs (alive in `retainedPages` until the last
+  `ReleasePage`); a re-load shares the parked carrier. `keepResident`
   is the sticky SESSION ref released at `UnloadAllMeshes`/teardown. The
   ownership is the STORE's — ProjectScenes knows nothing about who holds
   assets. Teardown order: the store dies BEFORE its world. Pinned by
@@ -598,7 +600,7 @@ motion/DoF/SSR/volumetric/exposure/bloom/tonemap/AA/UI → swapchain.
 - **THE SHARED GEOMETRY UPLOAD SERVICE**
   (`engine/include/Engine/Renderer/geometry_upload.h/.cpp`): the carve +
   all-or-nothing rollback + table-driven bulk-copy core (extracted from
-  `Cluster::UploadStaticMeshesDirect` — that keeps the
+  `WorldPage::UploadStaticMeshesDirect` — that keeps the
   cluster-bookkeeping side). `UploadStaticGeometry` returns CALLER-OWNED
   arena tokens + pool-independent `StaticMesh` values — the ONE upload
   seam the shared mesh store + pager submit into, never a duplicate
@@ -798,8 +800,8 @@ base; this is the family layer.
   never runs the hooks — so the effect survives to the farthest cooked
   LOD (the documented v1 cost).
 - **The demo** (`samples/04_project_game`): the `ProjectLitDemo` element
-  (composed with the audio runtime — RunPakApp has ONE extraElement
-  slot) pulses the damage + wetness bits through `SetMaterialUserData`
+  (composed with the audio runtime — RunPakApp composes the
+  `extraElements` list) pulses the damage + wetness bits through `SetMaterialUserData`
   on the scene's first opaque material. Headless A/B:
   `TOURMALINE_EXTRA_ELEMENT_BENCH=1 TOURMALINE_CAPTURE=12 --bench 16`.
 - Tests: `family.*` (test_world_entities.cpp).
