@@ -64,11 +64,11 @@ target_include_directories(engine
         ${TOURMALINE_SOURCE_DIR}/external/streamline/include
         # stb_image/stb_image_write (LutIo PNG readback).
         ${TOURMALINE_SOURCE_DIR}/external/stb
-        # gltf_import helper used by the world renderer
+        # source_import helper used by the world renderer
         # (GltfPunctualAimAxis): headers only — the lib itself stays with
-        # the executables (gltf_import PUBLIC-links engine, so linking it
+        # the executables (source_import PUBLIC-links engine, so linking it
         # here would be a dependency cycle).
-        ${TOURMALINE_SOURCE_DIR}/tools/gltf_import/include
+        ${TOURMALINE_SOURCE_DIR}/tools/source_import/include
         # miniaudio (vendored single-header, device-less configuration):
         # the audio DSP/node-graph core — include path is PRIVATE (the
         # engine's public headers never mention ma_* types; all miniaudio

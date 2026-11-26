@@ -499,7 +499,7 @@ motion/DoF/SSR/volumetric/exposure/bloom/tonemap/AA/UI → swapchain.
 ## Source identity + the file watcher (the watched-resource pipeline)
 
 - **The mesh-source formats (the import lane)**:
-  `LoadModelFromSourceFile` (gltf_import) is the ONE loader for every
+  `LoadModelFromSourceFile` (source_import) is the ONE loader for every
   model source: .gltf (ASCII) and .glb (detected by MAGIC, never
   extension) through tinygltf, .obj through the tinyobjloader adapter
   (`obj_import.cpp`, builds the tinygltf interchange form in memory;

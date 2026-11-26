@@ -6,7 +6,7 @@
 // The COOK-SPLIT (the clean separation): the cook inputs are the
 // ALREADY-PROCESSED .geometry artifacts (import.exe / the MeshImporter /
 // the editor's open-drop produce them - glTF is IMPORT-ONLY, never a
-// cook input; see gltf_import/asset_export.h; the raw import lives in
+// cook input; see source_import/asset_export.h; the raw import lives in
 // tools/import, ONE place).
 //
 //   pak.exe <vfs_path> <artifact...> [--options]
@@ -112,9 +112,9 @@
 #include <Engine/WorldPartition/map_tile_pak.h>
 #include <artifact_cache/artifact_cache.h>
 #include <artifact_cache/store_adapter.h>
-#include <gltf_import/asset_export.h> // materialAsset replay (tour cooks)
-#include <gltf_import/gltf.h>
 #include <meshoptimizer.h>
+#include <source_import/asset_export.h> // materialAsset replay (tour cooks)
+#include <source_import/gltf.h>
 #include <tool_log.h>
 
 namespace paktool {
@@ -1854,7 +1854,7 @@ int Run(const PakArgs& c) {
         tool::out() << "No project cache under " << args.contentDir
                     << "/.tourmaline — plain pack (no acceleration)\n";
     }
-    GltfArtifactCache* artifactCache = registryAdapter ? registryAdapter.get() : nullptr;
+    SourceArtifactCache* artifactCache = registryAdapter ? registryAdapter.get() : nullptr;
 
     // Tour path: the doc IS the definition (root reference #0 = the
     // source glTF, inlined under the scene root exactly like the

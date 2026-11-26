@@ -18,7 +18,7 @@ ${CMAKE_CURRENT_SOURCE_DIR}
 target_link_libraries(PakLib
 PRIVATE
 engine
-gltf_import
+source_import
 artifact_cache
 volk
 OptickCore
@@ -34,7 +34,7 @@ target_include_directories(Pak PRIVATE ${TOURMALINE_SOURCE_DIR}/external/stb ${T
 target_link_libraries(Pak
     PRIVATE
         engine
-        gltf_import
+        source_import
         artifact_cache
         volk
         OptickCore

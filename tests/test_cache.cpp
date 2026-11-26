@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 Samuel Martin
+// Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
 // test_cache: artifact-cache library tests (registry root handling +
@@ -243,7 +243,7 @@ void TestKindsAndIdentity() {
     std::filesystem::remove_all(dir, ec);
 }
 
-// StoreArtifactCacheAdapter: gltf_import's GltfArtifactCache over the
+// StoreArtifactCacheAdapter: source_import's SourceArtifactCache over the
 // real store — the adapter is what the editor/PakCooker inject, so its
 // round-trip IS the acceleration contract (keyed by the importer's
 // TextureConversionHash).

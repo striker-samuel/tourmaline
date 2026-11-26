@@ -3,10 +3,10 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <gltf_import/asset_export.h>
-#include <gltf_import/source_scene.h>
 #include <iostream>
 #include <limits>
+#include <source_import/asset_export.h>
+#include <source_import/source_scene.h>
 #include <string>
 
 static void Require(bool condition) {

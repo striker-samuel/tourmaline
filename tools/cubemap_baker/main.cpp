@@ -78,7 +78,7 @@
 #include <Engine/Renderer/cubemap_prefilter.h>
 #include <Engine/Utils/thread_pool.h>
 #include <Engine/Vfs/vfs.h>
-#include <gltf_import/gltf.h>
+#include <source_import/gltf.h>
 
 namespace {
 

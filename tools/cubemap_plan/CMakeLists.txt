@@ -13,7 +13,7 @@ target_compile_definitions(CubemapPlan PRIVATE ENGINE_VULKAN)
 target_link_libraries(CubemapPlan
     PRIVATE
         engine
-        gltf_import
+        source_import
         volk
         KTX::ktx
 )

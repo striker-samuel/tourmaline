@@ -58,9 +58,9 @@
 #include <Engine/GI/triangle_bvh.h>
 #include <Engine/ImGui/imgui_overlay.h>
 #include <Engine/Renderer/ReferenceSceneRenderer.h>
-#include <Engine/Renderer/material_gpu_records.h>
 #include <Engine/Renderer/cubemap_placement.h>
 #include <Engine/Renderer/light.h>
+#include <Engine/Renderer/material_gpu_records.h>
 #include <Engine/Renderer/texture_streamer.h>
 #include <Engine/Rendergraph/cascadedshadowmap.h>
 #include <Engine/Rendergraph/depth.h>
@@ -74,9 +74,9 @@
 #include <artifact_cache/store_adapter.h>
 #include <atomic>
 #include <future>
-#include <gltf_import/asset_export.h>   // the preprocessed asset derivation
-#include <gltf_import/gltf.h>           // GltfGuidResolver (the hook below)
-#include <gltf_import/source_formats.h> // the mesh-source gate (.gltf/.glb/.obj)
+#include <source_import/asset_export.h>   // the preprocessed asset derivation
+#include <source_import/gltf.h>           // SourceGuidResolver (the hook below)
+#include <source_import/source_formats.h> // the mesh-source gate (.gltf/.glb/.obj)
 
 // ABI-checked shared structs (offsets asserted against common.hlsli).
 #include <Engine/Renderer/Renderer.h>
@@ -2056,7 +2056,7 @@ class EditorApp : public tour::App {
     // References are scene DEFINITION (bound at import like the source
     // itself — not undoable commands): each is a placeholder group node
     // in the owning cluster whose subtree is another scene, inlined by
-    // gltf_import's ApplySceneReferences (recursing through each
+    // source_import's ApplySceneReferences (recursing through each
     // source's own .tour, cycle-guarded). Referenced nodes are ordinary
     // nodes once inlined, so overrides (local + wide regex) apply per
     // occurrence without touching the referenced asset.
@@ -2188,7 +2188,7 @@ class EditorApp : public tour::App {
     // Interactive relink of one imported image record: loads newPath,
     // reassigns every recorded (material, slot) user via undoable
     // commands, and writes the input plug (persistent). Pool or -1.
-    int RelinkTextureLive(const GltfImportImage& rec, const std::string& newPath);
+    int RelinkTextureLive(const SourceImportImage& rec, const std::string& newPath);
     // Material by its registered cluster uri ("<source>#mat.N"; exact
     // match — import records carry full uris). -1 when unmapped.
     int MatWorldForUri(const std::string& uri) const;
@@ -2805,17 +2805,17 @@ class EditorApp : public tour::App {
     // not an authored edit — the tour's textureAsset record already
     // names the asset, and a reload/cook re-imports it fresh).
     void RewireTextureSlots(uint32_t oldRhiIndex, uint32_t newRhiIndex);
-    // GltfGuidResolver over m_assetDb (gltf_import hook): tour
+    // SourceGuidResolver over m_assetDb (source_import hook): tour
     // references carrying -guid resolve identity-first — moves/
     // renames heal through rescan + the .meta sidecars. Closed db
     // answers "" (path-only fallback, exactly the pre-GUID behavior).
-    struct GuidResolverHook final : public GltfGuidResolver {
+    struct GuidResolverHook final : public SourceGuidResolver {
         EditorApp& app;
         explicit GuidResolverHook(EditorApp& a) : app(a) {}
         std::string PathForGuid(const std::string& guid) override;
     };
     GuidResolverHook m_guidResolver; // init: EditorApp ctor (holds *this)
-    // gltf_import hook over the store (texture-transcode
+    // source_import hook over the store (texture-transcode
     // acceleration; injected into every import path).
     std::unique_ptr<StoreArtifactCacheAdapter> m_texCacheAdapter;
     // Opens (creating when missing) the PROJECT's artifact dir +
@@ -2851,12 +2851,12 @@ class EditorApp : public tour::App {
     void ClearSglmLayers();
     // ---- diffuse preview cache (single entry; cleared on scene load) ----
     TexPreview m_texPreview;
-    // ---- importer data (see gltf_import's GltfImportImage): one row per
+    // ---- importer data (see source_import's SourceImportImage): one row per
     // referenced image across the definition's imports (loaded AND failed),
     // collected by ApplySceneReferences. THE replacement for the old kept
     // tinygltf::Model: the path editor's texture rows + the live relink
     // read this, never a parsed glTF. Cleared with the world.
-    std::vector<GltfImportImage> m_importImages;
+    std::vector<SourceImportImage> m_importImages;
 
     // ---- editor state ----
     // View modes are PER VIEWPORT (m_viewports[].viewMode; the F-keys
@@ -3277,7 +3277,9 @@ class EditorApp : public tour::App {
         engine::IRenderer::PushConstants pc{};
         bool drawWires = false;
     };
-    static void RecordLmExport(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
+    static void RecordLmExport(smvk::CommandBuffer&,
+                               const smvk::FrameContext&,
+                               const smvk::PassData&);
     struct MainPassFrame {
         engine::IRenderer::PushConstants pc{};
         bool selectedWireOverlay = false;
@@ -3286,8 +3288,12 @@ class EditorApp : public tour::App {
         bool uvDbg = false;
         ViewMode mode = ViewMode::Lit;
     };
-    static void RecordMainDraw(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
-    struct InsetFrame { engine::IRenderer::PushConstants pc{}; };
+    static void RecordMainDraw(smvk::CommandBuffer&,
+                               const smvk::FrameContext&,
+                               const smvk::PassData&);
+    struct InsetFrame {
+        engine::IRenderer::PushConstants pc{};
+    };
     static void RecordInset(smvk::CommandBuffer&, const smvk::FrameContext&, const smvk::PassData&);
     static void RecordTrianglePreview(smvk::CommandBuffer&,
                                       const smvk::FrameContext&,

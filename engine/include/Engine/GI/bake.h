@@ -510,7 +510,7 @@ struct GiSceneBuildOptions {
     bool referenceMaterialSampling = false;
     // Punctual-light aim axis in engine node-local space (the import
     // bakes node transforms through a basis change, so the local aim
-    // axis depends on it — see tools/gltf_import): the harvest resolves
+    // axis depends on it — see tools/source_import): the harvest resolves
     // world aims as globalTransform * axis. Default (0,0,-1) =
     // engine-space scenes (no coordFix); cook imports at coordFix 0 pass
     // (0,0,+1) or the Bistro sun bakes underground / spots aim backwards.

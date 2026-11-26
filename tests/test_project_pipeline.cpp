@@ -37,11 +37,11 @@
 #include <artifact_cache/artifact_cache.h>
 #include <artifact_cache/assetdb.h>
 
-#include <gltf_import/asset_export.h>
+#include <source_import/asset_export.h>
 // KtxEncodeFormat (the texture-encoding enum the material-compose
 // encoding settings store) lives here at global scope - asset_export.h
 // does not pull it in.
-#include <gltf_import/gltf.h>
+#include <source_import/gltf.h>
 
 #include <Engine/Asset/appmanifest.h>
 #include <Engine/Asset/asset_plan.h>

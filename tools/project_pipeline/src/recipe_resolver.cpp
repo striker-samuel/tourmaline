@@ -26,8 +26,8 @@
 
 #include <Engine/Asset/tour.h>
 
-#include <gltf_import/asset_export.h>
-#include <gltf_import/source_formats.h>
+#include <source_import/asset_export.h>
+#include <source_import/source_formats.h>
 
 namespace smvk::project {
 

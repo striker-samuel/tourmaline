@@ -60,7 +60,7 @@
 #include <Engine/core.h>
 #include <Engine/debug_log.h> // SMVK_TRACE_LOG ([exposure] dashboards)
 #include <Engine/platform.h>  // readFile (exe-relative SPV loads)
-#include <gltf_import/gltf.h>
+#include <source_import/gltf.h>
 
 #include <Engine/Renderer/GfxRenderer.h>
 #include <Engine/Renderer/gpu_scene_admission.h> // GpuSceneAdmissionFailure histogram (Epoch 0)
@@ -550,20 +550,28 @@ void WorldRenderer::ApplyRunConfig(const RunConfig& run) {
         unsigned divisor = 0, maxDraws = 0;
         char trailing = 0;
         const int fields = std::sscanf(run.planarReflection->c_str(),
-            "%f,%f,%f,%f,%f,%f,%f,%f,%u,%f,%u,%f %c",
-            &settings.receiverPlane.x, &settings.receiverPlane.y,
-            &settings.receiverPlane.z, &settings.receiverPlane.w,
-            &settings.receiverCenter.x, &settings.receiverCenter.y,
-            &settings.receiverCenter.z, &settings.receiverRadius,
-            &divisor, &settings.maxDistance, &maxDraws, &settings.f0, &trailing);
+                                       "%f,%f,%f,%f,%f,%f,%f,%f,%u,%f,%u,%f %c",
+                                       &settings.receiverPlane.x,
+                                       &settings.receiverPlane.y,
+                                       &settings.receiverPlane.z,
+                                       &settings.receiverPlane.w,
+                                       &settings.receiverCenter.x,
+                                       &settings.receiverCenter.y,
+                                       &settings.receiverCenter.z,
+                                       &settings.receiverRadius,
+                                       &divisor,
+                                       &settings.maxDistance,
+                                       &maxDraws,
+                                       &settings.f0,
+                                       &trailing);
         glm::vec4 normalized{};
         if (fields == 12 && smvk::NormalizePlanarPlane(settings.receiverPlane, normalized) &&
             std::isfinite(settings.receiverCenter.x) && std::isfinite(settings.receiverCenter.y) &&
             std::isfinite(settings.receiverCenter.z) && std::isfinite(settings.receiverRadius) &&
             settings.receiverRadius >= 0 && (divisor == 2 || divisor == 4) &&
-            std::isfinite(settings.maxDistance) && settings.maxDistance > 0 &&
-            maxDraws > 0 && maxDraws <= 65535 && std::isfinite(settings.f0) &&
-            settings.f0 >= 0 && settings.f0 <= 1) {
+            std::isfinite(settings.maxDistance) && settings.maxDistance > 0 && maxDraws > 0 &&
+            maxDraws <= 65535 && std::isfinite(settings.f0) && settings.f0 >= 0 &&
+            settings.f0 <= 1) {
             settings.resolutionDivisor = divisor;
             settings.maxDraws = maxDraws;
             SetPlanarReflectionSettings(settings);
@@ -10095,13 +10103,24 @@ void WorldRenderer::RecordPlanarCapture(smvk::CommandBuffer& cmd,
     auto& planar = self->m_viewportResources.planarReflections;
     if (self->m_passes.terrain && self->m_terrainEnabled && self->m_terrain.valid &&
         planar.terrainNearProgram.shaderCount == 2 && planar.terrainFarProgram.shaderCount == 2) {
-        draws = self->m_terrain.RecordBlocks(cmd, f.cullView.m_viewProjectionMatrix,
-            f.eye, f.pc,
+        draws = self->m_terrain.RecordBlocks(
+            cmd,
+            f.cullView.m_viewProjectionMatrix,
+            f.eye,
+            f.pc,
             smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
-                                .writeEnable = true, .depthTestEnable = true},
-            smvk::StencilSettings{}, smvk::BlendSettings::Opaque(),
-            smvk::MSAASettings::Count1(), 0, 0, true, f.maxDistance,
-            f.maxDraws, &planar.terrainNearProgram, &planar.terrainFarProgram);
+                                .writeEnable = true,
+                                .depthTestEnable = true},
+            smvk::StencilSettings{},
+            smvk::BlendSettings::Opaque(),
+            smvk::MSAASettings::Count1(),
+            0,
+            0,
+            true,
+            f.maxDistance,
+            f.maxDraws,
+            &planar.terrainNearProgram,
+            &planar.terrainFarProgram);
     }
     cmd.BindStaticVertexFmt();
     self->m_world->forEachRenderItem(
@@ -10126,12 +10145,13 @@ void WorldRenderer::RecordPlanarCapture(smvk::CommandBuffer& cmd,
             const auto& model = self->m_world->scene.globalTransform[item.node];
             glm::vec3 center{};
             float radius = 0;
-            smvk::MeshBoundsToWorld(model, mesh->geometry.aabbMin,
-                                   mesh->geometry.aabbMax, center, radius);
+            smvk::MeshBoundsToWorld(
+                model, mesh->geometry.aabbMin, mesh->geometry.aabbMax, center, radius);
             if (!smvk::RenderViewIntersectsSphere(f.cullView, center, radius) ||
                 glm::length(center - f.eye) > f.maxDistance + radius)
                 return;
-            const auto* mat = static_cast<const smvk::World&>(*self->m_world).GetMaterial(item.material);
+            const auto* mat =
+                static_cast<const smvk::World&>(*self->m_world).GetMaterial(item.material);
             if (!mat)
                 return;
             if (DitherCloseupStateFor(self->m_world->scene, int(item.node), f.eye) ==
@@ -10143,16 +10163,20 @@ void WorldRenderer::RecordPlanarCapture(smvk::CommandBuffer& cmd,
             else if (raster.cullMode == smvk::CullMode::Front)
                 raster.cullMode = smvk::CullMode::Back;
             cmd.BindRenderPipeline(self->m_viewportResources.planarReflections.captureProgram,
-                ::tour::vertex_layouts::Static,
-                smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
-                                    .writeEnable = true, .depthTestEnable = true},
-                smvk::StencilSettings{}, smvk::BlendSettings::Opaque(),
-                smvk::MSAASettings::Count1(), raster);
+                                   ::tour::vertex_layouts::Static,
+                                   smvk::DepthSettings{.depthFunc = smvk::CompareOp::GreaterEqual,
+                                                       .writeEnable = true,
+                                                       .depthTestEnable = true},
+                                   smvk::StencilSettings{},
+                                   smvk::BlendSettings::Opaque(),
+                                   smvk::MSAASettings::Count1(),
+                                   raster);
             auto pc = f.pc;
             std::copy_n(glm::value_ptr(model), 16, pc.model);
             pc.materialId = item.material;
             pc.padEnd_[2] = item.node < self->m_world->scene.metadata.size()
-                ? self->m_world->scene.metadata[item.node].lightLayerMask : 0xffffffffu;
+                                ? self->m_world->scene.metadata[item.node].lightLayerMask
+                                : 0xffffffffu;
             cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
             for (const auto& surface : mesh->geometry.surfaces) {
                 if (draws >= f.maxDraws)
@@ -15251,13 +15275,13 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     smvk::Extent2D planarExtent{};
     glm::vec3 planarEye{};
     if (m_planarReflectionSettings && !m_planarReflectionCapture && m_world &&
-        !DebugVisualizationActive() &&
-        mainRenderView != smvk::RenderViewSet::kInvalidIndex) {
+        !DebugVisualizationActive() && mainRenderView != smvk::RenderViewSet::kInvalidIndex) {
         const auto& cfg = *m_planarReflectionSettings;
         glm::vec4 plane{};
         const bool visible = cfg.receiverRadius <= 0 ||
-            smvk::RenderViewIntersectsSphere(m_renderViews.Get(mainRenderView),
-                                             cfg.receiverCenter, cfg.receiverRadius);
+                             smvk::RenderViewIntersectsSphere(m_renderViews.Get(mainRenderView),
+                                                              cfg.receiverCenter,
+                                                              cfg.receiverRadius);
         if (visible && cfg.strength > 0 && cfg.maxDraws > 0 && cfg.maxDistance > 0 &&
             smvk::NormalizePlanarPlane(cfg.receiverPlane, plane)) {
             if (glm::dot(plane, glm::vec4(frameData.cameraPos, 1)) < 0)
@@ -15266,20 +15290,28 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             glm::mat4 clipped{};
             glm::vec4 keepPlane = plane;
             keepPlane.w -= 0.005f; // exclude the receiver itself
-            if (smvk::MakePlanarReflectionCamera(frameData.view, frameData.proj,
-                    frameData.cameraPos, plane, camera) &&
-                smvk::MakePlanarObliqueProjection(camera.view, frameData.proj, keepPlane, clipped)) {
+            if (smvk::MakePlanarReflectionCamera(
+                    frameData.view, frameData.proj, frameData.cameraPos, plane, camera) &&
+                smvk::MakePlanarObliqueProjection(
+                    camera.view, frameData.proj, keepPlane, clipped)) {
                 planarExtent = smvk::PlanarCaptureExtent(renderExtent, cfg.resolutionDivisor);
                 smvk::PlanarReceiverCrop crop{};
                 const bool cropVisible = smvk::MakePlanarReceiverCrop(camera.viewProjection,
-                    plane, cfg.receiverCenter, cfg.receiverRadius, planarExtent, crop);
+                                                                      plane,
+                                                                      cfg.receiverCenter,
+                                                                      cfg.receiverRadius,
+                                                                      planarExtent,
+                                                                      crop);
                 planarExtent = crop.extent;
                 auto& planar = m_viewportResources.planarReflections;
-                if (cropVisible && planar.EnsureCapture(*m_context, *m_rendergraph, planarExtent,
-                                         m_viewportResources.renderDepth.format)) {
+                if (cropVisible && planar.EnsureCapture(*m_context,
+                                                        *m_rendergraph,
+                                                        planarExtent,
+                                                        m_viewportResources.renderDepth.format)) {
                     if (m_passes.terrain && m_terrainEnabled && m_terrain.valid)
                         planar.EnsureTerrainShaders(*m_context);
-                    planarView = m_renderViews.AllocateView(crop.transform * clipped * camera.view,
+                    planarView = m_renderViews.AllocateView(
+                        crop.transform * clipped * camera.view,
                         {float(planarExtent.width), float(planarExtent.height)},
                         smvk::RenderViewFlagBit_Custom);
                     if (planarView != smvk::RenderViewSet::kInvalidIndex) {
@@ -20841,11 +20873,16 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     if (internalPlanarCapture) {
         auto& planar = m_viewportResources.planarReflections;
         auto& pass = m_rendergraph->AddPass("PlanarReflectionCapture");
-        pass.SetOffset(0, 0).SetExtent(planarExtent)
-            .SetColor({planar.internalColor.logicalView}, smvk::AttachmentLoadOp::Clear,
-                      smvk::AttachmentStoreOp::Store, smvk::ClearColor(0, 0, 0, 0))
-            .SetDepth(planar.internalDepth.logicalView, smvk::AttachmentLoadOp::Clear,
-                      smvk::AttachmentStoreOp::DontCare, smvk::ClearDepthStencil(0, 0));
+        pass.SetOffset(0, 0)
+            .SetExtent(planarExtent)
+            .SetColor({planar.internalColor.logicalView},
+                      smvk::AttachmentLoadOp::Clear,
+                      smvk::AttachmentStoreOp::Store,
+                      smvk::ClearColor(0, 0, 0, 0))
+            .SetDepth(planar.internalDepth.logicalView,
+                      smvk::AttachmentLoadOp::Clear,
+                      smvk::AttachmentStoreOp::DontCare,
+                      smvk::ClearDepthStencil(0, 0));
         auto& f = m_rendergraph->PassFrameData<PlanarCaptureFrame>(pass);
         f.pc = pc;
         f.pc.mainRenderView = planarView;
@@ -20857,8 +20894,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         f.includeMasked = m_planarReflectionSettings->includeMasked;
         pass.SetRecordFn(&WorldRenderer::RecordPlanarCapture, this);
     }
-    const auto& activePlanarCapture = m_planarReflectionCapture
-        ? m_planarReflectionCapture : internalPlanarCapture;
+    const auto& activePlanarCapture =
+        m_planarReflectionCapture ? m_planarReflectionCapture : internalPlanarCapture;
 
     // Optional planar mirror composite. The host renders a reflected
     // camera into an independent sampled HDR image and registers its
@@ -20868,8 +20905,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // mirror reflections participate in the rest of the post chain.
     // Absent capture: no shader, target allocation or graph work.
     if (activePlanarCapture && !DebugVisualizationActive() &&
-        activePlanarCapture->strength > 0.0f &&
-        activePlanarCapture->logicalView != sceneHdrView &&
+        activePlanarCapture->strength > 0.0f && activePlanarCapture->logicalView != sceneHdrView &&
         activePlanarCapture->bindlessIndex != UINT32_MAX &&
         !m_viewportResources.renderDepth.logicalView.empty() &&
         m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX) {

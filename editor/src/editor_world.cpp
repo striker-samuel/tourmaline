@@ -14,7 +14,7 @@
 #include <cstring>
 
 #include <Engine/Asset/tour.h>
-#include <gltf_import/gltf.h>
+#include <source_import/gltf.h>
 
 namespace editor {
 

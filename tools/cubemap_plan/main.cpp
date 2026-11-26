@@ -15,8 +15,8 @@
 #include <Engine/Vfs/vfs.h>
 #include <Engine/WorldPartition/CubemapCaptureDiagnostics.h>
 #include <Engine/WorldPartition/CubemapCapturePlanning.h>
-#include <gltf_import/asset_export.h>
-#include <gltf_import/gltf.h> // BuildFromMeshAsset + VfsTextureSource (global ns)
+#include <source_import/asset_export.h>
+#include <source_import/gltf.h> // BuildFromMeshAsset + VfsTextureSource (global ns)
 
 #include <cerrno>
 #include <cmath>

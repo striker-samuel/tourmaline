@@ -20,10 +20,10 @@
 #include <set>
 #include <system_error>
 
-#include <gltf_import/asset_export.h>
 #include <Engine/Asset/mesh_preparation_policy.h>
-#include <gltf_import/gltf.h>
-#include <gltf_import/source_formats.h>
+#include <source_import/asset_export.h>
+#include <source_import/gltf.h>
+#include <source_import/source_formats.h>
 
 #include "registry_detail.h"
 
@@ -176,7 +176,7 @@ bool ComposeMaterialFromRecipe(const MaterialPackingRule& rule,
         output.srgb = group.srgb;
         const std::string& encoding = rule.encodings[groupIndex];
         if (!encoding.empty()) {
-            // KtxEncodeFormat lives at GLOBAL scope in gltf_import/gltf.h
+            // KtxEncodeFormat lives at GLOBAL scope in source_import/gltf.h
             // (a tool-header enum, not part of smvk::assets) - the PR's
             // smvk::assets:: spelling was the CI red on every platform.
             ::KtxEncodeFormat format{};
@@ -431,21 +431,24 @@ bool ImportProjectAsset(const ImportRequest& request, ImportResult& out, std::st
         glm::mat4 world(1.0f);
         std::vector<size_t> chain;
         int32_t node = int32_t(i);
-        while (node >= 0 && size_t(node) < asset.nodes.size() && chain.size() < asset.nodes.size()) {
+        while (node >= 0 && size_t(node) < asset.nodes.size() &&
+               chain.size() < asset.nodes.size()) {
             chain.push_back(size_t(node));
             node = asset.nodes[size_t(node)].parent;
         }
         for (auto it = chain.rbegin(); it != chain.rend(); ++it)
-            if (*it < asset.locals.size()) world *= asset.locals[*it];
+            if (*it < asset.locals.size())
+                world *= asset.locals[*it];
         globals[i] = world;
     }
     std::vector<uint8_t> eligible(asset.geometry.size(), 0);
     for (const auto& instance : asset.instances) {
-        if (instance.geometry >= asset.geometry.size() || instance.node >= globals.size()) continue;
+        if (instance.geometry >= asset.geometry.size() || instance.node >= globals.size())
+            continue;
         const auto& g = asset.geometry[instance.geometry];
-        if (smvk::EligibleForSpatialDerivatives(g.aabbMin, g.aabbMax,
-                                                 g.indices.size(), globals[instance.node],
-                                                 !g.skin.empty())) eligible[instance.geometry] = 1;
+        if (smvk::EligibleForSpatialDerivatives(
+                g.aabbMin, g.aabbMax, g.indices.size(), globals[instance.node], !g.skin.empty()))
+            eligible[instance.geometry] = 1;
     }
     for (size_t gi = 0; gi < asset.geometry.size(); ++gi) {
         const auto& g = asset.geometry[gi];

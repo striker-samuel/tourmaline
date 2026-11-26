@@ -22,8 +22,8 @@
 #include <Engine/Asset/tour.h>
 #include <Engine/Scene/scene.h>
 
-#include <gltf_import/asset_export.h>
-#include <gltf_import/gltf.h>
+#include <source_import/asset_export.h>
+#include <source_import/gltf.h>
 
 #include <ktx.h>
 
@@ -3139,7 +3139,7 @@ void TestTextureCacheConsult() {
         f << gltfText;
     }
     // Fake cache: records every call; Get's payload is injectable.
-    struct FakeCache final : GltfArtifactCache {
+    struct FakeCache final : SourceArtifactCache {
         int getCalls = 0;
         int putCalls = 0;
         std::string lastHash;
@@ -3216,7 +3216,7 @@ void TestTextureCacheConsult() {
 } // namespace
 
 // Reference asset GUIDs: `reference ... -guid <32-hex>` round-trips, and
-// the GltfGuidResolver hook resolves identity-FIRST (a moved source file
+// the SourceGuidResolver hook resolves identity-FIRST (a moved source file
 // keeps binding through its GUID even when the recorded -source path is
 // stale; a miss falls back to the recorded path exactly as before).
 void TestReferenceGuid() {
@@ -3286,7 +3286,7 @@ void TestReferenceGuid() {
               back.references[0].asset && back.references[0].source == "old_name.geometry",
           "refguid roundtrip");
     // Resolver: GUID -> the moved file's path.
-    struct FakeResolver final : public GltfGuidResolver {
+    struct FakeResolver final : public SourceGuidResolver {
         std::string movedTo;
         std::string PathForGuid(const std::string& guid) override {
             if (guid == "0123456789abcdef0123456789abcdef")
@@ -4776,26 +4776,26 @@ void TestLightCookieBakeRecords() {
     Check(loaded.lightCookieBakes.size() == 1, "light cookie bake survives roundtrip");
     if (loaded.lightCookieBakes.size() == 1) {
         const auto& actual = loaded.lightCookieBakes.front();
-        Check(actual.lightUuid == bake.lightUuid &&
-                  actual.occluderUuids == bake.occluderUuids &&
-                  actual.output == bake.output &&
-                  actual.resolution == bake.resolution &&
-                  actual.samples == bake.samples &&
-                  actual.emitterRadius == bake.emitterRadius &&
+        Check(actual.lightUuid == bake.lightUuid && actual.occluderUuids == bake.occluderUuids &&
+                  actual.output == bake.output && actual.resolution == bake.resolution &&
+                  actual.samples == bake.samples && actual.emitterRadius == bake.emitterRadius &&
                   actual.captureDistance == bake.captureDistance,
               "light cookie bake payload survives roundtrip");
     }
-    Check(!LoadTourFromString(
-              "lightCookieBake -light \"spot\" -output \"../escape.texture\" "
-              "-occluder \"mesh\";\n", loaded, err),
+    Check(!LoadTourFromString("lightCookieBake -light \"spot\" -output \"../escape.texture\" "
+                              "-occluder \"mesh\";\n",
+                              loaded,
+                              err),
           "light cookie bake rejects path traversal");
-    Check(!LoadTourFromString(
-              "lightCookieBake -light \"spot\" -output \"cookie.texture\" "
-              "-occluder \"mesh\" -samples 0;\n", loaded, err),
+    Check(!LoadTourFromString("lightCookieBake -light \"spot\" -output \"cookie.texture\" "
+                              "-occluder \"mesh\" -samples 0;\n",
+                              loaded,
+                              err),
           "light cookie bake rejects zero samples");
-    Check(!LoadTourFromString(
-              "lightCookieBake -light \"spot\" -output \"cookie.texture\" "
-              "-occluder \"mesh\" -resolution 300;\n", loaded, err),
+    Check(!LoadTourFromString("lightCookieBake -light \"spot\" -output \"cookie.texture\" "
+                              "-occluder \"mesh\" -resolution 300;\n",
+                              loaded,
+                              err),
           "light cookie bake rejects non-power-of-two resolution");
 }
 

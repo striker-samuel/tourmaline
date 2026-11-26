@@ -215,7 +215,7 @@ add_executable(KnightAnimTests test_knight_anim.cpp)
 target_link_libraries(KnightAnimTests
     PRIVATE
         engine
-        gltf_import
+        source_import
 )
 
 set_target_properties(KnightAnimTests PROPERTIES
@@ -514,7 +514,7 @@ target_include_directories(SourceImportTests
 
 target_link_libraries(SourceImportTests
     PRIVATE
-        gltf_import
+        source_import
         engine
 )
 
@@ -539,7 +539,7 @@ add_executable(TourTests test_tour.cpp)
 target_link_libraries(TourTests
     PRIVATE
         engine
-        gltf_import
+        source_import
 )
 
 set_target_properties(TourTests PROPERTIES
@@ -549,7 +549,7 @@ set_target_properties(TourTests PROPERTIES
 add_test(NAME tour_tests COMMAND TourTests)
 
 # Fixture light-cookie baking (Embree ray-sampled spot cookie -> .texture
-# asset -> cluster pool -> cookie-uri resolution). Links gltf_import for the
+# asset -> cluster pool -> cookie-uri resolution). Links source_import for the
 # shared smvk::assets texture library the bake writes through.
 project(LightCookieTests)
 
@@ -558,7 +558,7 @@ add_executable(LightCookieTests test_light_cookie.cpp)
 target_link_libraries(LightCookieTests
     PRIVATE
         engine
-        gltf_import
+        source_import
 )
 
 set_target_properties(LightCookieTests PROPERTIES
@@ -583,7 +583,7 @@ target_include_directories(AssetOpsTests
 target_link_libraries(AssetOpsTests
     PRIVATE
         engine
-        gltf_import
+        source_import
 )
 
 set_target_properties(AssetOpsTests PROPERTIES
@@ -600,7 +600,7 @@ target_link_libraries(CacheTests
     PRIVATE
         artifact_cache
         engine
-        gltf_import
+        source_import
 )
 
 set_target_properties(CacheTests PROPERTIES
@@ -1184,7 +1184,7 @@ add_executable(ProjectPipelineTests test_project_pipeline.cpp)
 target_link_libraries(ProjectPipelineTests
 	PRIVATE
 		project_pipeline
-		gltf_import
+		source_import
 		engine
 		# The EDT-01 parity leg: the IN-PROCESS stage adapter (the linked
 		# Cook/GiBaker/Pak Runs — exactly what the editor drives) builds
@@ -1255,7 +1255,7 @@ add_test(NAME shader_library_tests COMMAND ShaderLibraryTests)
 add_executable(EditorContentServerTests test_editor_content_server.cpp)
 target_include_directories(EditorContentServerTests PRIVATE
     ${CMAKE_SOURCE_DIR}/editor/src)
-target_link_libraries(EditorContentServerTests PRIVATE engine gltf_import)
+target_link_libraries(EditorContentServerTests PRIVATE engine source_import)
 set_target_properties(EditorContentServerTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME editor_content_server_tests COMMAND EditorContentServerTests)
@@ -1730,7 +1730,7 @@ add_test(NAME gpu_scene_hlod_tests COMMAND GpuSceneHlodTests)
 
 # Native source scene validation: no GPU or importer execution required.
 add_executable(SourceSceneTests test_source_scene.cpp)
-target_link_libraries(SourceSceneTests PRIVATE gltf_import)
+target_link_libraries(SourceSceneTests PRIVATE source_import)
 set_target_properties(SourceSceneTests PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME source_scene_tests COMMAND SourceSceneTests)
 

@@ -1,7 +1,7 @@
 // Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
-#include <gltf_import/usd_adapter.h>
+#include <source_import/usd_adapter.h>
 
 #include <cstdint>
 #include <cstring>
@@ -12,7 +12,7 @@
 #include <dlfcn.h>
 #endif
 
-namespace gltf_import {
+namespace source_import {
 
 // The C-ABI entry point exported by usd_import.<ext>: fills a UsdAdapterApi
 // table. Unmangled ("extern \"C\"") so both sides agree on the name.
@@ -57,4 +57,4 @@ bool LoadUsdAdapter(UsdAdapterApi* api, std::string* error) {
     return true;
 }
 
-} // namespace gltf_import
+} // namespace source_import

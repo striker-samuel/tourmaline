@@ -17,7 +17,7 @@ ${CMAKE_CURRENT_SOURCE_DIR}/src
 target_link_libraries(CookLib
 PRIVATE
 engine
-gltf_import
+source_import
 artifact_cache
 volk
 OptickCore
@@ -30,7 +30,7 @@ target_include_directories(Cook PRIVATE ${TOURMALINE_SOURCE_DIR}/external/stb ${
 target_link_libraries(Cook
 PRIVATE
 engine
-gltf_import
+source_import
 artifact_cache
 volk
 OptickCore

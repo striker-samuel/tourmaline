@@ -12,7 +12,7 @@
 // the live import) + the packed SoA GPU heap streams (the exact layout the
 // pak cooker stores — direct upload, no per-vertex work at load).
 
-#include <gltf_import/asset_export.h>
+#include <source_import/asset_export.h>
 
 #include <algorithm>
 #include <array>
@@ -41,7 +41,7 @@
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Utils/ktx_error_texture.h> // EnsureClusterErrorTexture mint
 #include <Engine/Utils/texture_loader.h>
-#include <gltf_import/gltf.h>
+#include <source_import/gltf.h>
 
 #include "ktx.h"
 

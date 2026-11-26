@@ -125,7 +125,7 @@ void EditorApp::ForgetTexturePlug(const std::string& source, const std::string& 
 // (material, slot) user via undoable commands, and writes the input
 // plug on the source asset's .meta (persistent — every future import,
 // cook and bake reads the replacement).
-int EditorApp::RelinkTextureLive(const GltfImportImage& rec, const std::string& newPath) {
+int EditorApp::RelinkTextureLive(const SourceImportImage& rec, const std::string& newPath) {
     if (!m_world || rec.uri.empty() || newPath.empty())
         return -1;
     tour::WorldPage* cl = m_world->pages.empty() ? nullptr : m_world->pages[0].get();
@@ -144,7 +144,7 @@ int EditorApp::RelinkTextureLive(const GltfImportImage& rec, const std::string& 
     if (pool < 0)
         return -1;
     int touched = 0;
-    for (const GltfImportImage::User& u : rec.users) {
+    for (const SourceImportImage::User& u : rec.users) {
         const int mw = MatWorldForUri(u.materialUri);
         if (mw < 0)
             continue;
@@ -328,7 +328,7 @@ void EditorApp::DrawPathsPanel() {
             // One row per import record: the authored uri, the resolved
             // source it came from, its plug (relink) state, the users.
             struct TexRow {
-                const GltfImportImage* rec = nullptr;
+                const SourceImportImage* rec = nullptr;
                 std::string plugTarget; // plug newPath ("" = no plug)
                 bool fileOk = false;
                 bool loaded = false;
@@ -340,7 +340,7 @@ void EditorApp::DrawPathsPanel() {
             int missingFiles = 0;
             std::map<std::string, std::vector<smvk::cache::AssetPlug>>
                 plugCache; // per-source plug rows (read once per frame)
-            for (const GltfImportImage& rec : m_importImages) {
+            for (const SourceImportImage& rec : m_importImages) {
                 if (IsEmbeddedUri(rec.uri))
                     continue; // buffer-embedded: no file to fix
                 TexRow r;
@@ -369,7 +369,7 @@ void EditorApp::DrawPathsPanel() {
                         }
                     }
                 }
-                for (const GltfImportImage::User& u : rec.users) {
+                for (const SourceImportImage::User& u : rec.users) {
                     if (!r.users.empty())
                         r.users += ", ";
                     r.users += u.materialUri + ":" + u.slot;

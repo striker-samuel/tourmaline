@@ -4,7 +4,7 @@
 // .tourAnim runtime: the ASCII clip loader + the spline sampler + the
 // skin palette build (the header - Engine/Asset/touranim.h - carries
 // the full format contract; the .anim WRITER lives in
-// gltf_import/asset_export.cpp, which hand-rolls the documented format
+// source_import/asset_export.cpp, which hand-rolls the documented format
 // for the derivation).
 
 #include <Engine/Asset/touranim.h>

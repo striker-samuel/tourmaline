@@ -10,8 +10,8 @@
 #include <filesystem>
 #include <system_error>
 
-#include <gltf_import/asset_export.h>   // manifest-derived asset detection
-#include <gltf_import/source_formats.h> // the mesh-source gate + meta sidecars
+#include <source_import/asset_export.h>   // manifest-derived asset detection
+#include <source_import/source_formats.h> // the mesh-source gate + meta sidecars
 
 namespace editor {
 

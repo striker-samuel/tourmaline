@@ -26,7 +26,7 @@
 #include <Engine/Renderer/cubemap.h>
 #include <Engine/Scene/scene.h>
 #include <Engine/Vfs/vfs.h>
-#include <gltf_import/gltf.h>
+#include <source_import/gltf.h>
 
 #include "cook_tool.h"
 #include "gi_baker.h"
@@ -35,8 +35,8 @@
 
 #include <project_pipeline/build_pipeline.h>
 #include <project_pipeline/project.h>
-#include <project_pipeline/project_resource_path.h>
 #include <project_pipeline/project_recipe.h>
+#include <project_pipeline/project_resource_path.h>
 #include <project_pipeline/recipe_resolver.h>
 
 #include <fstream>
@@ -205,8 +205,7 @@ void EditorApp::CookToPak(bool quickBakes, bool cubemapsOnly) {
         // Trim trailing separators without damaging a filesystem root.
         const fs::path rootPath(contentDir);
         while (contentDir.size() > rootPath.root_path().generic_string().size() &&
-               !contentDir.empty() &&
-               (contentDir.back() == '/' || contentDir.back() == '\\'))
+               !contentDir.empty() && (contentDir.back() == '/' || contentDir.back() == '\\'))
             contentDir.pop_back();
     }
     CookSettings cook = m_cook;
@@ -684,8 +683,7 @@ void EditorApp::StartProjectRecipeBuild(const std::string& recipePath,
     m_cookLastOk = false;
     // Publishing the project is not cancellable or undoable; keep the
     // task modal in front until the worker completes and result is acknowledged.
-    TaskWindowBegin("Export Project", "Resolving .tourrecipe and preparing project paks...",
-                    false);
+    TaskWindowBegin("Export Project", "Resolving .tourrecipe and preparing project paks...", false);
     m_taskWindow.logPath = buildLog->Path();
     m_projectExportStatus = "Building " + recipePath;
     Log("Export Project started: " + recipePath);

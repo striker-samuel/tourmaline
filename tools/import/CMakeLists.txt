@@ -7,7 +7,7 @@ project(Import)
 # creation). POSITIONAL grammar: import.exe <input.glb|gltf|gltf>
 # [--settings] - parse + derive the Tourmaline artifact family next to
 # the source (<stem>.geometry + .material/.anim + .gltf.meta, stable
-# deterministic GUIDs; see gltf_import/asset_export.h). The ONE raw
+# deterministic GUIDs; see source_import/asset_export.h). The ONE raw
 # import surface: the editor's open/drop and the pak cook's
 # derive-if-stale all run the SAME MeshImporter. import.exe is the
 # headless/CLI form.
@@ -15,11 +15,11 @@ add_executable(Import main.cpp)
 
 target_link_libraries(Import
 PRIVATE
-gltf_import
+source_import
 engine
 )
 # The USD adapter is a SEPARATE shared library (usd_import.dll): Import.exe
-# loads it lazily through gltf_import::LoadUsdAdapter only when a .usd source
+# loads it lazily through source_import::LoadUsdAdapter only when a .usd source
 # is dispatched, so it does NOT link OpenUSD here. The define gates the
 # .usd/.usda/.usdc/.usdz source-format recognition in source_formats.h.
 if(TOURMALINE_WITH_USD)

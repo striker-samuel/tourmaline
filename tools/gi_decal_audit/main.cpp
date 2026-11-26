@@ -25,8 +25,8 @@
 #include <Engine/Scene/scene.h>
 #include <Engine/Scene/scene_tables.h>
 #include <Engine/Vfs/vfs.h>
-#include <gltf_import/asset_export.h>
-#include <gltf_import/gltf.h>
+#include <source_import/asset_export.h>
+#include <source_import/gltf.h>
 
 #include <algorithm>
 #include <cctype>

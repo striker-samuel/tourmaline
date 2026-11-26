@@ -17,7 +17,7 @@ namespace smvk {
 // Virtual filesystem: the runtime's abstraction over cooked resources.
 // Backends serve loose content trees (dev iteration) and mounted paks
 // (shipped content) behind one path space; import-time file access lives
-// with the importer in tools/gltf_import, never behind this interface.
+// with the importer in tools/source_import, never behind this interface.
 //
 // VFS path convention: posix-style, relative to the virtual root, e.g.
 //   "models/Sponza/sponza.gltf"

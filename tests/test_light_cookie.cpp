@@ -26,7 +26,7 @@
 #include <Engine/Scene/scene_tables.h>
 #include <Engine/Utils/LutIo.h>
 
-#include <gltf_import/asset_export.h>
+#include <source_import/asset_export.h>
 
 namespace {
 

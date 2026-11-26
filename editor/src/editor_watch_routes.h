@@ -33,7 +33,7 @@
 #include <filesystem>
 #include <string>
 
-#include <gltf_import/source_formats.h> // the mesh-source gate (.gltf/.glb/.obj)
+#include <source_import/source_formats.h> // the mesh-source gate (.gltf/.glb/.obj)
 
 namespace editor {
 

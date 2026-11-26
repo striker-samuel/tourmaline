@@ -2472,7 +2472,7 @@ bool LoadTourFromString(const std::string& text,
             continue;
         } else if (effVerb == "reference" && fl.hasSource) {
             // Clarisse-style scene reference: placeholder under -n with a
-            // linked source; the gltf_import loader inlines the subtree
+            // linked source; the source_import loader inlines the subtree
             // (recursively, via each source's own tour) at scene build.
             // -root marks the scene's OWN source (reference #0): inlined
             // under the scene root, no placeholder, no namespace.

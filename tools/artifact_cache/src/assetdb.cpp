@@ -67,10 +67,10 @@ int64_t FileMtime(const fs::path& p) {
 }
 
 // Manifest-registered derived assets (glTF derivation; see
-// gltf_import/asset_export.h): the <stem>.gltf.meta sidecar carries the
+// source_import/asset_export.h): the <stem>.gltf.meta sidecar carries the
 // glTF's own guid PLUS its derived-asset table — "mesh=", "material.N=",
 // "anim.N=" lines with "file guid name" values. Parsed here (inline —
-// artifact_cache never depends on gltf_import) so the rescan registers
+// artifact_cache never depends on source_import) so the rescan registers
 // the derived files into the same table (kind mesh/material/anim).
 struct ManifestEntry {
     std::string kind; // "mesh" | "material" | "anim"

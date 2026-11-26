@@ -26,7 +26,7 @@
 #include <Engine/RHI/swapchain.h>
 #include <Engine/Rendergraph/rendergraph.h>
 // NOTE: no glTF here on purpose — the runtime works on cooked clusters
-// and paks; import lives in tools/gltf_import (cooker/editor/bakers).
+// and paks; import lives in tools/source_import (cooker/editor/bakers).
 #include <Engine/Camera/camera.h>
 #include <Engine/ImGui/imgui_overlay.h>
 #include <Engine/Renderer/light.h>

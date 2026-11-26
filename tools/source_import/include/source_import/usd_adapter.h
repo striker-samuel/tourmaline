@@ -3,7 +3,7 @@
 
 #pragma once
 // Optional OpenUSD adapter load boundary. `Import.exe` links the USD-free
-// `gltf_import` and dynamically loads `usd_import.<ext>` only when a
+// `source_import` and dynamically loads `usd_import.<ext>` only when a
 // `.usd` / `.usda` / `.usdc` / `.usdz` source is detected, so a process that
 // only imports glTF/OBJ never pulls the OpenUSD runtime (and never dies with
 // "DLL not found" when the USD SDK is not on PATH). The function-pointer
@@ -25,7 +25,7 @@ struct BakedPlacementAsset;
 }
 } // namespace tour
 
-namespace gltf_import {
+namespace source_import {
 
 struct UsdAdapterApi {
     // The .usd stage -> in-memory tinygltf::Model adapter. Same signature as
@@ -45,4 +45,4 @@ struct UsdAdapterApi {
 // disabled" — without touching the OpenUSD runtime. Safe to call repeatedly.
 bool LoadUsdAdapter(UsdAdapterApi* api, std::string* error);
 
-} // namespace gltf_import
+} // namespace source_import

@@ -14,7 +14,7 @@
 #include <cmath>
 #include <filesystem>
 #include <glm/gtx/matrix_decompose.hpp>
-#include <gltf_import/gltf.h>
+#include <source_import/gltf.h>
 #include <string>
 #include <system_error>
 #include <utility>

@@ -4,8 +4,8 @@
 #include <cmath>
 #include <cstdint>
 #include <functional>
-#include <gltf_import/source_scene.h>
 #include <numeric>
+#include <source_import/source_scene.h>
 #include <unordered_map>
 #include <unordered_set>
 

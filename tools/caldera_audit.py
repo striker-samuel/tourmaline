@@ -7,7 +7,7 @@ Caldera (https://github.com/Activision/caldera) is an OpenUSD scene containing
 most of the Call of Duty: Warzone map geometry: ~17.5M primitives, >2B points,
 2x2 miles, Z-up, inch units, no textures/materials. It uses PointInstancers for
 vegetation/clutter, `districtLod` variants (proxy vs full), payloads and
-instance proxies. Tourmaline's OpenUSD importer (`tools/gltf_import/src/usd_import.cpp`)
+instance proxies. Tourmaline's OpenUSD importer (`tools/source_import/src/usd_import.cpp`)
 currently fails closed on PointInstancers, instance proxies, subdivision
 meshes and connected shader graphs.
 

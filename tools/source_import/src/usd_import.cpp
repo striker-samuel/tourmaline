@@ -9,8 +9,8 @@
 // Deliberately fail closed on USD constructs this adapter cannot represent.
 // Silent loss of a prim is worse than a failed content build.
 
-#include <gltf_import/gltf.h>
-#include <gltf_import/usd_adapter.h>
+#include <source_import/gltf.h>
+#include <source_import/usd_adapter.h>
 
 #include <pxr/base/gf/matrix4d.h>
 #include <pxr/base/gf/rotation.h>
@@ -1180,9 +1180,9 @@ namespace {
 // The Import tool loads this DLL lazily (only for .usd sources) and reads the
 // function pointers through this export; the static registrar is gone, so the
 // OpenUSD runtime is never pulled into a process that does not import USD.
-TOURMALINE_USD_EXPORT int TourmalineUsdGetApi(gltf_import::UsdAdapterApi* out,
+TOURMALINE_USD_EXPORT int TourmalineUsdGetApi(source_import::UsdAdapterApi* out,
                                               std::uint32_t structSize) {
-    if (!out || structSize != sizeof(gltf_import::UsdAdapterApi))
+    if (!out || structSize != sizeof(source_import::UsdAdapterApi))
         return 0;
     out->loadUsdFileAsModel = &LoadUsdFileAsModel;
     out->lastBakedPlacement = &BakedPlacementImpl;

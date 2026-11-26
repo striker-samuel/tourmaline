@@ -39,7 +39,7 @@
 
 #include <tiny_obj_loader.h>
 
-#include <gltf_import/gltf.h>
+#include <source_import/gltf.h>
 
 #include <algorithm>
 #include <array>

@@ -20,7 +20,7 @@ namespace {
 
 // VkFormat core values (Vulkan 1.x, stable): R8G8B8A8_UNORM = 37,
 // R8G8B8A8_SRGB = 43. Hardcoded so this TU doesn't inherit a Vulkan
-// header dependency (same convention as gltf_import's
+// header dependency (same convention as source_import's
 // tex_transcode.cpp).
 constexpr uint32_t kVkR8G8B8A8Unorm = 37;
 constexpr uint32_t kVkR8G8B8A8Srgb = 43;
@@ -146,7 +146,7 @@ bool WritePinkKtx2Blob(const ktxTexture2& mirror, std::vector<uint8_t>& out) {
     // prebuilt KTX DLL is Release-built: a Debug executable (Debug CRT)
     // freeing a DLL-owned allocation crosses CRT heaps. Release frees
     // normally; Debug intentionally leaks this short-lived error-path
-    // buffer (the gltf_import tex_transcode.cpp precedent).
+    // buffer (the source_import tex_transcode.cpp precedent).
 #ifdef _DEBUG
     (void)mem;
 #else

@@ -1,4 +1,4 @@
-﻿# Copyright (c) 2026 Samuel Martin
+# Copyright (c) 2026 Samuel Martin
 # SPDX-License-Identifier: MIT
 
 project(App)
@@ -50,7 +50,7 @@ target_include_directories(tourmaline_apphost
 target_link_libraries(tourmaline_apphost
     PUBLIC
         engine
-        gltf_import
+        source_import
     PRIVATE
         # DeployCheck's content-address digest (the pak name hash):
         # HashBytes. PRIVATE — the gate is host-internal.

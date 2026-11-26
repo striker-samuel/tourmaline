@@ -57,7 +57,7 @@ $Pins = @(
        sha256='777b94a0d7b4876b521cea53630a5bbd55aff693ef49586a55fb273278e96bf5' }
     @{ name='tinyobjloader'; type='raw'; target='tinyobjloader';
        # v2.0.0rc13 (the release the ecosystem uses; no final v2.0.0 was
-       # ever tagged). The OBJ source adapter (tools/gltf_import/
+       # ever tagged). The OBJ source adapter (tools/source_import/
        # obj_import.cpp) parses through this header-only library.
        url='https://raw.githubusercontent.com/tinyobjloader/tinyobjloader/v2.0.0rc13/tiny_obj_loader.h';
        file='tiny_obj_loader.h';

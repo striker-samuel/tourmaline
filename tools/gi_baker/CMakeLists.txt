@@ -19,7 +19,7 @@ target_include_directories(GiBakerLib
 target_link_libraries(GiBakerLib
     PUBLIC
         engine
-        gltf_import
+        source_import
         volk
         KTX::ktx
 )
@@ -41,7 +41,7 @@ target_include_directories(GiBaker
 target_link_libraries(GiBaker
     PRIVATE
         engine
-        gltf_import
+        source_import
         volk
         KTX::ktx
 )

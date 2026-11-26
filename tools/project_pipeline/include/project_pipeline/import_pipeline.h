@@ -4,7 +4,7 @@
 #pragma once
 // THE PROJECT IMPORT PIPELINE: one canonical glTF -> project-asset flow
 // (the spec's ImportGltf/ImportProjectAsset). Built ON the single
-// existing importer — smvk::assets::ImportMeshSource (gltf_import, the
+// existing importer — smvk::assets::ImportMeshSource (source_import, the
 // only glTF-aware module in the tree); this layer adds the project
 // ownership the spec requires:
 //
@@ -33,7 +33,7 @@
 #include <string>
 #include <vector>
 
-#include <gltf_import/asset_export.h> // DeriveConfig: the settings surface
+#include <source_import/asset_export.h> // DeriveConfig: the settings surface
 
 #include "project.h"
 #include "project_recipe.h"

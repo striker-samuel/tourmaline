@@ -28,8 +28,8 @@
 #include <Engine/Asset/touranim.h>
 #include <Engine/Scene/scene.h>
 
-#include <gltf_import/asset_export.h>
-#include <gltf_import/gltf.h>
+#include <source_import/asset_export.h>
+#include <source_import/gltf.h>
 
 namespace {
 

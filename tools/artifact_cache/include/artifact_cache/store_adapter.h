@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
-// StoreAdapter: gltf_import's GltfArtifactCache over the registry's
+// StoreAdapter: source_import's SourceArtifactCache over the registry's
 // ArtifactStore. The editor and PakCooker inject this into their import
 // paths so texture transcodes accelerate through the registry
 // (hash-validated copy on hit; stage-into-registry on miss). The store
@@ -22,9 +22,9 @@
 #include <vector>
 
 #include <artifact_cache/artifact_cache.h>
-#include <gltf_import/gltf.h>
+#include <source_import/gltf.h>
 
-class StoreArtifactCacheAdapter final : public GltfArtifactCache {
+class StoreArtifactCacheAdapter final : public SourceArtifactCache {
   public:
     explicit StoreArtifactCacheAdapter(smvk::cache::ArtifactStore& store) : m_store(store) {}
 

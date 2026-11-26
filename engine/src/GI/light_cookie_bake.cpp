@@ -13,7 +13,7 @@
 #include <Engine/Scene/scene_tables.h>
 
 #include <glm/glm.hpp>
-#include <gltf_import/gltf.h>
+#include <source_import/gltf.h>
 
 #include <algorithm>
 #include <cmath>

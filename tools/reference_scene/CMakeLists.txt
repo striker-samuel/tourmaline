@@ -3,7 +3,7 @@
 project(ReferenceScene)
 add_executable(ReferenceScene main.cpp)
 target_compile_definitions(ReferenceScene PRIVATE ENGINE_VULKAN)
-target_link_libraries(ReferenceScene PRIVATE engine gltf_import volk KTX::ktx)
+target_link_libraries(ReferenceScene PRIVATE engine source_import volk KTX::ktx)
 set_target_properties(ReferenceScene PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_custom_command(TARGET ReferenceScene POST_BUILD

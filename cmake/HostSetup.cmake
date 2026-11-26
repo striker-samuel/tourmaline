@@ -163,7 +163,7 @@ function(tourmaline_host_setup TGT)
     target_link_libraries(${TGT}
         PRIVATE
             engine
-            gltf_import
+            source_import
             KTX::ktx
     )
 

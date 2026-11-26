@@ -3,7 +3,7 @@
 
 // Editor-side nested scene references (Clarisse-style) + the Maya-style
 // Reference Editor panel: the master scene's reference list is scene
-// DEFINITION — bound at import by gltf_import's ApplySceneReferences
+// DEFINITION — bound at import by source_import's ApplySceneReferences
 // (placeholder group node + the referenced source's subtree, recursing
 // through each source's own .tour). Adding/removing/replacing a
 // reference persists the list and rebinds by reloading the scene (the

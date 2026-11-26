@@ -1,12 +1,14 @@
 # Copyright (c) 2026 Samuel Martin
 # SPDX-License-Identifier: MIT
 
-project(GltfImport)
+project(SourceImport)
 
-# glTF import pipeline (moved out of the engine: the runtime works on
+# Source import pipeline (moved out of the engine: the runtime works on
 # cooked clusters/paks only; cookers, bakers and the editor import here).
-# Static lib linked by PakCooker, GiBaker, CubemapBaker, Editor and App.
-add_library(gltf_import STATIC
+# Converts authored source scenes (glTF/GLB, OBJ, USD) into the native
+# .geometry/.material/.meta asset chain. Static lib linked by PakCooker,
+# GiBaker, CubemapBaker, Editor and App.
+add_library(source_import STATIC
     src/gltf.cpp
     # The ONLY TU compiling the tinyobjloader implementation (the OBJ
     # source adapter; tinygltf's implementation lives in gltf.cpp).
@@ -22,7 +24,7 @@ add_library(gltf_import STATIC
     src/usd_adapter_loader.cpp
 )
 
-target_include_directories(gltf_import
+target_include_directories(source_import
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
     # tinyobjloader FIRST: xatlas's thirdparty dir bundles an older
@@ -47,7 +49,7 @@ target_include_directories(gltf_import
 # directxtex_bc: the texture-asset BCn encode targets (D3DXEncodeBC1/3/4/5/7
 # per 4x4 block — the same vendored block-codec layer the engine's BC6H GI
 # encode uses).
-target_link_libraries(gltf_import
+target_link_libraries(source_import
     PUBLIC
         engine
         KTX::ktx
@@ -55,7 +57,7 @@ target_link_libraries(gltf_import
         directxtex_bc
 )
 
-target_compile_definitions(gltf_import PRIVATE ENGINE_VULKAN)
+target_compile_definitions(source_import PRIVATE ENGINE_VULKAN)
 
 # OpenUSD is an optional authoring-time dependency, never a runtime USD
 # backend. Enabling it converts composed USD stages through the existing
@@ -68,7 +70,7 @@ if(TOURMALINE_WITH_USD)
     # when a .usd source is dispatched), so only a process that actually
     # imports USD pulls the OpenUSD runtime DLLs. The exported entry point is
     # TourmalineUsdGetApi (see usd_import.cpp), read via
-    # gltf_import::LoadUsdAdapter.
+    # source_import::LoadUsdAdapter.
     add_library(usd_import SHARED src/usd_import.cpp)
     # Live at the build root next to Import.exe so LoadLibrary("usd_import.dll")
     # resolves from the executable's own directory.
@@ -76,9 +78,9 @@ if(TOURMALINE_WITH_USD)
         RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     )
     if(TARGET usdGeom AND TARGET usdShade AND TARGET usd)
-        target_link_libraries(usd_import PRIVATE gltf_import usdGeom usdShade usd)
+        target_link_libraries(usd_import PRIVATE source_import usdGeom usdShade usd)
     elseif(TARGET pxr::usdGeom AND TARGET pxr::usdShade AND TARGET pxr::usd)
-        target_link_libraries(usd_import PRIVATE gltf_import pxr::usdGeom pxr::usdShade pxr::usd)
+        target_link_libraries(usd_import PRIVATE source_import pxr::usdGeom pxr::usdShade pxr::usd)
     else()
         message(FATAL_ERROR "OpenUSD CMake package lacks supported usd/usdGeom/usdShade targets")
     endif()

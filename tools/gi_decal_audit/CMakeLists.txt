@@ -13,7 +13,7 @@ target_compile_definitions(GiDecalAudit PRIVATE ENGINE_VULKAN)
 target_link_libraries(GiDecalAudit
     PRIVATE
         engine
-        gltf_import
+        source_import
         volk
         KTX::ktx
 )

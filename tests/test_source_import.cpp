@@ -34,9 +34,9 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
-#include <gltf_import/asset_export.h>
-#include <gltf_import/gltf.h>
-#include <gltf_import/source_formats.h>
+#include <source_import/asset_export.h>
+#include <source_import/gltf.h>
+#include <source_import/source_formats.h>
 
 namespace {
 
@@ -268,10 +268,9 @@ void TestGlbBinary() {
 
     smvk::source::Scene source;
     std::string conversionError;
-    Check(DecodeGltfSourceScene(model, source, &conversionError),
-          "import.glb-binary.native-scene");
-    Check(conversionError.empty() && source.nodes.size() == 1 &&
-              source.meshes.size() == 1 && source.activeRoots == std::vector<uint32_t>{0},
+    Check(DecodeGltfSourceScene(model, source, &conversionError), "import.glb-binary.native-scene");
+    Check(conversionError.empty() && source.nodes.size() == 1 && source.meshes.size() == 1 &&
+              source.activeRoots == std::vector<uint32_t>{0},
           "import.glb-binary.native-hierarchy");
     Check(source.meshes[0].primitives.size() == 1 &&
               source.meshes[0].primitives[0].vertices.size() == 3 &&

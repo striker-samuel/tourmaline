@@ -27,7 +27,7 @@ using ::tour::WorldPage;
 struct MeshletConfig;
 } // namespace smvk
 
-struct GltfArtifactCache;
+struct SourceArtifactCache;
 struct MeshOptConfig;
 
 namespace tourworld {
@@ -38,7 +38,7 @@ struct BuildOptions {
     bool importMaterialAssets = false; // tour.materialAssets records
     bool autoKtx = true;
     const std::vector<smvk::tour::FileNode>* fileNodes = nullptr;
-    GltfArtifactCache* artifactCache = nullptr; // scratch hook, nullable
+    SourceArtifactCache* artifactCache = nullptr; // scratch hook, nullable
     smvk::MeshOptConfig meshOpt{};
     smvk::MeshletConfig meshlets{};
 };

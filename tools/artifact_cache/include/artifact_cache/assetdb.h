@@ -48,7 +48,7 @@ bool WriteAssetMeta(const std::string& assetPath,
 // INPUT PLUGS: per-asset import inputs serialized in the .meta sidecar
 // ("plug.<kind>.<n>.old=..." / "plug.<kind>.<n>.new=..." rows). A plug is
 // INPUT CONFIGURATION for whoever imports the asset — the importer applies
-// it (e.g. gltf_import's texture relink: an image whose authored uri
+// it (e.g. source_import's texture relink: an image whose authored uri
 // matches `oldUri` reads `newPath` instead), so plugs apply identically at
 // editor import, cook and bake. Never the tour format: plugs belong to the
 // ASSET (the tour already references assets by GUID) and travel with the

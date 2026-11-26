@@ -61,7 +61,7 @@
 #include <Engine/Asset/touranim.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/Scene/scene.h>
-#include <gltf_import/source_scene.h>
+#include <source_import/source_scene.h>
 
 namespace tinygltf {
 class Model;

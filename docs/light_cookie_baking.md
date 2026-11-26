@@ -56,7 +56,7 @@ a recipe into an opaque-coverage RGBA image, no GPU required:
 
 The pixel payload is the CALLER's job: the `.texture` descriptor + its source
 image are written through the shared `smvk::assets` texture library (the
-editor / cook link gltf_import; the engine does not), then imported into the
+editor / cook link source_import; the engine does not), then imported into the
 cluster pool so `FindTextureByUri(cookieUri)` resolves it — the same lookup
 the renderer performs for `setLightAttr cookie`. `tests/test_light_cookie.cpp`
 proves the chain end to end (recipe -> bake -> .texture -> pool -> uri).

@@ -1,4 +1,4 @@
-﻿// Copyright (c) 2026 Samuel Martin
+// Copyright (c) 2026 Samuel Martin
 // SPDX-License-Identifier: MIT
 
 // Project abstraction (Unity/Unreal style): a project folder owns
@@ -27,7 +27,7 @@
 
 #include <Engine/Asset/tour.h>
 
-// (gltf_import/asset_export.h rides editor_app.h — the import funnel's
+// (source_import/asset_export.h rides editor_app.h — the import funnel's
 // shared header.)
 
 #include <cctype>

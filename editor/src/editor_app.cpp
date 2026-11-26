@@ -41,7 +41,7 @@
 #include <Engine/Profile/profile.h>
 #include <Engine/Renderer/mesh.h>
 #include <Engine/core.h>
-#include <gltf_import/gltf.h>
+#include <source_import/gltf.h>
 #include <stb_image_write.h> // PNG writers (probe previews)
 
 #include <Engine/ImGui/crystal_fusion_style.h>
@@ -650,8 +650,8 @@ void EditorApp::CloseScene() {
     m_refPlaceholders.clear();
     m_refPlaceholders.shrink_to_fit();
     m_references.clear();
-    m_materialAssets.clear(); // session pool-import records (fresh scene)
-    m_textureAssets.clear();  // cookie/.texture pool imports (fresh scene)
+    m_materialAssets.clear();   // session pool-import records (fresh scene)
+    m_textureAssets.clear();    // cookie/.texture pool imports (fresh scene)
     m_lightCookieBakes.clear(); // fixture-cookie recipes (fresh scene)
     m_refPhCluster.clear();
     m_envCurrent = UINT32_MAX;
@@ -861,7 +861,7 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& pathIn, const std::string& 
                 if (std::atoi(e) == 0)
                     importMeshOpt.generateLods = false;
             }
-            // Importer data out (see GltfImportImage): one row per
+            // Importer data out (see SourceImportImage): one row per
             // referenced image (loaded AND failed, users included) —
             // the path editor's texture rows replace the parsed model.
             m_importImages.clear();

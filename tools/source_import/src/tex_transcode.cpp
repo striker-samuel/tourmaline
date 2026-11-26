@@ -38,7 +38,7 @@
 #include <ktx.h>
 
 // KtxEncodeFormat/TextureSourceInfo (the public decls this TU defines).
-#include <gltf_import/gltf.h>
+#include <source_import/gltf.h>
 
 // Block-compressed encode targets (see KtxEncodeFormat): DirectXTex's
 // low-level per-block codecs (the same vendored block-codec layer the
@@ -57,7 +57,7 @@
 
 // VkFormat core values (Vulkan 1.x, stable): R8G8B8A8_UNORM = 37,
 // R8G8B8A8_SRGB = 43; block-compressed pairs below. Hardcoded so
-// gltf_import doesn't inherit a Vulkan header dependency (the
+// source_import doesn't inherit a Vulkan header dependency (the
 // tex_transcode precedent).
 namespace {
 

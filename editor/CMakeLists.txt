@@ -83,7 +83,7 @@ endif()
 target_link_libraries(Editor
     PRIVATE
         engine
-        gltf_import
+        source_import
         project_pipeline
         artifact_cache
         GiBakerLib

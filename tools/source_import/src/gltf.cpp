@@ -11,11 +11,11 @@
 #include <Engine/Utils/texture_loader.h>
 #include <Engine/Utils/thread_pool.h>
 #include <Engine/core.h>
-#include <gltf_import/asset_export.h>
-#include <gltf_import/gltf.h>
-#include <gltf_import/source_scene.h>
-#include <gltf_import/usd_adapter.h>
 #include <ktx.h>
+#include <source_import/asset_export.h>
+#include <source_import/gltf.h>
+#include <source_import/source_scene.h>
+#include <source_import/usd_adapter.h>
 
 #include <algorithm>
 #include <array>
@@ -670,7 +670,7 @@ smvk::TextureHandle SourceSceneImporter::loadTextureForImage(int imageIndex, int
     }
     if (!textureSource)
         return {};
-    // Input plugs (texture relink; see GltfTextureRemap): an EXACT oldUri
+    // Input plugs (texture relink; see SourceTextureRemap): an EXACT oldUri
     // match redirects the byte read BEFORE the source is consulted — the
     // registered identity stays the ORIGINAL image's below (the import
     // stays addressable at its authored uri; the plug is a pure input).
@@ -678,7 +678,7 @@ smvk::TextureHandle SourceSceneImporter::loadTextureForImage(int imageIndex, int
     // then the raw host path (the plug is authored as a host path).
     std::optional<std::vector<uint8_t>> bytes;
     if (textureRemaps_) {
-        for (const GltfTextureRemap& r : *textureRemaps_) {
+        for (const SourceTextureRemap& r : *textureRemaps_) {
             if (r.oldUri != img.uri || r.newPath.empty())
                 continue;
             bytes = textureSource->ReadBytes(r.newPath);
@@ -774,13 +774,13 @@ smvk::TextureHandle SourceSceneImporter::loadTextureForImage(int imageIndex, int
 }
 
 // ---- importer data rows (see setImportImages) --------------------------
-GltfImportImage* SourceSceneImporter::importImageRow(int imageIndex) {
+SourceImportImage* SourceSceneImporter::importImageRow(int imageIndex) {
     if (!importImages_ || imageIndex < 0 || imageIndex >= (int)sourceScene_.images.size())
         return nullptr;
     auto it = importImageRows_.find(imageIndex);
     if (it != importImageRows_.end())
         return &(*importImages_)[it->second];
-    GltfImportImage row{};
+    SourceImportImage row{};
     row.source = gltfModelPath.generic_string();
     row.uri = sourceScene_.images[size_t(imageIndex)].uri;
     importImages_->push_back(std::move(row));
@@ -789,7 +789,7 @@ GltfImportImage* SourceSceneImporter::importImageRow(int imageIndex) {
 }
 
 void SourceSceneImporter::noteImage(int imageIndex, const std::string& identity, bool loaded) {
-    if (GltfImportImage* row = importImageRow(imageIndex)) {
+    if (SourceImportImage* row = importImageRow(imageIndex)) {
         row->identity = identity;
         row->loaded = loaded;
     }
@@ -798,8 +798,8 @@ void SourceSceneImporter::noteImage(int imageIndex, const std::string& identity,
 void SourceSceneImporter::noteImageUser(int imageIndex,
                                         const std::string& materialUri,
                                         const char* slot) {
-    if (GltfImportImage* row = importImageRow(imageIndex)) {
-        GltfImportImage::User u{};
+    if (SourceImportImage* row = importImageRow(imageIndex)) {
+        SourceImportImage::User u{};
         u.materialUri = materialUri;
         u.slot = slot;
         row->users.push_back(u);
@@ -944,7 +944,7 @@ bool ExtractEmbeddedImages(tinygltf::Model& model, const std::filesystem::path& 
 // The OpenUSD dispatch pointer. Null in the runtime/cookers (which never link
 // the usd_import library); the Import tool + USD tests link usd_import, whose
 // static registrar sets it to LoadUsdFileAsModel. This indirection keeps the
-// runtime USD-agnostic: gltf_import carries no USD link and no USD DLLs.
+// runtime USD-agnostic: source_import carries no USD link and no USD DLLs.
 bool (*UsdFileAsModel)(tinygltf::Model&,
                        const std::filesystem::path&,
                        std::vector<std::string>&) = nullptr;
@@ -975,9 +975,9 @@ bool LoadModelFromSourceFile(tinygltf::Model& model,
         // then the process has not touched the OpenUSD runtime, so glTF/OBJ
         // imports never require the USD SDK on PATH.
         if (!UsdFileAsModel) {
-            gltf_import::UsdAdapterApi api;
+            source_import::UsdAdapterApi api;
             std::string err;
-            if (!gltf_import::LoadUsdAdapter(&api, &err)) {
+            if (!source_import::LoadUsdAdapter(&api, &err)) {
                 std::cerr << "USD import disabled: " << err << std::endl;
                 return false;
             }
@@ -1386,7 +1386,7 @@ void SourceSceneImporter::preloadTextures() {
         // original's below).
         std::optional<std::vector<uint8_t>> bytes;
         if (textureRemaps_) {
-            for (const GltfTextureRemap& r : *textureRemaps_) {
+            for (const SourceTextureRemap& r : *textureRemaps_) {
                 if (r.oldUri != img.uri || r.newPath.empty())
                     continue;
                 bytes = textureSource->ReadBytes(r.newPath);
@@ -1650,7 +1650,7 @@ std::string TextureConversionHash(const void* data, size_t size, bool srgb) {
 
 // (GltfPunctualAimAxis moved INLINE into gltf.h — the engine consumes
 // it too and an out-of-line definition here made every engine consumer
-// order-dependent on linking gltf_import; see the header note.)
+// order-dependent on linking source_import; see the header note.)
 
 smvk::WorldPageMaterialHandle SourceSceneImporter::getOrCreateMaterial(int gltfMaterialIndex) {
     if (gltfMaterialIndex < 0) {
@@ -2923,14 +2923,14 @@ std::string VfsTextureSource::ResolveIdentity(const std::string& imageUri) const
     return n.empty() ? imageUri : n.Str();
 }
 
-std::vector<GltfTextureRemap> ReadTextureRemapPlugs(const std::string& resolvedSourcePath) {
+std::vector<SourceTextureRemap> ReadTextureRemapPlugs(const std::string& resolvedSourcePath) {
     // INPUT PLUGS (see gltf.h's block): texture-relink rows serialized in
     // the SOURCE asset's .meta sidecar — "plug.texture.<n>.old=<uri>" +
     // "plug.texture.<n>.new=<path>" pairs. The sidecar FORMAT is owned by
     // artifact_cache (assetdb.h — its write side rewrites the whole file and
     // preserves these rows); this is the tolerant read every import entry
     // point shares. Missing sidecar / no plug rows = empty (the common case).
-    std::vector<GltfTextureRemap> out;
+    std::vector<SourceTextureRemap> out;
     if (resolvedSourcePath.empty())
         return out;
     std::ifstream in(resolvedSourcePath + ".meta", std::ios::binary);
@@ -2976,7 +2976,7 @@ std::vector<GltfTextureRemap> ReadTextureRemapPlugs(const std::string& resolvedS
     for (auto& [idx, pair] : halves) {
         (void)idx;
         if (!pair.first.empty() && !pair.second.empty())
-            out.push_back(GltfTextureRemap{pair.first, pair.second});
+            out.push_back(SourceTextureRemap{pair.first, pair.second});
     }
     return out;
 }
@@ -3046,7 +3046,7 @@ size_t BuildFromMeshAsset(
     int ph,
     const std::shared_ptr<SourceSceneImporter::TextureSource>& textureSource,
     bool autoKtx,
-    GltfArtifactCache* artifactCache,
+    SourceArtifactCache* artifactCache,
     const std::function<std::optional<std::vector<uint8_t>>(const std::string&)>& readSibling,
     std::map<std::string, BuiltMeshCacheEntry>* reuseCache,
     const std::string& cacheKey) {
@@ -3430,9 +3430,9 @@ size_t ApplySceneReferences(smvk::WorldPage& cluster,
                             std::vector<std::string>* outResolvedSources,
                             bool autoKtx,
                             const std::vector<smvk::tour::FileNode>* fileNodes,
-                            GltfArtifactCache* artifactCache,
-                            GltfGuidResolver* guidResolver,
-                            std::vector<GltfImportImage>* outImages,
+                            SourceArtifactCache* artifactCache,
+                            SourceGuidResolver* guidResolver,
+                            std::vector<SourceImportImage>* outImages,
                             const std::string& contentRoot,
                             std::vector<std::unique_ptr<smvk::WorldPage>>* outPartPages,
                             std::vector<std::string>* outPartSceneNames) {

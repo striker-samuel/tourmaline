@@ -3,7 +3,7 @@
 //
 // Deterministic import-time material channel packing.
 // Decode is local to this TU (stb's symbols are static, matching
-// gltf_import/tex_transcode.cpp and avoiding host symbol collisions).
+// source_import/tex_transcode.cpp and avoiding host symbol collisions).
 #define STB_IMAGE_STATIC
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
@@ -11,7 +11,7 @@
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <stb_image_write.h>
 
-#include <gltf_import/asset_export.h>
+#include <source_import/asset_export.h>
 
 #include <array>
 #include <cstdint>

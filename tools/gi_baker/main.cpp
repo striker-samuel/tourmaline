@@ -67,8 +67,8 @@
 #include <Engine/GI/regular_volume.h>
 #include <Engine/Scene/scene.h>
 #include <Engine/Vfs/vfs.h>
-#include <gltf_import/asset_export.h> // the texture/material asset pool imports (the tour lanes)
-#include <gltf_import/gltf.h>
+#include <source_import/asset_export.h> // the texture/material asset pool imports (the tour lanes)
+#include <source_import/gltf.h>
 
 #include "gi_baker.h"
 #include <tool_log.h>

@@ -39,7 +39,7 @@ endif()
 # submodule — CMAKE_SOURCE_DIR/CMAKE_BINARY_DIR are THEIR roots there, so
 # every in-tree path keys off these instead. TOURMALINE_IS_TOP_LEVEL gates
 # the repo-only extras (the viewer app, editor, cook tools, tests,
-# samples): a game host builds the engine + gltf_import + the shader
+# samples): a game host builds the engine + source_import + the shader
 # target + nothing else.
 set(TOURMALINE_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 set(TOURMALINE_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR})
@@ -120,7 +120,7 @@ target_include_directories(directxtex_bc PUBLIC external/DirectXTex)
 # install_dependencies.sh); the _WIN32 path keeps using the SDK headers.
 # INTERFACE lib: PRIVATE-linking it into the STATIC directxtex_bc spreads
 # the usage requirements to every consumer that compiles DirectXTex
-# headers (engine, gltf_import, ...). wsl/stubs carries the Linux
+# headers (engine, source_import, ...). wsl/stubs carries the Linux
 # COM/Windows-type shims (unknwn.h etc. - that is how DirectX-Headers'
 # own WSL CI builds); sal.h (directxmath/Inc) is the dotnet PAL copy
 # Microsoft's DirectXMath WSL CI uses.
@@ -131,7 +131,7 @@ if(NOT WIN32)
         external/directx-headers/include/wsl/stubs
         external/directxmath/Inc)
     # PUBLIC: every consumer that compiles DirectXTex headers sees the
-    # chain (engine's bc6h.cpp, gltf_import's tex_transcode.cpp, ...).
+    # chain (engine's bc6h.cpp, source_import's tex_transcode.cpp, ...).
     target_link_libraries(directxtex_bc PUBLIC directxtex_nonwin_iface)
 endif()
 target_compile_features(directxtex_bc PRIVATE cxx_std_20)
@@ -587,7 +587,7 @@ target_link_libraries(engine PRIVATE embree)
 # types in scene data or public headers); Jolt stays an implementation
 # detail of the engine's physics subsystem.
 target_link_libraries(engine PRIVATE Jolt)
-add_subdirectory(tools/gltf_import)
+add_subdirectory(tools/source_import)
 add_subdirectory(tools/project_pipeline) # the canonical project pipeline (Project.exe + the editor use it)
 add_subdirectory(tools/tooling) # linkable project/package/capture tooling core
 # Opt-in native game host for external game repositories embedding Tourmaline.

@@ -52,8 +52,8 @@ a hand-written integration, or are an unpinnable snapshot:
 | [xatlas](https://github.com/jpcy/xatlas) | `external/xatlas` | [MIT](external/xatlas/LICENSE) | Lightmap UV2 chart+pack; hand-written CMakeLists.txt builds only the self-contained core (bundled OpenFBX license in-tree) |
 | [zlib](https://zlib.net) | `external/zlib` | [zlib](external/zlib/LICENSE) | CRC/reference only (not wired into the build); unpinnable develop-branch snapshot |
 | [VulkanMemoryAllocator](https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator) | `external/VulkanMemoryAllocator` | MIT (see header notice) | `vk_mem_alloc.h` |
-| [tinygltf](https://github.com/syoyo/tinygltf) | `external/tinygltf` | MIT (see header notice) | `tiny_gltf.h` (gltf_import tool) |
-| [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) | `external/tinyobjloader` | MIT (see header notice) | `tiny_obj_loader.h` v2.0.0rc13 (gltf_import's OBJ source adapter) |
+| [tinygltf](https://github.com/syoyo/tinygltf) | `external/tinygltf` | MIT (see header notice) | `tiny_gltf.h` (source_import tool) |
+| [tinyobjloader](https://github.com/tinyobjloader/tinyobjloader) | `external/tinyobjloader` | MIT (see header notice) | `tiny_obj_loader.h` v2.0.0rc13 (source_import's OBJ source adapter) |
 | [stb](https://github.com/nothings/stb) | `external/stb` | Public Domain / MIT (see header notices) | `stb_image.h`, `stb_image_write.h` |
 | [miniaudio](https://github.com/mackron/miniaudio) 0.11.26 | `external/miniaudio` | [MIT-0 / public domain](external/miniaudio/LICENSE) | `miniaudio.h` — the audio DSP/node-graph core (device-less: SDL3 keeps the device, paks keep the content; impl TU in `engine/src/Audio/miniaudio_impl.cpp`, feature macros in `engine/src/Audio/miniaudio_config.h`) |
 | [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers) 1.4.357 | `external/vulkan-headers` | Apache-2.0 | Linux-only fetch: the full 1.4 symbol set ahead of older distro `libvulkan-dev` headers (Ubuntu 24.04 ships 1.3.275); the loader stays the system's |

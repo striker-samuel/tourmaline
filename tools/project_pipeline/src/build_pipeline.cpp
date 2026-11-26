@@ -93,9 +93,9 @@ bool ProcessAlive(unsigned long long pid) {
 #include <artifact_cache/artifact_cache.h>
 #include <artifact_cache/assetdb.h>
 
-#include <gltf_import/asset_export.h>
-#include <gltf_import/source_formats.h>
-#include <gltf_import/tour_world.h>
+#include <source_import/asset_export.h>
+#include <source_import/source_formats.h>
+#include <source_import/tour_world.h>
 
 #include <project_pipeline/import_pipeline.h>
 #include <project_pipeline/project.h>
@@ -716,62 +716,52 @@ static bool BakePlanSdfs(const Project& project,
             ::tour::asset::PackSdfMaterial(glm::vec3(0.7f), 0.5f, 0.0f, 0.0f);
         std::vector<uint32_t> palette{kNeutralMaterial};
         {
-            smvk::assets::AssetManifest manifest;
-            bool haveManifest = false;
-            for (const char* e : {".gltf", ".glb", ".obj"}) {
-                fs::path srcAbs = source;
-                srcAbs.replace_extension(e);
-                std::string mErr;
-                if (fs::is_regular_file(srcAbs) &&
-                    smvk::assets::LoadAssetManifest(srcAbs, manifest, mErr)) {
-                    haveManifest = true;
-                    break;
-                }
-            }
+            // Resolve materials directly from the .material assets beside the
+            // .geometry (each carries its own guid) — no glTF/source-format
+            // manifest dependency. The cooker works purely over derived
+            // content: .geometry + .material + the referenced base-color image.
             const fs::path matDir = source.parent_path();
             struct FragMat {
                 uint32_t packed = 0;
-                std::string texPath; // base-color source image, relative to matDir
+                std::string texPath; // base-color image, relative to matDir
             };
+            const FragMat neutralFm{kNeutralMaterial, ""};
             std::map<std::string, FragMat> guidToMat;
-            auto matForGuid = [&](const std::string& guid) -> const FragMat& {
-                auto it = guidToMat.find(guid);
-                if (it != guidToMat.end())
-                    return it->second;
-                FragMat fm{kNeutralMaterial, ""};
-                if (haveManifest) {
-                    const smvk::assets::AssetEntry* ent = nullptr;
-                    for (const auto& e : manifest.entries)
-                        if (e.kind == smvk::assets::AssetKind::Material && e.guid == guid) {
-                            ent = &e;
-                            break;
-                        }
-                    if (ent) {
-                        smvk::assets::MaterialAsset mat;
-                        std::string mErr;
-                        if (smvk::assets::LoadMaterialAsset(matDir / ent->file, mat, mErr)) {
-                            const auto& info = mat.info;
-                            const float emissive =
-                                info.emissiveStrength *
-                                glm::dot(info.emissiveFactor, glm::vec3(0.2126f, 0.7152f, 0.0722f));
-                            fm.packed =
-                                ::tour::asset::PackSdfMaterial(glm::vec3(info.baseColorFactor),
+            std::error_code ec;
+            if (fs::is_directory(matDir, ec))
+                for (fs::directory_iterator it(matDir, ec), end; it != end; it.increment(ec)) {
+                    if (ec)
+                        break;
+                    const auto& entry = *it;
+                    if (!entry.is_regular_file() || entry.path().extension() != ".material")
+                        continue;
+                    smvk::assets::MaterialAsset mat;
+                    std::string mErr;
+                    if (!smvk::assets::LoadMaterialAsset(entry.path(), mat, mErr) ||
+                        mat.guid.empty())
+                        continue;
+                    const auto& info = mat.info;
+                    const float emissive =
+                        info.emissiveStrength *
+                        glm::dot(info.emissiveFactor, glm::vec3(0.2126f, 0.7152f, 0.0722f));
+                    FragMat fm;
+                    fm.packed = ::tour::asset::PackSdfMaterial(glm::vec3(info.baseColorFactor),
                                                                info.roughnessFactor,
                                                                info.metallicFactor,
                                                                std::min(emissive, 1.0f));
-                            if (!mat.baseColor.path.empty())
-                                fm.texPath = mat.baseColor.path;
-                        }
-                    }
+                    if (!mat.baseColor.path.empty())
+                        fm.texPath = mat.baseColor.path;
+                    guidToMat.emplace(mat.guid, std::move(fm));
                 }
-                auto [it2, _] = guidToMat.emplace(guid, std::move(fm));
-                return it2->second;
+            auto packedFor = [&](const std::string& guid) -> const FragMat& {
+                const auto it = guidToMat.find(guid);
+                return it != guidToMat.end() ? it->second : neutralFm;
             };
             std::map<uint32_t, uint32_t> packedToIndex{{kNeutralMaterial, 0u}};
             for (const auto& inst : mesh.instances) {
                 if (inst.geometry >= mesh.geometry.size())
                     continue;
-                const FragMat& fm = matForGuid(inst.materialGuid);
+                const FragMat& fm = packedFor(inst.materialGuid);
                 const uint32_t packed = fm.packed;
                 auto it = packedToIndex.find(packed);
                 if (it == packedToIndex.end()) {

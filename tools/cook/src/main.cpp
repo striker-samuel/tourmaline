@@ -122,9 +122,9 @@
 #include <artifact_cache/artifact_cache.h>
 #include <artifact_cache/artifact_kind.h>
 #include <artifact_cache/store_adapter.h>
-#include <gltf_import/asset_export.h> // materialAsset replay (tour cooks)
-#include <gltf_import/gltf.h>
 #include <meshoptimizer.h>
+#include <source_import/asset_export.h> // materialAsset replay (tour cooks)
+#include <source_import/gltf.h>
 
 #include "cube_png.h"
 #include "lm_png.h"
@@ -4433,7 +4433,7 @@ int Run(const CookArgs& c) {
         tool::out() << "No project cache under " << args.contentDir
                     << "/.tourmaline — plain cook (no acceleration, no funnel)\n";
     }
-    GltfArtifactCache* artifactCache = registryAdapter ? registryAdapter.get() : nullptr;
+    SourceArtifactCache* artifactCache = registryAdapter ? registryAdapter.get() : nullptr;
 
     // Tour path: the doc IS the definition (root reference #0 = the
     // source glTF, inlined under the scene root exactly like the

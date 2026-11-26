@@ -11,7 +11,7 @@
 // runs the same calls):
 //   .glb/.gltf/.obj/.usd (USD optional)
 //               parse + derive in ONE call (the MeshImporter:
-//               gltf_import's ImportMeshSource — glTF/GLB through
+//               source_import's ImportMeshSource — glTF/GLB through
 //               tinygltf, OBJ through the tinyobjloader adapter, both
 //               behind LoadModelFromSourceFile): the Tourmaline
 //               artifact family lands next to the source -
@@ -52,8 +52,8 @@
 #include <iostream>
 #include <string>
 
-#include <gltf_import/asset_export.h>
-#include <gltf_import/source_formats.h>
+#include <source_import/asset_export.h>
+#include <source_import/source_formats.h>
 
 namespace {
 

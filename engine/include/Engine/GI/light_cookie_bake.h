@@ -8,7 +8,7 @@
 // opaque-coverage cookie texture through an occluder-only Embree BVH. The
 // pixel payload (a .texture asset + its source image, then a setLightAttr
 // cookie bind) is the CALLER's job — the editor's asset library (smvk::assets)
-// lives in gltf_import, which the engine does not link.
+// lives in source_import, which the engine does not link.
 //
 // Scope: spot lights only, opaque binary coverage only (colored transmission
 // and point-light cubemap cookies are explicitly out of scope until the
