@@ -1210,6 +1210,11 @@ bool WorldRenderer::onAttach() {
             m_debugView = ViewMode::ClippingHighlights;
         else if (dv == "sdf" || dv == "sdfscene" || dv == "sdf_scene")
             m_debugView = ViewMode::SdfScene;
+        // DDGI irradiance debug view (the sampled probe irradiance with the
+        // volumetric/distance visualization; the DdgiActive pin must be on,
+        // TOURMALINE_DDGI=1, or the view silently shows Lit).
+        else if (dv == "ddgi" || dv == "ddgi_irradiance" || dv == "ddgiirradiance")
+            m_debugView = ViewMode::DdgiIrradiance;
         else
             std::cerr << "[WorldRenderer] unknown TOURMALINE_DEBUGVIEW value: " << dv << "\n";
     }
