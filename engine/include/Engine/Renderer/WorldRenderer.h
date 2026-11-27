@@ -5097,7 +5097,8 @@ class WorldRenderer : public IRenderer {
     uint32_t m_ssProbesTileCountX = 0, m_ssProbesTileCountY = 0;
     uint32_t m_ssProbesUpdateIndex = 0;
     bool m_ssProbesReady = false;
-    bool m_ssProbesRtBackend = false; // trace backend: SDF octree (false) vs TLAS/BLAS (true)
+    bool m_ssProbesRtBackend = false;       // trace backend: SDF octree (false) vs TLAS/BLAS (true)
+    bool m_ssProbesModuleBackendRt = false; // which backend the loaded module is compiled for
     // Quality knobs: power-of-two tile size (8/16/32/64/128) and the amortized
     // per-frame update divisor (1 = full every frame, 4 = a quarter per frame).
     uint32_t m_ssProbesTilePx = 32;

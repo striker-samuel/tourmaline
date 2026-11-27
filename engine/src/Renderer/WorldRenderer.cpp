@@ -19780,7 +19780,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             m_ssProbesTileCountY = tileGridY;
             m_ssProbesUpdateIndex = 0;
         }
-        if (m_ssProbesModule.empty()) {
+        if (m_ssProbesModule.empty() || m_ssProbesModuleBackendRt != m_ssProbesRtBackend) {
+            // (Re)load the trace module when the backend changes (the SDF and
+            // RT variants are separate compiled pipelines).
+            m_ssProbesModule = {};
+            m_ssProbesProgram = {};
             m_ssProbesModule = m_context->CreateShaderModule(
                 smvk::shaders::Read(m_ssProbesRtBackend ? "content/shaders/ssprobes_rt.cs.hlsl.spv"
                                                         : "content/shaders/ssprobes.cs.hlsl.spv"),
@@ -19791,6 +19795,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                .stage = smvk::ShaderStage::Compute};
                 m_ssProbesProgram = {.shaders = {s}, .shaderCount = 1};
             }
+            m_ssProbesModuleBackendRt = m_ssProbesRtBackend;
         }
         if (m_ssProbesBlurModule.empty()) {
             m_ssProbesBlurModule = m_context->CreateShaderModule(

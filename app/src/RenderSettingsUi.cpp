@@ -243,19 +243,35 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                 ImGui::SeparatorText("Global Illumination");
                 {
                     // ONE mutually-exclusive GI source (N cycles): baked /
-                    // dynamic (DDGI) / analytic sky IBL / off. Selecting a
-                    // source turns the others off — baked GI and DDGI never
-                    // both own the diffuse ambient.
-                    static const char* const kGiSourceNames[7] = {"Baked (sky fallback)",
-                                                                  "Lightmaps only",
-                                                                  "Probes only",
-                                                                  "Sky IBL only",
-                                                                  "Off (direct only)",
-                                                                  "Baked (no fallback)",
-                                                                  "Dynamic (DDGI)"};
-                    int giSrc = static_cast<int>(m_ambientMode);
-                    if (ImGui::Combo("GI source (N)", &giSrc, kGiSourceNames, 7))
-                        m_ambientMode = static_cast<AmbientMode>(std::clamp(giSrc, 0, 6));
+                    // dynamic (DDGI / screen-space probes) / analytic sky IBL
+                    // / off. Selecting a source turns the others off — at most
+                    // one diffuse-ambient owner at a time.
+                    static const char* const kGiSourceNames[8] = {
+                        "Off (direct only)",
+                        "Baked (sky fallback)",
+                        "Baked (no fallback)",
+                        "Lightmaps only",
+                        "Probes only",
+                        "Sky IBL only",
+                        "Dynamic probes (DDGI)",
+                        "Screen-space probes",
+                    };
+                    static const AmbientMode kGiSourceModes[8] = {
+                        AmbientMode::Off,
+                        AmbientMode::All,
+                        AmbientMode::Baked,
+                        AmbientMode::Lightmaps,
+                        AmbientMode::Probes,
+                        AmbientMode::SkyIbl,
+                        AmbientMode::Ddgi,
+                        AmbientMode::SsProbes,
+                    };
+                    int giSrc = 0;
+                    for (int i = 0; i < 8; ++i)
+                        if (m_ambientMode == kGiSourceModes[i])
+                            giSrc = i;
+                    if (ImGui::Combo("GI source (N)", &giSrc, kGiSourceNames, 8))
+                        m_ambientMode = kGiSourceModes[giSrc];
                     if (m_ambientMode == AmbientMode::Ddgi) {
                         // DDGI owns the diffuse ambient (baked + sky diffuse
                         // are off). Needs ray queries; otherwise the mode
@@ -278,6 +294,45 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                                         (unsigned)m_ddgiVolumes.size(),
                                         (unsigned long long)total);
                         }
+                    } else if (m_ambientMode == AmbientMode::SsProbes) {
+                        // Screen-space probes: a per-screen-tile surface cache
+                        // with temporal accumulation, traced through either the
+                        // SDF octree or the hardware TLAS/BLAS (see the trace
+                        // backend adapter).
+                        static const char* const kBackendNames[2] = {"SDF octree (coarse)",
+                                                                     "Hardware RT (TLAS/BLAS)"};
+                        int backend = m_ssProbesRtBackend ? 1 : 0;
+                        if (ImGui::Combo("Trace backend", &backend, kBackendNames, 2))
+                            m_ssProbesRtBackend = (backend == 1);
+                        if (m_ssProbesRtBackend && !(m_context && m_context->SupportsRayQueries()))
+                            ImGui::TextDisabled(
+                                "Hardware RT needs ray queries - falling back to SDF");
+                        static const char* const kTileNames[5] = {"Ultra (8px)",
+                                                                  "High (16px)",
+                                                                  "Medium (32px)",
+                                                                  "Low (64px)",
+                                                                  "Very low (128px)"};
+                        static const uint32_t kTileValues[5] = {8, 16, 32, 64, 128};
+                        int tileIdx = 0;
+                        for (int i = 0; i < 5; ++i)
+                            if (m_ssProbesTilePx == kTileValues[i])
+                                tileIdx = i;
+                        if (ImGui::Combo("Probe tile size", &tileIdx, kTileNames, 5))
+                            m_ssProbesTilePx = kTileValues[tileIdx];
+                        static const char* const kUpdateNames[5] = {"Full (every frame)",
+                                                                    "Half (1/2)",
+                                                                    "Quarter (1/4)",
+                                                                    "Eighth (1/8)",
+                                                                    "Sixteenth (1/16)"};
+                        static const uint32_t kUpdateValues[5] = {1, 2, 4, 8, 16};
+                        int updIdx = 0;
+                        for (int i = 0; i < 5; ++i)
+                            if (m_ssProbesUpdateDivisor == kUpdateValues[i])
+                                updIdx = i;
+                        if (ImGui::Combo("Per-frame update", &updIdx, kUpdateNames, 5))
+                            m_ssProbesUpdateDivisor = kUpdateValues[updIdx];
+                        ImGui::Text(
+                            "Probe grid: %ux%u tiles", m_ssProbesTileCountX, m_ssProbesTileCountY);
                     } else {
                         // Baked / IBL / off modes: the baked-GI source
                         // toggles + the ambient scale.
@@ -932,6 +987,8 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                         "Clipping (highlights only)",
                         "DDGI irradiance (raw probe field)",
                         "Static SDF scene (sphere trace)",
+                        "Screen-space probes irradiance",
+                        "Screen-space probes (lattice + age)",
                     };
                     // Combo index <-> ViewMode mapping (SsrContribution stays
                     // env-only; UV1 and Normals are combo/env only; the
@@ -976,6 +1033,8 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                         ViewMode::ClippingHighlights,
                         ViewMode::DdgiIrradiance,
                         ViewMode::SdfScene,
+                        ViewMode::ScreenSpaceProbesIrradiance,
+                        ViewMode::ScreenSpaceProbesProbes,
                     };
                     // The combo count follows the arrays (the old hardcoded
                     // 20 once left appended modes existing but unselectable).
