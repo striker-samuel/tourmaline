@@ -18,15 +18,16 @@ struct SdfGiPush {
     GPU_PTR_READ(FrameUniforms) frameUniforms;
     GPU_PTR_READ(StaticSdfSceneHeader) scene;
     uint depthTextureIndex;
-    uint outImageIndex; // bindless storage index of the irradiance image
-    uint outWidth;      // tile grid width
-    uint outHeight;     // tile grid height
-    float invDepthW;    // 1 / full-res depth width
+    uint prevImageIndex; // history[writeSlot ^ 1] (sampled read)
+    uint outImageIndex;  // history[writeSlot] (storage write)
+    uint outWidth;       // tile grid width
+    uint outHeight;      // tile grid height
+    float invDepthW;     // 1 / full-res depth width
     float invDepthH;
-    uint rays;          // hemisphere ray count per probe
+    uint rays;           // hemisphere ray count per probe (per update)
     uint updateIndex;
     uint samplerIndex;
-    uint pad0;
+    float blendAlpha;    // EMA blend factor (1 = full replace)
 };
 GPU_PUSH(SdfGiPush, sp);
 
@@ -59,20 +60,36 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     const FrameUniforms frame = sp.frameUniforms.Get();
     const StaticSdfSceneHeader scene = sp.scene.Get();
 
-    // Receiver: tile center -> full-res uv -> y-down NDC -> world.
-    const float2 tileUV = (float2(tid.xy) + 0.5f) /
-                          float2(float(sp.outWidth), float(sp.outHeight));
-    // The tile spans tilePx pixels; sample the depth at its center.
-    const float2 uv = tileUV;
-    Texture2D depthTex = textures[NonUniformResourceIndex(sp.depthTextureIndex)];
+    // Tile center -> full-res uv -> y-down NDC -> world.
+    const float2 uv = (float2(tid.xy) + 0.5f) /
+                      float2(float(sp.outWidth), float(sp.outHeight));
+
+    // Previous history value for this tile (the EMA feedback source). Each
+    // thread reads/writes only its own texel, but the sampled read and the
+    // storage write target DIFFERENT ping-pong images (no in-place hazard).
+    Texture2D prevTex = textures[NonUniformResourceIndex(sp.prevImageIndex)];
     SamplerState smp = samplers[NonUniformResourceIndex(sp.samplerIndex)];
+    const float3 prevE = prevTex.SampleLevel(smp, uv, 0).rgb;
+
+    // Rotating subset: only 1/4 of tiles trace each frame (the amortized
+    // surface-cache schedule); the rest copy their history unchanged. The
+    // interleaved (x+y)&3 stride measured faster than warp-coalesced groups
+    // (the march is memory-latency-bound, so spreading the traced threads
+    // across every warp hides the octree-access latency better).
+    if (((tid.x + tid.y) & 3u) != (sp.updateIndex & 3u)) {
+        sdfGiStorage[sp.outImageIndex][tid.xy] = float4(prevE, 1.0f);
+        return;
+    }
+
+    Texture2D depthTex = textures[NonUniformResourceIndex(sp.depthTextureIndex)];
     const float ndcD = depthTex.SampleLevel(smp, uv, 0).r;
 
     // Sky / background tiles: no surface to cache. Store the up-facing sky
     // irradiance (pi * L_sky) so any stray sample reads a sky-lit surface.
     const float3 missColor = DdgiSkyRadiance(frame, float3(0, 1, 0)) * 3.14159265358979f;
     if (DofIsBackgroundOrGarbage(ndcD)) {
-        sdfGiStorage[sp.outImageIndex][tid.xy] = float4(missColor, 1.0f);
+        sdfGiStorage[sp.outImageIndex][tid.xy] =
+            float4(lerp(prevE, missColor, sp.blendAlpha), 1.0f);
         return;
     }
 
@@ -107,7 +124,7 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
                                 normal * localDir.z;
 
         const StaticSdfRayHit hit = StaticSdfTrace(
-            worldPos + normal * bias, worldDir, 12.0f, scene.epsilon, scene.maxSteps,
+            worldPos + normal * bias, worldDir, 3.0f, scene.epsilon, min(scene.maxSteps, 32u),
             scene.instanceCount, scene.materialCount, scene.instances, scene.nodes,
             scene.children, scene.leaves, scene.materials
 #ifdef STATIC_SDF_DDGI
@@ -131,5 +148,6 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     // E = (pi / N) * sum(L_i) for cosine-weighted hemisphere sampling.
     const float3 irradiance =
         (sp.rays > 0u) ? (acc * (3.14159265358979f / float(sp.rays))) : float3(0, 0, 0);
-    sdfGiStorage[sp.outImageIndex][tid.xy] = float4(irradiance, 1.0f);
+    sdfGiStorage[sp.outImageIndex][tid.xy] =
+        float4(lerp(prevE, irradiance, sp.blendAlpha), 1.0f);
 }

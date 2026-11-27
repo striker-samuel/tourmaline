@@ -5056,14 +5056,18 @@ class WorldRenderer : public IRenderer {
     uint64_t m_ddgiProbeBda = 0;
     uint32_t m_ddgiProbeCount = 0;
     bool m_ddgiProbesDirty = true;
-    // ---- Screen-adaptive SDF GI (#410) runtime state.
+    // ---- Screen-adaptive SDF GI (#410) runtime state. The irradiance field
+    // is a ping-ponged tile-grid history: the trace+blend pass reads
+    // history[writeSlot ^ 1] and EMA-blends a rotating tile subset into
+    // history[writeSlot], which Main samples as the diffuse ambient owner.
     smvk::Holder<smvk::ShaderModuleHandle> m_sdfGiModule;
     smvk::ShaderProgram m_sdfGiProgram{};
-    smvk::Holder<smvk::ImageHandle> m_sdfGiImage;
-    smvk::Holder<smvk::ImageViewHandle> m_sdfGiView;         // keeps the view alive
-    smvk::Holder<smvk::BindlessImageHandle> m_sdfGiBindless; // keeps the descriptor alive
-    smvk::LogicalImageViewHandle m_sdfGiLogical{};           // the render-graph logical view
-    uint32_t m_sdfGiImageIndex = UINT32_MAX;                 // bindless sampled-image index
+    smvk::Holder<smvk::ImageHandle> m_sdfGiImage[2];
+    smvk::Holder<smvk::ImageViewHandle> m_sdfGiView[2];         // keeps the view alive
+    smvk::Holder<smvk::BindlessImageHandle> m_sdfGiBindless[2]; // keeps the descriptor alive
+    smvk::LogicalImageViewHandle m_sdfGiLogical[2]{};           // the render-graph logical view
+    uint32_t m_sdfGiImageIndex[2] = {UINT32_MAX, UINT32_MAX};   // bindless sampled-image index
+    uint32_t m_sdfGiWriteSlot = 0;
     uint32_t m_sdfGiTileCountX = 0, m_sdfGiTileCountY = 0;
     uint32_t m_sdfGiUpdateIndex = 0;
     bool m_sdfGiReady = false;
