@@ -1170,6 +1170,8 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                     if (!autoReach)
                         ImGui::SliderFloat(
                             "Coarse reach (m)", &m_ddgiFarOverride, 5.0f, 160.0f, "%.0f");
+                    ImGui::SliderFloat(
+                        "Fine->coarse cross-fade", &m_ddgiCrossFade, 0.15f, 0.8f, "%.2f");
                     if (m_regLoaded || m_giVolumesLoaded) {
                         // All R / F8 stops (including off).
                         // Select Lit so the debug shader is visible.

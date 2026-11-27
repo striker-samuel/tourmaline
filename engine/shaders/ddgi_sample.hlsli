@@ -137,10 +137,12 @@ DdgiSampleResult DdgiSampleIrradiance(DdgiParams params, float3 cameraPos, float
     const DdgiVolumeDesc dFine = params.volumes.Get().values[0];
     const float fineReach = 0.5f * float(dFine.dimX - 1u) * dFine.spacing;
     const float dist = length(worldPos - cameraPos);
+    const float fadeStart = fineReach * saturate(params.crossFade);
+    const float fadeEnd = fineReach * saturate(params.crossFade + 0.4f);
 
     // Near the camera the fine cascade alone wins — skip the coarse sample
     // entirely (most pixels, so the smooth blend stays cheap).
-    if (dist < fineReach * 0.45f) {
+    if (dist < fadeStart) {
         const float3 vmin = float3(dFine.originX, dFine.originY, dFine.originZ);
         const float3 vmax = vmin + (float3(dFine.dimX, dFine.dimY, dFine.dimZ) - 1.0f) * dFine.spacing;
         if (all(worldPos >= vmin) && all(worldPos <= vmax))
@@ -174,7 +176,7 @@ DdgiSampleResult DdgiSampleIrradiance(DdgiParams params, float3 cameraPos, float
     }
 
     if (fine.valid > 0.0f && coarse.valid > 0.0f) {
-        const float t = smoothstep(fineReach * 0.45f, fineReach * 0.85f, dist);
+        const float t = smoothstep(fadeStart, fadeEnd, dist);
         r.irradiance = lerp(fine.irradiance, coarse.irradiance, t);
         r.valid = 1.0f;
         return r;

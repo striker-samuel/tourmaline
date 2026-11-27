@@ -45,7 +45,7 @@ struct DdgiParams {
     float strength;
     uint enabled;
     uint debug;
-    uint pad;
+    float crossFade;
 };
 
 

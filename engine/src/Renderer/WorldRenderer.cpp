@@ -6182,6 +6182,7 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
         ddgiParams.strength = m_ddgiStrength;
         ddgiParams.enabled = 1u;
         ddgiParams.debug = (m_debugView == ViewMode::DdgiIrradiance) ? 1u : 0u;
+        ddgiParams.crossFade = m_ddgiCrossFade;
     }
     m_context->UploadDataToBuffer(m_resources.ddgiParams,
                                   &ddgiParams,

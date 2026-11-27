@@ -69,7 +69,9 @@ struct alignas(16) DdgiParams {
     float strength = 0.0f;    // 16 blend strength (0..1)
     uint32_t enabled = 0;     // 20 1 = sample + blend
     uint32_t debug = 0;       // 24 1 = flat irradiance view
-    uint32_t pad = 0;         // 28
+    // 28 fine->coarse cross-fade start, as a fraction of the fine cascade's
+    // reach (the fade ends at crossFade + 0.4). Mirrored in ddgi_common.hlsli.
+    float crossFade = 0.45f;
 };
 static_assert(sizeof(DdgiParams) == 32);
 
