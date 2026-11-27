@@ -2360,28 +2360,17 @@ void WorldRenderer::DrawPanicOverlay() {
     }
     if (panic.empty())
         return; // nothing wrong — no legend
-    const ImVec2 disp = ImGui::GetIO().DisplaySize;
-    ImGui::SetNextWindowPos(ImVec2(disp.x * 0.5f, 44.0f), ImGuiCond_Always, ImVec2(0.5f, 0.0f));
-    ImGui::SetNextWindowBgAlpha(0.72f);
-    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f);
-    if (!ImGui::Begin("##tourmaline_panic",
-                      nullptr,
-                      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                          ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
-                          ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_AlwaysAutoResize)) {
-        ImGui::End();
-        ImGui::PopStyleVar();
-        return;
+    // Crude bright-red text pinned to the top-left corner (no window, no
+    // background, no interaction) — the old centered "RENDER PANIC" window
+    // occluded the view and stole focus.
+    ImDrawList* dl = ImGui::GetForegroundDrawList();
+    float y = 6.0f;
+    dl->AddText(ImVec2(6.0f, y), IM_COL32(255, 22, 22, 255), "RENDER PANIC");
+    y += 22.0f;
+    for (const std::string& p : panic) {
+        dl->AddText(ImVec2(6.0f, y), IM_COL32(255, 82, 82, 255), p.c_str());
+        y += 16.0f;
     }
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.22f, 0.22f, 1.0f));
-    ImGui::TextUnformatted("RENDER PANIC");
-    ImGui::PopStyleColor();
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.48f, 0.42f, 1.0f));
-    for (const std::string& p : panic)
-        ImGui::TextUnformatted(p.c_str());
-    ImGui::PopStyleColor();
-    ImGui::End();
-    ImGui::PopStyleVar();
 }
 
 void WorldRenderer::DrawHudOverlay() {
