@@ -869,7 +869,8 @@ struct SdfGiBlurPush {
     uint32_t srcImageIndex = 0; // history[writeSlot] (sampled read)
     uint32_t outImageIndex = 0; // smoothed output (storage write)
     uint32_t outWidth = 0, outHeight = 0;
-    uint32_t samplerIndex = 0, pad0 = 0, pad1 = 0, pad2 = 0;
+    uint32_t depthTextureIndex = 0; // full-res depth (bilateral guide)
+    uint32_t samplerIndex = 0, pad0 = 0, pad1 = 0;
 };
 struct SdfGiBlurFrame {
     smvk::ShaderProgram* program = nullptr;
@@ -19760,8 +19761,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             pass.SetRecordFn(&RecordSdfGi);
             m_sdfGiWriteSlot = cur ^ 1u;
 
-            // Spatial resolve: 3x3 box blur of the just-written history so the
-            // Monte-Carlo tile noise doesn't read as surface detail.
+            // Spatial resolve: depth-aware 5x5 box blur of the just-written
+            // history so the Monte-Carlo tile noise doesn't read as surface
+            // detail, without bleeding across silhouettes.
             auto& blurPass = m_rendergraph->AddComputePass("SdfGiBlur");
             {
                 smvk::ImageSyncRequest readReq{};
@@ -19769,6 +19771,14 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 readReq.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
                 readReq.layout = smvk::ImageLayout::General;
                 blurPass.AddImageHint(m_sdfGiLogical[cur], readReq);
+            }
+            {
+                // The full-res depth, sampled as the bilateral guide.
+                smvk::ImageSyncRequest depthReq{};
+                depthReq.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+                depthReq.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+                depthReq.layout = smvk::ImageLayout::DepthStencilReadOnlyOptimal;
+                blurPass.AddImageHint(m_viewportResources.renderDepth.logicalView, depthReq);
             }
             {
                 smvk::ImageSyncRequest writeReq{};
@@ -19782,6 +19792,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             blurPush.outImageIndex = m_sdfGiBlurIndex;
             blurPush.outWidth = tileGridX;
             blurPush.outHeight = tileGridY;
+            blurPush.depthTextureIndex = depthIndex;
             blurPush.samplerIndex = pointSampler;
             SdfGiBlurFrame blurFrame{&m_sdfGiBlurProgram, blurPush, tileGridX, tileGridY};
             m_rendergraph->PassFrameData<SdfGiBlurFrame>(blurPass) = blurFrame;

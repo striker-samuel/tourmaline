@@ -69,7 +69,11 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     // storage write target DIFFERENT ping-pong images (no in-place hazard).
     Texture2D prevTex = textures[NonUniformResourceIndex(sp.prevImageIndex)];
     SamplerState smp = samplers[NonUniformResourceIndex(sp.samplerIndex)];
-    const float3 prevE = prevTex.SampleLevel(smp, uv, 0).rgb;
+    // Nonfinite-history rejection: NaN/Inf would persist through the EMA
+    // forever (lerp(NaN, x, t) == NaN for any t). Explicit zero-init should
+    // prevent it, but guard anyway so a bad frame can always recover.
+    const float3 prevRaw = prevTex.SampleLevel(smp, uv, 0).rgb;
+    const float3 prevE = all(isfinite(prevRaw)) ? prevRaw : float3(0.0f, 0.0f, 0.0f);
 
     // Rotating subset: only 1/4 of tiles trace each frame (the amortized
     // surface-cache schedule); the rest copy their history unchanged. The
@@ -103,24 +107,49 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     // detail in the diffuse field). The derivative offset spans the tile
     // footprint (16px / 2) so the normal is a tile-scale average, not the
     // 1px micro-detail that a full-res derivative would pick up.
+    //
+    // A derivative tap is rejected when it is background OR crosses a depth
+    // discontinuity (a silhouette / foreground-background step), so a thin
+    // occluder's normal can't be stolen by the surface behind it. Each axis
+    // then falls back to a one-sided derivative (or the up normal) instead
+    // of mixing two unrelated depths.
     const float2 stepX = float2(8.0f * sp.invDepthW, 0.0f);
     const float2 stepY = float2(0.0f, 8.0f * sp.invDepthH);
     const float dL = depthTex.SampleLevel(smp, uv - stepX, 0).r;
     const float dR = depthTex.SampleLevel(smp, uv + stepX, 0).r;
     const float dU = depthTex.SampleLevel(smp, uv - stepY, 0).r;
     const float dD = depthTex.SampleLevel(smp, uv + stepY, 0).r;
+    const float discThreshold = max(0.05f, ndcD * 0.2f);
+    const bool dLok = !DofIsBackgroundOrGarbage(dL) && abs(dL - ndcD) < discThreshold;
+    const bool dRok = !DofIsBackgroundOrGarbage(dR) && abs(dR - ndcD) < discThreshold;
+    const bool dUok = !DofIsBackgroundOrGarbage(dU) && abs(dU - ndcD) < discThreshold;
+    const bool dDok = !DofIsBackgroundOrGarbage(dD) && abs(dD - ndcD) < discThreshold;
     float3 normal = float3(0, 1, 0);
-    if (!DofIsBackgroundOrGarbage(dL) && !DofIsBackgroundOrGarbage(dR) &&
-        !DofIsBackgroundOrGarbage(dU) && !DofIsBackgroundOrGarbage(dD)) {
-        float4 wL = mul(frame.invViewProj, float4((uv - stepX) * 2.0f - 1.0f, dL, 1.0f));
-        float4 wR = mul(frame.invViewProj, float4((uv + stepX) * 2.0f - 1.0f, dR, 1.0f));
-        float4 wU = mul(frame.invViewProj, float4((uv - stepY) * 2.0f - 1.0f, dU, 1.0f));
-        float4 wD = mul(frame.invViewProj, float4((uv + stepY) * 2.0f - 1.0f, dD, 1.0f));
-        const float3 pL = wL.xyz / max(wL.w, 1e-9f);
-        const float3 pR = wR.xyz / max(wR.w, 1e-9f);
-        const float3 pU = wU.xyz / max(wU.w, 1e-9f);
-        const float3 pD = wD.xyz / max(wD.w, 1e-9f);
-        normal = cross(pR - pL, pD - pU);
+    if (dLok || dRok || dUok || dDok) {
+        float3 pL = worldPos, pR = worldPos, pU = worldPos, pD = worldPos;
+        if (dLok) {
+            float4 w = mul(frame.invViewProj, float4((uv - stepX) * 2.0f - 1.0f, dL, 1.0f));
+            pL = w.xyz / max(w.w, 1e-9f);
+        }
+        if (dRok) {
+            float4 w = mul(frame.invViewProj, float4((uv + stepX) * 2.0f - 1.0f, dR, 1.0f));
+            pR = w.xyz / max(w.w, 1e-9f);
+        }
+        if (dUok) {
+            float4 w = mul(frame.invViewProj, float4((uv - stepY) * 2.0f - 1.0f, dU, 1.0f));
+            pU = w.xyz / max(w.w, 1e-9f);
+        }
+        if (dDok) {
+            float4 w = mul(frame.invViewProj, float4((uv + stepY) * 2.0f - 1.0f, dD, 1.0f));
+            pD = w.xyz / max(w.w, 1e-9f);
+        }
+        // One-sided fallback: a rejected tap degenerates its axis's derivative
+        // toward the centre (the valid side still contributes).
+        const float3 tx = (dLok && dRok) ? (pR - pL) : (dRok ? (pR - worldPos)
+                                                            : (pL - worldPos));
+        const float3 ty = (dUok && dDok) ? (pD - pU) : (dDok ? (pD - worldPos)
+                                                            : (pU - worldPos));
+        normal = cross(tx, ty);
         const float n2 = dot(normal, normal);
         normal = n2 > 1e-12f ? normal * rsqrt(n2) : float3(0, 1, 0);
         // Orient toward the camera (the visible side of the surface).
@@ -162,8 +191,11 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     }
 
     // E = (pi / N) * sum(L_i) for cosine-weighted hemisphere sampling.
-    const float3 irradiance =
+    const float3 irradianceRaw =
         (sp.rays > 0u) ? (acc * (3.14159265358979f / float(sp.rays))) : float3(0, 0, 0);
+    // Reject a non-finite sample (e.g. a degenerate hit normal) so a single
+    // bad frame cannot poison the history through the EMA.
+    const float3 irradiance = all(isfinite(irradianceRaw)) ? irradianceRaw : prevE;
     sdfGiStorage[sp.outImageIndex][tid.xy] =
         float4(lerp(prevE, irradiance, sp.blendAlpha), 1.0f);
 }
