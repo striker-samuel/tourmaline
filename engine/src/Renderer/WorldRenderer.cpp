@@ -844,7 +844,8 @@ static std::optional<AmbientMode> AmbientModeFromPin(std::string_view v) {
 // ---- Screen-adaptive screen-space probes (#410) pass plumbing (mirrors ddgi.h) ----
 namespace {
 struct SsProbesPush {
-    uint64_t frameUniforms = 0, sceneAddress = 0;
+    uint64_t frameUniforms = 0, sceneAddress = 0; // SDF backend scene
+    uint64_t rayMaterials = 0;                    // RT backend material buffer
     uint32_t depthTextureIndex = 0;
     uint32_t prevImageIndex = 0;    // history[writeSlot ^ 1] (sampled read)
     uint32_t outImageIndex = 0;     // history[writeSlot] (storage write)
@@ -1571,6 +1572,14 @@ bool WorldRenderer::onAttach() {
             std::cerr << "[WorldRenderer] unknown TOURMALINE_AMBIENT value: " << a
                       << " (all|baked|lightmaps|probes|skyibl|off)\n";
         std::cerr << "[WorldRenderer] ambient source: " << AmbientModeName(m_ambientMode) << "\n";
+    }
+    // Screen-space probes trace backend: SDF octree (default) or hardware
+    // TLAS/BLAS ray query (needs ray queries + the shared RT world).
+    if (const char* be = std::getenv("TOURMALINE_SSPROBES_BACKEND")) {
+        const std::string_view b = trimEnv(be);
+        m_ssProbesRtBackend = (b == "rt" || b == "hardware" || b == "tlas");
+        std::cerr << "[WorldRenderer] screen-space probes backend: "
+                  << (m_ssProbesRtBackend ? "hardware RT (TLAS/BLAS)" : "SDF octree") << "\n";
     }
     // Legacy GI override (pre-ambient-modes runs): 1/on -> All,
     // 0/off -> out of the baked modes into SkyIbl. (Shared mapping:
@@ -14322,7 +14331,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // (dynamic diffuse GI) shares the SAME TLAS for its probe ray
     // queries, so the build also runs when DDGI is enabled even without
     // ray-traced sun shadows.
-    if ((m_rayTracedSunShadowsEnabled || m_ambientMode == AmbientMode::Ddgi) &&
+    if ((m_rayTracedSunShadowsEnabled || m_ambientMode == AmbientMode::Ddgi ||
+         (m_ambientMode == AmbientMode::SsProbes && m_ssProbesRtBackend)) &&
         m_context->SupportsRayQueries() && m_world) {
         // Impostor RT-proxy swap (experimental, opt-in): TOURMALINE_IMPOSTOR=1
         // swaps distant shadow casters onto their six-view depth proxy BLAS
@@ -19723,7 +19733,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         }
         if (m_ssProbesModule.empty()) {
             m_ssProbesModule = m_context->CreateShaderModule(
-                smvk::shaders::Read("content/shaders/ssprobes.cs.hlsl.spv"), "ssProbes");
+                smvk::shaders::Read(m_ssProbesRtBackend ? "content/shaders/ssprobes_rt.cs.hlsl.spv"
+                                                        : "content/shaders/ssprobes.cs.hlsl.spv"),
+                "ssProbes");
             if (!m_ssProbesModule.empty()) {
                 smvk::Shader s{.module = m_ssProbesModule,
                                .entryPoint = "mainCS",
@@ -19804,7 +19816,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             }
             SsProbesPush push{};
             push.frameUniforms = frameUniformsAddress;
-            push.sceneAddress = sdfSceneAddr;
+            push.sceneAddress = m_ssProbesRtBackend ? 0 : sdfSceneAddr;
+            push.rayMaterials = m_ssProbesRtBackend ? m_context->RayTracingMaterialAddress() : 0;
             push.depthTextureIndex = depthIndex;
             push.prevImageIndex = m_ssProbesImageIndex[prev];
             push.outImageIndex = m_ssProbesImageIndex[cur];

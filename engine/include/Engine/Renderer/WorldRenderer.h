@@ -5089,6 +5089,7 @@ class WorldRenderer : public IRenderer {
     uint32_t m_ssProbesTileCountX = 0, m_ssProbesTileCountY = 0;
     uint32_t m_ssProbesUpdateIndex = 0;
     bool m_ssProbesReady = false;
+    bool m_ssProbesRtBackend = false; // trace backend: SDF octree (false) vs TLAS/BLAS (true)
     float m_rayTracedSunShadowDistance = 200.0f;
     float m_rayTracedSunShadowBias = 0.02f;
     int m_rayTracedSunShadowResolutionDivisor = 2;
