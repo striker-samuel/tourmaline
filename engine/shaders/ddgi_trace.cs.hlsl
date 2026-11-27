@@ -19,6 +19,8 @@ struct DdgiTracePush {
     GPU_PTR_READ(DdgiDistanceBuffer) oldDistance; // E_indirect visibility moments
     GPU_PTR_READ(RayMaterialBuffer) rayMaterials; // per-TLAS-instance material
     GPU_PTR_READ(DdgiRelocationBuffer) relocation; // per-probe relocation offset
+    float oldOriginX, oldOriginY, oldOriginZ; // previous-frame origin (E_indirect)
+    float pad;
 };
 GPU_PUSH(DdgiTracePush, sp);
 

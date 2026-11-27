@@ -4809,11 +4809,15 @@ class WorldRenderer : public IRenderer {
     // (called once after all three GI loaders at scene init): keeps the
     // isolation states meaningful instead of silently empty.
     void DegradeAmbientForMissingSources();
-    // DDGI probe-volume discovery: buckets the world's opaque static
-    // meshes into 64 m subcells, computes a dense grid per occupied
-    // subcell (within the probe budget), creates one Volume per subcell
-    // and publishes the GPU VolumeDesc list. Called on world change.
+    // DDGI probe-volume discovery: builds the camera-following cascade
+    // volumes (fine + coarse) and publishes the GPU VolumeDesc list. Called
+    // on world change. The volumes no longer bake world subcells — they
+    // scroll with the camera (see UpdateDdgiCascades).
     void RebuildDdgiVolumes();
+    // Per-frame camera-following update: fits the coarse-cascade spacing to
+    // the estimated far depth (SDSM-style slow hysteresis), snaps each
+    // cascade's grid to the camera, and re-uploads the VolumeDesc origins.
+    void UpdateDdgiCascades(const glm::vec3& camPos);
 #if defined(DS_DEBUG_VIZ)
     // ---- Deferred-shadow debug visualizers (paper 5.3/5.4; debug builds
     // only). Mode/light/overlay ride the per-flight DsVizParams ring
@@ -5101,6 +5105,13 @@ class WorldRenderer : public IRenderer {
     uint32_t m_ddgiUpdateIndex = 0;
     bool m_ddgiReset = true;
     const void* m_ddgiCachedWorld = nullptr;
+    // Camera-following distance fit (SDSM-style, SLOW hysteresis): the far
+    // depth the coarse cascade must reach, driving its spacing ladder. Expands
+    // instantly (never leave the scene uncovered), contracts ~1%/frame,
+    // quantized to 0.5 m, snapped to the coarse spacing ladder.
+    float m_ddgiFar = 40.0f;
+    bool m_ddgiFarValid = false;
+    float m_ddgiCoarseSpacing = 6.0f;
     // DDGI probe-grid visualization (the "Probe debug view"): the dynamic
     // probe positions as lattice markers over the scene (reuses giprobe.h's
     // mode-2 lattice, no bake fetch). Strided to the draw cap; rebuilt when

@@ -25,6 +25,19 @@ inline constexpr uint32_t kMaxRays = 512;
 // shader's lookup table. ----
 inline constexpr uint32_t kDdgiMaxVolumes = 128;
 
+// ---- Camera-following cascades (two levels, both scroll with the camera).
+// Fine (near): fixed dense spacing. Coarse (far): spacing distance-fitted
+// (SDSM-style slow hysteresis) so its volume reaches the estimated far depth.
+inline constexpr uint32_t kDdgiCascadeCount = 2;
+inline constexpr uint32_t kDdgiFineDims[3] = {12, 6, 12};
+inline constexpr uint32_t kDdgiCoarseDims[3] = {12, 6, 12};
+inline constexpr float kDdgiFineSpacing = 1.5f;
+inline constexpr float kDdgiCoarseMinSpacing = 2.0f;
+inline constexpr float kDdgiCoarseMaxSpacing = 16.0f;
+// The coarse volume's half-extent in cells ~ (dims.x-1)/2; reach = this *
+// spacing must cover the estimated far depth (m_ddgiFar).
+inline constexpr float kDdgiCoarseReachCells = 5.0f;
+
 // GPU descriptor of one probe volume (mirrored in ddgi_common.hlsli as
 // DdgiVolumeDesc; 64 bytes, 16-aligned). Carries BOTH history-slot BDAs —
 // the lit shader picks the published slot via DdgiParams::slot, so
@@ -131,6 +144,11 @@ struct TracePush {
     uint64_t rayMaterials = 0;
     // Per-probe relocation offset (float4, written by the SDF relocation).
     uint64_t relocation = 0;
+    // Previous-frame grid origin (camera-following scroll): the OLD history
+    // was written at the old origin, so E_indirect sampling must map hit
+    // positions through the old grid, not the current one.
+    float oldOriginX = 0, oldOriginY = 0, oldOriginZ = 0;
+    float pad_ = 0;
 };
 // Fixed choice per volume/dispatch, not a per-ray switch.
 enum class TraceBackend : uint8_t { HardwareRT, StaticSdf };
@@ -139,13 +157,19 @@ struct SdfTracePush {
     TracePush trace{};
     uint64_t sceneAddress = 0;
 };
-static_assert(sizeof(TracePush) == 88 && offsetof(TracePush, relocation) == 80);
-static_assert(sizeof(SdfTracePush) == 96 && offsetof(SdfTracePush, sceneAddress) == 88);
+static_assert(sizeof(TracePush) == 104 && offsetof(TracePush, oldOriginX) == 88);
+static_assert(sizeof(SdfTracePush) == 112 && offsetof(SdfTracePush, sceneAddress) == 104);
 
 struct BlendPush {
     uint64_t scratch = 0, oldIrr = 0, oldDistance = 0, newIrr = 0, newDistance = 0;
     uint32_t probes = 0, rays = 0, reset = 1;
     float hysteresis = 0, maxDistance = 0;
+    // Toroidal history carry (camera-following scroll): a probe at logical
+    // coord c this frame lived at c + delta in the previous grid. carry =
+    // c+delta inside [0, dims); those probes blend hysteresis against the
+    // shifted old history, the rest (scrolled-in territory) reset to 0.
+    int32_t deltaX = 0, deltaY = 0, deltaZ = 0;
+    uint32_t dimX = 0, dimY = 0, dimZ = 0;
     uint32_t pad = 0;
 };
 // SDF-assisted probe relocation (ddgi_relocate.cs.hlsl).
@@ -157,7 +181,7 @@ struct RelocatePush {
     uint32_t iterations = 0;
 };
 static_assert(sizeof(RelocatePush) == 56 && offsetof(RelocatePush, iterations) == 52);
-static_assert(sizeof(TracePush) == 88 && offsetof(TracePush, maxDistance) == 48);
-static_assert(sizeof(BlendPush) == 64 && offsetof(BlendPush, probes) == 40);
+static_assert(sizeof(TracePush) == 104 && offsetof(TracePush, maxDistance) == 48);
+static_assert(sizeof(BlendPush) == 88 && offsetof(BlendPush, deltaX) == 60);
 
 } // namespace smvk::ddgi

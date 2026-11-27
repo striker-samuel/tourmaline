@@ -132,6 +132,10 @@ DdgiSampleResult DdgiSampleIrradiance(DdgiParams params, float3 worldPos, float3
     const uint count = min(params.volumeCount, 128u);
     // Index the BDA in place (values[1] is a flexible GPU array view).
     // Reject using spatial fields before fetching the history pointers.
+    // Cascades are listed fine-first (both follow the camera, the fine volume
+    // is a subset of the coarse): return the first cascade whose sample is
+    // VALID, so a fine cascade that faded at its outer cell falls through to
+    // the coarse cascade instead of dropping to the baked/sky fallback.
     [loop]
     for (uint v = 0; v < count; ++v)
     {
@@ -144,8 +148,12 @@ DdgiSampleResult DdgiSampleIrradiance(DdgiParams params, float3 worldPos, float3
         const float3 vmax = vmin + (float3(params.volumes.Get().values[v].dimX,
             params.volumes.Get().values[v].dimY, params.volumes.Get().values[v].dimZ) - 1.0f)
             * params.volumes.Get().values[v].spacing;
-        if (all(worldPos >= vmin) && all(worldPos <= vmax))
-            return DdgiSampleVolume(params.volumes.Get().values[v], params.slot, worldPos, geomN, N);
+        if (all(worldPos >= vmin) && all(worldPos <= vmax)) {
+            DdgiSampleResult s =
+                DdgiSampleVolume(params.volumes.Get().values[v], params.slot, worldPos, geomN, N);
+            if (s.valid > 0.0f)
+                return s;
+        }
     }
     return r;
 }

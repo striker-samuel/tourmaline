@@ -50,6 +50,16 @@ struct Volume {
     ShaderProgram traceProgram{}, blendProgram{}, relocateProgram{};
     bool ready = false;
     TraceBackend backend = TraceBackend::HardwareRT;
+    // Camera-following scroll (probe units): the grid origin snaps to the
+    // camera each frame. scroll is the integer grid coord of the volume's
+    // min corner (origin = scroll * spacing); scrollPrev drives the toroidal
+    // history carry (the blend reads old history at coord + (scroll-scrollPrev)).
+    int32_t scroll[3] = {0, 0, 0};
+    int32_t scrollPrev[3] = {0, 0, 0};
+    // Set by the owner when the grid shape (spacing) changed so the blend
+    // must reset this volume's history (the old probes are at different
+    // world positions). Cleared after AddPasses consumes it.
+    bool resetPending = false;
 
     // Header, instances, nodes, children, leaves, materials. The caller
     // guarantees coverage of primary and shadow rays and stable GPU lifetime.
@@ -218,22 +228,21 @@ struct Volume {
             // (and its distance moments) to gather multi-bounce color at hits.
             Hint(pass, old.irradiance, false);
             Hint(pass, old.distance, false);
-            const TracePush push{frameAddress,
-                                 scratch.address,
-                                 grid.origin[0],
-                                 grid.origin[1],
-                                 grid.origin[2],
-                                 grid.spacing,
-                                 grid.dims[0],
-                                 grid.dims[1],
-                                 grid.dims[2],
-                                 grid.rays,
-                                 grid.maxDistance,
-                                 updateIndex,
-                                 old.irradiance.address,
-                                 old.distance.address,
-                                 rayMaterials,
-                                 relocation.address};
+            const float oldOrigin[3] = {
+                float(scrollPrev[0]) * grid.spacing,
+                float(scrollPrev[1]) * grid.spacing,
+                float(scrollPrev[2]) * grid.spacing,
+            };
+            const TracePush push{frameAddress,           scratch.address,
+                                 grid.origin[0],         grid.origin[1],
+                                 grid.origin[2],         grid.spacing,
+                                 grid.dims[0],           grid.dims[1],
+                                 grid.dims[2],           grid.rays,
+                                 grid.maxDistance,       updateIndex,
+                                 old.irradiance.address, old.distance.address,
+                                 rayMaterials,           relocation.address,
+                                 oldOrigin[0],           oldOrigin[1],
+                                 oldOrigin[2],           0.0f};
             if (backend == TraceBackend::StaticSdf) {
                 BufferSyncRequest req{};
                 req.barrierMasks.accessMask = AccessFlags::ShaderRead;
@@ -265,6 +274,11 @@ struct Volume {
             Hint(pass, next.distance, true);
             auto& f = rg.PassFrameData<Frame<BlendPush>>(pass);
             f.program = const_cast<ShaderProgram*>(&blendProgram);
+            const int32_t delta[3] = {
+                scroll[0] - scrollPrev[0],
+                scroll[1] - scrollPrev[1],
+                scroll[2] - scrollPrev[2],
+            };
             f.push = {scratch.address,
                       old.irradiance.address,
                       old.distance.address,
@@ -275,6 +289,12 @@ struct Volume {
                       uint32_t(reset),
                       grid.hysteresis,
                       grid.maxDistance,
+                      delta[0],
+                      delta[1],
+                      delta[2],
+                      grid.dims[0],
+                      grid.dims[1],
+                      grid.dims[2],
                       0};
             f.groupsX = (kDistanceBins + 63) / 64;
             f.groupsY = sizes.probes;

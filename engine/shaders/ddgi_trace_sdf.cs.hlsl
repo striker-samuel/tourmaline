@@ -16,6 +16,8 @@ struct DdgiSdfTracePush {
     GPU_PTR_READ(DdgiDistanceBuffer) oldDistance; // E_indirect visibility moments
     GPU_PTR_READ(RayMaterialBuffer) rayMaterials; // unused (SDF leaf carries material)
     GPU_PTR_READ(DdgiRelocationBuffer) relocation; // per-probe relocation offset
+    float oldOriginX, oldOriginY, oldOriginZ; // previous-frame origin (E_indirect)
+    float pad;
     GPU_PTR_READ(StaticSdfSceneHeader) scene;
 };
 GPU_PUSH(DdgiSdfTracePush, sp);
@@ -63,7 +65,7 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
                 // irradiance field (the color-bleed + shadow-fill term).
                 const float3 eIndirect = DdgiSampleEIndirect(
                     sp.oldIrr, sp.oldDistance,
-                    float3(sp.originX, sp.originY, sp.originZ), sp.spacing,
+                    float3(sp.oldOriginX, sp.oldOriginY, sp.oldOriginZ), sp.spacing,
                     uint3(sp.dimX, sp.dimY, sp.dimZ), hit.hitPoint, hit.normal);
                 result.radiance += diffuse * (eIndirect / DDGI_PI);
                 float3 sunDir = frame.env.sunDirection.xyz;

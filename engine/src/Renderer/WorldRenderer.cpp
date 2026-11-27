@@ -5147,12 +5147,14 @@ void WorldRenderer::DegradeAmbientForMissingSources() {
     }
 }
 
-// DDGI probe-volume discovery: bucket the world's opaque static meshes
-// into 64 m subcells (XZ), clip each subcell's AABB to its footprint,
-// compute a dense grid per occupied subcell within a shared probe budget,
-// create one Volume per subcell and publish the GPU VolumeDesc list
-// (uploaded ONCE — it carries BOTH history-slot BDAs; the lit shader picks
-// the published slot via FrameUniforms::ddgiSlot).
+// DDGI cascade build: TWO fixed-shape probe volumes (fine + coarse) that
+// SCROLL with the camera. No world-subcell bucketing — the volumes are
+// camera-relative and re-centered every frame by UpdateDdgiCascades. The
+// coarse cascade's spacing is distance-fitted there; here it starts at the
+// applied spacing (m_ddgiCoarseSpacing). Fail-closed: any failed volume
+// drops the whole feature (baked/sky ambient stands).
+// Backend: hardware RT (inline RayQuery over the TLAS). The SDF is used
+// for probe classification/relocation, not for the trace itself.
 void WorldRenderer::RebuildDdgiVolumes() {
     for (auto& v : m_ddgiVolumes)
         v.Destroy(*m_rendergraph);
@@ -5168,109 +5170,37 @@ void WorldRenderer::RebuildDdgiVolumes() {
     if (!m_world || !m_context || !m_context->SupportsRayQueries())
         return;
 
-    // ---- Bucket meshes into 64 m subcells. ----
-    constexpr double kSub = 64.0; // WorldPartition subcell (XZ, m)
-    std::map<std::pair<int64_t, int64_t>, tour::Aabb> cells;
-    const float inf = std::numeric_limits<float>::infinity();
-    m_world->forEachRenderItem(
-        smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow,
-        [&](const smvk::World::RenderItem& item) {
-            const smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
-            if (!mesh || item.node >= m_world->scene.globalTransform.size())
-                return;
-            // CPU-authoritative DOUBLE world transform: the float
-            // globalTransform is the quantized legacy ABI and loses precision
-            // on large-world scenes (the Lumberyard Bistro), which would place
-            // the probe volumes offset from the geometry. globalTransformDouble
-            // holds the pak's authoritative double transforms for static nodes.
-            const glm::dmat4 model =
-                tour::transformhierarchy::GlobalTransformDouble(m_world->scene, item.node);
-            const glm::vec3 mn = mesh->geometry.aabbMin;
-            const glm::vec3 mx = mesh->geometry.aabbMax;
-            glm::vec3 wmin(inf), wmax(-inf);
-            for (int c = 0; c < 8; ++c) {
-                const glm::vec3 corner(
-                    (c & 1) ? mx.x : mn.x, (c & 2) ? mx.y : mn.y, (c & 4) ? mx.z : mn.z);
-                const glm::dvec3 w = model * glm::dvec4(glm::dvec3(corner), 1.0);
-                wmin = glm::min(wmin, glm::vec3(w));
-                wmax = glm::max(wmax, glm::vec3(w));
-            }
-            const int64_t sx0 = int64_t(std::floor(wmin.x / kSub));
-            const int64_t sx1 = int64_t(std::floor(wmax.x / kSub));
-            const int64_t sz0 = int64_t(std::floor(wmin.z / kSub));
-            const int64_t sz1 = int64_t(std::floor(wmax.z / kSub));
-            for (int64_t sx = sx0; sx <= sx1; ++sx)
-                for (int64_t sz = sz0; sz <= sz1; ++sz) {
-                    auto [it, inserted] = cells.try_emplace(std::make_pair(sx, sz));
-                    tour::Aabb& cell = it->second;
-                    if (inserted)
-                        cell = tour::Aabb::empty();
-                    cell.mn = glm::min(cell.mn, wmin);
-                    cell.mx = glm::max(cell.mx, wmax);
-                    // Clip XZ to the subcell footprint (tight, tiled, no
-                    // cross-subcell overlap; Y stays the mesh-union range).
-                    cell.mn.x = std::max(cell.mn.x, float(sx * kSub));
-                    cell.mx.x = std::min(cell.mx.x, float((sx + 1) * kSub));
-                    cell.mn.z = std::max(cell.mn.z, float(sz * kSub));
-                    cell.mx.z = std::min(cell.mx.z, float((sz + 1) * kSub));
-                }
-        });
-
-    if (cells.empty())
-        return;
-
-    // ---- Adaptive spacing: densest uniform spacing whose TOTAL probe
-    // count across every subcell volume fits the budget. ----
-    constexpr uint64_t kBudget = 24576;
-    float spacing = 2.0f;
-    for (int guard = 0; guard < 64; ++guard) {
-        uint64_t total = 0;
-        for (const auto& [key, cell] : cells) {
-            const glm::vec3 ext = cell.mx - cell.mn;
-            // +2 = +1 probe beyond the far corner (the original margin) AND
-            // +1 for the half-spacing origin offset below (probes must reach
-            // one spacing PAST the AABB min so boundary surfaces sample
-            // open-space probes, never a probe embedded in the wall).
-            const uint32_t dx = std::max(2u, uint32_t(std::ceil(ext.x / spacing)) + 2u);
-            const uint32_t dy = std::max(2u, uint32_t(std::ceil(ext.y / spacing)) + 2u);
-            const uint32_t dz = std::max(2u, uint32_t(std::ceil(ext.z / spacing)) + 2u);
-            total += uint64_t(dx) * dy * dz;
-        }
-        if (total <= kBudget || spacing >= 128.0f)
-            break;
-        spacing *= 1.15f;
-    }
-
-    // ---- Create one Volume per subcell; collect descriptors. Fail-closed:
-    // any failed volume drops the whole feature (baked/sky ambient stands).
-    // Backend: hardware RT (inline RayQuery over the TLAS). The SDF is used
-    // for probe classification/relocation, not for the trace itself.
     const smvk::ddgi::TraceBackend ddgiBackend = smvk::ddgi::TraceBackend::HardwareRT;
-    m_ddgiVolumes.reserve(cells.size());
-    m_ddgiVolumeDescs.reserve(cells.size());
-    for (const auto& [key, cell] : cells) {
-        const glm::vec3 ext = cell.mx - cell.mn;
+    m_ddgiVolumes.reserve(smvk::ddgi::kDdgiCascadeCount);
+    m_ddgiVolumeDescs.reserve(smvk::ddgi::kDdgiCascadeCount);
+
+    struct CascadeDef {
+        const uint32_t* dims;
+        float spacing;
+        float maxDistance;
+    };
+    const CascadeDef cascades[smvk::ddgi::kDdgiCascadeCount] = {
+        {smvk::ddgi::kDdgiFineDims, smvk::ddgi::kDdgiFineSpacing, 20.0f},
+        {smvk::ddgi::kDdgiCoarseDims, m_ddgiCoarseSpacing, 60.0f},
+    };
+
+    for (uint32_t c = 0; c < smvk::ddgi::kDdgiCascadeCount; ++c) {
         smvk::ddgi::Grid grid{};
-        // Offset the grid one probe spacing OUTSIDE the mesh AABB: a probe
-        // on the AABB min corner sits inside/on the boundary wall and reads
-        // invalid, so every surface at the AABB edge would sample embedded
-        // probes and the whole field comes back magenta. Shifting the origin
-        // one spacing below the min corner (and extending dims to match)
-        // surrounds the mesh with open-space probes on all six sides.
-        grid.origin[0] = cell.mn.x - spacing;
-        grid.origin[1] = cell.mn.y - spacing;
-        grid.origin[2] = cell.mn.z - spacing;
-        grid.spacing = spacing;
-        grid.dims[0] = std::max(2u, uint32_t(std::ceil(ext.x / spacing)) + 2u);
-        grid.dims[1] = std::max(2u, uint32_t(std::ceil(ext.y / spacing)) + 2u);
-        grid.dims[2] = std::max(2u, uint32_t(std::ceil(ext.z / spacing)) + 2u);
+        // Origin is camera-snapped by UpdateDdgiCascades on the first frame.
+        grid.origin[0] = 0.0f;
+        grid.origin[1] = 0.0f;
+        grid.origin[2] = 0.0f;
+        grid.spacing = cascades[c].spacing;
+        grid.dims[0] = cascades[c].dims[0];
+        grid.dims[1] = cascades[c].dims[1];
+        grid.dims[2] = cascades[c].dims[2];
         grid.rays = 128u;
-        grid.maxDistance = 20.0f;
+        grid.maxDistance = cascades[c].maxDistance;
         grid.hysteresis = 0.95f;
 
         smvk::ddgi::Volume vol{};
         if (!vol.Create(*m_context, *m_rendergraph, grid, size_t(128u) << 20, ddgiBackend)) {
-            std::cerr << "[DDGI] a probe volume failed to create - DDGI disabled\n";
+            std::cerr << "[DDGI] cascade " << c << " failed to create - DDGI disabled\n";
             for (auto& v : m_ddgiVolumes)
                 v.Destroy(*m_rendergraph);
             m_ddgiVolumes.clear();
@@ -5316,13 +5246,104 @@ void WorldRenderer::RebuildDdgiVolumes() {
                                       0,
                                       0);
     }
-    std::cerr << "[DDGI] " << m_ddgiVolumes.size() << " subcell volume(s), spacing " << spacing
-              << " m";
-    for (const auto& d : m_ddgiVolumeDescs) {
-        std::cerr << "\n[DDGI]   origin=(" << d.origin[0] << "," << d.origin[1] << ","
-                  << d.origin[2] << ") dims=" << d.dims[0] << "x" << d.dims[1] << "x" << d.dims[2];
+    std::cerr << "[DDGI] " << m_ddgiVolumes.size() << " camera-following cascade(s), fine spacing "
+              << smvk::ddgi::kDdgiFineSpacing << " m, coarse spacing " << m_ddgiCoarseSpacing
+              << " m\n";
+}
+
+// Per-frame camera-following cascade update: fits the coarse-cascade spacing
+// to the estimated far depth (SDSM-style SLOW hysteresis, reusing the shadow
+// SDSM's 99% depth percentile) and snaps each cascade's grid to the camera,
+// carrying history toroidally across the scroll.
+void WorldRenderer::UpdateDdgiCascades(const glm::vec3& camPos) {
+    if (m_ddgiVolumes.empty())
+        return;
+
+    // ---- Far-depth fit (slow hysteresis). The shadow SDSM's 99% percentile
+    // is "how far the visible scene extends"; the coarse cascade must reach it.
+    const float measuredFar = m_sdsmStatsValid ? m_sdsmPctMax : 40.0f;
+    const float wantFar = std::clamp(measuredFar * 1.1f, 8.0f, 160.0f);
+    if (!m_ddgiFarValid) {
+        m_ddgiFar = wantFar;
+        m_ddgiFarValid = true;
+    } else if (wantFar > m_ddgiFar) {
+        m_ddgiFar = wantFar; // instant expand — never leave the scene uncovered
+    } else {
+        // slow contract (~1%/frame) so the cascade reach doesn't swim.
+        m_ddgiFar = std::max(wantFar, m_ddgiFar - (m_ddgiFar - wantFar) * 0.01f);
     }
-    std::cerr << "\n";
+    m_ddgiFar = std::ceil(m_ddgiFar / 0.5f) * 0.5f; // quantize 0.5 m
+
+    // ---- Coarse spacing ladder: snap so the grid only re-converges when a
+    // rung actually moves (rare). Pick the SMALLEST rung whose reach covers
+    // the estimated far depth (rung * reachCells >= m_ddgiFar), so distant
+    // geometry is never left outside the coarse volume.
+    const float target = m_ddgiFar / smvk::ddgi::kDdgiCoarseReachCells;
+    static constexpr float ladder[] = {2.0f, 3.0f, 4.0f, 6.0f, 8.0f, 12.0f, 16.0f};
+    float snapped = smvk::ddgi::kDdgiCoarseMaxSpacing;
+    for (float l : ladder)
+        if (l >= target - 1e-3f) {
+            snapped = l;
+            break;
+        }
+    snapped =
+        std::clamp(snapped, smvk::ddgi::kDdgiCoarseMinSpacing, smvk::ddgi::kDdgiCoarseMaxSpacing);
+    const bool coarseSpacingChanged = (snapped != m_ddgiCoarseSpacing);
+    m_ddgiCoarseSpacing = snapped;
+
+    // ---- Scroll each cascade: snap its grid to the camera, compute the
+    // per-axis delta vs last frame (the blend's toroidal carry), update the
+    // grid origin + descriptor. ----
+    const float spacings[smvk::ddgi::kDdgiCascadeCount] = {smvk::ddgi::kDdgiFineSpacing,
+                                                           m_ddgiCoarseSpacing};
+    for (uint32_t c = 0; c < m_ddgiVolumes.size(); ++c) {
+        smvk::ddgi::Volume& vol = m_ddgiVolumes[c];
+        const float spacing = spacings[c];
+        const bool spacingChanged = (spacing != vol.grid.spacing);
+        if (spacingChanged)
+            vol.grid.spacing = spacing;
+
+        // Center the volume on the camera: scroll = floor(cam/spacing) - dims/2.
+        const int32_t sx = int32_t(std::floor(camPos.x / spacing)) - int32_t(vol.grid.dims[0] / 2);
+        const int32_t sy = int32_t(std::floor(camPos.y / spacing)) - int32_t(vol.grid.dims[1] / 2);
+        const int32_t sz = int32_t(std::floor(camPos.z / spacing)) - int32_t(vol.grid.dims[2] / 2);
+
+        // First frame / spacing change: no toroidal carry (delta 0), and a
+        // spacing change must also reset the history (old probes are at
+        // different world positions).
+        if (m_ddgiReset || spacingChanged) {
+            vol.scrollPrev[0] = sx;
+            vol.scrollPrev[1] = sy;
+            vol.scrollPrev[2] = sz;
+            if (spacingChanged)
+                vol.resetPending = true;
+        }
+        vol.scroll[0] = sx;
+        vol.scroll[1] = sy;
+        vol.scroll[2] = sz;
+
+        vol.grid.origin[0] = float(sx) * spacing;
+        vol.grid.origin[1] = float(sy) * spacing;
+        vol.grid.origin[2] = float(sz) * spacing;
+        m_ddgiVolumeDescs[c].origin[0] = vol.grid.origin[0];
+        m_ddgiVolumeDescs[c].origin[1] = vol.grid.origin[1];
+        m_ddgiVolumeDescs[c].origin[2] = vol.grid.origin[2];
+        m_ddgiVolumeDescs[c].spacing = vol.grid.spacing;
+    }
+
+    // The descriptor origins changed: re-upload the (tiny) list every frame.
+    if (!m_ddgiVolumeDescBuf.empty()) {
+        m_context->UploadDataToBuffer(m_ddgiVolumeDescBuf,
+                                      m_ddgiVolumeDescs.data(),
+                                      m_ddgiVolumeDescs.size() * sizeof(smvk::ddgi::VolumeDesc),
+                                      smvk::PipelineStageBit_Fragment,
+                                      smvk::AccessFlags::ShaderRead,
+                                      0,
+                                      0);
+    }
+    (void)coarseSpacingChanged;
+    // The key-7 debug lattice tracks the (now moving) grid: rebuild it.
+    m_ddgiProbesDirty = true;
 }
 
 // One env-zone look derived from a scene env block. The map stores the
@@ -19603,11 +19624,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     }
 
     // ---------------------------------------------------------------------
-    // DDGI (dynamic diffuse GI, Rendergraph/ddgi.h): one probe VOLUME per
-    // occupied 64 m world subcell. The trace + blend passes are emitted
+    // DDGI (dynamic diffuse GI, Rendergraph/ddgi.h): two camera-following
+    // cascade volumes (fine + coarse). The trace + blend passes are emitted
     // BEFORE Main so the lit body samples the freshly-written
-    // irradiance/moments; the volume set is (re)built once per world. The
-    // Main-side READ hints are attached below after mainPass.
+    // irradiance/moments; the cascade set is (re)built once per world, then
+    // re-centered on the camera + distance-fitted every frame. The Main-side
+    // READ hints are attached below after mainPass.
     // ---------------------------------------------------------------------
     const bool ddgiWants = m_ambientMode == AmbientMode::Ddgi && m_context &&
                            m_context->SupportsRayQueries() && m_world;
@@ -19616,9 +19638,13 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             m_ddgiCachedWorld = m_world;
             RebuildDdgiVolumes();
         }
+        // Camera-following: snap the cascades to the camera + fit the coarse
+        // spacing to the measured far depth (before the passes read origins).
+        UpdateDdgiCascades(m_cameraPositioner.cameraPosition_);
         // One trace + blend pair per volume; the shared write slot +
         // update index ping-pong the double-buffered history across every
-        // volume (m_ddgiReset clears history on the first frame).
+        // volume (m_ddgiReset clears history on the first frame; a spacing
+        // change resets only that cascade via vol.resetPending).
         const uint64_t rayMaterials = m_context->RayTracingMaterialAddress();
         smvk::ddgi::Volume::SdfTraceInput sdfInput;
         const smvk::ddgi::Volume::SdfTraceInput* sdfPtr = nullptr;
@@ -19627,13 +19653,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             sdfPtr = &sdfInput;
         }
         for (auto& vol : m_ddgiVolumes) {
+            const bool volReset = m_ddgiReset || vol.resetPending;
             vol.AddPasses(*m_rendergraph,
                           frameUniformsAddress,
                           m_ddgiWriteSlot,
                           m_ddgiUpdateIndex,
-                          m_ddgiReset,
+                          volReset,
                           rayMaterials,
                           sdfPtr);
+            vol.resetPending = false;
         }
         if (!m_ddgiVolumes.empty()) {
             m_ddgiWriteSlot ^= 1u;
