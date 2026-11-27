@@ -1800,6 +1800,26 @@ float envVis = 1.0f;
                 }
             }
         }
+        else if (!isBlendMat)
+        {
+            // Uncovered by the DDGI field (the cascades don't reach here, or
+            // every neighboring probe is invalid). DDGI is the exclusive
+            // diffuse owner and the diffuse-IBL isolation flag is off, so
+            // `ambient` would otherwise stay at the near-black legacy term —
+            // pure black blobs. Fall back to the UNGATED sky diffuse (the
+            // field's own sky, DdgiSkyIrradiance) instead.
+            const float skyIbl = max(frame.env.ground.w, 0.0f);
+            const float skyExp = max(frame.env.skyHorizon.w, 0.01f);
+            const float upW = saturate(geomN.y);
+            const float dnW = saturate(-geomN.y);
+            const float3 skyPart =
+                lerp(frame.env.skyHorizon.rgb, frame.env.skyZenith.rgb, pow(upW, skyExp));
+            const float3 gndPart =
+                lerp(frame.env.skyHorizon.rgb, frame.env.ground.rgb, saturate(dnW * 1.5f));
+            const float3 hemi = lerp(gndPart, skyPart, saturate(geomN.y * 0.5f + 0.5f));
+            const float3 skyDiffuse = kD * baseColor * (hemi * skyIbl) * occlusion;
+            ambient = lerp(ambient, skyDiffuse, saturate(ddgiParams.strength));
+        }
     }
 
     // ---------------------------------------------------------------
