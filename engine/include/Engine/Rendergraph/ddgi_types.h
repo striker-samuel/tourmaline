@@ -148,7 +148,13 @@ struct TracePush {
     // was written at the old origin, so E_indirect sampling must map hit
     // positions through the old grid, not the current one.
     float oldOriginX = 0, oldOriginY = 0, oldOriginZ = 0;
-    float pad_ = 0;
+    // Scroll delta (probe units) + reset flag: the trace SKIPS probes whose
+    // history carried across the scroll (coord + delta still in [0, dims))
+    // except the rotating subset, so only scrolled-in + a rotating 1/N of
+    // carried probes are re-traced each frame (incremental tracing).
+    int32_t deltaX = 0, deltaY = 0, deltaZ = 0;
+    uint32_t reset = 0;
+    uint32_t pad_ = 0;
 };
 // Fixed choice per volume/dispatch, not a per-ray switch.
 enum class TraceBackend : uint8_t { HardwareRT, StaticSdf };
@@ -157,8 +163,8 @@ struct SdfTracePush {
     TracePush trace{};
     uint64_t sceneAddress = 0;
 };
-static_assert(sizeof(TracePush) == 104 && offsetof(TracePush, oldOriginX) == 88);
-static_assert(sizeof(SdfTracePush) == 112 && offsetof(SdfTracePush, sceneAddress) == 104);
+static_assert(sizeof(TracePush) == 120 && offsetof(TracePush, oldOriginX) == 88);
+static_assert(sizeof(SdfTracePush) == 128 && offsetof(SdfTracePush, sceneAddress) == 120);
 
 struct BlendPush {
     uint64_t scratch = 0, oldIrr = 0, oldDistance = 0, newIrr = 0, newDistance = 0;
@@ -170,7 +176,7 @@ struct BlendPush {
     // shifted old history, the rest (scrolled-in territory) reset to 0.
     int32_t deltaX = 0, deltaY = 0, deltaZ = 0;
     uint32_t dimX = 0, dimY = 0, dimZ = 0;
-    uint32_t pad = 0;
+    uint32_t updateIndex = 0; // rotating-subset phase (incremental trace match)
 };
 // SDF-assisted probe relocation (ddgi_relocate.cs.hlsl).
 struct RelocatePush {
@@ -181,7 +187,7 @@ struct RelocatePush {
     uint32_t iterations = 0;
 };
 static_assert(sizeof(RelocatePush) == 56 && offsetof(RelocatePush, iterations) == 52);
-static_assert(sizeof(TracePush) == 104 && offsetof(TracePush, maxDistance) == 48);
+static_assert(sizeof(TracePush) == 120 && offsetof(TracePush, maxDistance) == 48);
 static_assert(sizeof(BlendPush) == 88 && offsetof(BlendPush, deltaX) == 60);
 
 } // namespace smvk::ddgi

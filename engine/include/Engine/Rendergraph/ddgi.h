@@ -196,6 +196,11 @@ struct Volume {
         }
         const History& old = history[writeSlot ^ 1];
         const History& next = history[writeSlot];
+        const int32_t delta[3] = {
+            scroll[0] - scrollPrev[0],
+            scroll[1] - scrollPrev[1],
+            scroll[2] - scrollPrev[2],
+        };
         {
             // SDF-assisted probe relocation: push buried probes into free
             // space so the surfaces they serve stop reading black. Runs once
@@ -233,16 +238,30 @@ struct Volume {
                 float(scrollPrev[1]) * grid.spacing,
                 float(scrollPrev[2]) * grid.spacing,
             };
-            const TracePush push{frameAddress,           scratch.address,
-                                 grid.origin[0],         grid.origin[1],
-                                 grid.origin[2],         grid.spacing,
-                                 grid.dims[0],           grid.dims[1],
-                                 grid.dims[2],           grid.rays,
-                                 grid.maxDistance,       updateIndex,
-                                 old.irradiance.address, old.distance.address,
-                                 rayMaterials,           relocation.address,
-                                 oldOrigin[0],           oldOrigin[1],
-                                 oldOrigin[2],           0.0f};
+            const TracePush push{frameAddress,
+                                 scratch.address,
+                                 grid.origin[0],
+                                 grid.origin[1],
+                                 grid.origin[2],
+                                 grid.spacing,
+                                 grid.dims[0],
+                                 grid.dims[1],
+                                 grid.dims[2],
+                                 grid.rays,
+                                 grid.maxDistance,
+                                 updateIndex,
+                                 old.irradiance.address,
+                                 old.distance.address,
+                                 rayMaterials,
+                                 relocation.address,
+                                 oldOrigin[0],
+                                 oldOrigin[1],
+                                 oldOrigin[2],
+                                 delta[0],
+                                 delta[1],
+                                 delta[2],
+                                 uint32_t(reset),
+                                 0u};
             if (backend == TraceBackend::StaticSdf) {
                 BufferSyncRequest req{};
                 req.barrierMasks.accessMask = AccessFlags::ShaderRead;
@@ -274,11 +293,6 @@ struct Volume {
             Hint(pass, next.distance, true);
             auto& f = rg.PassFrameData<Frame<BlendPush>>(pass);
             f.program = const_cast<ShaderProgram*>(&blendProgram);
-            const int32_t delta[3] = {
-                scroll[0] - scrollPrev[0],
-                scroll[1] - scrollPrev[1],
-                scroll[2] - scrollPrev[2],
-            };
             f.push = {scratch.address,
                       old.irradiance.address,
                       old.distance.address,
@@ -295,7 +309,7 @@ struct Volume {
                       grid.dims[0],
                       grid.dims[1],
                       grid.dims[2],
-                      0};
+                      updateIndex};
             f.groupsX = (kDistanceBins + 63) / 64;
             f.groupsY = sizes.probes;
             pass.SetRecordFn(&Record<BlendPush>);

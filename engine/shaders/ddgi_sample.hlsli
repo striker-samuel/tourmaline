@@ -118,10 +118,13 @@ DdgiSampleResult DdgiSampleVolume(DdgiVolumeDesc desc, uint slot, float3 worldPo
 }
 
 // Sample the DDGI probe field at worldPos with geometric normal geomN and
-// shading normal N: find the volume whose AABB contains the point and sample
-// it. Returns valid == 0 when the point is outside every volume or the
-// weights sum to ~0.
-DdgiSampleResult DdgiSampleIrradiance(DdgiParams params, float3 worldPos, float3 geomN, float3 N)
+// shading normal N. Cascades are listed fine-first (both follow the camera;
+// the fine volume is a subset of the coarse). Both are sampled and blended by
+// camera distance — near the camera the fine cascade wins, far the coarse —
+// so the density transition is a smooth cross-fade, not a hard seam. Returns
+// valid == 0 when the point is outside every volume or the weights sum to ~0.
+DdgiSampleResult DdgiSampleIrradiance(DdgiParams params, float3 cameraPos, float3 worldPos,
+                                      float3 geomN, float3 N)
 {
     DdgiSampleResult r;
     r.irradiance = float3(0.0, 0.0, 0.0);
@@ -130,30 +133,55 @@ DdgiSampleResult DdgiSampleIrradiance(DdgiParams params, float3 worldPos, float3
         return r;
 
     const uint count = min(params.volumeCount, 128u);
-    // Index the BDA in place (values[1] is a flexible GPU array view).
-    // Reject using spatial fields before fetching the history pointers.
-    // Cascades are listed fine-first (both follow the camera, the fine volume
-    // is a subset of the coarse): return the first cascade whose sample is
-    // VALID, so a fine cascade that faded at its outer cell falls through to
-    // the coarse cascade instead of dropping to the baked/sky fallback.
+    // Fine cascade = volume 0; its half-extent sets the cross-fade band.
+    const DdgiVolumeDesc dFine = params.volumes.Get().values[0];
+    const float fineReach = 0.5f * float(dFine.dimX - 1u) * dFine.spacing;
+    const float dist = length(worldPos - cameraPos);
+
+    // Near the camera the fine cascade alone wins — skip the coarse sample
+    // entirely (most pixels, so the smooth blend stays cheap).
+    if (dist < fineReach * 0.45f) {
+        const float3 vmin = float3(dFine.originX, dFine.originY, dFine.originZ);
+        const float3 vmax = vmin + (float3(dFine.dimX, dFine.dimY, dFine.dimZ) - 1.0f) * dFine.spacing;
+        if (all(worldPos >= vmin) && all(worldPos <= vmax))
+            return DdgiSampleVolume(dFine, params.slot, worldPos, geomN, N);
+        return r;
+    }
+
+    // Otherwise sample both cascades and cross-fade by distance (far = coarse,
+    // the band in between blends).
+    DdgiSampleResult fine;
+    DdgiSampleResult coarse;
+    fine.irradiance = float3(0.0, 0.0, 0.0);
+    coarse.irradiance = float3(0.0, 0.0, 0.0);
+    fine.valid = 0.0;
+    coarse.valid = 0.0;
     [loop]
     for (uint v = 0; v < count; ++v)
     {
-        const float3 vmin = float3(params.volumes.Get().values[v].originX,
-            params.volumes.Get().values[v].originY, params.volumes.Get().values[v].originZ);
-        // The last actual probe sits at (dims-1)*spacing, not dims*spacing:
-        // the grid covers [0, (dims-1)*spacing] on each axis. Extending the
-        // AABB by a full spacing made a volume claim the surface beyond its
-        // probe lattice (the dark strip at volume edges).
-        const float3 vmax = vmin + (float3(params.volumes.Get().values[v].dimX,
-            params.volumes.Get().values[v].dimY, params.volumes.Get().values[v].dimZ) - 1.0f)
-            * params.volumes.Get().values[v].spacing;
+        const DdgiVolumeDesc d = params.volumes.Get().values[v];
+        const float3 vmin = float3(d.originX, d.originY, d.originZ);
+        const float3 vmax = vmin + (float3(d.dimX, d.dimY, d.dimZ) - 1.0f) * d.spacing;
         if (all(worldPos >= vmin) && all(worldPos <= vmax)) {
-            DdgiSampleResult s =
-                DdgiSampleVolume(params.volumes.Get().values[v], params.slot, worldPos, geomN, N);
-            if (s.valid > 0.0f)
-                return s;
+            DdgiSampleResult s = DdgiSampleVolume(d, params.slot, worldPos, geomN, N);
+            if (s.valid > 0.0f) {
+                if (v == 0u)
+                    fine = s;
+                else if (coarse.valid <= 0.0f)
+                    coarse = s;
+            }
         }
     }
+
+    if (fine.valid > 0.0f && coarse.valid > 0.0f) {
+        const float t = smoothstep(fineReach * 0.45f, fineReach * 0.85f, dist);
+        r.irradiance = lerp(fine.irradiance, coarse.irradiance, t);
+        r.valid = 1.0f;
+        return r;
+    }
+    if (fine.valid > 0.0f)
+        return fine;
+    if (coarse.valid > 0.0f)
+        return coarse;
     return r;
 }

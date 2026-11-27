@@ -20,7 +20,7 @@ struct DdgiBlendPush {
     uint dimX;
     uint dimY;
     uint dimZ;
-    uint pad;
+    uint updateIndex;
 };
 GPU_PUSH(DdgiBlendPush, sp);
 
@@ -31,20 +31,30 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     if (probe >= sp.probes || bin >= DDGI_DIST_RES * DDGI_DIST_RES || sp.rays == 0)
         return;
 
-    // Toroidal history carry (camera-following scroll): probe `probe` sits at
-    // grid coord c = DdgiGridCoord(probe). Last frame that world position was
-    // logical coord c + delta. When c+delta is inside [0, dims) the probe's
-    // history carried across the scroll (blend hysteresis); otherwise it
-    // scrolled into fresh territory and resets (hysteresis 0).
+    // Toroidal carry + incremental subset (see ddgi_common.hlsli): a probe at
+    // grid coord c lived at c + delta last frame. Carried probes re-trace only
+    // on their rotating-subset turn; scrolled-in probes and the reset frame
+    // always trace. Carried-but-not-traced probes copy their old history.
     const uint3 dims = uint3(sp.dimX, sp.dimY, sp.dimZ);
-    const uint3 coord = DdgiGridCoord(probe, dims);
-    const int3 oldCoord = int3(coord) + int3(sp.deltaX, sp.deltaY, sp.deltaZ);
-    const bool carry = all(oldCoord >= int3(0, 0, 0)) && all(oldCoord < int3(dims));
-    const uint oldProbe = carry
-        ? uint(oldCoord.x) + uint(oldCoord.y) * sp.dimX + uint(oldCoord.z) * sp.dimX * sp.dimY
-        : 0u;
+    uint oldProbe = 0u;
+    const bool carry = DdgiProbeCarried(int3(DdgiGridCoord(probe, dims)),
+                                        int3(sp.deltaX, sp.deltaY, sp.deltaZ), dims, oldProbe);
+    const bool traced = sp.reset != 0u || !carry || DdgiProbeTraced(probe, sp.updateIndex);
 
     const bool writeIrr = bin < DDGI_IRR_RES * DDGI_IRR_RES;
+    const uint distIndex = probe * DDGI_DIST_RES * DDGI_DIST_RES + bin;
+
+    // Carried + not traced this frame: pure scroll — copy the carried history
+    // forward unchanged (the trace left this probe's scratch stale).
+    if (carry && !traced) {
+        if (writeIrr)
+            sp.newIrr.Get().values[probe * DDGI_IRR_RES * DDGI_IRR_RES + bin] =
+                sp.oldIrr.Get().values[oldProbe * DDGI_IRR_RES * DDGI_IRR_RES + bin];
+        sp.newDistance.Get().values[distIndex] =
+            sp.oldDistance.Get().values[oldProbe * DDGI_DIST_RES * DDGI_DIST_RES + bin];
+        return;
+    }
+
     float3 irrDir = DdgiBinDirection(min(bin, DDGI_IRR_RES * DDGI_IRR_RES - 1), DDGI_IRR_RES);
     float3 distDir = DdgiBinDirection(bin, DDGI_DIST_RES);
     float3 sumIrr = 0;
@@ -68,26 +78,17 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     }
 
     // Probe validity: a probe is "inside geometry" only when its mean ray
-    // distance collapses (surrounded on all sides). The old backface-count
-    // test (backfaces*4 <= rays) wrongly rejected interior room probes — a
-    // ceiling is a legitimate back-face hit from below, not proof the probe
-    // is embedded. Distance-based validity keeps room probes valid while
-    // rejecting probes buried in walls/floors (mean dist ~0).
+    // distance collapses (surrounded on all sides).
     const float meanDist = sumDist / float(max(sp.rays, 1u));
-    // Tolerate a few unresolved rays: the SDF march occasionally hits its
-    // step budget in enclosed spaces, and requiring ZERO incomplete rays
-    // made tunnel probes flicker invalid on the per-frame ray rotation (the
-    // field visibly flashing frame-to-frame). Require < 1/4 unresolved.
     const bool valid =
         incompleteCount < (sp.rays / 4u + 1u) && meanDist > sp.maxDistance * 0.025f;
-    float h = (sp.reset == 0 && carry) ? saturate(sp.hysteresis) : 0.0;
-    uint distIndex = probe * DDGI_DIST_RES * DDGI_DIST_RES + bin;
+    // Carried + traced: blend hysteresis against the shifted old history;
+    // scrolled-in / reset probes start fresh (h = 0).
+    const float h = (carry && sp.reset == 0) ? saturate(sp.hysteresis) : 0.0;
     uint oldDistIndex = oldProbe * DDGI_DIST_RES * DDGI_DIST_RES + bin;
     float2 moments = sumWeight > 1e-8 ? sumMoments / sumWeight :
         float2(sp.maxDistance, sp.maxDistance * sp.maxDistance);
-    // Use the first irradiance bin as the probe-wide validity flag, read at
-    // the toroidal old index so the carried history matches this world pos.
-    if (sp.reset == 0 && carry &&
+    if (carry && sp.reset == 0 &&
         sp.oldIrr.Get().values[oldProbe * DDGI_IRR_RES * DDGI_IRR_RES].w > 0
         && valid) {
         moments = lerp(moments, sp.oldDistance.Get().values[oldDistIndex], h);
@@ -99,7 +100,7 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
         uint index = probe * DDGI_IRR_RES * DDGI_IRR_RES + bin;
         uint oldIndex = oldProbe * DDGI_IRR_RES * DDGI_IRR_RES + bin;
         float3 E = sumIrr * (4 * DDGI_PI / float(sp.rays));
-        if (sp.reset == 0 && carry && valid) {
+        if (carry && sp.reset == 0 && valid) {
             float4 old = sp.oldIrr.Get().values[oldIndex];
             if (old.w > 0) E = lerp(E, old.rgb, h);
         }

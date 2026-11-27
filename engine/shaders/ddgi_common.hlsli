@@ -111,3 +111,26 @@ float DdgiVisibility(float2 moments, float distance) {
     float v = variance / (variance + delta * delta);
     return v*v*v;
 }
+
+// Incremental tracing: each frame only the scrolled-in probes + a rotating
+// 1/N subset of carried probes are re-traced; the blend copies the rest.
+static const uint DDGI_TRACE_SUBSET = 4;
+
+// Toroidal carry decision: probe at grid coord `coord` lived at `coord +
+// delta` in the previous grid. Returns true (and the previous-frame linear
+// probe index) when that world position was inside the old grid.
+bool DdgiProbeCarried(int3 coord, int3 delta, uint3 dims, out uint oldProbe)
+{
+    const int3 oldCoord = coord + delta;
+    const bool carry = all(oldCoord >= int3(0, 0, 0)) && all(oldCoord < int3(dims));
+    oldProbe = carry ? uint(oldCoord.x) + uint(oldCoord.y) * dims.x
+        + uint(oldCoord.z) * dims.x * dims.y : 0u;
+    return carry;
+}
+
+// Rotating-subset trace decision: a carried probe is re-traced only when its
+// residue matches the current phase (new/scrolled-in probes always trace).
+bool DdgiProbeTraced(uint probe, uint updateIndex)
+{
+    return (probe % DDGI_TRACE_SUBSET) == (updateIndex % DDGI_TRACE_SUBSET);
+}

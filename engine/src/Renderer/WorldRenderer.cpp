@@ -5180,7 +5180,7 @@ void WorldRenderer::RebuildDdgiVolumes() {
         float maxDistance;
     };
     const CascadeDef cascades[smvk::ddgi::kDdgiCascadeCount] = {
-        {smvk::ddgi::kDdgiFineDims, smvk::ddgi::kDdgiFineSpacing, 20.0f},
+        {smvk::ddgi::kDdgiFineDims, m_ddgiFineSpacing, 20.0f},
         {smvk::ddgi::kDdgiCoarseDims, m_ddgiCoarseSpacing, 60.0f},
     };
 
@@ -5246,9 +5246,9 @@ void WorldRenderer::RebuildDdgiVolumes() {
                                       0,
                                       0);
     }
+    m_ddgiBuiltFineSpacing = m_ddgiFineSpacing;
     std::cerr << "[DDGI] " << m_ddgiVolumes.size() << " camera-following cascade(s), fine spacing "
-              << smvk::ddgi::kDdgiFineSpacing << " m, coarse spacing " << m_ddgiCoarseSpacing
-              << " m\n";
+              << m_ddgiFineSpacing << " m, coarse spacing " << m_ddgiCoarseSpacing << " m\n";
 }
 
 // Per-frame camera-following cascade update: fits the coarse-cascade spacing
@@ -5261,18 +5261,24 @@ void WorldRenderer::UpdateDdgiCascades(const glm::vec3& camPos) {
 
     // ---- Far-depth fit (slow hysteresis). The shadow SDSM's 99% percentile
     // is "how far the visible scene extends"; the coarse cascade must reach it.
-    const float measuredFar = m_sdsmStatsValid ? m_sdsmPctMax : 40.0f;
-    const float wantFar = std::clamp(measuredFar * 1.1f, 8.0f, 160.0f);
-    if (!m_ddgiFarValid) {
-        m_ddgiFar = wantFar;
+    // A manual override (m_ddgiFarOverride >= 0) bypasses the fit entirely.
+    if (m_ddgiFarOverride >= 0.0f) {
+        m_ddgiFar = m_ddgiFarOverride;
         m_ddgiFarValid = true;
-    } else if (wantFar > m_ddgiFar) {
-        m_ddgiFar = wantFar; // instant expand — never leave the scene uncovered
     } else {
-        // slow contract (~1%/frame) so the cascade reach doesn't swim.
-        m_ddgiFar = std::max(wantFar, m_ddgiFar - (m_ddgiFar - wantFar) * 0.01f);
+        const float measuredFar = m_sdsmStatsValid ? m_sdsmPctMax : 40.0f;
+        const float wantFar = std::clamp(measuredFar * 1.1f, 8.0f, 160.0f);
+        if (!m_ddgiFarValid) {
+            m_ddgiFar = wantFar;
+            m_ddgiFarValid = true;
+        } else if (wantFar > m_ddgiFar) {
+            m_ddgiFar = wantFar; // instant expand — never leave the scene uncovered
+        } else {
+            // slow contract (~1%/frame) so the cascade reach doesn't swim.
+            m_ddgiFar = std::max(wantFar, m_ddgiFar - (m_ddgiFar - wantFar) * 0.01f);
+        }
+        m_ddgiFar = std::ceil(m_ddgiFar / 0.5f) * 0.5f; // quantize 0.5 m
     }
-    m_ddgiFar = std::ceil(m_ddgiFar / 0.5f) * 0.5f; // quantize 0.5 m
 
     // ---- Coarse spacing ladder: snap so the grid only re-converges when a
     // rung actually moves (rare). Pick the SMALLEST rung whose reach covers
@@ -5294,8 +5300,7 @@ void WorldRenderer::UpdateDdgiCascades(const glm::vec3& camPos) {
     // ---- Scroll each cascade: snap its grid to the camera, compute the
     // per-axis delta vs last frame (the blend's toroidal carry), update the
     // grid origin + descriptor. ----
-    const float spacings[smvk::ddgi::kDdgiCascadeCount] = {smvk::ddgi::kDdgiFineSpacing,
-                                                           m_ddgiCoarseSpacing};
+    const float spacings[smvk::ddgi::kDdgiCascadeCount] = {m_ddgiFineSpacing, m_ddgiCoarseSpacing};
     for (uint32_t c = 0; c < m_ddgiVolumes.size(); ++c) {
         smvk::ddgi::Volume& vol = m_ddgiVolumes[c];
         const float spacing = spacings[c];
@@ -19634,7 +19639,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     const bool ddgiWants = m_ambientMode == AmbientMode::Ddgi && m_context &&
                            m_context->SupportsRayQueries() && m_world;
     if (ddgiWants) {
-        if (m_ddgiCachedWorld != m_world) {
+        if (m_ddgiCachedWorld != m_world || m_ddgiFineSpacing != m_ddgiBuiltFineSpacing) {
             m_ddgiCachedWorld = m_world;
             RebuildDdgiVolumes();
         }

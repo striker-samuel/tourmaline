@@ -20,7 +20,9 @@ struct DdgiTracePush {
     GPU_PTR_READ(RayMaterialBuffer) rayMaterials; // per-TLAS-instance material
     GPU_PTR_READ(DdgiRelocationBuffer) relocation; // per-probe relocation offset
     float oldOriginX, oldOriginY, oldOriginZ; // previous-frame origin (E_indirect)
-    float pad;
+    int deltaX, deltaY, deltaZ; // scroll delta (probe units) for the carry test
+    uint reset; // 1 = trace everything (first frame / spacing change)
+    uint pad;
 };
 GPU_PUSH(DdgiTracePush, sp);
 
@@ -31,6 +33,18 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     uint3 dims = uint3(sp.dimX, sp.dimY, sp.dimZ);
     if (rayIndex >= sp.rays || probe >= dims.x * dims.y * dims.z)
         return;
+
+    // Incremental tracing: carried probes (their world position existed last
+    // frame) are re-traced only on their rotating-subset turn; scrolled-in
+    // probes and the reset frame trace everything. Skipped probes leave the
+    // scratch stale — the blend copies the carried history instead.
+    if (sp.reset == 0u) {
+        uint oldProbe;
+        const bool carry = DdgiProbeCarried(int3(DdgiGridCoord(probe, dims)),
+                                            int3(sp.deltaX, sp.deltaY, sp.deltaZ), dims, oldProbe);
+        if (carry && !DdgiProbeTraced(probe, sp.updateIndex))
+            return;
+    }
 
     float3 direction = DdgiRayDirection(rayIndex, sp.rays, sp.updateIndex);
     float3 origin = float3(sp.originX, sp.originY, sp.originZ)

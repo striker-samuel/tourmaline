@@ -1746,7 +1746,8 @@ float envVis = 1.0f;
     const DdgiParams ddgiParams = frame.ddgiParams.Get();
     if (ddgiParams.enabled != 0u)
     {
-        const DdgiSampleResult ddgi = DdgiSampleIrradiance(ddgiParams, IN.worldPos, geomN, N);
+        const DdgiSampleResult ddgi =
+            DdgiSampleIrradiance(ddgiParams, frame.cameraPos, IN.worldPos, geomN, N);
         if (ddgiParams.debug == 1u)
         {
             OUT.outAoTerm = float4(0.0f, 0.0f, 0.0f, 0.0f);

@@ -1155,6 +1155,21 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                         ImGui::SameLine();
                         ImGui::TextColored(ImVec4(1.00f, 0.60f, 0.20f, 1.0f), "coarse");
                     }
+                    // Cascade distance knobs. Fine spacing rebuilds the fine
+                    // cascade (dims fixed, spacing is the distance between
+                    // probes); coarse reach re-fits the coarse cascade's
+                    // spacing through the ladder (auto = the SDSM far fit).
+                    if (ImGui::SliderFloat(
+                            "Fine cascade spacing (m)", &m_ddgiFineSpacing, 0.5f, 4.0f, "%.2f")) {
+                        // Rebuild is picked up by the update loop's compare
+                        // against m_ddgiBuiltFineSpacing.
+                    }
+                    bool autoReach = m_ddgiFarOverride < 0.0f;
+                    if (ImGui::Checkbox("Auto coarse reach (SDSM)", &autoReach))
+                        m_ddgiFarOverride = autoReach ? -1.0f : 40.0f;
+                    if (!autoReach)
+                        ImGui::SliderFloat(
+                            "Coarse reach (m)", &m_ddgiFarOverride, 5.0f, 160.0f, "%.0f");
                     if (m_regLoaded || m_giVolumesLoaded) {
                         // All R / F8 stops (including off).
                         // Select Lit so the debug shader is visible.

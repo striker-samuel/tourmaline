@@ -5112,6 +5112,10 @@ class WorldRenderer : public IRenderer {
     float m_ddgiFar = 40.0f;
     bool m_ddgiFarValid = false;
     float m_ddgiCoarseSpacing = 6.0f;
+    // User-tunable cascade distances (the Debug panel sliders).
+    float m_ddgiFineSpacing = 1.5f;       // fine cascade probe spacing (m)
+    float m_ddgiFarOverride = -1.0f;      // manual coarse reach (m); <0 = auto (SDSM fit)
+    float m_ddgiBuiltFineSpacing = -1.0f; // fine spacing the volumes were built with
     // DDGI probe-grid visualization (the "Probe debug view"): the dynamic
     // probe positions as lattice markers over the scene (reuses giprobe.h's
     // mode-2 lattice, no bake fetch). Strided to the draw cap; rebuilt when
