@@ -836,6 +836,8 @@ static std::optional<AmbientMode> AmbientModeFromPin(std::string_view v) {
         return AmbientMode::Off;
     if (v == "ddgi" || v == "dynamic")
         return AmbientMode::Ddgi;
+    if (v == "sdfgi" || v == "sdf_gi")
+        return AmbientMode::SdfGi;
     return std::nullopt;
 }
 // Legacy TOURMALINE_GI overlap: 1/on -> All; 0/off demotes the baked

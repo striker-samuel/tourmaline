@@ -274,6 +274,8 @@ enum class AmbientMode : int {
     Baked = 5,     // All minus the sky fallback (baked GI isolation)
     Ddgi = 6,      // dynamic diffuse GI (probe grid, ray-query updates) — the
                    // diffuse ambient owner; baked GI + sky IBL diffuse are off
+    SdfGi = 7,     // screen-adaptive SDF surface irradiance cache (#410) — the
+                   // diffuse ambient owner, one-bounce prototype
 };
 inline const char* AmbientModeName(AmbientMode m) {
     switch (m) {
@@ -291,6 +293,8 @@ inline const char* AmbientModeName(AmbientMode m) {
         return "Baked (no sky fallback)";
     case AmbientMode::Ddgi:
         return "Dynamic (DDGI)";
+    case AmbientMode::SdfGi:
+        return "Dynamic (SDF GI)";
     }
     return "?";
 }
