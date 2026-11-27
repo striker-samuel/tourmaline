@@ -2127,6 +2127,38 @@ class WorldRenderer : public IRenderer {
     void SetGiDebug(int d) {
         m_giDebug = d ? 1 : 0;
     }
+    // F8/R: cycle the GI debug views of the SELECTED GI source. Baked-family
+    // modes cycle the baked flat views (m_giDebug 1..7, back to off); DDGI
+    // toggles the raw probe field; screen-space probes cycle irradiance ->
+    // lattice/age -> off. Sky IBL / off have no GI debug views.
+    void CycleGiDebugView() {
+        switch (m_ambientMode) {
+        case AmbientMode::Ddgi:
+            m_debugView = (m_debugView == ViewMode::DdgiIrradiance) ? ViewMode::Lit
+                                                                    : ViewMode::DdgiIrradiance;
+            m_giDebug = 0;
+            break;
+        case AmbientMode::SsProbes:
+            if (m_debugView == ViewMode::ScreenSpaceProbesIrradiance)
+                m_debugView = ViewMode::ScreenSpaceProbesProbes;
+            else if (m_debugView == ViewMode::ScreenSpaceProbesProbes)
+                m_debugView = ViewMode::Lit;
+            else
+                m_debugView = ViewMode::ScreenSpaceProbesIrradiance;
+            m_giDebug = 0;
+            break;
+        case AmbientMode::All:
+        case AmbientMode::Baked:
+        case AmbientMode::Lightmaps:
+        case AmbientMode::Probes:
+            m_giDebug = (m_giDebug + 1) % 8;
+            if (m_giDebug != 0)
+                m_debugView = ViewMode::Lit;
+            break;
+        default: // SkyIbl / Off: nothing to debug.
+            break;
+        }
+    }
     // Editor-only selection adornment for the borrowed-world WYSIWYG
     // renderer. UINT32_MAX disables it (also the standalone App default).
     // WorldRenderer owns the OBB line pass so it uses the SAME camera,

@@ -331,20 +331,14 @@ void WorldRendererElement::HandleShortcuts() {
     // SkyIbl -> Off -> Baked (see AmbientMode — isolation for
     // bisection, All is the production state, Baked = All minus
     // the sky fallback).
-    // R cycles the baked-GI debug views (see GI_DEBUG_MODE_COUNT).
-    // F8 is an alias for R. Both work in every ambient mode.
     if (m_input.isKeyPressed(keybind::AMBIENT_CYCLE)) {
         m_renderer.CycleAmbientMode();
     }
+    // R / F8 cycle the GI debug views of the SELECTED GI source (baked flat
+    // views / DDGI probe field / screen-space probe views).
     if (m_input.isKeyPressed(keybind::GI_DEBUG_CYCLE) ||
         m_input.isKeyPressed(keybind::GI_DEBUG_CYCLE_ALT)) {
-        keybind::CycleGiDebug(m_renderer.m_giDebug);
-        // The GI debug views render through the LIT fragment shader:
-        // snap the base view back to Lit when one activates, or the
-        // cycle is invisible under a flat mode (F2 Unlit, F3
-        // Meshlets...). Cycling back to 0 leaves the base view alone.
-        if (m_renderer.m_giDebug != 0)
-            m_renderer.m_debugView = ViewMode::Lit;
+        m_renderer.CycleGiDebugView();
     }
     if (m_input.isKeyPressed(keybind::SKY_TOGGLE)) {
         m_renderer.m_skyEnabled = !m_renderer.m_skyEnabled;
