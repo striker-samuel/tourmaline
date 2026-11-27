@@ -40,6 +40,9 @@ void smvk::VulkanResourceManager::ClearRayTracingWorld() {
         mm = {};
     }
     rtOpacityMicromaps_.clear();
+    if (rtMaterial_.buffer != VK_NULL_HANDLE)
+        vmaDestroyBuffer(m_allocator, rtMaterial_.buffer, rtMaterial_.allocation);
+    rtMaterial_ = {};
     rtWorldReady_ = false;
 }
 
@@ -158,6 +161,29 @@ bool smvk::VulkanResourceManager::BuildRayTracingWorld(
         out.allocation = b.allocation;
         return true;
     };
+    // Publish the per-instance compact material for hit lighting (DDGI/SDF
+    // GI). Indexed by the TLAS instance custom index (0..accepted.size()-1),
+    // which is exactly the accepted-instance order below.
+    {
+        if (rtMaterial_.buffer != VK_NULL_HANDLE)
+            vmaDestroyBuffer(m_allocator, rtMaterial_.buffer, rtMaterial_.allocation);
+        rtMaterial_ = {};
+        TempBuffer matBuf{};
+        if (alloc(accepted.size() * 32ull, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true,
+                  matBuf)) {
+            auto* dst = static_cast<float*>(matBuf.mapped);
+            for (size_t i = 0; i < accepted.size(); ++i) {
+                for (uint32_t c = 0; c < 4; ++c)
+                    dst[i * 8 + c] = accepted[i].albedoEmissive[c];
+                for (uint32_t c = 0; c < 4; ++c)
+                    dst[i * 8 + 4 + c] = accepted[i].pbr[c];
+            }
+            vmaFlushAllocation(m_allocator, matBuf.allocation, 0, VK_WHOLE_SIZE);
+            rtMaterial_.buffer = matBuf.buffer;
+            rtMaterial_.allocation = matBuf.allocation;
+            rtMaterial_.address = matBuf.address;
+        }
+    }
     auto getGeometry = [&](const RayTracingInstance& inst) {
         VkAccelerationStructureGeometryKHR geo{
             VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR };

@@ -5134,12 +5134,9 @@ void WorldRenderer::RebuildDdgiVolumes() {
 
     // ---- Create one Volume per subcell; collect descriptors. Fail-closed:
     // any failed volume drops the whole feature (baked/sky ambient stands).
-    // Backend: prefer the StaticSdf trace when the SDF residency is ready
-    // (material-aware: emissive + direct sun + E_indirect color bleed);
-    // fall back to hardware RT (sky-only) for un-baked scenes.
-    const smvk::ddgi::TraceBackend ddgiBackend = m_ddgiSdfGpu.Ready()
-                                                     ? smvk::ddgi::TraceBackend::StaticSdf
-                                                     : smvk::ddgi::TraceBackend::HardwareRT;
+    // Backend: hardware RT (inline RayQuery over the TLAS). The SDF is used
+    // for probe classification/relocation, not for the trace itself.
+    const smvk::ddgi::TraceBackend ddgiBackend = smvk::ddgi::TraceBackend::HardwareRT;
     m_ddgiVolumes.reserve(cells.size());
     m_ddgiVolumeDescs.reserve(cells.size());
     for (const auto& [key, cell] : cells) {
@@ -14289,6 +14286,16 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // indices. Resolve before building micromaps so the alpha
         // compute bake accesses the same base-color texture as raster.
         const auto texBindless = BuildPoolToBindlessMap();
+        auto packMaterial = [](smvk::RayTracingInstance& inst, const smvk::Material* mat) {
+            if (!mat)
+                return;
+            const float emissive = mat->values.params2.z * (0.2126f * mat->values.emissiveFactor.r +
+                                                            0.7152f * mat->values.emissiveFactor.g +
+                                                            0.0722f * mat->values.emissiveFactor.b);
+            inst.albedoEmissive = {
+                mat->values.diffuse.r, mat->values.diffuse.g, mat->values.diffuse.b, emissive};
+            inst.pbr = {mat->values.params.y, mat->values.params.z, 0.0f, 0.0f};
+        };
         m_world->forEachRenderItem(
             smvk::IteratorFlagBit_StaticVertexFmt | smvk::IteratorFlagBit_CastShadow,
             [&](const smvk::World::RenderItem& item) {
@@ -14347,6 +14354,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                             for (int row = 0; row < 3; ++row)
                                 for (int col = 0; col < 4; ++col)
                                     inst.transform[row * 4 + col] = model[col][row];
+                            packMaterial(inst, mat);
                             rtInstances.push_back(inst);
                             ++impostorSwapCount;
                             return; // proxy replaces the full surface list
@@ -14370,6 +14378,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     for (int row = 0; row < 3; ++row)
                         for (int col = 0; col < 4; ++col)
                             inst.transform[row * 4 + col] = model[col][row];
+                    packMaterial(inst, mat);
                     rtInstances.push_back(inst);
                 }
             });
@@ -19473,6 +19482,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     if (m_ambientMode == AmbientMode::Ddgi && m_world) {
         m_ddgiSdfGpu.SetWholeScene(true);
         ddgiSdfReady = m_ddgiSdfGpu.Update(*m_context, *m_world, sdfEye);
+        (void)ddgiSdfReady; // whole-scene SDF residency (relocation + #410)
     }
 
     // ---------------------------------------------------------------------
@@ -19492,21 +19502,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // One trace + blend pair per volume; the shared write slot +
         // update index ping-pong the double-buffered history across every
         // volume (m_ddgiReset clears history on the first frame).
+        const uint64_t rayMaterials = m_context->RayTracingMaterialAddress();
         for (auto& vol : m_ddgiVolumes) {
-            smvk::ddgi::Volume::SdfTraceInput sdfInput;
-            const smvk::ddgi::Volume::SdfTraceInput* sdfPtr = nullptr;
-            if (vol.backend == smvk::ddgi::TraceBackend::StaticSdf && ddgiSdfReady) {
-                // Whole-scene resident SDF scene (stable-upload residency,
-                // no per-frame read hints — see the AddPasses contract).
-                sdfInput.sceneAddress = m_ddgiSdfGpu.SceneAddress(*m_context);
-                sdfPtr = &sdfInput;
-            }
             vol.AddPasses(*m_rendergraph,
                           frameUniformsAddress,
                           m_ddgiWriteSlot,
                           m_ddgiUpdateIndex,
                           m_ddgiReset,
-                          sdfPtr);
+                          rayMaterials,
+                          nullptr);
         }
         if (!m_ddgiVolumes.empty()) {
             m_ddgiWriteSlot ^= 1u;

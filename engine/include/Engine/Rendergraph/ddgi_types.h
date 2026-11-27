@@ -126,6 +126,9 @@ struct TracePush {
     // moments of THIS volume, sampled at surface hit points so the field
     // gathers multi-bounce color (the lit shader's walk, read-only).
     uint64_t oldIrr = 0, oldDistance = 0;
+    // Per-TLAS-instance compact material (albedo/emissive/metallic) for hit
+    // lighting: float4 albedoEmissive + float4 pbr per instance.
+    uint64_t rayMaterials = 0;
 };
 // Fixed choice per volume/dispatch, not a per-ray switch.
 enum class TraceBackend : uint8_t { HardwareRT, StaticSdf };
@@ -134,8 +137,8 @@ struct SdfTracePush {
     TracePush trace{};
     uint64_t sceneAddress = 0;
 };
-static_assert(sizeof(TracePush) == 72 && offsetof(TracePush, oldIrr) == 56);
-static_assert(sizeof(SdfTracePush) == 80 && offsetof(SdfTracePush, sceneAddress) == 72);
+static_assert(sizeof(TracePush) == 80 && offsetof(TracePush, rayMaterials) == 72);
+static_assert(sizeof(SdfTracePush) == 88 && offsetof(SdfTracePush, sceneAddress) == 80);
 
 struct BlendPush {
     uint64_t scratch = 0, oldIrr = 0, oldDistance = 0, newIrr = 0, newDistance = 0;
@@ -143,7 +146,7 @@ struct BlendPush {
     float hysteresis = 0, maxDistance = 0;
     uint32_t pad = 0;
 };
-static_assert(sizeof(TracePush) == 72 && offsetof(TracePush, maxDistance) == 48);
+static_assert(sizeof(TracePush) == 80 && offsetof(TracePush, maxDistance) == 48);
 static_assert(sizeof(BlendPush) == 64 && offsetof(BlendPush, probes) == 40);
 
 } // namespace smvk::ddgi

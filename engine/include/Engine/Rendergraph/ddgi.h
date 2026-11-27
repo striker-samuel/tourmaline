@@ -161,6 +161,7 @@ struct Volume {
                    uint32_t writeSlot,
                    uint32_t updateIndex,
                    bool reset,
+                   uint64_t rayMaterials = 0,
                    const SdfTraceInput* sdf = nullptr) const {
         if (!ready || !frameAddress || writeSlot > 1)
             return false;
@@ -194,7 +195,8 @@ struct Volume {
                                  grid.maxDistance,
                                  updateIndex,
                                  old.irradiance.address,
-                                 old.distance.address};
+                                 old.distance.address,
+                                 rayMaterials};
             if (backend == TraceBackend::StaticSdf) {
                 BufferSyncRequest req{};
                 req.barrierMasks.accessMask = AccessFlags::ShaderRead;

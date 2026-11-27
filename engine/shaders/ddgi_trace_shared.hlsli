@@ -34,6 +34,23 @@ DdgiRay DdgiEmptyRay(float3 direction, float maxDistance) {
     return result;
 }
 
+// Ungated hemispherical sky irradiance for a surface normal (the analytic
+// sky the DDGI field is computed against). Mirrors EvaluateIrradiance but
+// WITHOUT the fogEndAndFlags.w diffuse-IBL-isolation gate, which is 0 while
+// DDGI owns the ambient.
+float3 DdgiSkyIrradiance(float3 N, FrameUniforms frame) {
+    const float ibl = max(frame.env.ground.w, 0.0f);
+    const float exponent = max(frame.env.skyHorizon.w, 0.01f);
+    const float up = saturate(N.y);
+    const float dn = saturate(-N.y);
+    const float3 skyPart =
+        lerp(frame.env.skyHorizon.rgb, frame.env.skyZenith.rgb, pow(up, exponent));
+    const float3 gndPart =
+        lerp(frame.env.skyHorizon.rgb, frame.env.ground.rgb, saturate(dn * 1.5f));
+    const float3 hemi = lerp(gndPart, skyPart, saturate(N.y * 0.5f + 0.5f));
+    return max(0, hemi * ibl);
+}
+
 // Multi-bounce feedback: sample the CURRENT volume's PREVIOUS-frame
 // irradiance field at a surface hit point toward its normal, returning
 // irradiance E (0 when the point is outside the volume or no probe is

@@ -5,8 +5,9 @@
 [[vk::binding(8, 0)]]
 RaytracingAccelerationStructure rayScene;
 
-// Diagnostic first stage: sky misses and opaque occlusion. Material hit
-// lighting is deliberately not fabricated; do not enable in Main yet.
+// Hardware-RT DDGI trace: sky misses + material hit lighting (compact
+// per-instance albedo/emissive/metallic), plus distance moments for the
+// Chebyshev visibility.
 struct DdgiTracePush {
     GPU_PTR_READ(FrameUniforms) frameUniforms;
     GPU_PTR_WRITE(DdgiRayBuffer) scratch;
@@ -16,6 +17,7 @@ struct DdgiTracePush {
     uint updateIndex;
     GPU_PTR_READ(DdgiIrrBuffer) oldIrr;           // E_indirect feedback (prev frame)
     GPU_PTR_READ(DdgiDistanceBuffer) oldDistance; // E_indirect visibility moments
+    GPU_PTR_READ(RayMaterialBuffer) rayMaterials; // per-TLAS-instance material
 };
 GPU_PUSH(DdgiTracePush, sp);
 
@@ -42,11 +44,28 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     while (q.Proceed()) {}
 
     DdgiRay result = DdgiEmptyRay(direction, sp.maxDistance);
+    FrameUniforms frame = sp.frameUniforms.Get();
     if (q.CommittedStatus() == COMMITTED_TRIANGLE_HIT) {
         result.distance = q.CommittedRayT();
-        result.flags = q.CommittedTriangleFrontFace() ? 1 : 2;
+        const bool frontFace = q.CommittedTriangleFrontFace();
+        result.flags = frontFace ? 1 : 2;
+        if (frontFace) {
+            // Compact per-instance material (flat baseColor, no texture).
+            const uint instanceId = q.CommittedInstanceIndex();
+            const RayMaterial mat = sp.rayMaterials.Get().items[instanceId];
+            const float3 baseColor = max(mat.albedoEmissive.rgb, 0.0f);
+            const float emissive = max(mat.albedoEmissive.w, 0.0f);
+            const float metallic = saturate(mat.pbr.x);
+
+            // One-bounce material hit lighting: emissive + diffuse sky
+            // reflection. No per-hit normal in this shader, so the up-facing
+            // sky is a constant proxy for the incoming sky irradiance.
+            // (E_indirect feedback + direct sun are the P2 follow-on.)
+            const float3 skyAmbient = DdgiSkyRadiance(frame, float3(0.0f, 1.0f, 0.0f));
+            result.radiance =
+                baseColor * (emissive + (1.0f - metallic) * skyAmbient);
+        }
     } else {
-        FrameUniforms frame = sp.frameUniforms.Get();
         result.radiance = DdgiSkyRadiance(frame, direction);
     }
     sp.scratch.Get().values[probe * sp.rays + rayIndex] = result;

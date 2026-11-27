@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 #pragma once
-#include <Engine/RHI/upload_ticket.h>
 #include <Engine/RHI/gpu_memory_spill.h>
+#include <Engine/RHI/upload_ticket.h>
 #include <Engine/smvk.h>
 // Windowing is SDL3 (see App/app.h). Forward-declared so RHI headers stay
 // light; .cpp files include <SDL3/SDL_video.h>.
@@ -43,8 +43,13 @@ struct RayTracingInstance {
     uint32_t opacityTextureIndex = UINT32_MAX;
     float opacityFactor = 1.0f;
     float opacityCutoff = 0.5f;
+    // Compact per-instance material for hit lighting (DDGI + SDF GI):
+    // albedoEmissive.xyz = flat baseColor, .w = emissive scalar
+    // (emissiveStrength * luma(emissiveFactor)); pbr.x = metallic.
+    std::array<float, 4> albedoEmissive{1.0f, 1.0f, 1.0f, 0.0f};
+    std::array<float, 4> pbr{0.0f, 1.0f, 0.0f, 0.0f};
 };
-static_assert(sizeof(RayTracingInstance) == 80);
+static_assert(sizeof(RayTracingInstance) == 112);
 
 // True when the device was created with VK_EXT_mesh_shader enabled
 // (taskShader + meshShader features, probed, never required). Gates the
@@ -168,9 +173,12 @@ class ResourceManager {
     // Opt-in upload tickets: admission checked before returning.
     // Poll is nonblocking and does not flush. Device-local destination
     // buffers only in v1; host-visible uploads use the legacy path.
-    [[nodiscard]] UploadRequest RequestBufferUpload(
-        BufferHandle dst, const void* data, size_t bytes,
-        PipelineStage stages, AccessFlags access, size_t dstOffset = 0);
+    [[nodiscard]] UploadRequest RequestBufferUpload(BufferHandle dst,
+                                                    const void* data,
+                                                    size_t bytes,
+                                                    PipelineStage stages,
+                                                    AccessFlags access,
+                                                    size_t dstOffset = 0);
     [[nodiscard]] UploadStatus PollUpload(UploadTicket ticket) const noexcept;
 
     // RHI barrier enums (no Vk)
@@ -338,6 +346,9 @@ class ResourceManager {
     bool SupportsOpacityMicromaps() const;
     bool BuildRayTracingWorld(std::span<const RayTracingInstance> instances);
     bool RayTracingWorldReady() const;
+    // Per-TLAS-instance compact material (albedo/emissive/metallic) BDA,
+    // indexed by the TLAS instance custom index. 0 when not built.
+    uint64_t RayTracingMaterialAddress() const;
     void ClearRayTracingWorld();
     void FlushUploads();
     // Shard-local flush: submits ONLY the calling thread's upload-streamer

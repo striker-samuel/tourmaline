@@ -14,6 +14,7 @@ struct DdgiSdfTracePush {
     uint updateIndex;
     GPU_PTR_READ(DdgiIrrBuffer) oldIrr;           // E_indirect feedback (prev frame)
     GPU_PTR_READ(DdgiDistanceBuffer) oldDistance; // E_indirect visibility moments
+    GPU_PTR_READ(RayMaterialBuffer) rayMaterials; // unused (SDF leaf carries material)
     GPU_PTR_READ(StaticSdfSceneHeader) scene;
 };
 GPU_PUSH(DdgiSdfTracePush, sp);

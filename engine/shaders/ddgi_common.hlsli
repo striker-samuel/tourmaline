@@ -14,6 +14,13 @@ struct DdgiRay {
 struct DdgiRayBuffer { DdgiRay values[1]; };
 struct DdgiIrrBuffer { float4 values[1]; };
 struct DdgiDistanceBuffer { float2 values[1]; };
+// Per-TLAS-instance compact material (published by BuildRayTracingWorld,
+// indexed by the TLAS instance custom index).
+struct RayMaterial {
+    float4 albedoEmissive; // rgb = flat baseColor, w = emissive scalar
+    float4 pbr;            // x = metallic, y = roughness
+};
+struct RayMaterialBuffer { RayMaterial items[1]; };
 // One probe volume's lookup descriptor (mirror of smvk::ddgi::VolumeDesc,
 // 64 bytes). Carries both history-slot BDAs; the lit shader picks the
 // published slot via DdgiParams::slot.

@@ -15,13 +15,13 @@
 #define VK_NO_PROTOTYPES
 #endif
 
-#include <Engine/RHI/upload_ticket.h>
 #include <Engine/Memory/arena.h>
 #include <Engine/Memory/linear_vector.h>
 #include <Engine/Memory/memory.h>
 #include <Engine/Memory/pool.h>
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/RHI/swapchain.h>
+#include <Engine/RHI/upload_ticket.h>
 #include <Engine/Renderer/spirv_reflection.h>
 #include <Engine/smvk.h>
 
@@ -552,8 +552,11 @@ struct UploadStreamer {
     bool init(VkDeviceSize ringCapacity = mem::config::Runtime().streamerTotalBudget);
     void destroy();
     [[nodiscard]] UploadRequest requestBuffer(BufferHandle dst,
-                      const void* data, size_t size, size_t dstOffset,
-                      VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess);
+                                              const void* data,
+                                              size_t size,
+                                              size_t dstOffset,
+                                              VkPipelineStageFlags2 dstStages,
+                                              VkAccessFlags2 dstAccess);
     [[nodiscard]] UploadStatus pollUpload(UploadTicket ticket) const noexcept;
     bool uploadBuffer(BufferHandle dst,
                       const void* data,
@@ -947,6 +950,9 @@ struct VulkanResourceManager final /*: public IResourceManager*/ {
     [[nodiscard]] bool RayTracingWorldReady() const {
         return rtWorldReady_;
     }
+    [[nodiscard]] uint64_t RayTracingMaterialAddress() const {
+        return rtMaterial_.address;
+    }
     void ClearRayTracingWorld();
     Holder<DescriptorPoolHandle> CreateDescriptorPool(std::vector<VkDescriptorPoolSize> poolSizes,
                                                       const char* debugName = "DescriptorPool");
@@ -971,9 +977,12 @@ struct VulkanResourceManager final /*: public IResourceManager*/ {
     // unconditional. Call BEFORE reading any mapped staging bytes.
     void InvalidateStagingRange(BufferHandle handle, VkDeviceSize offset, VkDeviceSize size);
 
-    [[nodiscard]] UploadRequest RequestBufferUpload(
-        BufferHandle buffer, const void* data, size_t dataSize,
-        VkPipelineStageFlags2 dstStages, VkAccessFlags2 dstAccess, size_t destOffset);
+    [[nodiscard]] UploadRequest RequestBufferUpload(BufferHandle buffer,
+                                                    const void* data,
+                                                    size_t dataSize,
+                                                    VkPipelineStageFlags2 dstStages,
+                                                    VkAccessFlags2 dstAccess,
+                                                    size_t destOffset);
     [[nodiscard]] UploadStatus PollUpload(UploadTicket ticket) const noexcept;
     void UploadDataToBuffer(BufferHandle buffer,
                             const void* data,
@@ -1186,6 +1195,14 @@ struct VulkanResourceManager final /*: public IResourceManager*/ {
     };
     std::vector<RtOpacityMicromap> rtOpacityMicromaps_;
     RtAcceleration rtTlas_{};
+    // Per-TLAS-instance compact material for hit lighting (DDGI/SDF GI).
+    // Indexed by the TLAS instance custom index (0..instanceCount-1).
+    struct RtMaterialBuffer {
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VmaAllocation allocation = VK_NULL_HANDLE;
+        VkDeviceAddress address = 0;
+    };
+    RtMaterialBuffer rtMaterial_{};
     bool rtWorldReady_ = false;
 
     // Resources – one local shard per thread, no pool locks (see pool.h).

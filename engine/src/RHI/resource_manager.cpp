@@ -2,10 +2,10 @@
 // SPDX-License-Identifier: MIT
 
 #include <Engine/RHI/resource_manager.h>
-#include <atomic>
 #include <Engine/Renderer/spirv_reflection.h>
 #include <Engine/smvk.h>
 #include <array>
+#include <atomic>
 #ifndef VK_NO_PROTOTYPES
 #define VK_NO_PROTOTYPES
 #endif
@@ -239,12 +239,14 @@ void* ResourceManager::MapBuffer(BufferHandle handle) {
 void ResourceManager::UnmapBuffer(BufferHandle handle) {
     impl_->vulkan.UnmapBuffer(handle);
 }
-UploadRequest ResourceManager::RequestBufferUpload(
-    BufferHandle dst, const void* data, size_t bytes,
-    PipelineStage stages, AccessFlags access, size_t dstOffset) {
+UploadRequest ResourceManager::RequestBufferUpload(BufferHandle dst,
+                                                   const void* data,
+                                                   size_t bytes,
+                                                   PipelineStage stages,
+                                                   AccessFlags access,
+                                                   size_t dstOffset) {
     return impl_->vulkan.RequestBufferUpload(
-        dst, data, bytes, toVkPipelineStage(stages),
-        toVkAccess(access), dstOffset);
+        dst, data, bytes, toVkPipelineStage(stages), toVkAccess(access), dstOffset);
 }
 UploadStatus ResourceManager::PollUpload(UploadTicket ticket) const noexcept {
     return impl_->vulkan.PollUpload(ticket);
@@ -554,6 +556,9 @@ bool ResourceManager::BuildRayTracingWorld(std::span<const RayTracingInstance> i
     // The build reads the static monoblocks, which may still be uploading.
     impl_->vulkan.WaitForUploads();
     return impl_->vulkan.BuildRayTracingWorld(instances);
+}
+uint64_t ResourceManager::RayTracingMaterialAddress() const {
+    return impl_->vulkan.RayTracingMaterialAddress();
 }
 bool ResourceManager::RayTracingWorldReady() const {
     return impl_->vulkan.RayTracingWorldReady();
