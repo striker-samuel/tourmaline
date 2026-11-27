@@ -1412,6 +1412,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
     // (Same far-LOD gate: no specular env fetch when simplified.)
     float3 rawEnvSpec = float3(0.0f, 0.0f, 0.0f);
     float3 envSpec = float3(0.0f, 0.0f, 0.0f);
+    bool envCovered = false; // cubemap probe covered this pixel (specular IBL)
     if (litSpecular != 0u)
     {
         uint specTileIdx = 0xffffffffu;
@@ -1423,7 +1424,7 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
                 specTileIdx = sty * pc.fpTileCountX + stx;
         }
         rawEnvSpec = EvaluateSpecularEnv(R, Fenv, shadingRoughness, frame.env, IN.worldPos, pc.frameUniforms.Get(), specTileIdx,
-            pc.fpLightCount, pc.fpMaxPerTile, pc.fpTileCounts, pc.fpTileIndices, pc.fpLights, metallic);
+            pc.fpLightCount, pc.fpMaxPerTile, pc.fpTileCounts, pc.fpTileIndices, pc.fpLights, metallic, envCovered);
         envSpec = rawEnvSpec * occlusion;
     }
 float envVis = 1.0f;
@@ -1775,6 +1776,29 @@ float envVis = 1.0f;
         {
             const float3 ddgiAmbient = kD * baseColor * (ddgi.irradiance / PI) * occlusion;
             ambient = lerp(ambient, ddgiAmbient, saturate(ddgiParams.strength));
+
+            // DDGI rough-specular fallback: an uncovered pixel (no cubemap
+            // probe) would mirror the UNOCCLUDED analytic sky — far too bright
+            // inside. Use the OCCLUDED DDGI field toward R as the rough-spec
+            // environment instead. Sharp lobes keep the sky/SSR (E(R)/pi is a
+            // rough proxy only), so the fallback ramps in with roughness.
+            if (!envCovered && litSpecular != 0u)
+            {
+                const float gloss = 1.0f - clamp(shadingRoughness, 0.0f, 1.0f);
+                const float roughW = saturate((shadingRoughness - 0.2f) / 0.5f);
+                if (roughW > 0.0f)
+                {
+                    const DdgiSampleResult ddgiSpec =
+                        DdgiSampleIrradiance(ddgiParams, frame.cameraPos, IN.worldPos, geomN, R);
+                    if (ddgiSpec.valid > 0.0f)
+                    {
+                        const float3 ddgiSpecCol = ddgiSpec.irradiance / PI
+                            * Fenv * EnvSpecFade(gloss, metallic) * occlusion;
+                        ambientSpec = lerp(ambientSpec, ddgiSpecCol,
+                            saturate(ddgiParams.strength) * roughW);
+                    }
+                }
+            }
         }
     }
 

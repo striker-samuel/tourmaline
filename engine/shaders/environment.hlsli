@@ -234,8 +234,10 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
     uint fpLightCount, uint fpMaxPerTile,
     GPU_PTR(ForwardPlusTileCountBuffer) fpTileCounts,
     GPU_PTR(ForwardPlusTileIndexBuffer) fpTileIndices,
-    GPU_PTR(ForwardPlusLightBuffer) fpLights, float metallic)
+    GPU_PTR(ForwardPlusLightBuffer) fpLights, float metallic,
+    out bool covered)
 {
+    covered = false;
     // Intensity split: iblIntensity (ground.w) is the ANALYTIC fallback's
     // intensity only. Baked samples are TRUE radiance (physical units,
     // matching the direct sun view of the same surface) scaled by the
@@ -272,6 +274,7 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
         const ProbePremixSelection sel =
             GPU_PTR(ProbePremixSelection)(frame.probePremixSel).Get();
         if (sel.count > 0u) {
+            covered = true;
             TextureCube blend =
                 cubemaps[NonUniformResourceIndex(frame.probePremixIndex)];
             const SamplerState cubeSampler =
@@ -474,6 +477,9 @@ float3 EvaluateSpecularEnv(float3 R, float3 F, float roughness, EnvironmentFrame
         // directly — the IBL slider never touches baked content.
         envCol *= max(frame.cubemapIntensity, 0.0f);
     }
+
+    // Report coverage to the caller (the DDGI specular fallback keys on it).
+    covered = foundProbe;
 
     // Debug views (UI): raw cubemap without Fresnel/roughness weighting,
     // or the probe blend weight as heat.

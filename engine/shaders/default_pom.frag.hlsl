@@ -421,8 +421,10 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         if (stx < pc.fpTileCountX)
             specTileIdx = sty * pc.fpTileCountX + stx;
     }
+    bool pomCovered = false;
     float3 ambientSpec = EvaluateSpecularEnv(R, Fenv, shadingRoughness, frame.env, IN.worldPos, pc.frameUniforms.Get(), specTileIdx,
-        pc.fpLightCount, pc.fpMaxPerTile, pc.fpTileCounts, pc.fpTileIndices, pc.fpLights, metallic)
+        pc.fpLightCount, pc.fpMaxPerTile, pc.fpTileCounts, pc.fpTileIndices, pc.fpLights, metallic,
+        pomCovered)
         * occlusion;
 
     float3 color = direct + ambient + ambientSpec;

@@ -239,10 +239,11 @@ PSOut mainPS(float4 clipPos : SV_Position, PSIn IN)
         if (stx < pc.fpTileCountX)
             specTileIdx = sty * pc.fpTileCountX + stx;
     }
+    bool waterCovered = false;
     float3 reflection = EvaluateSpecularEnv(R, F, kWaterGlintRough,
         frame.env, IN.worldPos, frame, specTileIdx,
         pc.fpLightCount, pc.fpMaxPerTile, pc.fpTileCounts, pc.fpTileIndices,
-        pc.fpLights, 0.0f);
+        pc.fpLights, 0.0f, waterCovered);
 
     // Refraction stand-in: the body color under flat sky irradiance —
     // NO depth-based absorption (the develop-further slot: Beer-Lambert
