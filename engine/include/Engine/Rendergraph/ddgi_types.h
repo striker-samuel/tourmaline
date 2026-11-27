@@ -183,15 +183,16 @@ struct BlendPush {
     uint32_t dimX = 0, dimY = 0, dimZ = 0;
     uint32_t updateIndex = 0; // rotating-subset phase (incremental trace match)
 };
-// SDF-assisted probe relocation (ddgi_relocate.cs.hlsl).
+// TLAS-based probe relocation (no SDF dependency): the shader casts six axis
+// rays and pushes a probe buried in geometry toward its largest open gap.
 struct RelocatePush {
-    uint64_t sceneAddress = 0, relocation = 0;
+    uint64_t relocation = 0;
     float originX = 0, originY = 0, originZ = 0, spacing = 0;
     uint32_t dimX = 0, dimY = 0, dimZ = 0, probes = 0;
-    float searchStep = 0;
-    uint32_t iterations = 0;
+    float maxDistance = 0;
+    uint32_t pad = 0;
 };
-static_assert(sizeof(RelocatePush) == 56 && offsetof(RelocatePush, iterations) == 52);
+static_assert(sizeof(RelocatePush) == 48 && offsetof(RelocatePush, maxDistance) == 40);
 static_assert(sizeof(TracePush) == 120 && offsetof(TracePush, maxDistance) == 48);
 static_assert(sizeof(BlendPush) == 88 && offsetof(BlendPush, deltaX) == 60);
 

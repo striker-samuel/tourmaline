@@ -19597,11 +19597,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 
     // ---------------------------------------------------------------------
     // Static-SDF scene residency. TWO residencies, both updated BEFORE the
-    // DDGI passes schedule (so the DDGI SDF backend has a resident scene on
-    // its first frame too):
+    // passes schedule:
     //   - m_staticSdfGpu (camera-centric) feeds SSR + the SdfScene debug view.
-    //   - m_ddgiSdfGpu (whole-scene, sibling) feeds the DDGI probe trace so
-    //     probes far from the camera trace the real scene.
+    //   - m_ddgiSdfGpu (whole-scene, sibling) feeds the SCREEN-SPACE PROBES
+    //     trace (probes far from the camera trace the real scene). DDGI is
+    //     fully TLAS-based (relocation + trace), so it no longer needs it.
     // The SSR block below reuses `sdfReady` and only adds its own gating.
     // ---------------------------------------------------------------------
     const glm::vec3 sdfEye = glm::vec3(m_cameraPositioner.cameraPosition_);
@@ -19619,10 +19619,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         }
     }
     bool ddgiSdfReady = false;
-    if ((m_ambientMode == AmbientMode::Ddgi || m_ambientMode == AmbientMode::SsProbes) && m_world) {
+    if (m_ambientMode == AmbientMode::SsProbes && m_world) {
         m_ddgiSdfGpu.SetWholeScene(true);
         ddgiSdfReady = m_ddgiSdfGpu.Update(*m_context, *m_world, sdfEye);
-        (void)ddgiSdfReady; // whole-scene SDF residency (relocation + #410)
     }
 
     // ---------------------------------------------------------------------
@@ -19648,21 +19647,18 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // volume (m_ddgiReset clears history on the first frame; a spacing
         // change resets only that cascade via vol.resetPending).
         const uint64_t rayMaterials = m_context->RayTracingMaterialAddress();
-        smvk::ddgi::Volume::SdfTraceInput sdfInput;
-        const smvk::ddgi::Volume::SdfTraceInput* sdfPtr = nullptr;
-        if (ddgiSdfReady) {
-            sdfInput.sceneAddress = m_ddgiSdfGpu.SceneAddress(*m_context);
-            sdfPtr = &sdfInput;
-        }
         for (auto& vol : m_ddgiVolumes) {
             const bool volReset = m_ddgiReset || vol.resetPending;
+            // Relocation + trace are TLAS-based (no SDF): the StaticSdf backend
+            // stays reachable via the TraceBackend enum but is not the DDGI
+            // path here, so no SDF input is passed.
             vol.AddPasses(*m_rendergraph,
                           frameUniformsAddress,
                           m_ddgiWriteSlot,
                           m_ddgiUpdateIndex,
                           volReset,
                           rayMaterials,
-                          sdfPtr);
+                          nullptr);
             vol.resetPending = false;
         }
         if (!m_ddgiVolumes.empty()) {

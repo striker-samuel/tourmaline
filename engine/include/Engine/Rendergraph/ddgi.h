@@ -202,15 +202,14 @@ struct Volume {
             scroll[2] - scrollPrev[2],
         };
         {
-            // SDF-assisted probe relocation: push buried probes into free
-            // space so the surfaces they serve stop reading black. Runs once
-            // per volume, before the trace.
+            // TLAS probe relocation: push buried probes into free space so
+            // the surfaces they serve stop reading black. Runs once per
+            // volume, before the trace (no SDF dependency — six axis rays).
             auto& pass = rg.AddComputePass("DDGIRelocate");
             Hint(pass, relocation, true);
             auto& f = rg.PassFrameData<Frame<RelocatePush>>(pass);
             f.program = const_cast<ShaderProgram*>(&relocateProgram);
-            f.push = {sdf ? sdf->sceneAddress : 0,
-                      relocation.address,
+            f.push = {relocation.address,
                       grid.origin[0],
                       grid.origin[1],
                       grid.origin[2],
@@ -219,8 +218,8 @@ struct Volume {
                       grid.dims[1],
                       grid.dims[2],
                       sizes.probes,
-                      grid.spacing,
-                      4u};
+                      grid.maxDistance,
+                      0u};
             f.groupsX = (sizes.probes + 63) / 64;
             f.groupsY = 1;
             pass.SetRecordFn(&Record<RelocatePush>);
