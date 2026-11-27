@@ -44,6 +44,42 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     const bool writeIrr = bin < DDGI_IRR_RES * DDGI_IRR_RES;
     const uint distIndex = probe * DDGI_DIST_RES * DDGI_DIST_RES + bin;
 
+    // Seed a scrolled-in probe from its carried axis-neighbors so it fades in
+    // smoothly: the single 128-ray fresh trace is noisy (no temporal average
+    // yet), while the neighbors are already temporally averaged and thus
+    // smooth. Only NEW probes need this (a carried probe has its own history).
+    float3 seedIrr = float3(0.0, 0.0, 0.0);
+    float2 seedDist = float2(0.0, 0.0);
+    float seedW = 0.0;
+    if (!carry && sp.reset == 0u) {
+        const int3 coord = int3(DdgiGridCoord(probe, dims));
+        [unroll]
+        for (int a = 0; a < 3; ++a) {
+            [unroll]
+            for (int s = -1; s <= 1; s += 2) {
+                int3 nc = coord;
+                nc[a] += s;
+                const int3 oldc = nc + int3(sp.deltaX, sp.deltaY, sp.deltaZ);
+                if (all(oldc >= int3(0, 0, 0)) && all(oldc < int3(dims))) {
+                    const uint np = uint(oldc.x) + uint(oldc.y) * sp.dimX
+                        + uint(oldc.z) * sp.dimX * sp.dimY;
+                    if (sp.oldIrr.Get().values[np * DDGI_IRR_RES * DDGI_IRR_RES].w > 0.0) {
+                        if (writeIrr)
+                            seedIrr += sp.oldIrr.Get()
+                                .values[np * DDGI_IRR_RES * DDGI_IRR_RES + bin].rgb;
+                        seedDist += sp.oldDistance.Get()
+                            .values[np * DDGI_DIST_RES * DDGI_DIST_RES + bin];
+                        seedW += 1.0;
+                    }
+                }
+            }
+        }
+        if (seedW > 0.0) {
+            seedIrr /= seedW;
+            seedDist /= seedW;
+        }
+    }
+
     // Carried + not traced this frame: pure scroll — copy the carried history
     // forward unchanged (the trace left this probe's scratch stale).
     if (carry && !traced) {
@@ -93,6 +129,8 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     if (valid) {
         if (oldValid)
             moments = lerp(moments, sp.oldDistance.Get().values[oldDistIndex], h);
+        else if (seedW > 0.0)
+            moments = seedDist; // scrolled-in probe: seed from carried neighbors
     } else if (oldValid) {
         // A single-frame invalid trace (borderline meanDist under the rotating
         // rays) must not discard the probe's converged history — keep the old
@@ -110,6 +148,8 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
             if (oldValid) {
                 float4 old = sp.oldIrr.Get().values[oldIndex];
                 E = lerp(E, old.rgb, h);
+            } else if (seedW > 0.0) {
+                E = seedIrr; // scrolled-in probe: seed from carried neighbors
             }
             sp.newIrr.Get().values[index] = float4(E, 1);
         } else if (oldValid) {
