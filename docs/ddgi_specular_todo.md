@@ -54,6 +54,16 @@ trace, so consecutive fresh results are nearly uncorrelated and the 5%
 hysteresis blend adds a small per-trace step. Fixed-camera measured impact is
 < 0.2%, but worth confirming on moving/emissive scenes.
 
+### 6. Roof / uncovered black shapes → probe coverage + relocation
+The bistro roof showed pure-black blobs where the DDGI field didn't reach
+(probes embedded in the roof, or beyond the fine cascade's Y extent). Mitigated
+with an ungated sky-diffuse fallback (`9714ff51`) so uncovered pixels read
+sky-lit instead of black, but that's a band-aid — the sky is unoccluded, so
+occluded-but-uncovered geometry reads too bright. Proper fix: (a) make the SDF
+relocation actually push embedded roof probes into open space, and (b) raise
+the fine cascade's Y extent so it reaches the roof. Verify the relocation is
+running (SDF ready + `relocation` offset non-zero) before blaming coverage.
+
 ### 5. Cascade defaults
 Cross-fade knob shipped; fine/coarse dims (16x8x16) + coarse spacing clamp
 (2x..4x fine) are still hardcoded and want a scene pass to settle defaults.
