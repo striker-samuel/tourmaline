@@ -2,43 +2,46 @@
 #define CONTACT_SHADOW_PASS
 #include "ddgi_trace_shared.hlsli"
 #include "static_sdf_trace.hlsli"
+#include "dof.hlsli"
 
 // Screen-adaptive SDF surface irradiance cache (#410, one-bounce minimal):
 // for each screen tile, reconstruct the visible surface from depth, then
 // trace cosine-weighted hemisphere rays through the SDF with material hit
-// lighting and accumulate the diffuse irradiance into a screen-space buffer
+// lighting and accumulate the diffuse irradiance into a screen-space image
 // the lit body samples. This is the surface-cache prototype (no persistent
 // voxel cache / feedback yet), comparable to the DDGI diffuse path.
 
-struct SdfGiOutputBuffer { float4 values[1]; };
+[[vk::binding(2, 0)]]
+RWTexture2D<float4> sdfGiStorage[];
 
 struct SdfGiPush {
     GPU_PTR_READ(FrameUniforms) frameUniforms;
     GPU_PTR_READ(StaticSdfSceneHeader) scene;
-    GPU_PTR_WRITE(SdfGiOutputBuffer) output;
     uint depthTextureIndex;
-    uint outWidth;  // tile grid width
-    uint outHeight; // tile grid height
-    float invDepthW; // 1 / full-res depth width
+    uint outImageIndex; // bindless storage index of the irradiance image
+    uint outWidth;      // tile grid width
+    uint outHeight;     // tile grid height
+    float invDepthW;    // 1 / full-res depth width
     float invDepthH;
-    uint tilePx;     // tile size in pixels (the surface sample footprint)
-    uint rays;       // hemisphere ray count per probe
+    uint rays;          // hemisphere ray count per probe
     uint updateIndex;
     uint samplerIndex;
+    uint pad0;
 };
 GPU_PUSH(SdfGiPush, sp);
 
-// Cosine-weighted hemisphere direction (shared rotating sequence, like DDGI).
+// Cosine-weighted hemisphere direction around +Z (the tangent-frame normal):
+// z = sqrt(u) so the sample density is proportional to cos(theta), which the
+// diffuse irradiance estimate integrates with E = (pi / N) * sum(L_i) (the
+// cosine is absorbed into the sampling density, so no per-ray cos factor).
 float3 SdfGiRayDirection(uint ray, uint count, uint updateIndex) {
-    const float z = 1.0f - 2.0f * (float(ray) + 0.5f) / float(count);
+    const float u = (float(ray) + 0.5f) / float(count);
+    const float v = frac(float(ray) * 0.61803398875f +
+                         float(updateIndex % 4096u) * 0.754877666f);
+    const float z = sqrt(saturate(u)); // cos(theta)
     const float radius = sqrt(max(0.0f, 1.0f - z * z));
-    const float phi = 2.0f * 3.14159265358979f *
-                      frac(float(ray) * 0.61803398875f +
-                           float(updateIndex % 4096u) * 0.754877666f);
-    float3 d = float3(radius * cos(phi), radius * sin(phi), z);
-    if (updateIndex % 3u == 1u) d = d.yzx;
-    if (updateIndex % 3u == 2u) d = d.zxy;
-    return d; // hemisphere around +Z
+    const float phi = 2.0f * 3.14159265358979f * v;
+    return float3(radius * cos(phi), radius * sin(phi), z);
 }
 
 // Build an orthonormal basis from a unit normal (Z = normal).
@@ -65,10 +68,11 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     SamplerState smp = samplers[NonUniformResourceIndex(sp.samplerIndex)];
     const float ndcD = depthTex.SampleLevel(smp, uv, 0).r;
 
-    const float3 missColor = DdgiSkyRadiance(frame, float3(0, 1, 0)) / 3.14159265358979f;
-    if (ndcD <= 0.0f || ndcD >= 1.0f) {
-        // Sky / background: no surface to cache.
-        sp.output.Get().values[tid.y * sp.outWidth + tid.x] = float4(missColor, 1.0f);
+    // Sky / background tiles: no surface to cache. Store the up-facing sky
+    // irradiance (pi * L_sky) so any stray sample reads a sky-lit surface.
+    const float3 missColor = DdgiSkyRadiance(frame, float3(0, 1, 0)) * 3.14159265358979f;
+    if (DofIsBackgroundOrGarbage(ndcD)) {
+        sdfGiStorage[sp.outImageIndex][tid.xy] = float4(missColor, 1.0f);
         return;
     }
 
@@ -84,9 +88,12 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
                      StaticSdfSceneDistance(scene, worldPos - float3(0, h, 0));
     const float dz = StaticSdfSceneDistance(scene, worldPos + float3(0, 0, h)) -
                      StaticSdfSceneDistance(scene, worldPos - float3(0, 0, h));
+    // The SDF gradient points toward INCREASING distance (outward from the
+    // surface, negative = inside), so normalize(dx,dy,dz) is the OUTWARD
+    // surface normal — the hemisphere must gather light from that side.
     float3 normal = float3(dx, dy, dz);
     const float n2 = dot(normal, normal);
-    normal = n2 > 1e-12f ? -normal * rsqrt(n2) : float3(0, 1, 0);
+    normal = n2 > 1e-12f ? normal * rsqrt(n2) : float3(0, 1, 0);
 
     float3 tangent, bitangent;
     SdfGiBasis(normal, tangent, bitangent);
@@ -98,9 +105,6 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
         const float3 localDir = SdfGiRayDirection(r, sp.rays, sp.updateIndex);
         const float3 worldDir = tangent * localDir.x + bitangent * localDir.y +
                                 normal * localDir.z;
-        const float cosW = max(localDir.z, 0.0f);
-        if (cosW <= 1e-6f)
-            continue;
 
         const StaticSdfRayHit hit = StaticSdfTrace(
             worldPos + normal * bias, worldDir, 12.0f, scene.epsilon, scene.maxSteps,
@@ -115,18 +119,17 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
         if (!hit.valid) {
             L = DdgiSkyRadiance(frame, worldDir);
         } else {
-            // Material hit lighting: emissive + diffuse sky reflection.
+            // Material hit lighting (the DDGI hardware-RT form, but with the
+            // per-hit SDF normal): albedo * (emissive + (1-metallic) * sky).
             const float3 baseColor = max(hit.baseColor, 0.0f);
-            const float3 diffuse = baseColor * (1.0f - saturate(hit.metallic));
-            L = baseColor * hit.emissive +
-                diffuse * (DdgiSkyIrradiance(hit.normal, frame) / 3.14159265358979f);
+            const float3 skyAmbient = DdgiSkyIrradiance(hit.normal, frame);
+            L = baseColor * (hit.emissive + (1.0f - saturate(hit.metallic)) * skyAmbient);
         }
-        acc += L * cosW;
+        acc += L; // cosine absorbed into the cosine-weighted sampling density
     }
 
-    // Cosine-weighted irradiance E = pi * mean(L * cosW) ... here we store
-    // the mean radiance so the lit body multiplies by albedo directly.
+    // E = (pi / N) * sum(L_i) for cosine-weighted hemisphere sampling.
     const float3 irradiance =
         (sp.rays > 0u) ? (acc * (3.14159265358979f / float(sp.rays))) : float3(0, 0, 0);
-    sp.output.Get().values[tid.y * sp.outWidth + tid.x] = float4(irradiance, 1.0f);
+    sdfGiStorage[sp.outImageIndex][tid.xy] = float4(irradiance, 1.0f);
 }

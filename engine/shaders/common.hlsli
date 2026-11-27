@@ -1063,6 +1063,10 @@ uint decalCount;                                         // 776 0 = decals off
     uint staticSdfEnabled;                              // 3528 1 = the BDA above is valid
     float staticSdfMaxTrace;                            // 3532 SdfScene debug max trace (world)
     uint staticSdfColorMode;                            // 3536 SdfScene debug color mode
+    uint sdfGiEnabled;                                  // 3540 1 = sample the SDF GI irradiance
+    uint sdfGiImageIndex;                               // 3544 bindless sampled-image index
+    uint sdfGiTileGrid;                                 // 3548 x | (y << 16) tile grid
+    uint sdfGiDebug;                                    // 3552 1 = render the raw SDF GI irradiance
 };
 
 // Deferred-shadow push constants + shared helpers (needs FrameUniforms

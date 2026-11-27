@@ -581,6 +581,11 @@ enum class ViewMode : int {
     // Renders through the lit path with the SDF debug FS swap; needs the
     // static SDF residency published (frame.staticSdfScene), else MAGENTA.
     SdfScene = 34,
+    // Screen-adaptive SDF GI irradiance (combo/env only): the raw SDF GI
+    // surface-cache irradiance E at each lit pixel (HDR, no albedo) —
+    // rendered through the LIT path with the SdfGi debug flag set. Needs the
+    // SdfGi ambient source active, else it falls back to plain Lit.
+    SdfGiIrradiance = 35,
 };
 
 // The diffuse SSGI debug views (see the ViewMode block): rendered by
@@ -1253,6 +1258,13 @@ struct FrameUniforms {
     float staticSdfMaxTrace = 50.0f; // 3532 max sphere-trace distance (world units)
     uint32_t staticSdfColorMode = 0; // 3536 0=baseColor,1=materialId,2=meshId,
                                      //      3=normal,4=distance,5=roughness,6=metallic,7=emissive
+    // Screen-adaptive SDF GI (#410): a screen-space diffuse irradiance image
+    // the lit body samples when AmbientMode::SdfGi is active. The 12-byte
+    // pre-DDGI tail pad absorbs these three words (sizeof stays 3552).
+    uint32_t sdfGiEnabled = 0;    // 3540 1 = sample the SDF GI irradiance
+    uint32_t sdfGiImageIndex = 0; // 3544 bindless sampled-image index
+    uint32_t sdfGiTileGrid = 0;   // 3548 x | (y << 16) tile grid (pixels = grid * 16)
+    uint32_t sdfGiDebug = 0;      // 3552 1 = render the raw SDF GI irradiance (debug view)
 };
 // FrameUniforms layout insurance: the HLSL mirror (common.hlsli) reads
 // every field by absolute offset — any drift desyncs the GPU reads.
@@ -1383,12 +1395,19 @@ static_assert(offsetof(FrameUniforms, staticSdfMaxTrace) == 3532,
               "staticSdfMaxTrace offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, staticSdfColorMode) == 3536,
               "staticSdfColorMode offset: HLSL mirror");
-static_assert(sizeof(FrameUniforms) == 3552,
+static_assert(offsetof(FrameUniforms, sdfGiEnabled) == 3540, "sdfGiEnabled offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, sdfGiImageIndex) == 3544,
+              "sdfGiImageIndex offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, sdfGiTileGrid) == 3548, "sdfGiTileGrid offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, sdfGiDebug) == 3552, "sdfGiDebug offset: HLSL mirror");
+static_assert(sizeof(FrameUniforms) == 3568,
               "FrameUniforms size: HLSL mirror (the motion tail appended "
               "relativeViewProj + cameraOriginHigh/Low 3424 -> 3520, then the "
               "staticSdfScene BDA 8-aligns to 3520 -> 3528 and the 16-byte "
               "struct pad rounds it to 3536; the SdfScene debug controls "
-              "append 3536 -> 3540 and the 16-byte pad rounds it to 3552); "
+              "append 3536 -> 3540 and the 16-byte pad rounds it to 3552; the "
+              "SDF GI tail appends 3540 -> 3552 and sdfGiDebug 3552 -> 3556, "
+              "16-byte pad rounds it to 3568); "
               "the GI-blend tail grew the struct 2160 -> 2500; "
               "the §1.1 layer tables append 2500 -> 3140, the 64-bit telemetry BDA 8-aligns to "
               "3144 -> 3152, the octahedral atlas tail appends 3156 -> 3220, the compact "
@@ -5037,6 +5056,17 @@ class WorldRenderer : public IRenderer {
     uint64_t m_ddgiProbeBda = 0;
     uint32_t m_ddgiProbeCount = 0;
     bool m_ddgiProbesDirty = true;
+    // ---- Screen-adaptive SDF GI (#410) runtime state.
+    smvk::Holder<smvk::ShaderModuleHandle> m_sdfGiModule;
+    smvk::ShaderProgram m_sdfGiProgram{};
+    smvk::Holder<smvk::ImageHandle> m_sdfGiImage;
+    smvk::Holder<smvk::ImageViewHandle> m_sdfGiView;         // keeps the view alive
+    smvk::Holder<smvk::BindlessImageHandle> m_sdfGiBindless; // keeps the descriptor alive
+    smvk::LogicalImageViewHandle m_sdfGiLogical{};           // the render-graph logical view
+    uint32_t m_sdfGiImageIndex = UINT32_MAX;                 // bindless sampled-image index
+    uint32_t m_sdfGiTileCountX = 0, m_sdfGiTileCountY = 0;
+    uint32_t m_sdfGiUpdateIndex = 0;
+    bool m_sdfGiReady = false;
     float m_rayTracedSunShadowDistance = 200.0f;
     float m_rayTracedSunShadowBias = 0.02f;
     int m_rayTracedSunShadowResolutionDivisor = 2;

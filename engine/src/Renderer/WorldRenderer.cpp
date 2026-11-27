@@ -840,6 +840,28 @@ static std::optional<AmbientMode> AmbientModeFromPin(std::string_view v) {
         return AmbientMode::SdfGi;
     return std::nullopt;
 }
+
+// ---- Screen-adaptive SDF GI (#410) pass plumbing (mirrors ddgi.h) ----
+namespace {
+struct SdfGiPush {
+    uint64_t frameUniforms = 0, sceneAddress = 0;
+    uint32_t depthTextureIndex = 0, outImageIndex = 0;
+    uint32_t outWidth = 0, outHeight = 0;
+    float invDepthW = 0, invDepthH = 0;
+    uint32_t rays = 0, updateIndex = 0, samplerIndex = 0, pad0 = 0;
+};
+struct SdfGiFrame {
+    smvk::ShaderProgram* program = nullptr;
+    SdfGiPush push{};
+    uint32_t w = 0, h = 0;
+};
+void RecordSdfGi(smvk::CommandBuffer& cmd, const smvk::FrameContext& fc, const smvk::PassData& pd) {
+    const auto& f = fc.rg->FrameData().Get<SdfGiFrame>(pd.frameSlot);
+    cmd.BindComputePipeline(*f.program);
+    cmd.PushConstants(0, sizeof(SdfGiPush), &f.push, smvk::ShaderStage::Compute);
+    cmd.Dispatch((f.w + 7u) / 8u, (f.h + 7u) / 8u, 1u);
+}
+} // namespace
 // Legacy TOURMALINE_GI overlap: 1/on -> All; 0/off demotes the baked
 // modes to SkyIbl. nullopt = the SPELLING is unknown (a no-op "already
 // correct" returns the current mode, NOT nullopt — the re-application
@@ -1217,6 +1239,10 @@ bool WorldRenderer::onAttach() {
         // TOURMALINE_DDGI=1, or the view silently shows Lit).
         else if (dv == "ddgi" || dv == "ddgi_irradiance" || dv == "ddgiirradiance")
             m_debugView = ViewMode::DdgiIrradiance;
+        // SDF GI irradiance debug view (the raw screen-adaptive surface-cache
+        // irradiance; the SdfGi ambient source must be active, else Lit).
+        else if (dv == "sdfgi" || dv == "sdfgi_irradiance")
+            m_debugView = ViewMode::SdfGiIrradiance;
         else
             std::cerr << "[WorldRenderer] unknown TOURMALINE_DEBUGVIEW value: " << dv << "\n";
     }
@@ -6070,6 +6096,11 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
     data.staticSdfEnabled = staticSdfAddr != 0u ? 1u : 0u;
     data.staticSdfMaxTrace = m_sdfDebugMaxTrace;
     data.staticSdfColorMode = m_sdfDebugColorMode;
+    data.sdfGiEnabled = (m_ambientMode == AmbientMode::SdfGi && m_sdfGiReady) ? 1u : 0u;
+    data.sdfGiImageIndex = m_sdfGiImageIndex;
+    data.sdfGiTileGrid = m_sdfGiTileCountX | (m_sdfGiTileCountY << 16);
+    data.sdfGiDebug =
+        (m_ambientMode == AmbientMode::SdfGi && m_debugView == ViewMode::SdfGiIrradiance) ? 1u : 0u;
 
     m_context->UploadDataToBuffer(m_resources.frameUniforms,
                                   &data,
@@ -15523,7 +15554,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         !ShaderLodActive() && !m_wireframe &&
         (m_debugView == ViewMode::Lit || m_debugView == ViewMode::Meshlets ||
          m_debugView == ViewMode::Lods || m_debugView == ViewMode::DdgiIrradiance ||
-         m_debugView == ViewMode::MotionVectors || DebugFsForView(m_debugView).has_value()) &&
+         m_debugView == ViewMode::SdfGiIrradiance || m_debugView == ViewMode::MotionVectors ||
+         DebugFsForView(m_debugView).has_value()) &&
         gpuSceneGiReady;
     // KD diagnostic: the full raster-mode breakdown (the temporal gate
     // downstream only names its own conditions - this names every reason
@@ -19481,7 +19513,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         }
     }
     bool ddgiSdfReady = false;
-    if (m_ambientMode == AmbientMode::Ddgi && m_world) {
+    if ((m_ambientMode == AmbientMode::Ddgi || m_ambientMode == AmbientMode::SdfGi) && m_world) {
         m_ddgiSdfGpu.SetWholeScene(true);
         ddgiSdfReady = m_ddgiSdfGpu.Update(*m_context, *m_world, sdfEye);
         (void)ddgiSdfReady; // whole-scene SDF residency (relocation + #410)
@@ -19527,6 +19559,104 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         }
     }
 
+    // ---------------------------------------------------------------------
+    // Screen-adaptive SDF GI (#410): one screen-space irradiance image
+    // (tile grid) traced through the SDF, sampled by Main when SdfGi owns
+    // the ambient.
+    // ---------------------------------------------------------------------
+    const bool sdfGiWants = m_ambientMode == AmbientMode::SdfGi && m_world && ddgiSdfReady;
+    if (sdfGiWants) {
+        const uint32_t tileGridX = (renderExtent.width + 15u) / 16u;
+        const uint32_t tileGridY = (renderExtent.height + 15u) / 16u;
+        if (m_sdfGiImage.empty() || m_sdfGiTileCountX != tileGridX ||
+            m_sdfGiTileCountY != tileGridY) {
+            if (!m_sdfGiLogical.empty())
+                m_rendergraph->FreeImageView(m_sdfGiLogical);
+            m_sdfGiImage = {};
+            m_sdfGiView = {};
+            m_sdfGiBindless = {};
+            m_sdfGiImageIndex = UINT32_MAX;
+            m_sdfGiLogical = {};
+            smvk::ImageCreateInfo ci{};
+            ci.extent = {tileGridX, tileGridY, 1};
+            ci.format = smvk::Format::RGBA32_Float; // matches RWTexture2D<float4> storage
+            ci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::Storage;
+            ci.mipLevels = 1;
+            ci.arrayLayers = 1;
+            ci.name = "sdfGiIrradiance";
+            m_sdfGiImage = m_context->CreateImage(ci, nullptr);
+            if (!m_sdfGiImage.empty()) {
+                smvk::ImageViewCreateInfo vci{};
+                vci.viewType = smvk::ImageViewType::View2D;
+                vci.format = smvk::Format::Undefined;
+                vci.subresourceRange = {smvk::ImageAspect::Color, 0, 1, 0, 1};
+                vci.name = "sdfGiIrradiance";
+                m_sdfGiView = m_context->CreateImageView(m_sdfGiImage, vci);
+                m_sdfGiBindless =
+                    m_context->CreateBindlessImage(m_sdfGiView, smvk::ImageLayout::General);
+                if (!m_sdfGiBindless.empty()) {
+                    m_sdfGiImageIndex = m_context->GetBindlessIndex(m_sdfGiBindless);
+                    m_sdfGiLogical = m_rendergraph->AddExternalImageView(
+                        m_sdfGiView, smvk::Format::RGBA32_Float, "sdfGiIrradiance");
+                }
+            }
+            m_sdfGiTileCountX = tileGridX;
+            m_sdfGiTileCountY = tileGridY;
+        }
+        if (m_sdfGiModule.empty()) {
+            m_sdfGiModule = m_context->CreateShaderModule(
+                smvk::shaders::Read("content/shaders/sdfgi.cs.hlsl.spv"), "sdfGi");
+            if (!m_sdfGiModule.empty()) {
+                smvk::Shader s{.module = m_sdfGiModule,
+                               .entryPoint = "mainCS",
+                               .stage = smvk::ShaderStage::Compute};
+                m_sdfGiProgram = {.shaders = {s}, .shaderCount = 1};
+            }
+        }
+        m_sdfGiReady = !m_sdfGiImage.empty() && m_sdfGiImageIndex != UINT32_MAX &&
+                       !m_sdfGiLogical.empty() && m_sdfGiProgram.shaderCount != 0;
+        if (m_sdfGiReady) {
+            auto& pass = m_rendergraph->AddComputePass("SdfGiTrace");
+            const uint64_t sdfSceneAddr = m_ddgiSdfGpu.SceneAddress(*m_context);
+            const uint32_t depthIndex = m_viewportResources.renderDepth.bindlessIndex;
+            {
+                // The opaque depth, read as a sampled texture from compute
+                // (the contact-shadow/SSRClassify shape).
+                smvk::ImageSyncRequest depthReq{};
+                depthReq.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+                depthReq.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+                depthReq.layout = smvk::ImageLayout::DepthStencilReadOnlyOptimal;
+                pass.AddImageHint(m_viewportResources.renderDepth.logicalView, depthReq);
+            }
+            {
+                // The irradiance write: General (storage); the paired READ hint
+                // on Main transitions it to ShaderReadOnlyOptimal.
+                smvk::ImageSyncRequest writeReq{};
+                writeReq.barrierMasks.accessMask = smvk::AccessFlags::ShaderWrite;
+                writeReq.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+                writeReq.layout = smvk::ImageLayout::General;
+                pass.AddImageHint(m_sdfGiLogical, writeReq);
+            }
+            SdfGiPush push{};
+            push.frameUniforms = frameUniformsAddress;
+            push.sceneAddress = sdfSceneAddr;
+            push.depthTextureIndex = depthIndex;
+            push.outImageIndex = m_sdfGiImageIndex;
+            push.outWidth = tileGridX;
+            push.outHeight = tileGridY;
+            push.invDepthW = 1.0f / float(std::max(1u, renderExtent.width));
+            push.invDepthH = 1.0f / float(std::max(1u, renderExtent.height));
+            push.rays = 16u;
+            push.updateIndex = m_sdfGiUpdateIndex++;
+            push.samplerIndex = pointSampler;
+            SdfGiFrame frame{&m_sdfGiProgram, push, tileGridX, tileGridY};
+            m_rendergraph->PassFrameData<SdfGiFrame>(pass) = frame;
+            pass.SetRecordFn(&RecordSdfGi);
+        }
+    } else {
+        m_sdfGiReady = false;
+    }
+
     // useMsaa is hoisted above the fc fill (the stencil layer gate + the
     // pane layer below + Main's attachments here all key on it).
     std::array<smvk::LogicalImageViewHandle, 2> mainInputs{};
@@ -19564,6 +19694,19 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     if (DdgiActive()) {
         for (auto& vol : m_ddgiVolumes)
             vol.AddMainReadHints(mainPass, m_ddgiWriteSlot ^ 1u);
+    }
+    // SDF GI (#410): the paired READ half of the irradiance write->read
+    // edge (the contact-shadow pattern). Main's lit body fetches the tile
+    // grid through the bindless array (frame.sdfGiImageIndex) — invisible
+    // to CollectPassUsages — so this hint guarantees Main sorts AFTER this
+    // frame's SdfGiTrace and drives the General -> ShaderReadOnlyOptimal
+    // transition of the storage write.
+    if (m_ambientMode == AmbientMode::SdfGi && !m_sdfGiLogical.empty()) {
+        smvk::ImageSyncRequest sdfGiRead{};
+        sdfGiRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+        sdfGiRead.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
+        sdfGiRead.layout = smvk::ImageLayout::ShaderReadOnlyOptimal;
+        mainPass.AddImageHint(m_sdfGiLogical, sdfGiRead);
     }
     // Shader failure and missing multisample sampling support degrade to hardware AVERAGE.
     const bool customMsaaResolve = useMsaa && m_aaMode == AaMode::Msaa2xCustom &&
