@@ -18,16 +18,18 @@ struct SdfGiPush {
     GPU_PTR_READ(FrameUniforms) frameUniforms;
     GPU_PTR_READ(StaticSdfSceneHeader) scene;
     uint depthTextureIndex;
-    uint prevImageIndex; // history[writeSlot ^ 1] (sampled read)
-    uint outImageIndex;  // history[writeSlot] (storage write)
-    uint outWidth;       // tile grid width
-    uint outHeight;      // tile grid height
-    float invDepthW;     // 1 / full-res depth width
+    uint prevImageIndex;     // history[writeSlot ^ 1] (sampled read)
+    uint outImageIndex;      // history[writeSlot] (storage write)
+    uint prevWorldPosIndex;  // world position[writeSlot ^ 1] (sampled read)
+    uint outWorldPosIndex;   // world position[writeSlot] (storage write)
+    uint outWidth;           // tile grid width
+    uint outHeight;          // tile grid height
+    float invDepthW;         // 1 / full-res depth width
     float invDepthH;
-    uint rays;           // hemisphere ray count per probe (per update)
+    uint rays;               // hemisphere ray count per probe (per update)
     uint updateIndex;
     uint samplerIndex;
-    float blendAlpha;    // EMA blend factor (1 = full replace)
+    float blendAlpha;        // EMA blend factor (1 = full replace)
 };
 GPU_PUSH(SdfGiPush, sp);
 
@@ -59,41 +61,19 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
 
     const FrameUniforms frame = sp.frameUniforms.Get();
     const StaticSdfSceneHeader scene = sp.scene.Get();
-
-    // Tile center -> full-res uv -> y-down NDC -> world.
+    SamplerState smp = samplers[NonUniformResourceIndex(sp.samplerIndex)];
     const float2 uv = (float2(tid.xy) + 0.5f) /
                       float2(float(sp.outWidth), float(sp.outHeight));
-
-    // Previous history value for this tile (the EMA feedback source). Each
-    // thread reads/writes only its own texel, but the sampled read and the
-    // storage write target DIFFERENT ping-pong images (no in-place hazard).
-    Texture2D prevTex = textures[NonUniformResourceIndex(sp.prevImageIndex)];
-    SamplerState smp = samplers[NonUniformResourceIndex(sp.samplerIndex)];
-    // Nonfinite-history rejection: NaN/Inf would persist through the EMA
-    // forever (lerp(NaN, x, t) == NaN for any t). Explicit zero-init should
-    // prevent it, but guard anyway so a bad frame can always recover.
-    const float3 prevRaw = prevTex.SampleLevel(smp, uv, 0).rgb;
-    const float3 prevE = all(isfinite(prevRaw)) ? prevRaw : float3(0.0f, 0.0f, 0.0f);
-
-    // Rotating subset: only 1/4 of tiles trace each frame (the amortized
-    // surface-cache schedule); the rest copy their history unchanged. The
-    // interleaved (x+y)&3 stride measured faster than warp-coalesced groups
-    // (the march is memory-latency-bound, so spreading the traced threads
-    // across every warp hides the octree-access latency better).
-    if (((tid.x + tid.y) & 3u) != (sp.updateIndex & 3u)) {
-        sdfGiStorage[sp.outImageIndex][tid.xy] = float4(prevE, 1.0f);
-        return;
-    }
 
     Texture2D depthTex = textures[NonUniformResourceIndex(sp.depthTextureIndex)];
     const float ndcD = depthTex.SampleLevel(smp, uv, 0).r;
 
-    // Sky / background tiles: no surface to cache. Store the up-facing sky
-    // irradiance (pi * L_sky) so any stray sample reads a sky-lit surface.
+    // Sky / background tiles: no surface, no reprojection. The far sentinel
+    // makes any surface that later reappears here read as disoccluded.
     const float3 missColor = DdgiSkyRadiance(frame, float3(0, 1, 0)) * 3.14159265358979f;
     if (DofIsBackgroundOrGarbage(ndcD)) {
-        sdfGiStorage[sp.outImageIndex][tid.xy] =
-            float4(lerp(prevE, missColor, sp.blendAlpha), 1.0f);
+        sdfGiStorage[sp.outImageIndex][tid.xy] = float4(missColor, 1.0f);
+        sdfGiStorage[sp.outWorldPosIndex][tid.xy] = float4(1e30f, 1e30f, 1e30f, 0.0f);
         return;
     }
 
@@ -101,18 +81,48 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     float4 world = mul(frame.invViewProj, float4(ndc, ndcD, 1.0f));
     const float3 worldPos = world.xyz / max(world.w, 1e-9f);
 
-    // Surface normal from the depth buffer's screen-space derivatives: a
-    // smooth geometric normal (no SDF octree quantization noise — the SDF
-    // gradient carries per-leaf stair-stepping that read as high-frequency
-    // detail in the diffuse field). The derivative offset spans the tile
-    // footprint (16px / 2) so the normal is a tile-scale average, not the
-    // 1px micro-detail that a full-res derivative would pick up.
-    //
-    // A derivative tap is rejected when it is background OR crosses a depth
-    // discontinuity (a silhouette / foreground-background step), so a thin
-    // occluder's normal can't be stolen by the surface behind it. Each axis
-    // then falls back to a one-sided derivative (or the up normal) instead
-    // of mixing two unrelated depths.
+    // Camera-motion reprojection: fetch the previous history at the location
+    // this surface occupied LAST frame, and detect disocclusion (the previous
+    // surface there is not this surface). A world-position distance is the
+    // motion-invariant test — the same surface keeps the same world position
+    // however the camera moves, so only a true disocclusion crosses it.
+    Texture2D prevTex = textures[NonUniformResourceIndex(sp.prevImageIndex)];
+    Texture2D prevPosTex = textures[NonUniformResourceIndex(sp.prevWorldPosIndex)];
+    const float4 clipPrev = mul(frame.prevViewProj, float4(worldPos, 1.0f));
+    float3 reprojE = float3(0.0f, 0.0f, 0.0f);
+    bool disoccluded = true;
+    if (clipPrev.w > 1e-6f) {
+        const float2 uvPrev = (clipPrev.xy / clipPrev.w) * 0.5f + 0.5f;
+        if (all(uvPrev >= 0.0f) && all(uvPrev <= 1.0f)) {
+            const float3 reprojRaw = prevTex.SampleLevel(smp, uvPrev, 0).rgb;
+            reprojE = all(isfinite(reprojRaw)) ? reprojRaw : float3(0.0f, 0.0f, 0.0f);
+            const float3 prevPos = prevPosTex.SampleLevel(smp, uvPrev, 0).xyz;
+            const float3 delta = prevPos - worldPos;
+            disoccluded = dot(delta, delta) > (0.5f * 0.5f);
+        }
+    }
+
+    // Rotating subset: only 1/4 of tiles trace each frame (the amortized
+    // surface-cache schedule); the rest carry the reprojected history. The
+    // interleaved (x+y)&3 stride measured faster than warp-coalesced groups
+    // (the march is memory-latency-bound, so spreading the traced threads
+    // across every warp hides the octree-access latency better).
+    const bool update = ((tid.x + tid.y) & 3u) == (sp.updateIndex & 3u);
+    if (!update) {
+        // Disoccluded: reset to the sky estimate (a better first guess than
+        // black for a newly revealed surface) and let the next trace converge.
+        const float3 outE = disoccluded ? missColor : reprojE;
+        sdfGiStorage[sp.outImageIndex][tid.xy] = float4(outE, 1.0f);
+        sdfGiStorage[sp.outWorldPosIndex][tid.xy] = float4(worldPos, 0.0f);
+        return;
+    }
+
+    // Surface normal from the depth buffer's screen-space derivatives (only
+    // for the traced subset): a smooth geometric normal (no SDF octree
+    // quantization noise). The derivative offset spans the tile footprint
+    // (16px / 2) so the normal is a tile-scale average, not 1px micro-detail.
+    // A tap that is background or crosses a depth discontinuity is rejected,
+    // so a thin occluder's normal can't be stolen by the surface behind it.
     const float2 stepX = float2(8.0f * sp.invDepthW, 0.0f);
     const float2 stepY = float2(0.0f, 8.0f * sp.invDepthH);
     const float dL = depthTex.SampleLevel(smp, uv - stepX, 0).r;
@@ -195,7 +205,11 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
         (sp.rays > 0u) ? (acc * (3.14159265358979f / float(sp.rays))) : float3(0, 0, 0);
     // Reject a non-finite sample (e.g. a degenerate hit normal) so a single
     // bad frame cannot poison the history through the EMA.
-    const float3 irradiance = all(isfinite(irradianceRaw)) ? irradianceRaw : prevE;
-    sdfGiStorage[sp.outImageIndex][tid.xy] =
-        float4(lerp(prevE, irradiance, sp.blendAlpha), 1.0f);
+    const float3 irradiance = all(isfinite(irradianceRaw)) ? irradianceRaw : reprojE;
+    // Full-replace on disocclusion (and during warmup); EMA otherwise.
+    const float3 outE = (disoccluded || sp.blendAlpha >= 1.0f)
+                            ? irradiance
+                            : lerp(reprojE, irradiance, sp.blendAlpha);
+    sdfGiStorage[sp.outImageIndex][tid.xy] = float4(outE, 1.0f);
+    sdfGiStorage[sp.outWorldPosIndex][tid.xy] = float4(worldPos, 0.0f);
 }

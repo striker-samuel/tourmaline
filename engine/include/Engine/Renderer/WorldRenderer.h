@@ -5060,7 +5060,8 @@ class WorldRenderer : public IRenderer {
     // is a ping-ponged tile-grid history: the trace+blend pass reads
     // history[writeSlot ^ 1] and EMA-blends a rotating tile subset into
     // history[writeSlot], a spatial blur smooths it, and Main samples the
-    // smoothed copy as the diffuse ambient owner.
+    // smoothed copy as the diffuse ambient owner. A parallel world-position
+    // history[2] enables camera-motion reprojection + disocclusion reset.
     smvk::Holder<smvk::ShaderModuleHandle> m_sdfGiModule;
     smvk::ShaderProgram m_sdfGiProgram{};
     smvk::Holder<smvk::ImageHandle> m_sdfGiImage[2];
@@ -5068,6 +5069,11 @@ class WorldRenderer : public IRenderer {
     smvk::Holder<smvk::BindlessImageHandle> m_sdfGiBindless[2]; // keeps the descriptor alive
     smvk::LogicalImageViewHandle m_sdfGiLogical[2]{};           // the render-graph logical view
     uint32_t m_sdfGiImageIndex[2] = {UINT32_MAX, UINT32_MAX};   // bindless sampled-image index
+    smvk::Holder<smvk::ImageHandle> m_sdfGiWorldPos[2];         // per-tile surface world position
+    smvk::Holder<smvk::ImageViewHandle> m_sdfGiWorldPosView[2];
+    smvk::Holder<smvk::BindlessImageHandle> m_sdfGiWorldPosBindless[2];
+    smvk::LogicalImageViewHandle m_sdfGiWorldPosLogical[2]{};
+    uint32_t m_sdfGiWorldPosIndex[2] = {UINT32_MAX, UINT32_MAX};
     uint32_t m_sdfGiWriteSlot = 0;
     // Spatial-blur pass (reads history[writeSlot], writes a transient smooth copy).
     smvk::Holder<smvk::ShaderModuleHandle> m_sdfGiBlurModule;

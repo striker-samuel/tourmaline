@@ -846,8 +846,10 @@ namespace {
 struct SdfGiPush {
     uint64_t frameUniforms = 0, sceneAddress = 0;
     uint32_t depthTextureIndex = 0;
-    uint32_t prevImageIndex = 0; // history[writeSlot ^ 1] (sampled read)
-    uint32_t outImageIndex = 0;  // history[writeSlot] (storage write)
+    uint32_t prevImageIndex = 0;    // history[writeSlot ^ 1] (sampled read)
+    uint32_t outImageIndex = 0;     // history[writeSlot] (storage write)
+    uint32_t prevWorldPosIndex = 0; // world position[writeSlot ^ 1] (sampled read)
+    uint32_t outWorldPosIndex = 0;  // world position[writeSlot] (storage write)
     uint32_t outWidth = 0;
     uint32_t outHeight = 0;
     float invDepthW = 0, invDepthH = 0;
@@ -19605,6 +19607,13 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 m_sdfGiBindless[slot] = {};
                 m_sdfGiImageIndex[slot] = UINT32_MAX;
                 m_sdfGiLogical[slot] = {};
+                if (!m_sdfGiWorldPosLogical[slot].empty())
+                    m_rendergraph->FreeImageView(m_sdfGiWorldPosLogical[slot]);
+                m_sdfGiWorldPos[slot] = {};
+                m_sdfGiWorldPosView[slot] = {};
+                m_sdfGiWorldPosBindless[slot] = {};
+                m_sdfGiWorldPosIndex[slot] = UINT32_MAX;
+                m_sdfGiWorldPosLogical[slot] = {};
             }
             if (!m_sdfGiBlurLogical.empty())
                 m_rendergraph->FreeImageView(m_sdfGiBlurLogical);
@@ -19642,6 +19651,39 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                             m_context->GetBindlessIndex(m_sdfGiBindless[slot]);
                         m_sdfGiLogical[slot] = m_rendergraph->AddExternalImageView(
                             m_sdfGiView[slot], smvk::Format::RGBA32_Float, ci.name);
+                    }
+                }
+                // Per-tile surface world position (reprojection/disocclusion
+                // guide). Zero-init so a disoccluded tile reads a far sentinel
+                // (0 -> distance mismatch -> reset) instead of garbage.
+                {
+                    smvk::ImageCreateInfo wci{};
+                    wci.extent = {tileGridX, tileGridY, 1};
+                    wci.format = smvk::Format::RGBA32_Float;
+                    wci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::Storage |
+                                smvk::ImageUsage::TransferDst;
+                    wci.mipLevels = 1;
+                    wci.arrayLayers = 1;
+                    wci.name = slot == 0 ? "sdfGiWorldPosA" : "sdfGiWorldPosB";
+                    const size_t zeroBytes = size_t(tileGridX) * tileGridY * 16u;
+                    std::vector<uint8_t> zeros(zeroBytes, 0);
+                    m_sdfGiWorldPos[slot] = m_context->CreateImage(wci, zeros.data());
+                    if (!m_sdfGiWorldPos[slot].empty()) {
+                        smvk::ImageViewCreateInfo vci{};
+                        vci.viewType = smvk::ImageViewType::View2D;
+                        vci.format = smvk::Format::Undefined;
+                        vci.subresourceRange = {smvk::ImageAspect::Color, 0, 1, 0, 1};
+                        vci.name = wci.name;
+                        m_sdfGiWorldPosView[slot] =
+                            m_context->CreateImageView(m_sdfGiWorldPos[slot], vci);
+                        m_sdfGiWorldPosBindless[slot] = m_context->CreateBindlessImage(
+                            m_sdfGiWorldPosView[slot], smvk::ImageLayout::General);
+                        if (!m_sdfGiWorldPosBindless[slot].empty()) {
+                            m_sdfGiWorldPosIndex[slot] =
+                                m_context->GetBindlessIndex(m_sdfGiWorldPosBindless[slot]);
+                            m_sdfGiWorldPosLogical[slot] = m_rendergraph->AddExternalImageView(
+                                m_sdfGiWorldPosView[slot], smvk::Format::RGBA32_Float, wci.name);
+                        }
                     }
                 }
             }
@@ -19698,6 +19740,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         m_sdfGiReady = !m_sdfGiImage[0].empty() && !m_sdfGiImage[1].empty() &&
                        m_sdfGiImageIndex[0] != UINT32_MAX && m_sdfGiImageIndex[1] != UINT32_MAX &&
                        !m_sdfGiLogical[0].empty() && !m_sdfGiLogical[1].empty() &&
+                       !m_sdfGiWorldPos[0].empty() && !m_sdfGiWorldPos[1].empty() &&
+                       m_sdfGiWorldPosIndex[0] != UINT32_MAX &&
+                       m_sdfGiWorldPosIndex[1] != UINT32_MAX &&
+                       !m_sdfGiWorldPosLogical[0].empty() && !m_sdfGiWorldPosLogical[1].empty() &&
                        !m_sdfGiBlurImage.empty() && m_sdfGiBlurIndex != UINT32_MAX &&
                        !m_sdfGiBlurLogical.empty() && m_sdfGiProgram.shaderCount != 0 &&
                        m_sdfGiBlurProgram.shaderCount != 0;
@@ -19736,12 +19782,30 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 writeReq.layout = smvk::ImageLayout::General;
                 pass.AddImageHint(m_sdfGiLogical[cur], writeReq);
             }
+            {
+                // Previous world position: sampled read (reprojection guide).
+                smvk::ImageSyncRequest prevPosReq{};
+                prevPosReq.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+                prevPosReq.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+                prevPosReq.layout = smvk::ImageLayout::General;
+                pass.AddImageHint(m_sdfGiWorldPosLogical[prev], prevPosReq);
+            }
+            {
+                // Current world position: General (storage write).
+                smvk::ImageSyncRequest writePosReq{};
+                writePosReq.barrierMasks.accessMask = smvk::AccessFlags::ShaderWrite;
+                writePosReq.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+                writePosReq.layout = smvk::ImageLayout::General;
+                pass.AddImageHint(m_sdfGiWorldPosLogical[cur], writePosReq);
+            }
             SdfGiPush push{};
             push.frameUniforms = frameUniformsAddress;
             push.sceneAddress = sdfSceneAddr;
             push.depthTextureIndex = depthIndex;
             push.prevImageIndex = m_sdfGiImageIndex[prev];
             push.outImageIndex = m_sdfGiImageIndex[cur];
+            push.prevWorldPosIndex = m_sdfGiWorldPosIndex[prev];
+            push.outWorldPosIndex = m_sdfGiWorldPosIndex[cur];
             push.outWidth = tileGridX;
             push.outHeight = tileGridY;
             push.invDepthW = 1.0f / float(std::max(1u, renderExtent.width));
