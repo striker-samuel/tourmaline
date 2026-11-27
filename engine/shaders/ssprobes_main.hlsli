@@ -127,11 +127,11 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     // Surface normal from the depth buffer's screen-space derivatives (only
     // for the traced subset): a smooth geometric normal (no SDF octree
     // quantization noise). The derivative offset spans the tile footprint
-    // (8px / 2) so the normal is a tile-scale average, not 1px micro-detail.
+    // (64px / 2) so the normal is a tile-scale average, not 1px micro-detail.
     // A tap that is background or crosses a depth discontinuity is rejected,
     // so a thin occluder's normal can't be stolen by the surface behind it.
-    const float2 stepX = float2(4.0f * sp.invDepthW, 0.0f);
-    const float2 stepY = float2(0.0f, 4.0f * sp.invDepthH);
+    const float2 stepX = float2(32.0f * sp.invDepthW, 0.0f);
+    const float2 stepY = float2(0.0f, 32.0f * sp.invDepthH);
     const float dL = depthTex.SampleLevel(smp, uv - stepX, 0).r;
     const float dR = depthTex.SampleLevel(smp, uv + stepX, 0).r;
     const float dU = depthTex.SampleLevel(smp, uv - stepY, 0).r;

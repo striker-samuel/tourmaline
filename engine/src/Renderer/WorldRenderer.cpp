@@ -19617,8 +19617,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // ---------------------------------------------------------------------
     const bool ssProbesWants = m_ambientMode == AmbientMode::SsProbes && m_world && ddgiSdfReady;
     if (ssProbesWants) {
-        const uint32_t tileGridX = (renderExtent.width + 7u) / 8u;
-        const uint32_t tileGridY = (renderExtent.height + 7u) / 8u;
+        const uint32_t tileGridX = (renderExtent.width + 63u) / 64u;
+        const uint32_t tileGridY = (renderExtent.height + 63u) / 64u;
         if (m_ssProbesImage[0].empty() || m_ssProbesTileCountX != tileGridX ||
             m_ssProbesTileCountY != tileGridY) {
             for (uint32_t slot = 0; slot < 2; ++slot) {
