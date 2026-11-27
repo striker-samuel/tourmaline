@@ -86,12 +86,18 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     // scrolled-in / reset probes start fresh (h = 0).
     const float h = (carry && sp.reset == 0) ? saturate(sp.hysteresis) : 0.0;
     uint oldDistIndex = oldProbe * DDGI_DIST_RES * DDGI_DIST_RES + bin;
+    const bool oldValid = carry && sp.reset == 0 &&
+        sp.oldIrr.Get().values[oldProbe * DDGI_IRR_RES * DDGI_IRR_RES].w > 0;
     float2 moments = sumWeight > 1e-8 ? sumMoments / sumWeight :
         float2(sp.maxDistance, sp.maxDistance * sp.maxDistance);
-    if (carry && sp.reset == 0 &&
-        sp.oldIrr.Get().values[oldProbe * DDGI_IRR_RES * DDGI_IRR_RES].w > 0
-        && valid) {
-        moments = lerp(moments, sp.oldDistance.Get().values[oldDistIndex], h);
+    if (valid) {
+        if (oldValid)
+            moments = lerp(moments, sp.oldDistance.Get().values[oldDistIndex], h);
+    } else if (oldValid) {
+        // A single-frame invalid trace (borderline meanDist under the rotating
+        // rays) must not discard the probe's converged history — keep the old
+        // moments so the probe reads as it did instead of flashing black.
+        moments = sp.oldDistance.Get().values[oldDistIndex];
     }
     moments.y = max(moments.y, moments.x * moments.x);
     sp.newDistance.Get().values[distIndex] = moments;
@@ -99,11 +105,17 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     if (writeIrr) {
         uint index = probe * DDGI_IRR_RES * DDGI_IRR_RES + bin;
         uint oldIndex = oldProbe * DDGI_IRR_RES * DDGI_IRR_RES + bin;
-        float3 E = sumIrr * (4 * DDGI_PI / float(sp.rays));
-        if (carry && sp.reset == 0 && valid) {
-            float4 old = sp.oldIrr.Get().values[oldIndex];
-            if (old.w > 0) E = lerp(E, old.rgb, h);
+        if (valid) {
+            float3 E = sumIrr * (4 * DDGI_PI / float(sp.rays));
+            if (oldValid) {
+                float4 old = sp.oldIrr.Get().values[oldIndex];
+                E = lerp(E, old.rgb, h);
+            }
+            sp.newIrr.Get().values[index] = float4(E, 1);
+        } else if (oldValid) {
+            sp.newIrr.Get().values[index] = sp.oldIrr.Get().values[oldIndex];
+        } else {
+            sp.newIrr.Get().values[index] = float4(0, 0, 0, 0);
         }
-        sp.newIrr.Get().values[index] = valid ? float4(E, 1) : float4(0, 0, 0, 0);
     }
 }

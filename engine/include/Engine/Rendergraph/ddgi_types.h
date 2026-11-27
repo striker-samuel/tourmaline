@@ -29,14 +29,17 @@ inline constexpr uint32_t kDdgiMaxVolumes = 128;
 // Fine (near): fixed dense spacing. Coarse (far): spacing distance-fitted
 // (SDSM-style slow hysteresis) so its volume reaches the estimated far depth.
 inline constexpr uint32_t kDdgiCascadeCount = 2;
-inline constexpr uint32_t kDdgiFineDims[3] = {12, 6, 12};
-inline constexpr uint32_t kDdgiCoarseDims[3] = {12, 6, 12};
+inline constexpr uint32_t kDdgiFineDims[3] = {16, 8, 16};
+inline constexpr uint32_t kDdgiCoarseDims[3] = {16, 8, 16};
 inline constexpr float kDdgiFineSpacing = 1.5f;
-inline constexpr float kDdgiCoarseMinSpacing = 2.0f;
-inline constexpr float kDdgiCoarseMaxSpacing = 16.0f;
+// Coarse spacing clamps, expressed as MULTIPLES of the fine spacing (the
+// coarse cascade must stay dense enough to contribute — never stretch to
+// a useless 12 m spacing).
+inline constexpr float kDdgiCoarseMinScale = 2.0f;
+inline constexpr float kDdgiCoarseMaxScale = 4.0f;
 // The coarse volume's half-extent in cells ~ (dims.x-1)/2; reach = this *
 // spacing must cover the estimated far depth (m_ddgiFar).
-inline constexpr float kDdgiCoarseReachCells = 5.0f;
+inline constexpr float kDdgiCoarseReachCells = 7.5f;
 
 // GPU descriptor of one probe volume (mirrored in ddgi_common.hlsli as
 // DdgiVolumeDesc; 64 bytes, 16-aligned). Carries BOTH history-slot BDAs —

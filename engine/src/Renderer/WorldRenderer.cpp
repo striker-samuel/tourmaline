@@ -5280,20 +5280,16 @@ void WorldRenderer::UpdateDdgiCascades(const glm::vec3& camPos) {
         m_ddgiFar = std::ceil(m_ddgiFar / 0.5f) * 0.5f; // quantize 0.5 m
     }
 
-    // ---- Coarse spacing ladder: snap so the grid only re-converges when a
-    // rung actually moves (rare). Pick the SMALLEST rung whose reach covers
-    // the estimated far depth (rung * reachCells >= m_ddgiFar), so distant
-    // geometry is never left outside the coarse volume.
+    // ---- Coarse spacing: distance-fitted but CLAMPED to [2x, 4x] the fine
+    // spacing so the coarse cascade stays dense enough to contribute (it must
+    // never stretch to a useless 12 m). Quantized to 0.5 m so it only re-fits
+    // (and resets the coarse cascade) when the reach actually moves.
+    const float minCoarse = m_ddgiFineSpacing * smvk::ddgi::kDdgiCoarseMinScale;
+    const float maxCoarse = m_ddgiFineSpacing * smvk::ddgi::kDdgiCoarseMaxScale;
     const float target = m_ddgiFar / smvk::ddgi::kDdgiCoarseReachCells;
-    static constexpr float ladder[] = {2.0f, 3.0f, 4.0f, 6.0f, 8.0f, 12.0f, 16.0f};
-    float snapped = smvk::ddgi::kDdgiCoarseMaxSpacing;
-    for (float l : ladder)
-        if (l >= target - 1e-3f) {
-            snapped = l;
-            break;
-        }
-    snapped =
-        std::clamp(snapped, smvk::ddgi::kDdgiCoarseMinSpacing, smvk::ddgi::kDdgiCoarseMaxSpacing);
+    float snapped = std::clamp(target, minCoarse, maxCoarse);
+    snapped = std::ceil(snapped / 0.5f) * 0.5f;
+    snapped = std::clamp(snapped, minCoarse, maxCoarse);
     const bool coarseSpacingChanged = (snapped != m_ddgiCoarseSpacing);
     m_ddgiCoarseSpacing = snapped;
 
