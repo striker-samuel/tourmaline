@@ -2362,14 +2362,17 @@ void WorldRenderer::DrawPanicOverlay() {
         return; // nothing wrong — no legend
     // Crude bright-red text pinned to the top-left corner (no window, no
     // background, no interaction) — the old centered "RENDER PANIC" window
-    // occluded the view and stole focus.
+    // occluded the view and stole focus. Scales with the UI scale so it stays
+    // legible at any UI resolution.
     ImDrawList* dl = ImGui::GetForegroundDrawList();
+    ImFont* font = ImGui::GetFont();
+    const float fs = ImGui::GetFontSize() * m_uiScale;
     float y = 6.0f;
-    dl->AddText(ImVec2(6.0f, y), IM_COL32(255, 22, 22, 255), "RENDER PANIC");
-    y += 22.0f;
+    dl->AddText(font, fs, ImVec2(6.0f, y), IM_COL32(255, 22, 22, 255), "RENDER PANIC");
+    y += fs * 1.45f;
     for (const std::string& p : panic) {
-        dl->AddText(ImVec2(6.0f, y), IM_COL32(255, 82, 82, 255), p.c_str());
-        y += 16.0f;
+        dl->AddText(font, fs, ImVec2(6.0f, y), IM_COL32(255, 82, 82, 255), p.c_str());
+        y += fs * 1.05f;
     }
 }
 

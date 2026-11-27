@@ -15637,7 +15637,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
          m_debugView == ViewMode::Lods || m_debugView == ViewMode::DdgiIrradiance ||
          m_debugView == ViewMode::ScreenSpaceProbesIrradiance ||
          m_debugView == ViewMode::ScreenSpaceProbesProbes ||
-         m_debugView == ViewMode::MotionVectors || DebugFsForView(m_debugView).has_value()) &&
+         m_debugView == ViewMode::MotionVectors || DebugFsForView(m_debugView).has_value() ||
+         IsSsgiDiffuseDebugView(m_debugView)) &&
         gpuSceneGiReady;
     // KD diagnostic: the full raster-mode breakdown (the temporal gate
     // downstream only names its own conditions - this names every reason
