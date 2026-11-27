@@ -586,6 +586,11 @@ enum class ViewMode : int {
     // rendered through the LIT path with the SsProbes debug flag set. Needs the
     // SsProbes ambient source active, else it falls back to plain Lit.
     ScreenSpaceProbesIrradiance = 35,
+    // Screen-space probes lattice + age (combo/env only): the tile grid that
+    // is the probe layout, flat-coloured by probe age (frames since last
+    // trace) — the probe locations and their affected-tile footprint, with
+    // sky/background tiles left dark. Needs the SsProbes ambient source.
+    ScreenSpaceProbesProbes = 36,
 };
 
 // The diffuse SSGI debug views (see the ViewMode block): rendered by
@@ -1264,8 +1269,9 @@ struct FrameUniforms {
     uint32_t ssProbesEnabled = 0;    // 3540 1 = sample the screen-space probes irradiance
     uint32_t ssProbesImageIndex = 0; // 3544 bindless sampled-image index
     uint32_t ssProbesTileGrid = 0;   // 3548 x | (y << 16) tile grid (pixels = grid * 16)
-    uint32_t ssProbesDebug =
-        0; // 3552 1 = render the raw screen-space probes irradiance (debug view)
+    uint32_t ssProbesDebug = 0; // 3552 1 = raw irradiance, 2 = probe lattice + age (debug view)
+    uint32_t ssProbesWorldPosIndex =
+        0; // 3556 current-slot world-position image (probe age + sky detection)
 };
 // FrameUniforms layout insurance: the HLSL mirror (common.hlsli) reads
 // every field by absolute offset — any drift desyncs the GPU reads.
@@ -1403,6 +1409,8 @@ static_assert(offsetof(FrameUniforms, ssProbesImageIndex) == 3544,
 static_assert(offsetof(FrameUniforms, ssProbesTileGrid) == 3548,
               "ssProbesTileGrid offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, ssProbesDebug) == 3552, "ssProbesDebug offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, ssProbesWorldPosIndex) == 3556,
+              "ssProbesWorldPosIndex offset: HLSL mirror");
 static_assert(sizeof(FrameUniforms) == 3568,
               "FrameUniforms size: HLSL mirror (the motion tail appended "
               "relativeViewProj + cameraOriginHigh/Low 3424 -> 3520, then the "

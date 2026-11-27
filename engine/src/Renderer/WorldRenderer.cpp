@@ -1272,6 +1272,9 @@ bool WorldRenderer::onAttach() {
         // irradiance; the SsProbes ambient source must be active, else Lit).
         else if (dv == "ssprobes" || dv == "ssprobes_irradiance")
             m_debugView = ViewMode::ScreenSpaceProbesIrradiance;
+        // screen-space probes lattice + age (probe location + affected tiles).
+        else if (dv == "ssprobes_probes" || dv == "ssprobes_lattice" || dv == "ssprobes_grid")
+            m_debugView = ViewMode::ScreenSpaceProbesProbes;
         else
             std::cerr << "[WorldRenderer] unknown TOURMALINE_DEBUGVIEW value: " << dv << "\n";
     }
@@ -6136,10 +6139,14 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
     data.ssProbesEnabled = (m_ambientMode == AmbientMode::SsProbes && m_ssProbesReady) ? 1u : 0u;
     data.ssProbesImageIndex = m_ssProbesBlurIndex; // Main samples the smoothed copy
     data.ssProbesTileGrid = m_ssProbesTileCountX | (m_ssProbesTileCountY << 16);
+    data.ssProbesWorldPosIndex = m_ssProbesWorldPosIndex[m_ssProbesWriteSlot];
     data.ssProbesDebug = (m_ambientMode == AmbientMode::SsProbes &&
                           m_debugView == ViewMode::ScreenSpaceProbesIrradiance)
                              ? 1u
-                             : 0u;
+                             : ((m_ambientMode == AmbientMode::SsProbes &&
+                                 m_debugView == ViewMode::ScreenSpaceProbesProbes)
+                                    ? 2u
+                                    : 0u);
 
     m_context->UploadDataToBuffer(m_resources.frameUniforms,
                                   &data,
@@ -15595,6 +15602,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         (m_debugView == ViewMode::Lit || m_debugView == ViewMode::Meshlets ||
          m_debugView == ViewMode::Lods || m_debugView == ViewMode::DdgiIrradiance ||
          m_debugView == ViewMode::ScreenSpaceProbesIrradiance ||
+         m_debugView == ViewMode::ScreenSpaceProbesProbes ||
          m_debugView == ViewMode::MotionVectors || DebugFsForView(m_debugView).has_value()) &&
         gpuSceneGiReady;
     // KD diagnostic: the full raster-mode breakdown (the temporal gate
@@ -19609,8 +19617,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // ---------------------------------------------------------------------
     const bool ssProbesWants = m_ambientMode == AmbientMode::SsProbes && m_world && ddgiSdfReady;
     if (ssProbesWants) {
-        const uint32_t tileGridX = (renderExtent.width + 15u) / 16u;
-        const uint32_t tileGridY = (renderExtent.height + 15u) / 16u;
+        const uint32_t tileGridX = (renderExtent.width + 7u) / 8u;
+        const uint32_t tileGridY = (renderExtent.height + 7u) / 8u;
         if (m_ssProbesImage[0].empty() || m_ssProbesTileCountX != tileGridX ||
             m_ssProbesTileCountY != tileGridY) {
             for (uint32_t slot = 0; slot < 2; ++slot) {

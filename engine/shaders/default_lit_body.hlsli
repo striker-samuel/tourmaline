@@ -1790,12 +1790,44 @@ float envVis = 1.0f;
     {
         Texture2D ssProbesTex = textures[NonUniformResourceIndex(frame.ssProbesImageIndex)];
         const float3 e = ssProbesTex.SampleLevel(samplers[0], IN.uv, 0).rgb;
-        if (frame.ssProbesDebug != 0u)
+        if (frame.ssProbesDebug == 1u)
         {
             OUT.outAoTerm = float4(0.0f, 0.0f, 0.0f, 0.0f);
             OUT.outEnvSpec = float4(0.0f, 0.0f, 0.0f, 0.0f);
             const float ssProbesNorm = max(frame.env.ground.w, 1e-4f);
             OUT.outColor = float4(SanitizeHdr(e / PI / ssProbesNorm * 1000.0f), 1.0f);
+            return OUT;
+        }
+        if (frame.ssProbesDebug == 2u)
+        {
+            // Probe lattice + age: flat per-tile age heatmap over the tile grid
+            // (the probe layout), with a magenta lattice marking the probe
+            // locations. A probe's affected pixels are its flat tile footprint.
+            OUT.outAoTerm = float4(0.0f, 0.0f, 0.0f, 0.0f);
+            OUT.outEnvSpec = float4(0.0f, 0.0f, 0.0f, 0.0f);
+            Texture2D ssProbesPosTex =
+                textures[NonUniformResourceIndex(frame.ssProbesWorldPosIndex)];
+            const float2 grid = float2(float(frame.ssProbesTileGrid & 0xffffu),
+                                       float(frame.ssProbesTileGrid >> 16u));
+            const float2 tileUV = IN.uv * grid;
+            const float2 cell = floor(tileUV);
+            const float4 pos4 = ssProbesPosTex.SampleLevel(samplers[0], (cell + 0.5f) / grid, 0);
+            const float age = pos4.w;
+            const bool sky = dot(pos4.xyz, pos4.xyz) > 1e10f; // the 1e30 sky sentinel
+            float3 col;
+            if (sky) {
+                col = float3(0.02f, 0.02f, 0.12f); // no probe (sky/background)
+            } else {
+                // Age heatmap: green (fresh) -> yellow -> red (stale, 4+ frames).
+                const float t = saturate(age / 4.0f);
+                col = lerp(float3(0.10f, 0.85f, 0.15f), float3(0.90f, 0.10f, 0.10f), t);
+            }
+            // Probe-location lattice (magenta grid lines at the tile edges).
+            const float2 f = tileUV - cell;
+            const float edge = 0.10f;
+            if (min(f.x, f.y) < edge || min(1.0f - f.x, 1.0f - f.y) < edge)
+                col = float3(1.0f, 0.0f, 1.0f);
+            OUT.outColor = float4(SanitizeHdr(col * 1000.0f), 1.0f);
             return OUT;
         }
         ambient = kD * baseColor * (e / PI) * occlusion;

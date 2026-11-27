@@ -93,15 +93,17 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     Texture2D prevPosTex = textures[NonUniformResourceIndex(sp.prevWorldPosIndex)];
     const float4 clipPrev = mul(frame.prevViewProj, float4(worldPos, 1.0f));
     float3 reprojE = float3(0.0f, 0.0f, 0.0f);
+    float prevAge = 0.0f; // frames since the reprojected probe was last traced
     bool disoccluded = true;
     if (clipPrev.w > 1e-6f) {
         const float2 uvPrev = (clipPrev.xy / clipPrev.w) * 0.5f + 0.5f;
         if (all(uvPrev >= 0.0f) && all(uvPrev <= 1.0f)) {
             const float3 reprojRaw = prevTex.SampleLevel(smp, uvPrev, 0).rgb;
             reprojE = all(isfinite(reprojRaw)) ? reprojRaw : float3(0.0f, 0.0f, 0.0f);
-            const float3 prevPos = prevPosTex.SampleLevel(smp, uvPrev, 0).xyz;
-            const float3 delta = prevPos - worldPos;
+            const float4 prevPos4 = prevPosTex.SampleLevel(smp, uvPrev, 0);
+            const float3 delta = prevPos4.xyz - worldPos;
             disoccluded = dot(delta, delta) > (0.5f * 0.5f);
+            prevAge = prevPos4.w;
         }
     }
 
@@ -115,19 +117,21 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
         // Disoccluded: reset to the sky estimate (a better first guess than
         // black for a newly revealed surface) and let the next trace converge.
         const float3 outE = disoccluded ? missColor : reprojE;
+        // Age: a carried probe ages by one frame; a disoccluded reset is fresh.
+        const float age = disoccluded ? 0.0f : min(prevAge + 1.0f, 255.0f);
         ssProbesStorage[sp.outImageIndex][tid.xy] = float4(outE, 1.0f);
-        ssProbesStorage[sp.outWorldPosIndex][tid.xy] = float4(worldPos, 0.0f);
+        ssProbesStorage[sp.outWorldPosIndex][tid.xy] = float4(worldPos, age);
         return;
     }
 
     // Surface normal from the depth buffer's screen-space derivatives (only
     // for the traced subset): a smooth geometric normal (no SDF octree
     // quantization noise). The derivative offset spans the tile footprint
-    // (16px / 2) so the normal is a tile-scale average, not 1px micro-detail.
+    // (8px / 2) so the normal is a tile-scale average, not 1px micro-detail.
     // A tap that is background or crosses a depth discontinuity is rejected,
     // so a thin occluder's normal can't be stolen by the surface behind it.
-    const float2 stepX = float2(8.0f * sp.invDepthW, 0.0f);
-    const float2 stepY = float2(0.0f, 8.0f * sp.invDepthH);
+    const float2 stepX = float2(4.0f * sp.invDepthW, 0.0f);
+    const float2 stepY = float2(0.0f, 4.0f * sp.invDepthH);
     const float dL = depthTex.SampleLevel(smp, uv - stepX, 0).r;
     const float dR = depthTex.SampleLevel(smp, uv + stepX, 0).r;
     const float dU = depthTex.SampleLevel(smp, uv - stepY, 0).r;
@@ -210,5 +214,5 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
                             ? irradiance
                             : lerp(reprojE, irradiance, sp.blendAlpha);
     ssProbesStorage[sp.outImageIndex][tid.xy] = float4(outE, 1.0f);
-    ssProbesStorage[sp.outWorldPosIndex][tid.xy] = float4(worldPos, 0.0f);
+    ssProbesStorage[sp.outWorldPosIndex][tid.xy] = float4(worldPos, 0.0f); // freshly traced
 }

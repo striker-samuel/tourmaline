@@ -1066,7 +1066,8 @@ uint decalCount;                                         // 776 0 = decals off
     uint ssProbesEnabled;                                  // 3540 1 = sample the screen-space probes irradiance
     uint ssProbesImageIndex;                               // 3544 bindless sampled-image index
     uint ssProbesTileGrid;                                 // 3548 x | (y << 16) tile grid
-    uint ssProbesDebug;                                    // 3552 1 = render the raw screen-space probes irradiance
+    uint ssProbesDebug;                                    // 3552 1 = raw irradiance, 2 = probe lattice + age
+    uint ssProbesWorldPosIndex;                            // 3556 current-slot world-position image
 };
 
 // Deferred-shadow push constants + shared helpers (needs FrameUniforms
