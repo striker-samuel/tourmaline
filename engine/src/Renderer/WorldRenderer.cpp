@@ -19503,6 +19503,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // update index ping-pong the double-buffered history across every
         // volume (m_ddgiReset clears history on the first frame).
         const uint64_t rayMaterials = m_context->RayTracingMaterialAddress();
+        smvk::ddgi::Volume::SdfTraceInput sdfInput;
+        const smvk::ddgi::Volume::SdfTraceInput* sdfPtr = nullptr;
+        if (ddgiSdfReady) {
+            sdfInput.sceneAddress = m_ddgiSdfGpu.SceneAddress(*m_context);
+            sdfPtr = &sdfInput;
+        }
         for (auto& vol : m_ddgiVolumes) {
             vol.AddPasses(*m_rendergraph,
                           frameUniformsAddress,
@@ -19510,7 +19516,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                           m_ddgiUpdateIndex,
                           m_ddgiReset,
                           rayMaterials,
-                          nullptr);
+                          sdfPtr);
         }
         if (!m_ddgiVolumes.empty()) {
             m_ddgiWriteSlot ^= 1u;

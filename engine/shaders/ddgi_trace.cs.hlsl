@@ -18,6 +18,7 @@ struct DdgiTracePush {
     GPU_PTR_READ(DdgiIrrBuffer) oldIrr;           // E_indirect feedback (prev frame)
     GPU_PTR_READ(DdgiDistanceBuffer) oldDistance; // E_indirect visibility moments
     GPU_PTR_READ(RayMaterialBuffer) rayMaterials; // per-TLAS-instance material
+    GPU_PTR_READ(DdgiRelocationBuffer) relocation; // per-probe relocation offset
 };
 GPU_PUSH(DdgiTracePush, sp);
 
@@ -31,7 +32,8 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
 
     float3 direction = DdgiRayDirection(rayIndex, sp.rays, sp.updateIndex);
     float3 origin = float3(sp.originX, sp.originY, sp.originZ)
-        + float3(DdgiGridCoord(probe, dims)) * sp.spacing;
+        + float3(DdgiGridCoord(probe, dims)) * sp.spacing
+        + sp.relocation.Get().values[probe].xyz;
     RayDesc ray;
     ray.Origin = origin;
     ray.Direction = direction;

@@ -129,6 +129,8 @@ struct TracePush {
     // Per-TLAS-instance compact material (albedo/emissive/metallic) for hit
     // lighting: float4 albedoEmissive + float4 pbr per instance.
     uint64_t rayMaterials = 0;
+    // Per-probe relocation offset (float4, written by the SDF relocation).
+    uint64_t relocation = 0;
 };
 // Fixed choice per volume/dispatch, not a per-ray switch.
 enum class TraceBackend : uint8_t { HardwareRT, StaticSdf };
@@ -137,8 +139,8 @@ struct SdfTracePush {
     TracePush trace{};
     uint64_t sceneAddress = 0;
 };
-static_assert(sizeof(TracePush) == 80 && offsetof(TracePush, rayMaterials) == 72);
-static_assert(sizeof(SdfTracePush) == 88 && offsetof(SdfTracePush, sceneAddress) == 80);
+static_assert(sizeof(TracePush) == 88 && offsetof(TracePush, relocation) == 80);
+static_assert(sizeof(SdfTracePush) == 96 && offsetof(SdfTracePush, sceneAddress) == 88);
 
 struct BlendPush {
     uint64_t scratch = 0, oldIrr = 0, oldDistance = 0, newIrr = 0, newDistance = 0;
@@ -146,7 +148,16 @@ struct BlendPush {
     float hysteresis = 0, maxDistance = 0;
     uint32_t pad = 0;
 };
-static_assert(sizeof(TracePush) == 80 && offsetof(TracePush, maxDistance) == 48);
+// SDF-assisted probe relocation (ddgi_relocate.cs.hlsl).
+struct RelocatePush {
+    uint64_t sceneAddress = 0, relocation = 0;
+    float originX = 0, originY = 0, originZ = 0, spacing = 0;
+    uint32_t dimX = 0, dimY = 0, dimZ = 0, probes = 0;
+    float searchStep = 0;
+    uint32_t iterations = 0;
+};
+static_assert(sizeof(RelocatePush) == 56 && offsetof(RelocatePush, iterations) == 52);
+static_assert(sizeof(TracePush) == 88 && offsetof(TracePush, maxDistance) == 48);
 static_assert(sizeof(BlendPush) == 64 && offsetof(BlendPush, probes) == 40);
 
 } // namespace smvk::ddgi

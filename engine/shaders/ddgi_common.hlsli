@@ -14,6 +14,9 @@ struct DdgiRay {
 struct DdgiRayBuffer { DdgiRay values[1]; };
 struct DdgiIrrBuffer { float4 values[1]; };
 struct DdgiDistanceBuffer { float2 values[1]; };
+// Per-probe relocation offset (xyz = world offset from the grid position,
+// w = 0). Written by the SDF-assisted relocation pass, read by the trace.
+struct DdgiRelocationBuffer { float4 values[1]; };
 // Per-TLAS-instance compact material (published by BuildRayTracingWorld,
 // indexed by the TLAS instance custom index).
 struct RayMaterial {

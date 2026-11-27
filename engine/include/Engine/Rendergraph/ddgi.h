@@ -45,8 +45,9 @@ struct Volume {
     Sizes sizes{};
     Buffer scratch;
     History history[2];
-    Holder<ShaderModuleHandle> traceModule, blendModule;
-    ShaderProgram traceProgram{}, blendProgram{};
+    Buffer relocation; // per-probe float4 offset (SDF-assisted relocation)
+    Holder<ShaderModuleHandle> traceModule, blendModule, relocateModule;
+    ShaderProgram traceProgram{}, blendProgram{}, relocateProgram{};
     bool ready = false;
     TraceBackend backend = TraceBackend::HardwareRT;
 
@@ -78,8 +79,11 @@ struct Volume {
                 "ddgiTrace");
             blendModule = ctx.CreateShaderModule(
                 smvk::shaders::Read("content/shaders/ddgi_blend.cs.hlsl.spv"), "ddgiBlend");
+            relocateModule = ctx.CreateShaderModule(
+                smvk::shaders::Read("content/shaders/ddgi_relocate.cs.hlsl.spv"), "ddgiRelocate");
             if (!traceModule.empty() && !blendModule.empty() &&
                 scratch.Create(ctx, rg, sizes.scratch, "ddgi ray scratch") &&
+                relocation.Create(ctx, rg, sizes.probes * sizeof(float) * 4, "ddgi relocation") &&
                 history[0].irradiance.Create(ctx, rg, sizes.irradiance, "ddgi irradiance A") &&
                 history[0].distance.Create(ctx, rg, sizes.distance, "ddgi moments A") &&
                 history[1].irradiance.Create(ctx, rg, sizes.irradiance, "ddgi irradiance B") &&
@@ -107,8 +111,12 @@ struct Volume {
                     .module = traceModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute};
                 Shader blend{
                     .module = blendModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute};
+                Shader relocate{.module = relocateModule,
+                                .entryPoint = "mainCS",
+                                .stage = ShaderStage::Compute};
                 traceProgram = {.shaders = {trace}, .shaderCount = 1};
                 blendProgram = {.shaders = {blend}, .shaderCount = 1};
+                relocateProgram = {.shaders = {relocate}, .shaderCount = 1};
                 ready = true;
                 return true;
             }
@@ -122,14 +130,17 @@ struct Volume {
     void Destroy(RenderGraph& rg) {
         ready = false;
         scratch.Destroy(rg);
+        relocation.Destroy(rg);
         for (auto& h : history) {
             h.irradiance.Destroy(rg);
             h.distance.Destroy(rg);
         }
         traceProgram = ShaderProgram();
         blendProgram = ShaderProgram();
+        relocateProgram = ShaderProgram();
         traceModule = {};
         blendModule = {};
+        relocateModule = {};
         sizes = {};
     }
 
@@ -176,8 +187,33 @@ struct Volume {
         const History& old = history[writeSlot ^ 1];
         const History& next = history[writeSlot];
         {
+            // SDF-assisted probe relocation: push buried probes into free
+            // space so the surfaces they serve stop reading black. Runs once
+            // per volume, before the trace.
+            auto& pass = rg.AddComputePass("DDGIRelocate");
+            Hint(pass, relocation, true);
+            auto& f = rg.PassFrameData<Frame<RelocatePush>>(pass);
+            f.program = const_cast<ShaderProgram*>(&relocateProgram);
+            f.push = {sdf ? sdf->sceneAddress : 0,
+                      relocation.address,
+                      grid.origin[0],
+                      grid.origin[1],
+                      grid.origin[2],
+                      grid.spacing,
+                      grid.dims[0],
+                      grid.dims[1],
+                      grid.dims[2],
+                      sizes.probes,
+                      grid.spacing,
+                      4u};
+            f.groupsX = (sizes.probes + 63) / 64;
+            f.groupsY = 1;
+            pass.SetRecordFn(&Record<RelocatePush>);
+        }
+        {
             auto& pass = rg.AddComputePass("DDGITrace");
             Hint(pass, scratch, true);
+            Hint(pass, relocation, false);
             // E_indirect feedback: the trace reads the previous frame's field
             // (and its distance moments) to gather multi-bounce color at hits.
             Hint(pass, old.irradiance, false);
@@ -196,7 +232,8 @@ struct Volume {
                                  updateIndex,
                                  old.irradiance.address,
                                  old.distance.address,
-                                 rayMaterials};
+                                 rayMaterials,
+                                 relocation.address};
             if (backend == TraceBackend::StaticSdf) {
                 BufferSyncRequest req{};
                 req.barrierMasks.accessMask = AccessFlags::ShaderRead;

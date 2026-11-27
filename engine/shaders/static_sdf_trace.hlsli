@@ -251,6 +251,31 @@ void StaticSdfOctreeSample(StaticSdfGpuInstance v, float3 local,
     StaticSdfOctreeSampleCached(v, local, nodes, children, leaves, cache, dist, color);
 }
 
+// Minimum LOCAL signed distance from a world point to the SDF scene
+// (negative = inside geometry). Instances whose root AABB does not contain
+// the point are skipped. The distance is in each instance's local units,
+// which is fine for sign/relative comparisons (probe relocation), not for
+// exact world-space measurement.
+float StaticSdfSceneDistance(StaticSdfSceneHeader scene, float3 worldPos)
+{
+    float best = 1e30f;
+    [loop] for (uint index = 0;
+                index < min(scene.instanceCount, STATIC_SDF_MAX_INSTANCES); ++index)
+    {
+        const StaticSdfGpuInstance v = scene.instances.Get().items[index];
+        const float3 local = StaticSdfPointLocal(v, worldPos);
+        const float3 boxMin = v.originSize.xyz;
+        const float3 boxMax = boxMin + v.originSize.w * 2.0f;
+        if (any(local < boxMin) || any(local > boxMax))
+            continue;
+        float d;
+        float3 col;
+        StaticSdfOctreeSample(v, local, scene.nodes, scene.children, scene.leaves, d, col);
+        best = min(best, d);
+    }
+    return best;
+}
+
 StaticSdfRayHit StaticSdfTrace(float3 worldOrigin, float3 worldDir,
     float maxWorldDistance, float worldEpsilon, uint stepBudget,
     uint instanceCount, uint materialCount,
