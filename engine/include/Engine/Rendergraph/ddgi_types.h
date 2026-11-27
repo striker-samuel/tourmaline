@@ -12,6 +12,8 @@ namespace smvk::ddgi {
 inline constexpr uint32_t kIrrResolution = 8;
 inline constexpr uint32_t kDistanceResolution = 16;
 inline constexpr uint32_t kIrrBins = kIrrResolution * kIrrResolution;
+// One additional float4 per probe stores the traced relocation offset.
+inline constexpr uint32_t kIrrStride = kIrrBins + 1;
 inline constexpr uint32_t kDistanceBins = kDistanceResolution * kDistanceResolution;
 inline constexpr uint32_t kMaxProbes = 32768;
 inline constexpr uint32_t kMaxRays = 512;
@@ -121,9 +123,9 @@ inline bool CalculateSizes(const Grid& g, size_t byteBudget, Sizes& out) {
         count *= g.dims[i];
     }
     const uint64_t scratch = count * g.rays * sizeof(RaySample);
-    const uint64_t irr = count * kIrrBins * sizeof(Irradiance);
+    const uint64_t irr = count * kIrrStride * sizeof(Irradiance);
     const uint64_t dist = count * kDistanceBins * sizeof(DistanceMoments);
-    const uint64_t total = scratch + 2 * (irr + dist);
+    const uint64_t total = scratch + 2 * (irr + dist) + count * 4 * sizeof(float);
     if (total > byteBudget || total > std::numeric_limits<size_t>::max())
         return false;
     out = {static_cast<uint32_t>(count),
@@ -182,6 +184,7 @@ struct BlendPush {
     int32_t deltaX = 0, deltaY = 0, deltaZ = 0;
     uint32_t dimX = 0, dimY = 0, dimZ = 0;
     uint32_t updateIndex = 0; // rotating-subset phase (incremental trace match)
+    uint64_t relocation = 0;
 };
 // TLAS-based probe relocation (no SDF dependency): the shader casts six axis
 // rays and pushes a probe buried in geometry toward its largest open gap.
@@ -194,6 +197,7 @@ struct RelocatePush {
 };
 static_assert(sizeof(RelocatePush) == 48 && offsetof(RelocatePush, maxDistance) == 40);
 static_assert(sizeof(TracePush) == 120 && offsetof(TracePush, maxDistance) == 48);
-static_assert(sizeof(BlendPush) == 88 && offsetof(BlendPush, deltaX) == 60);
+static_assert(sizeof(BlendPush) == 96 && offsetof(BlendPush, deltaX) == 60 &&
+              offsetof(BlendPush, relocation) == 88);
 
 } // namespace smvk::ddgi

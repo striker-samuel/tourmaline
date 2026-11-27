@@ -21,6 +21,7 @@ struct DdgiBlendPush {
     uint dimY;
     uint dimZ;
     uint updateIndex;
+    GPU_PTR_READ(DdgiRelocationBuffer) relocation;
 };
 GPU_PUSH(DdgiBlendPush, sp);
 
@@ -31,131 +32,109 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     if (probe >= sp.probes || bin >= DDGI_DIST_RES * DDGI_DIST_RES || sp.rays == 0)
         return;
 
-    // Toroidal carry + incremental subset (see ddgi_common.hlsli): a probe at
-    // grid coord c lived at c + delta last frame. Carried probes re-trace only
-    // on their rotating-subset turn; scrolled-in probes and the reset frame
-    // always trace. Carried-but-not-traced probes copy their old history.
     const uint3 dims = uint3(sp.dimX, sp.dimY, sp.dimZ);
     uint oldProbe = 0u;
     const bool carry = DdgiProbeCarried(int3(DdgiGridCoord(probe, dims)),
-                                        int3(sp.deltaX, sp.deltaY, sp.deltaZ), dims, oldProbe);
-    const bool traced = sp.reset != 0u || !carry || DdgiProbeTraced(probe, sp.updateIndex);
+                                       int3(sp.deltaX, sp.deltaY, sp.deltaZ), dims, oldProbe);
+    const float3 offset = sp.relocation.Get().values[probe].xyz;
+    bool sameOrigin = false;
+    if (carry && sp.reset == 0u)
+        sameOrigin = DdgiSameOrigin(offset, DdgiHistoryOffset(sp.oldIrr, oldProbe));
 
-    const bool writeIrr = bin < DDGI_IRR_RES * DDGI_IRR_RES;
+    const bool writeIrr = bin < DDGI_IRR_BINS;
+    const uint index = probe * DDGI_IRR_STRIDE + bin;
+    const uint oldIndex = oldProbe * DDGI_IRR_STRIDE + bin;
     const uint distIndex = probe * DDGI_DIST_RES * DDGI_DIST_RES + bin;
+    const uint oldDistIndex = oldProbe * DDGI_DIST_RES * DDGI_DIST_RES + bin;
+    // Publish exactly the ray origin associated with this history slot.
+    if (bin == 0u)
+        sp.newIrr.Get().values[probe * DDGI_IRR_STRIDE + DDGI_IRR_BINS] = float4(offset, 0.0f);
 
-    // Seed a scrolled-in probe from its carried axis-neighbors so it fades in
-    // smoothly: the single 128-ray fresh trace is noisy (no temporal average
-    // yet), while the neighbors are already temporally averaged and thus
-    // smooth. Only NEW probes need this (a carried probe has its own history).
-    float3 seedIrr = float3(0.0, 0.0, 0.0);
-    float2 seedDist = float2(0.0, 0.0);
-    float seedW = 0.0;
-    if (!carry && sp.reset == 0u) {
-        const int3 coord = int3(DdgiGridCoord(probe, dims));
-        [unroll]
-        for (int a = 0; a < 3; ++a) {
-            [unroll]
-            for (int s = -1; s <= 1; s += 2) {
-                int3 nc = coord;
-                nc[a] += s;
-                const int3 oldc = nc + int3(sp.deltaX, sp.deltaY, sp.deltaZ);
-                if (all(oldc >= int3(0, 0, 0)) && all(oldc < int3(dims))) {
-                    const uint np = uint(oldc.x) + uint(oldc.y) * sp.dimX
-                        + uint(oldc.z) * sp.dimX * sp.dimY;
-                    if (sp.oldIrr.Get().values[np * DDGI_IRR_RES * DDGI_IRR_RES].w > 0.0) {
-                        if (writeIrr)
-                            seedIrr += sp.oldIrr.Get()
-                                .values[np * DDGI_IRR_RES * DDGI_IRR_RES + bin].rgb;
-                        seedDist += sp.oldDistance.Get()
-                            .values[np * DDGI_DIST_RES * DDGI_DIST_RES + bin];
-                        seedW += 1.0;
-                    }
-                }
-            }
-        }
-        if (seedW > 0.0) {
-            seedIrr /= seedW;
-            seedDist /= seedW;
-        }
-    }
-
-    // Carried + not traced this frame: pure scroll — copy the carried history
-    // forward unchanged (the trace left this probe's scratch stale).
-    if (carry && !traced) {
+    // Keep the trace and blend skip conditions identical.
+    if (sameOrigin && !DdgiProbeTraced(probe, sp.updateIndex)) {
         if (writeIrr)
-            sp.newIrr.Get().values[probe * DDGI_IRR_RES * DDGI_IRR_RES + bin] =
-                sp.oldIrr.Get().values[oldProbe * DDGI_IRR_RES * DDGI_IRR_RES + bin];
-        sp.newDistance.Get().values[distIndex] =
-            sp.oldDistance.Get().values[oldProbe * DDGI_DIST_RES * DDGI_DIST_RES + bin];
+            sp.newIrr.Get().values[index] = sp.oldIrr.Get().values[oldIndex];
+        sp.newDistance.Get().values[distIndex] = sp.oldDistance.Get().values[oldDistIndex];
         return;
     }
 
-    float3 irrDir = DdgiBinDirection(min(bin, DDGI_IRR_RES * DDGI_IRR_RES - 1), DDGI_IRR_RES);
-    float3 distDir = DdgiBinDirection(bin, DDGI_DIST_RES);
-    float3 sumIrr = 0;
-    float2 sumMoments = 0;
-    float sumWeight = 0;
-    float sumDist = 0;
-    uint incompleteCount = 0;
+    const float3 irrDir = DdgiBinDirection(min(bin, DDGI_IRR_BINS - 1u), DDGI_IRR_RES);
+    const float3 distDir = DdgiBinDirection(bin, DDGI_DIST_RES);
+    float3 sumIrr = 0.0f;
+    float sumCos = 0.0f;
+    float2 sumMoments = 0.0f;
+    float sumWeight = 0.0f;
+    uint completed = 0u;
+    uint backfaces = 0u;
 
     for (uint r = 0; r < sp.rays; ++r) {
-        DdgiRay ray = sp.scratch.Get().values[probe * sp.rays + r];
-        if (ray.flags == 3)
-            ++incompleteCount;
-        if (writeIrr && ray.flags < 2 && all(isfinite(ray.radiance))) {
-            sumIrr += max(ray.radiance, 0) * max(dot(irrDir, ray.direction), 0);
+        const DdgiRay ray = sp.scratch.Get().values[probe * sp.rays + r];
+        // Unknown rays are neither sky nor visibility measurements.
+        if (ray.flags >= 3u || !isfinite(ray.distance) || !all(isfinite(ray.direction)) ||
+            (ray.flags < 2u && !all(isfinite(ray.radiance))))
+            continue;
+        ++completed;
+        if (ray.flags == 2u)
+            ++backfaces;
+        if (writeIrr) {
+            const float cosine = max(dot(irrDir, ray.direction), 0.0f);
+            sumCos += cosine;
+            if (ray.flags < 2u)
+                sumIrr += max(ray.radiance, 0.0f) * cosine;
         }
-        float w = pow(saturate(dot(distDir, ray.direction)), 16.0);
-        float d = isfinite(ray.distance) ? clamp(ray.distance, 0, sp.maxDistance) : 0;
-        sumMoments += float2(d, d*d) * w;
+        const float w = pow(saturate(dot(distDir, ray.direction)), 16.0f);
+        const float d = clamp(ray.distance, 0.0f, sp.maxDistance);
+        sumMoments += float2(d, d * d) * w;
         sumWeight += w;
-        sumDist += d;
     }
 
-    // Probe validity: a probe is "inside geometry" only when its mean ray
-    // distance collapses (surrounded on all sides).
-    const float meanDist = sumDist / float(max(sp.rays, 1u));
-    const bool valid =
-        incompleteCount < (sp.rays / 4u + 1u) && meanDist > sp.maxDistance * 0.025f;
-    // Carried + traced: blend hysteresis against the shifted old history;
-    // scrolled-in / reset probes start fresh (h = 0).
-    const float h = (carry && sp.reset == 0) ? saturate(sp.hysteresis) : 0.0;
-    uint oldDistIndex = oldProbe * DDGI_DIST_RES * DDGI_DIST_RES + bin;
-    const bool oldValid = carry && sp.reset == 0 &&
-        sp.oldIrr.Get().values[oldProbe * DDGI_IRR_RES * DDGI_IRR_RES].w > 0;
-    float2 moments = sumWeight > 1e-8 ? sumMoments / sumWeight :
-        float2(sp.maxDistance, sp.maxDistance * sp.maxDistance);
-    if (valid) {
+    const bool embedded = completed > 0u && backfaces * 4u >= completed;
+    const bool complete = completed * 4u >= sp.rays * 3u;
+    bool oldValid = false;
+    if (sameOrigin)
+        oldValid = sp.oldIrr.Get().values[oldProbe * DDGI_IRR_STRIDE].w > 0.0f;
+
+    // Never keep lighting from an origin now classified inside geometry.
+    // A temporarily incomplete trace may keep history only at the same origin.
+    if (embedded || !complete) {
+        const bool keep = !embedded && oldValid;
+        float2 moments = 0.0f;
+        if (keep)
+            moments = sp.oldDistance.Get().values[oldDistIndex];
+        sp.newDistance.Get().values[distIndex] = moments;
+        if (writeIrr) {
+            float4 irr = 0.0f;
+            if (keep)
+                irr = sp.oldIrr.Get().values[oldIndex];
+            sp.newIrr.Get().values[index] = irr;
+        }
+        return;
+    }
+
+    const float h = oldValid ? saturate(sp.hysteresis) : 0.0f;
+    // An unsupported directional bin is not evidence of an open ray.
+    float2 moments = 0.0f;
+    if (sumWeight > 1e-8f) {
+        moments = sumMoments / sumWeight;
         if (oldValid)
             moments = lerp(moments, sp.oldDistance.Get().values[oldDistIndex], h);
-        else if (seedW > 0.0)
-            moments = seedDist; // scrolled-in probe: seed from carried neighbors
     } else if (oldValid) {
-        // A single-frame invalid trace (borderline meanDist under the rotating
-        // rays) must not discard the probe's converged history — keep the old
-        // moments so the probe reads as it did instead of flashing black.
         moments = sp.oldDistance.Get().values[oldDistIndex];
     }
     moments.y = max(moments.y, moments.x * moments.x);
     sp.newDistance.Get().values[distIndex] = moments;
 
     if (writeIrr) {
-        uint index = probe * DDGI_IRR_RES * DDGI_IRR_RES + bin;
-        uint oldIndex = oldProbe * DDGI_IRR_RES * DDGI_IRR_RES + bin;
-        if (valid) {
-            float3 E = sumIrr * (4 * DDGI_PI / float(sp.rays));
-            if (oldValid) {
-                float4 old = sp.oldIrr.Get().values[oldIndex];
-                E = lerp(E, old.rgb, h);
-            } else if (seedW > 0.0) {
-                E = seedIrr; // scrolled-in probe: seed from carried neighbors
-            }
-            sp.newIrr.Get().values[index] = float4(E, 1);
-        } else if (oldValid) {
-            sp.newIrr.Get().values[index] = sp.oldIrr.Get().values[oldIndex];
-        } else {
-            sp.newIrr.Get().values[index] = float4(0, 0, 0, 0);
+        // Cosine-weighted average times pi is irradiance, not radiance.
+        // Constant incident radiance integrates exactly even with few rays.
+        float3 E = 0.0f;
+        if (sumCos > 1e-8f)
+            E = sumIrr * (DDGI_PI / sumCos);
+        if (oldValid) {
+            const float3 old = sp.oldIrr.Get().values[oldIndex].rgb;
+            E = sumCos > 1e-8f ? lerp(E, old, h) : old;
         }
+        // Scrolled-in or relocated probes publish their own fresh measurements.
+        sp.newIrr.Get().values[index] = float4(E, 1.0f);
     }
 }

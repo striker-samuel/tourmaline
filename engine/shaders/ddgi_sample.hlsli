@@ -44,11 +44,11 @@ DdgiSampleResult DdgiSampleVolume(DdgiVolumeDesc desc, uint slot, float3 worldPo
     // (facing ~0) and read invalid, never reaching the open-air probe on
     // its normal side.
     const float3 biasedPos = worldPos + geomN * (DDGI_NORMAL_BIAS * spacing);
-    const float3 local = (biasedPos - origin) / spacing;
+    const float3 local = clamp((biasedPos - origin) / spacing, 0.0f, float3(dims - 1));
     const int3 base = int3(floor(local));
     const float3 frac = local - float3(base);
 
-    const uint irrStride = DDGI_IRR_RES * DDGI_IRR_RES;
+    const uint irrStride = DDGI_IRR_STRIDE;
     const uint distStride = DDGI_DIST_RES * DDGI_DIST_RES;
 
     // Directional irradiance taps for the SHADING normal (computed once).
@@ -77,7 +77,8 @@ DdgiSampleResult DdgiSampleVolume(DdgiVolumeDesc desc, uint slot, float3 worldPo
         if (tri <= 0.0)
             continue;
 
-        const float3 probePos = origin + float3(coord) * spacing;
+        const float3 probePos = origin + float3(coord) * spacing
+            + DdgiHistoryOffset(desc.irradiance[slot], probe);
 
         // Bilinear irradiance toward the surface normal; .w = validity.
         float4 irr = float4(0.0, 0.0, 0.0, 0.0);
@@ -101,9 +102,8 @@ DdgiSampleResult DdgiSampleVolume(DdgiVolumeDesc desc, uint slot, float3 worldPo
             moments += desc.distance[slot].Get().values[probe * distStride + distBin[t]] * distW[t];
         const float visibility = DdgiVisibility(moments, dist);
 
-        // Normal-facing cosine: probes behind the GEOMETRIC surface contribute
-        // 0. recDir is already guarded against a zero probe->receiver vector.
-        const float facing = max(dot(geomN, -recDir), 0.0f);
+        // Facing uses the unbiased receiver; visibility alone uses the bias.
+        const float facing = DdgiFacing(geomN, probePos - worldPos);
 
         const float weight = tri * facing * visibility;
         acc += irr.rgb * weight;
@@ -135,19 +135,26 @@ DdgiSampleResult DdgiSampleIrradiance(DdgiParams params, float3 cameraPos, float
     const uint count = min(params.volumeCount, 128u);
     // Fine cascade = volume 0; its half-extent sets the cross-fade band.
     const DdgiVolumeDesc dFine = params.volumes.Get().values[0];
-    const float fineReach = 0.5f * float(dFine.dimX - 1u) * dFine.spacing;
-    const float dist = length(worldPos - cameraPos);
-    const float fadeStart = fineReach * saturate(params.crossFade);
-    const float fadeEnd = fineReach * saturate(params.crossFade + 0.4f);
+    const float3 halfExtent = max(0.5f * (float3(dFine.dimX, dFine.dimY, dFine.dimZ) - 1.0f) * dFine.spacing, 1e-4f);
+    const float3 center = float3(dFine.originX, dFine.originY, dFine.originZ) + halfExtent;
+    const float3 edge = abs(worldPos - center) / halfExtent;
+    // Fade at every face, including the short vertical dimension.
+    const float dist = max(length(worldPos - cameraPos) / halfExtent.x,
+                           max(edge.x, max(edge.y, edge.z)));
+    const float fadeStart = min(saturate(params.crossFade), 0.999f);
+    const float fadeEnd = saturate(fadeStart + 0.4f);
 
     // Near the camera the fine cascade alone wins — skip the coarse sample
     // entirely (most pixels, so the smooth blend stays cheap).
     if (dist < fadeStart) {
         const float3 vmin = float3(dFine.originX, dFine.originY, dFine.originZ);
         const float3 vmax = vmin + (float3(dFine.dimX, dFine.dimY, dFine.dimZ) - 1.0f) * dFine.spacing;
-        if (all(worldPos >= vmin) && all(worldPos <= vmax))
-            return DdgiSampleVolume(dFine, params.slot, worldPos, geomN, N);
-        return r;
+        if (all(worldPos >= vmin) && all(worldPos <= vmax)) {
+            const DdgiSampleResult nearSample = DdgiSampleVolume(dFine, params.slot, worldPos, geomN, N);
+            if (nearSample.valid > 0.0f)
+                return nearSample;
+        }
+        // Invalid fine history must not hide a valid coarse volume.
     }
 
     // Otherwise sample both cascades and cross-fade by distance (far = coarse,

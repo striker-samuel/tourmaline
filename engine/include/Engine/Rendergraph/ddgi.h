@@ -89,9 +89,11 @@ struct Volume {
                 "ddgiTrace");
             blendModule = ctx.CreateShaderModule(
                 smvk::shaders::Read("content/shaders/ddgi_blend.cs.hlsl.spv"), "ddgiBlend");
-            relocateModule = ctx.CreateShaderModule(
-                smvk::shaders::Read("content/shaders/ddgi_relocate.cs.hlsl.spv"), "ddgiRelocate");
+            if (backend == TraceBackend::HardwareRT)
+                relocateModule = ctx.CreateShaderModule(
+                    smvk::shaders::Read("content/shaders/ddgi_relocate.cs.hlsl.spv"), "ddgiRelocate");
             if (!traceModule.empty() && !blendModule.empty() &&
+                (backend != TraceBackend::HardwareRT || !relocateModule.empty()) &&
                 scratch.Create(ctx, rg, sizes.scratch, "ddgi ray scratch") &&
                 relocation.Create(ctx, rg, sizes.probes * sizeof(float) * 4, "ddgi relocation") &&
                 history[0].irradiance.Create(ctx, rg, sizes.irradiance, "ddgi irradiance A") &&
@@ -117,6 +119,8 @@ struct Volume {
                 zero(history[0].distance, sizes.distance);
                 zero(history[1].irradiance, sizes.irradiance);
                 zero(history[1].distance, sizes.distance);
+                if (backend == TraceBackend::StaticSdf)
+                    zero(relocation, sizes.probes * sizeof(float) * 4);
                 Shader trace{
                     .module = traceModule, .entryPoint = "mainCS", .stage = ShaderStage::Compute};
                 Shader blend{
@@ -126,7 +130,8 @@ struct Volume {
                                 .stage = ShaderStage::Compute};
                 traceProgram = {.shaders = {trace}, .shaderCount = 1};
                 blendProgram = {.shaders = {blend}, .shaderCount = 1};
-                relocateProgram = {.shaders = {relocate}, .shaderCount = 1};
+                if (backend == TraceBackend::HardwareRT)
+                    relocateProgram = {.shaders = {relocate}, .shaderCount = 1};
                 ready = true;
                 return true;
             }
@@ -201,7 +206,7 @@ struct Volume {
             scroll[1] - scrollPrev[1],
             scroll[2] - scrollPrev[2],
         };
-        {
+        if (backend == TraceBackend::HardwareRT) {
             // TLAS probe relocation: push buried probes into free space so
             // the surfaces they serve stop reading black. Runs once per
             // volume, before the trace (no SDF dependency — six axis rays).
@@ -286,6 +291,7 @@ struct Volume {
         {
             auto& pass = rg.AddComputePass("DDGIBlend");
             Hint(pass, scratch, false);
+            Hint(pass, relocation, false);
             Hint(pass, old.irradiance, false);
             Hint(pass, old.distance, false);
             Hint(pass, next.irradiance, true);
@@ -308,7 +314,8 @@ struct Volume {
                       grid.dims[0],
                       grid.dims[1],
                       grid.dims[2],
-                      updateIndex};
+                      updateIndex,
+                      relocation.address};
             f.groupsX = (kDistanceBins + 63) / 64;
             f.groupsY = sizes.probes;
             pass.SetRecordFn(&Record<BlendPush>);

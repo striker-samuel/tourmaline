@@ -38,18 +38,21 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     // frame) are re-traced only on their rotating-subset turn; scrolled-in
     // probes and the reset frame trace everything. Skipped probes leave the
     // scratch stale — the blend copies the carried history instead.
+    const float3 offset = sp.relocation.Get().values[probe].xyz;
     if (sp.reset == 0u) {
         uint oldProbe;
         const bool carry = DdgiProbeCarried(int3(DdgiGridCoord(probe, dims)),
                                             int3(sp.deltaX, sp.deltaY, sp.deltaZ), dims, oldProbe);
-        if (carry && !DdgiProbeTraced(probe, sp.updateIndex))
-            return;
+        if (carry && !DdgiProbeTraced(probe, sp.updateIndex)) {
+            if (DdgiSameOrigin(offset, DdgiHistoryOffset(sp.oldIrr, oldProbe)))
+                return;
+        }
     }
 
     float3 direction = DdgiRayDirection(rayIndex, sp.rays, sp.updateIndex);
     float3 origin = float3(sp.originX, sp.originY, sp.originZ)
         + float3(DdgiGridCoord(probe, dims)) * sp.spacing
-        + sp.relocation.Get().values[probe].xyz;
+        + offset;
     RayDesc ray;
     ray.Origin = origin;
     ray.Direction = direction;

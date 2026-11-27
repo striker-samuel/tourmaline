@@ -74,7 +74,9 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
                 const float3 diffuse = hit.baseColor * (1.0f - saturate(hit.metallic));
                 // E_indirect: multi-bounce feedback from the previous frame's
                 // irradiance field (the color-bleed + shadow-fill term).
-                const float3 eIndirect = DdgiSampleEIndirect(
+                float3 eIndirect = 0.0f;
+                if (sp.reset == 0u)
+                    eIndirect = DdgiSampleEIndirect(
                     sp.oldIrr, sp.oldDistance,
                     float3(sp.oldOriginX, sp.oldOriginY, sp.oldOriginZ), sp.spacing,
                     uint3(sp.dimX, sp.dimY, sp.dimZ), hit.hitPoint, hit.normal);

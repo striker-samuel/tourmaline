@@ -62,10 +62,14 @@ float3 DdgiSampleEIndirect(GPU_PTR_READ(DdgiIrrBuffer) oldIrr,
                            float3 origin, float spacing, uint3 dims,
                            float3 worldPos, float3 normal)
 {
-    const uint irrStride = DDGI_IRR_RES * DDGI_IRR_RES;
+    const uint irrStride = DDGI_IRR_STRIDE;
     const uint distStride = DDGI_DIST_RES * DDGI_DIST_RES;
     const float3 biased = worldPos + normal * (0.25f * spacing);
-    const float3 local = (biased - origin) / spacing;
+    const float3 extent = float3(dims - 1u);
+    const float3 unbiased = (worldPos - origin) / spacing;
+    if (any(unbiased < 0.0f) || any(unbiased > extent))
+        return float3(0.0f, 0.0f, 0.0f);
+    const float3 local = clamp((biased - origin) / spacing, 0.0f, extent);
     const int3 base = int3(floor(local));
     const float3 frac = local - float3(base);
 
@@ -98,7 +102,8 @@ float3 DdgiSampleEIndirect(GPU_PTR_READ(DdgiIrrBuffer) oldIrr,
         if (irr.w <= 0.0)
             continue;
 
-        const float3 probePos = origin + float3(coord) * spacing;
+        const float3 probePos = origin + float3(coord) * spacing
+            + DdgiHistoryOffset(oldIrr, probe);
         const float3 toReceiver = biased - probePos;
         const float dist = length(toReceiver);
         const float3 recDir = dist > 1e-5f ? toReceiver / dist : normal;
@@ -111,7 +116,7 @@ float3 DdgiSampleEIndirect(GPU_PTR_READ(DdgiIrrBuffer) oldIrr,
         for (uint t = 0; t < 4; ++t)
             moments += oldDistance.Get().values[probe * distStride + distBin[t]] * distW[t];
         const float visibility = DdgiVisibility(moments, dist);
-        const float facing = max(dot(normal, -recDir), 0.0f);
+        const float facing = DdgiFacing(normal, probePos - worldPos);
 
         const float weight = tri * facing * visibility;
         acc += irr.rgb * weight;

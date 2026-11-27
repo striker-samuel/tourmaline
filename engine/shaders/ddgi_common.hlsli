@@ -4,6 +4,9 @@
 
 static const uint DDGI_IRR_RES = 8;
 static const uint DDGI_DIST_RES = 16;
+// Each history record ends with the offset used to trace that probe.
+static const uint DDGI_IRR_BINS = DDGI_IRR_RES * DDGI_IRR_RES;
+static const uint DDGI_IRR_STRIDE = DDGI_IRR_BINS + 1;
 static const float DDGI_PI = 3.14159265358979323846;
 struct DdgiRay {
     float3 direction;
@@ -14,8 +17,8 @@ struct DdgiRay {
 struct DdgiRayBuffer { DdgiRay values[1]; };
 struct DdgiIrrBuffer { float4 values[1]; };
 struct DdgiDistanceBuffer { float2 values[1]; };
-// Per-probe relocation offset (xyz = world offset from the grid position,
-// w = 0). Written by the SDF-assisted relocation pass, read by the trace.
+// Per-probe candidate relocation offset (xyz = world offset, w = 0).
+// Hardware RT writes it before tracing; SDF uses zero offsets.
 struct DdgiRelocationBuffer { float4 values[1]; };
 // Per-TLAS-instance compact material (published by BuildRayTracingWorld,
 // indexed by the TLAS instance custom index).
@@ -67,28 +70,46 @@ float3 DdgiOctDecode(float2 uv) {
 float3 DdgiBinDirection(uint bin, uint resolution) {
     return DdgiOctDecode((float2(bin % resolution, bin / resolution) + 0.5) / resolution);
 }
-// Bilinear octahedral taps for a direction: the 2x2 bin indices (clamped
-// at the map edge — the octahedron square's corners are unused) and their
-// weights. Bin centers sit at (i + 0.5)/res. Shared by the lit-shader
-// sampler and the trace's E_indirect feedback sampler.
+// Reflect across octahedral seams rather than clamping unrelated directions.
+uint DdgiOctTap(int2 p, uint res) {
+    const int n = int(res);
+    if (p.x < 0 || p.x >= n) {
+        p.x = p.x < 0 ? -1 - p.x : 2 * n - 1 - p.x;
+        p.y = n - 1 - p.y;
+    }
+    if (p.y < 0 || p.y >= n) {
+        p.y = p.y < 0 ? -1 - p.y : 2 * n - 1 - p.y;
+        p.x = n - 1 - p.x;
+    }
+    return uint(p.x) + uint(p.y) * res;
+}
 void DdgiOctBilinearTaps(float3 dir, uint res, out uint bin[4], out float w[4])
 {
-    const float2 uv = DdgiOctEncode(dir);
-    const float2 g = uv * float(res) - 0.5f;
+    const float2 g = DdgiOctEncode(dir) * float(res) - 0.5f;
     const int2 b = int2(floor(g));
     const float2 f = g - float2(b);
-    const uint x0 = uint(clamp(b.x, 0, int(res) - 1));
-    const uint y0 = uint(clamp(b.y, 0, int(res) - 1));
-    const uint x1 = uint(clamp(b.x + 1, 0, int(res) - 1));
-    const uint y1 = uint(clamp(b.y + 1, 0, int(res) - 1));
-    bin[0] = x0 + y0 * res;
-    bin[1] = x1 + y0 * res;
-    bin[2] = x0 + y1 * res;
-    bin[3] = x1 + y1 * res;
+    bin[0] = DdgiOctTap(b, res);
+    bin[1] = DdgiOctTap(b + int2(1, 0), res);
+    bin[2] = DdgiOctTap(b + int2(0, 1), res);
+    bin[3] = DdgiOctTap(b + int2(1, 1), res);
     w[0] = (1.0f - f.x) * (1.0f - f.y);
     w[1] = f.x * (1.0f - f.y);
     w[2] = (1.0f - f.x) * f.y;
     w[3] = f.x * f.y;
+}
+float3 DdgiHistoryOffset(GPU_PTR_READ(DdgiIrrBuffer) history, uint probe) {
+    return history.Get().values[probe * DDGI_IRR_STRIDE + DDGI_IRR_BINS].xyz;
+}
+bool DdgiSameOrigin(float3 a, float3 b) {
+    // Never carry moments measured from a different ray origin.
+    return all(a == b);
+}
+float DdgiFacing(float3 normal, float3 toProbe) {
+    const float d2 = dot(toProbe, toProbe);
+    if (d2 <= 1e-10f)
+        return 1.0f;
+    const float facing = saturate(0.5f + 0.5f * dot(normal, toProbe * rsqrt(d2)));
+    return facing * facing;
 }
 uint3 DdgiGridCoord(uint p, uint3 dims) {
     return uint3(p % dims.x, (p / dims.x) % dims.y, p / (dims.x * dims.y));
