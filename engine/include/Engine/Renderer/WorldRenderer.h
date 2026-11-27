@@ -3365,6 +3365,30 @@ class WorldRenderer : public IRenderer {
                 return true;
         return false;
     }
+    // Any of the stock/ProjectLit main lit family (base, A2C, std twin, and
+    // every GI variant) — the set MainLitProgramFor can hand the draw loop.
+    // Wireframe swaps the whole family to the flat-line twin, so a program
+    // that escapes this set renders textured on line pixels.
+    bool IsMainLitProgram(const smvk::ShaderProgram& prog) const {
+        if (&prog == &m_resources.mainProgram || &prog == &m_resources.mainProgramA2C ||
+            &prog == &m_resources.mainProgramStd || &prog == &m_resources.mainProjectProgram ||
+            &prog == &m_resources.mainProjectProgramA2C ||
+            &prog == &m_resources.mainProjectProgramStd)
+            return true;
+        for (const auto& p : m_resources.mainProgramGi)
+            if (&p == &prog)
+                return true;
+        for (const auto& p : m_resources.mainProgramGiStd)
+            if (&p == &prog)
+                return true;
+        for (const auto& p : m_resources.mainProjectProgramGi)
+            if (&p == &prog)
+                return true;
+        for (const auto& p : m_resources.mainProjectProgramGiStd)
+            if (&p == &prog)
+                return true;
+        return false;
+    }
     bool ShaderLodActive() const {
         return m_lodShaderEnabled && m_resources.vertexLitProgram.shaderCount == 2;
     }

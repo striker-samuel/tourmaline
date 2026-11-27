@@ -10355,9 +10355,7 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
     auto wireTwinOf = [&](smvk::ShaderProgram& prog) -> smvk::ShaderProgram& {
         if (!self->m_wireframe)
             return prog;
-        if (&prog == &self->m_resources.mainProgram || &prog == &self->m_resources.mainProgramA2C ||
-            &prog == &self->m_resources.mainProjectProgram ||
-            &prog == &self->m_resources.mainProjectProgramA2C || self->IsFarSpecProgram(prog)) {
+        if (self->IsMainLitProgram(prog) || self->IsFarSpecProgram(prog)) {
             return self->m_resources.mainWireProgram.shaderCount == 2
                        ? self->m_resources.mainWireProgram
                        : prog;
@@ -10370,11 +10368,6 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
         if (&prog == &self->m_resources.vertexLitProgram) {
             return self->m_resources.vertexLitWireProgram.shaderCount == 2
                        ? self->m_resources.vertexLitWireProgram
-                       : prog;
-        }
-        if (self->m_gfxRenderer.IsFilteredLitProgram(prog)) {
-            return self->m_gfxRenderer.FilteredWireValid()
-                       ? self->m_gfxRenderer.FilteredWireProgram()
                        : prog;
         }
         return prog;
