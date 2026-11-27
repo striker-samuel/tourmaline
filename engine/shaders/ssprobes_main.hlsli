@@ -31,6 +31,8 @@ struct SsProbesPush {
     uint updateIndex;
     uint samplerIndex;
     float blendAlpha;        // EMA blend factor (1 = full replace)
+    uint tilePx;             // tile size in pixels (normal derivative span)
+    uint updateDivisor;      // 1/N probes traced per frame (power of two)
 };
 GPU_PUSH(SsProbesPush, sp);
 
@@ -107,12 +109,13 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
         }
     }
 
-    // Rotating subset: only 1/4 of tiles trace each frame (the amortized
-    // surface-cache schedule); the rest carry the reprojected history. The
-    // interleaved (x+y)&3 stride measured faster than warp-coalesced groups
-    // (the march is memory-latency-bound, so spreading the traced threads
-    // across every warp hides the octree-access latency better).
-    const bool update = ((tid.x + tid.y) & 3u) == (sp.updateIndex & 3u);
+    // Rotating subset: only 1/updateDivisor of tiles trace each frame (the
+    // amortized surface-cache schedule); the rest carry the reprojected
+    // history. The interleaved (x+y)&mask stride measured faster than
+    // warp-coalesced groups (the march is memory-latency-bound, so spreading
+    // the traced threads across every warp hides the octree-access latency).
+    const uint mask = sp.updateDivisor - 1u;
+    const bool update = ((tid.x + tid.y) & mask) == (sp.updateIndex & mask);
     if (!update) {
         // Disoccluded: reset to the sky estimate (a better first guess than
         // black for a newly revealed surface) and let the next trace converge.
@@ -127,11 +130,13 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     // Surface normal from the depth buffer's screen-space derivatives (only
     // for the traced subset): a smooth geometric normal (no SDF octree
     // quantization noise). The derivative offset spans the tile footprint
-    // (64px / 2) so the normal is a tile-scale average, not 1px micro-detail.
+    // (tilePx / 2) so the normal is a tile-scale average, not 1px micro-detail.
     // A tap that is background or crosses a depth discontinuity is rejected,
     // so a thin occluder's normal can't be stolen by the surface behind it.
-    const float2 stepX = float2(32.0f * sp.invDepthW, 0.0f);
-    const float2 stepY = float2(0.0f, 32.0f * sp.invDepthH);
+    const float halfTileW = 0.5f * float(sp.tilePx) * sp.invDepthW;
+    const float halfTileH = 0.5f * float(sp.tilePx) * sp.invDepthH;
+    const float2 stepX = float2(halfTileW, 0.0f);
+    const float2 stepY = float2(0.0f, halfTileH);
     const float dL = depthTex.SampleLevel(smp, uv - stepX, 0).r;
     const float dR = depthTex.SampleLevel(smp, uv + stepX, 0).r;
     const float dU = depthTex.SampleLevel(smp, uv - stepY, 0).r;

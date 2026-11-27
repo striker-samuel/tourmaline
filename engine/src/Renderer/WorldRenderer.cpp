@@ -855,7 +855,9 @@ struct SsProbesPush {
     uint32_t outHeight = 0;
     float invDepthW = 0, invDepthH = 0;
     uint32_t rays = 0, updateIndex = 0, samplerIndex = 0;
-    float blendAlpha = 0; // EMA blend factor (1 = full replace, reset)
+    float blendAlpha = 0;       // EMA blend factor (1 = full replace, reset)
+    uint32_t tilePx = 0;        // tile size in pixels (normal derivative span)
+    uint32_t updateDivisor = 0; // 1/N probes traced per frame (power of two)
 };
 struct SsProbesFrame {
     smvk::ShaderProgram* program = nullptr;
@@ -1584,6 +1586,45 @@ bool WorldRenderer::onAttach() {
         std::cerr << "[WorldRenderer] screen-space probes backend: "
                   << (m_ssProbesRtBackend ? "hardware RT (TLAS/BLAS)" : "SDF octree") << "\n";
     }
+    // Screen-space probes quality: power-of-two tile size, via a named preset
+    // (ultra/high/medium/low/vlow) or a direct pixel size (TOURMALINE_SSPROBES_TILE).
+    if (const char* pe = std::getenv("TOURMALINE_SSPROBES_PRESET")) {
+        const std::string_view p = trimEnv(pe);
+        if (p == "ultra")
+            m_ssProbesTilePx = 8;
+        else if (p == "high")
+            m_ssProbesTilePx = 16;
+        else if (p == "medium")
+            m_ssProbesTilePx = 32;
+        else if (p == "low")
+            m_ssProbesTilePx = 64;
+        else if (p == "vlow")
+            m_ssProbesTilePx = 128;
+        else
+            std::cerr << "[WorldRenderer] unknown TOURMALINE_SSPROBES_PRESET: " << p
+                      << " (ultra|high|medium|low|vlow)\n";
+    }
+    if (const char* te = std::getenv("TOURMALINE_SSPROBES_TILE")) {
+        const uint32_t t = uint32_t(std::atoi(te));
+        if (t == 8 || t == 16 || t == 32 || t == 64 || t == 128)
+            m_ssProbesTilePx = t;
+        else
+            std::cerr << "[WorldRenderer] bad TOURMALINE_SSPROBES_TILE: " << te
+                      << " (8|16|32|64|128)\n";
+    }
+    // Per-frame update divisor: 1 traces every probe every frame, N traces 1/N
+    // per frame (amortized over N frames). Powers of two.
+    if (const char* ue = std::getenv("TOURMALINE_SSPROBES_UPDATES")) {
+        const uint32_t u = uint32_t(std::atoi(ue));
+        if (u >= 1 && u <= 64 && (u & (u - 1)) == 0)
+            m_ssProbesUpdateDivisor = u;
+        else
+            std::cerr << "[WorldRenderer] bad TOURMALINE_SSPROBES_UPDATES: " << ue
+                      << " (power of two, 1..64)\n";
+    }
+    if (m_ssProbesTilePx != 32 || m_ssProbesUpdateDivisor != 4)
+        std::cerr << "[WorldRenderer] screen-space probes quality: " << m_ssProbesTilePx
+                  << "px tiles, 1/" << m_ssProbesUpdateDivisor << " per frame\n";
     // Legacy GI override (pre-ambient-modes runs): 1/on -> All,
     // 0/off -> out of the baked modes into SkyIbl. (Shared mapping:
     // LegacyGiAmbientPin, also used by the post-seed pin re-apply.)
@@ -19617,8 +19658,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // ---------------------------------------------------------------------
     const bool ssProbesWants = m_ambientMode == AmbientMode::SsProbes && m_world && ddgiSdfReady;
     if (ssProbesWants) {
-        const uint32_t tileGridX = (renderExtent.width + 63u) / 64u;
-        const uint32_t tileGridY = (renderExtent.height + 63u) / 64u;
+        const uint32_t tileGridX = (renderExtent.width + m_ssProbesTilePx - 1u) / m_ssProbesTilePx;
+        const uint32_t tileGridY = (renderExtent.height + m_ssProbesTilePx - 1u) / m_ssProbesTilePx;
         if (m_ssProbesImage[0].empty() || m_ssProbesTileCountX != tileGridX ||
             m_ssProbesTileCountY != tileGridY) {
             for (uint32_t slot = 0; slot < 2; ++slot) {
@@ -19839,12 +19880,14 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             const uint32_t updateIndex = m_ssProbesUpdateIndex++;
             push.updateIndex = updateIndex;
             push.samplerIndex = pointSampler;
-            // First 4 frames full-replace (the history starts uninitialized and
-            // the rotating subset covers every tile exactly once), then EMA.
-            // Based on the pre-increment updateIndex so ALL four subsets get a
-            // full-replace pass (the post-increment value would demote subset 3
-            // to an EMA blend against garbage history).
-            push.blendAlpha = (updateIndex < 4u) ? 1.0f : 0.25f;
+            // First `updateDivisor` frames full-replace (the history starts
+            // uninitialized and the rotating subset covers every tile exactly
+            // once), then EMA. Based on the pre-increment updateIndex so ALL
+            // subsets get a full-replace pass (the post-increment value would
+            // demote the last subset to an EMA blend against garbage history).
+            push.blendAlpha = (updateIndex < m_ssProbesUpdateDivisor) ? 1.0f : 0.25f;
+            push.tilePx = m_ssProbesTilePx;
+            push.updateDivisor = m_ssProbesUpdateDivisor;
             SsProbesFrame frame{&m_ssProbesProgram, push, tileGridX, tileGridY};
             m_rendergraph->PassFrameData<SsProbesFrame>(pass) = frame;
             pass.SetRecordFn(&RecordSsProbes);
