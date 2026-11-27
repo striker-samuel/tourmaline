@@ -865,6 +865,25 @@ void RecordSdfGi(smvk::CommandBuffer& cmd, const smvk::FrameContext& fc, const s
     cmd.PushConstants(0, sizeof(SdfGiPush), &f.push, smvk::ShaderStage::Compute);
     cmd.Dispatch((f.w + 7u) / 8u, (f.h + 7u) / 8u, 1u);
 }
+struct SdfGiBlurPush {
+    uint32_t srcImageIndex = 0; // history[writeSlot] (sampled read)
+    uint32_t outImageIndex = 0; // smoothed output (storage write)
+    uint32_t outWidth = 0, outHeight = 0;
+    uint32_t samplerIndex = 0, pad0 = 0, pad1 = 0, pad2 = 0;
+};
+struct SdfGiBlurFrame {
+    smvk::ShaderProgram* program = nullptr;
+    SdfGiBlurPush push{};
+    uint32_t w = 0, h = 0;
+};
+void RecordSdfGiBlur(smvk::CommandBuffer& cmd,
+                     const smvk::FrameContext& fc,
+                     const smvk::PassData& pd) {
+    const auto& f = fc.rg->FrameData().Get<SdfGiBlurFrame>(pd.frameSlot);
+    cmd.BindComputePipeline(*f.program);
+    cmd.PushConstants(0, sizeof(SdfGiBlurPush), &f.push, smvk::ShaderStage::Compute);
+    cmd.Dispatch((f.w + 7u) / 8u, (f.h + 7u) / 8u, 1u);
+}
 } // namespace
 // Legacy TOURMALINE_GI overlap: 1/on -> All; 0/off demotes the baked
 // modes to SkyIbl. nullopt = the SPELLING is unknown (a no-op "already
@@ -6101,7 +6120,7 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
     data.staticSdfMaxTrace = m_sdfDebugMaxTrace;
     data.staticSdfColorMode = m_sdfDebugColorMode;
     data.sdfGiEnabled = (m_ambientMode == AmbientMode::SdfGi && m_sdfGiReady) ? 1u : 0u;
-    data.sdfGiImageIndex = m_sdfGiImageIndex[m_sdfGiWriteSlot];
+    data.sdfGiImageIndex = m_sdfGiBlurIndex; // Main samples the smoothed copy
     data.sdfGiTileGrid = m_sdfGiTileCountX | (m_sdfGiTileCountY << 16);
     data.sdfGiDebug =
         (m_ambientMode == AmbientMode::SdfGi && m_debugView == ViewMode::SdfGiIrradiance) ? 1u : 0u;
@@ -19586,15 +19605,28 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 m_sdfGiImageIndex[slot] = UINT32_MAX;
                 m_sdfGiLogical[slot] = {};
             }
+            if (!m_sdfGiBlurLogical.empty())
+                m_rendergraph->FreeImageView(m_sdfGiBlurLogical);
+            m_sdfGiBlurImage = {};
+            m_sdfGiBlurView = {};
+            m_sdfGiBlurBindless = {};
+            m_sdfGiBlurIndex = UINT32_MAX;
+            m_sdfGiBlurLogical = {};
             for (uint32_t slot = 0; slot < 2; ++slot) {
                 smvk::ImageCreateInfo ci{};
                 ci.extent = {tileGridX, tileGridY, 1};
                 ci.format = smvk::Format::RGBA32_Float; // matches RWTexture2D<float4> storage
-                ci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::Storage;
+                // TransferDst lets the one-shot zero upload initialize the
+                // history (a blend against uninitialized memory would feed
+                // NaN/Inf into the EMA and never converge).
+                ci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::Storage |
+                           smvk::ImageUsage::TransferDst;
                 ci.mipLevels = 1;
                 ci.arrayLayers = 1;
                 ci.name = slot == 0 ? "sdfGiIrradianceA" : "sdfGiIrradianceB";
-                m_sdfGiImage[slot] = m_context->CreateImage(ci, nullptr);
+                const size_t zeroBytes = size_t(tileGridX) * tileGridY * 16u;
+                std::vector<uint8_t> zeros(zeroBytes, 0);
+                m_sdfGiImage[slot] = m_context->CreateImage(ci, zeros.data());
                 if (!m_sdfGiImage[slot].empty()) {
                     smvk::ImageViewCreateInfo vci{};
                     vci.viewType = smvk::ImageViewType::View2D;
@@ -19612,6 +19644,32 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     }
                 }
             }
+            {
+                // The transient smoothed output (3x3 box over the history).
+                smvk::ImageCreateInfo ci{};
+                ci.extent = {tileGridX, tileGridY, 1};
+                ci.format = smvk::Format::RGBA32_Float;
+                ci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::Storage;
+                ci.mipLevels = 1;
+                ci.arrayLayers = 1;
+                ci.name = "sdfGiIrradianceBlur";
+                m_sdfGiBlurImage = m_context->CreateImage(ci, nullptr);
+                if (!m_sdfGiBlurImage.empty()) {
+                    smvk::ImageViewCreateInfo vci{};
+                    vci.viewType = smvk::ImageViewType::View2D;
+                    vci.format = smvk::Format::Undefined;
+                    vci.subresourceRange = {smvk::ImageAspect::Color, 0, 1, 0, 1};
+                    vci.name = ci.name;
+                    m_sdfGiBlurView = m_context->CreateImageView(m_sdfGiBlurImage, vci);
+                    m_sdfGiBlurBindless =
+                        m_context->CreateBindlessImage(m_sdfGiBlurView, smvk::ImageLayout::General);
+                    if (!m_sdfGiBlurBindless.empty()) {
+                        m_sdfGiBlurIndex = m_context->GetBindlessIndex(m_sdfGiBlurBindless);
+                        m_sdfGiBlurLogical = m_rendergraph->AddExternalImageView(
+                            m_sdfGiBlurView, smvk::Format::RGBA32_Float, ci.name);
+                    }
+                }
+            }
             m_sdfGiTileCountX = tileGridX;
             m_sdfGiTileCountY = tileGridY;
             m_sdfGiUpdateIndex = 0;
@@ -19626,10 +19684,22 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 m_sdfGiProgram = {.shaders = {s}, .shaderCount = 1};
             }
         }
+        if (m_sdfGiBlurModule.empty()) {
+            m_sdfGiBlurModule = m_context->CreateShaderModule(
+                smvk::shaders::Read("content/shaders/sdfgi_blur.cs.hlsl.spv"), "sdfGiBlur");
+            if (!m_sdfGiBlurModule.empty()) {
+                smvk::Shader s{.module = m_sdfGiBlurModule,
+                               .entryPoint = "mainCS",
+                               .stage = smvk::ShaderStage::Compute};
+                m_sdfGiBlurProgram = {.shaders = {s}, .shaderCount = 1};
+            }
+        }
         m_sdfGiReady = !m_sdfGiImage[0].empty() && !m_sdfGiImage[1].empty() &&
                        m_sdfGiImageIndex[0] != UINT32_MAX && m_sdfGiImageIndex[1] != UINT32_MAX &&
                        !m_sdfGiLogical[0].empty() && !m_sdfGiLogical[1].empty() &&
-                       m_sdfGiProgram.shaderCount != 0;
+                       !m_sdfGiBlurImage.empty() && m_sdfGiBlurIndex != UINT32_MAX &&
+                       !m_sdfGiBlurLogical.empty() && m_sdfGiProgram.shaderCount != 0 &&
+                       m_sdfGiBlurProgram.shaderCount != 0;
         if (m_sdfGiReady) {
             const uint32_t cur = m_sdfGiWriteSlot;
             const uint32_t prev = cur ^ 1u;
@@ -19676,15 +19746,46 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             push.invDepthW = 1.0f / float(std::max(1u, renderExtent.width));
             push.invDepthH = 1.0f / float(std::max(1u, renderExtent.height));
             push.rays = 6u;
-            push.updateIndex = m_sdfGiUpdateIndex++;
+            const uint32_t updateIndex = m_sdfGiUpdateIndex++;
+            push.updateIndex = updateIndex;
             push.samplerIndex = pointSampler;
             // First 4 frames full-replace (the history starts uninitialized and
             // the rotating subset covers every tile exactly once), then EMA.
-            push.blendAlpha = (m_sdfGiUpdateIndex < 4u) ? 1.0f : 0.25f;
+            // Based on the pre-increment updateIndex so ALL four subsets get a
+            // full-replace pass (the post-increment value would demote subset 3
+            // to an EMA blend against garbage history).
+            push.blendAlpha = (updateIndex < 4u) ? 1.0f : 0.25f;
             SdfGiFrame frame{&m_sdfGiProgram, push, tileGridX, tileGridY};
             m_rendergraph->PassFrameData<SdfGiFrame>(pass) = frame;
             pass.SetRecordFn(&RecordSdfGi);
             m_sdfGiWriteSlot = cur ^ 1u;
+
+            // Spatial resolve: 3x3 box blur of the just-written history so the
+            // Monte-Carlo tile noise doesn't read as surface detail.
+            auto& blurPass = m_rendergraph->AddComputePass("SdfGiBlur");
+            {
+                smvk::ImageSyncRequest readReq{};
+                readReq.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+                readReq.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+                readReq.layout = smvk::ImageLayout::General;
+                blurPass.AddImageHint(m_sdfGiLogical[cur], readReq);
+            }
+            {
+                smvk::ImageSyncRequest writeReq{};
+                writeReq.barrierMasks.accessMask = smvk::AccessFlags::ShaderWrite;
+                writeReq.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
+                writeReq.layout = smvk::ImageLayout::General;
+                blurPass.AddImageHint(m_sdfGiBlurLogical, writeReq);
+            }
+            SdfGiBlurPush blurPush{};
+            blurPush.srcImageIndex = m_sdfGiImageIndex[cur];
+            blurPush.outImageIndex = m_sdfGiBlurIndex;
+            blurPush.outWidth = tileGridX;
+            blurPush.outHeight = tileGridY;
+            blurPush.samplerIndex = pointSampler;
+            SdfGiBlurFrame blurFrame{&m_sdfGiBlurProgram, blurPush, tileGridX, tileGridY};
+            m_rendergraph->PassFrameData<SdfGiBlurFrame>(blurPass) = blurFrame;
+            blurPass.SetRecordFn(&RecordSdfGiBlur);
         }
     } else {
         m_sdfGiReady = false;
@@ -19734,19 +19835,17 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // to CollectPassUsages — so this hint guarantees Main sorts AFTER this
     // frame's SdfGiTrace and drives the General -> ShaderReadOnlyOptimal
     // transition of the storage write.
-    // SDF GI (#410): the paired READ half of the irradiance write->read
-    // edge (the contact-shadow pattern). Main's lit body fetches the tile
-    // grid through the bindless array (frame.sdfGiImageIndex) — invisible
-    // to CollectPassUsages — so this hint guarantees Main sorts AFTER this
-    // frame's SdfGiTrace and drives the General -> ShaderReadOnlyOptimal
-    // transition of the storage write. The writeSlot was already flipped
-    // past the written slot, so ^1 names it.
-    if (m_ambientMode == AmbientMode::SdfGi && !m_sdfGiLogical[m_sdfGiWriteSlot ^ 1u].empty()) {
+    // SDF GI (#410): the paired READ half of the blur write->read edge (the
+    // contact-shadow pattern). Main's lit body fetches the smoothed tile grid
+    // through the bindless array (frame.sdfGiImageIndex) — invisible to
+    // CollectPassUsages — so this hint guarantees Main sorts AFTER this
+    // frame's SdfGiBlur.
+    if (m_ambientMode == AmbientMode::SdfGi && !m_sdfGiBlurLogical.empty()) {
         smvk::ImageSyncRequest sdfGiRead{};
         sdfGiRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
         sdfGiRead.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
         sdfGiRead.layout = smvk::ImageLayout::General;
-        mainPass.AddImageHint(m_sdfGiLogical[m_sdfGiWriteSlot ^ 1u], sdfGiRead);
+        mainPass.AddImageHint(m_sdfGiBlurLogical, sdfGiRead);
     }
     // Shader failure and missing multisample sampling support degrade to hardware AVERAGE.
     const bool customMsaaResolve = useMsaa && m_aaMode == AaMode::Msaa2xCustom &&

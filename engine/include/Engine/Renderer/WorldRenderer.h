@@ -5059,7 +5059,8 @@ class WorldRenderer : public IRenderer {
     // ---- Screen-adaptive SDF GI (#410) runtime state. The irradiance field
     // is a ping-ponged tile-grid history: the trace+blend pass reads
     // history[writeSlot ^ 1] and EMA-blends a rotating tile subset into
-    // history[writeSlot], which Main samples as the diffuse ambient owner.
+    // history[writeSlot], a spatial blur smooths it, and Main samples the
+    // smoothed copy as the diffuse ambient owner.
     smvk::Holder<smvk::ShaderModuleHandle> m_sdfGiModule;
     smvk::ShaderProgram m_sdfGiProgram{};
     smvk::Holder<smvk::ImageHandle> m_sdfGiImage[2];
@@ -5068,6 +5069,14 @@ class WorldRenderer : public IRenderer {
     smvk::LogicalImageViewHandle m_sdfGiLogical[2]{};           // the render-graph logical view
     uint32_t m_sdfGiImageIndex[2] = {UINT32_MAX, UINT32_MAX};   // bindless sampled-image index
     uint32_t m_sdfGiWriteSlot = 0;
+    // Spatial-blur pass (reads history[writeSlot], writes a transient smooth copy).
+    smvk::Holder<smvk::ShaderModuleHandle> m_sdfGiBlurModule;
+    smvk::ShaderProgram m_sdfGiBlurProgram{};
+    smvk::Holder<smvk::ImageHandle> m_sdfGiBlurImage;
+    smvk::Holder<smvk::ImageViewHandle> m_sdfGiBlurView;
+    smvk::Holder<smvk::BindlessImageHandle> m_sdfGiBlurBindless;
+    smvk::LogicalImageViewHandle m_sdfGiBlurLogical{};
+    uint32_t m_sdfGiBlurIndex = UINT32_MAX;
     uint32_t m_sdfGiTileCountX = 0, m_sdfGiTileCountY = 0;
     uint32_t m_sdfGiUpdateIndex = 0;
     bool m_sdfGiReady = false;

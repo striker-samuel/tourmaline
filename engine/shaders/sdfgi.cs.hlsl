@@ -97,20 +97,36 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     float4 world = mul(frame.invViewProj, float4(ndc, ndcD, 1.0f));
     const float3 worldPos = world.xyz / max(world.w, 1e-9f);
 
-    // Surface normal from the SDF gradient (central difference).
-    const float h = 0.25f; // world-space finite-difference step
-    const float dx = StaticSdfSceneDistance(scene, worldPos + float3(h, 0, 0)) -
-                     StaticSdfSceneDistance(scene, worldPos - float3(h, 0, 0));
-    const float dy = StaticSdfSceneDistance(scene, worldPos + float3(0, h, 0)) -
-                     StaticSdfSceneDistance(scene, worldPos - float3(0, h, 0));
-    const float dz = StaticSdfSceneDistance(scene, worldPos + float3(0, 0, h)) -
-                     StaticSdfSceneDistance(scene, worldPos - float3(0, 0, h));
-    // The SDF gradient points toward INCREASING distance (outward from the
-    // surface, negative = inside), so normalize(dx,dy,dz) is the OUTWARD
-    // surface normal — the hemisphere must gather light from that side.
-    float3 normal = float3(dx, dy, dz);
-    const float n2 = dot(normal, normal);
-    normal = n2 > 1e-12f ? normal * rsqrt(n2) : float3(0, 1, 0);
+    // Surface normal from the depth buffer's screen-space derivatives: a
+    // smooth geometric normal (no SDF octree quantization noise — the SDF
+    // gradient carries per-leaf stair-stepping that read as high-frequency
+    // detail in the diffuse field). The derivative offset spans the tile
+    // footprint (16px / 2) so the normal is a tile-scale average, not the
+    // 1px micro-detail that a full-res derivative would pick up.
+    const float2 stepX = float2(8.0f * sp.invDepthW, 0.0f);
+    const float2 stepY = float2(0.0f, 8.0f * sp.invDepthH);
+    const float dL = depthTex.SampleLevel(smp, uv - stepX, 0).r;
+    const float dR = depthTex.SampleLevel(smp, uv + stepX, 0).r;
+    const float dU = depthTex.SampleLevel(smp, uv - stepY, 0).r;
+    const float dD = depthTex.SampleLevel(smp, uv + stepY, 0).r;
+    float3 normal = float3(0, 1, 0);
+    if (!DofIsBackgroundOrGarbage(dL) && !DofIsBackgroundOrGarbage(dR) &&
+        !DofIsBackgroundOrGarbage(dU) && !DofIsBackgroundOrGarbage(dD)) {
+        float4 wL = mul(frame.invViewProj, float4((uv - stepX) * 2.0f - 1.0f, dL, 1.0f));
+        float4 wR = mul(frame.invViewProj, float4((uv + stepX) * 2.0f - 1.0f, dR, 1.0f));
+        float4 wU = mul(frame.invViewProj, float4((uv - stepY) * 2.0f - 1.0f, dU, 1.0f));
+        float4 wD = mul(frame.invViewProj, float4((uv + stepY) * 2.0f - 1.0f, dD, 1.0f));
+        const float3 pL = wL.xyz / max(wL.w, 1e-9f);
+        const float3 pR = wR.xyz / max(wR.w, 1e-9f);
+        const float3 pU = wU.xyz / max(wU.w, 1e-9f);
+        const float3 pD = wD.xyz / max(wD.w, 1e-9f);
+        normal = cross(pR - pL, pD - pU);
+        const float n2 = dot(normal, normal);
+        normal = n2 > 1e-12f ? normal * rsqrt(n2) : float3(0, 1, 0);
+        // Orient toward the camera (the visible side of the surface).
+        if (dot(normal, frame.cameraPos - worldPos) < 0.0f)
+            normal = -normal;
+    }
 
     float3 tangent, bitangent;
     SdfGiBasis(normal, tangent, bitangent);
