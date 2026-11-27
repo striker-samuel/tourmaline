@@ -340,6 +340,25 @@ void WorldRendererElement::HandleShortcuts() {
         m_input.isKeyPressed(keybind::GI_DEBUG_CYCLE_ALT)) {
         m_renderer.CycleGiDebugView();
     }
+    // 5/6/7 toggle the three 3D probe-ball overlays independently (the
+    // panel's probe checkboxes): chrome mirror spheres / baked GI probe
+    // points / DDGI probe grid. The mirror spheres only draw when the
+    // cubemap path is enabled AND the scene has cubemap captures; the
+    // DDGI grid only draws when DDGI volumes are loaded.
+    if (m_input.isKeyPressed(keybind::PROBE_CUBEMAP_BALLS_TOGGLE)) {
+        m_renderer.m_cubemapShowBalls = !m_renderer.m_cubemapShowBalls;
+        std::fprintf(
+            stderr, "[ui] mirror probes %s\n", m_renderer.m_cubemapShowBalls ? "on" : "off");
+    }
+    if (m_input.isKeyPressed(keybind::PROBE_GI_POINTS_TOGGLE)) {
+        m_renderer.m_giShowProbes = !m_renderer.m_giShowProbes;
+        std::fprintf(stderr, "[ui] GI probe points %s\n", m_renderer.m_giShowProbes ? "on" : "off");
+    }
+    if (m_input.isKeyPressed(keybind::PROBE_DDGI_GRID_TOGGLE)) {
+        m_renderer.m_ddgiShowProbes = !m_renderer.m_ddgiShowProbes;
+        std::fprintf(
+            stderr, "[ui] DDGI probe grid %s\n", m_renderer.m_ddgiShowProbes ? "on" : "off");
+    }
     if (m_input.isKeyPressed(keybind::SKY_TOGGLE)) {
         m_renderer.m_skyEnabled = !m_renderer.m_skyEnabled;
     }

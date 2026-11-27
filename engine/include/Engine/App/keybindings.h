@@ -70,6 +70,12 @@ constexpr int AMBIENT_CYCLE = TOUR_KEY_N;  // All -> Lightmaps -> Probes -> SkyI
 constexpr int GI_DEBUG_CYCLE = TOUR_KEY_R; // baked-GI debug views (alias GI_DEBUG_CYCLE_ALT)
 constexpr int GI_DEBUG_CYCLE_ALT = TOUR_KEY_F8;
 
+// ---- Probe-ball overlays (the panel's three 3D probe visualizations) ----
+// 5..7 sit free beside the AA bank (1..4); each toggles one overlay.
+constexpr int PROBE_CUBEMAP_BALLS_TOGGLE = TOUR_KEY_5; // "Probe preview (mirror spheres)"
+constexpr int PROBE_GI_POINTS_TOGGLE = TOUR_KEY_6;     // "Probe points" (baked directional GI)
+constexpr int PROBE_DDGI_GRID_TOGGLE = TOUR_KEY_7;     // "DDGI probe grid"
+
 // ---- Actions (fire once, not toggles) ----
 constexpr int DECAL_SPLAT = TOUR_KEY_J; // blood splat at the crosshair
 constexpr int CAPTURE = TOUR_KEY_F7;    // LUT export + screenshot

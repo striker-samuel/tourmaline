@@ -2026,6 +2026,7 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                     "Keys (views): N ambient  R/F8 GI view  F1 lit  F2 unlit  F3 meshlets");
                 ImGui::TextDisabled("      F4 cascades  F5 LOD colors  F6 vertex colors  F9 UV0  "
                                     "F10 cubemap  F11 POM");
+                ImGui::TextDisabled("      [5] mirror probes  [6] GI probe points  [7] DDGI grid");
 #if defined(DS_DEBUG_VIZ)
                 ImGui::TextDisabled("      Y DS visualizer (%s)",
                                     m_dsDebugMode == DsDebugViz::Off ? "off" : "on");
