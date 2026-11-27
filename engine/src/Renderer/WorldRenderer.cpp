@@ -22021,27 +22021,21 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // ---------------------------------------------------------------------
     // DDGI probe-grid visualization (the "Probe debug view"): the dynamic
     // probe positions as lattice markers (giprobe.h mode 2 — no bake fetch,
-    // just the grid coverage). Strided across ALL subcell volumes to the
-    // draw cap; rebuilt when the volume set changes.
+    // just the grid coverage). One marker buffer per cascade so each level
+    // carries its own tint; rebuilt every frame (the grid scrolls).
     // ---------------------------------------------------------------------
     if (m_ddgiShowProbes && !m_ddgiVolumes.empty()) {
         if (m_ddgiProbesDirty) {
             m_ddgiProbesDirty = false;
             constexpr uint32_t kCap = smvk::giprobe::kGiProbeMaxInstances;
-            uint64_t total = 0;
-            for (const auto& vol : m_ddgiVolumes)
-                total += uint64_t(vol.grid.dims[0]) * vol.grid.dims[1] * vol.grid.dims[2];
-            const uint64_t stride = std::max<uint64_t>(1, (total + kCap - 1) / kCap);
-            std::vector<smvk::giprobe::GiProbeInstance> rows;
-            rows.reserve(kCap);
-            uint64_t g = 0;
-            for (const auto& vol : m_ddgiVolumes) {
+            for (uint32_t c = 0; c < m_ddgiVolumes.size(); ++c) {
+                const auto& vol = m_ddgiVolumes[c];
                 const uint32_t dx = vol.grid.dims[0], dy = vol.grid.dims[1], dz = vol.grid.dims[2];
                 const uint64_t n = uint64_t(dx) * dy * dz;
+                std::vector<smvk::giprobe::GiProbeInstance> rows;
+                rows.reserve(uint64_t(std::min<uint64_t>(n, kCap)));
                 const glm::vec3 origin(vol.grid.origin[0], vol.grid.origin[1], vol.grid.origin[2]);
-                for (uint64_t p = 0; p < n && rows.size() < kCap; ++p, ++g) {
-                    if (g % stride != 0)
-                        continue;
+                for (uint64_t p = 0; p < n && rows.size() < kCap; ++p) {
                     const uint32_t ix = uint32_t(p % dx);
                     const uint32_t iy = uint32_t((p / dx) % dy);
                     const uint32_t iz = uint32_t(p / (uint64_t(dx) * dy));
@@ -22052,32 +22046,45 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     row.grid[2] = iz;
                     rows.push_back(row);
                 }
-            }
-            if (!rows.empty()) {
-                if (m_ddgiProbeInstances.empty())
-                    m_ddgiProbeInstances =
+                if (m_ddgiProbeInstances[c].empty())
+                    m_ddgiProbeInstances[c] =
                         m_context->CreateBuffer(kCap * sizeof(smvk::giprobe::GiProbeInstance),
                                                 smvk::BufferType_Storage,
                                                 "ddgi probe instances");
-                if (!m_ddgiProbeInstances.empty()) {
-                    m_context->UploadDataToBuffer(m_ddgiProbeInstances,
+                if (!m_ddgiProbeInstances[c].empty() && !rows.empty()) {
+                    m_context->UploadDataToBuffer(m_ddgiProbeInstances[c],
                                                   rows.data(),
                                                   rows.size() * sizeof(rows[0]),
                                                   smvk::PipelineStageBit_Vertex,
                                                   smvk::AccessFlags::ShaderRead,
                                                   0,
                                                   0);
-                    m_ddgiProbeBda = m_context->GetBufferDeviceAddress(m_ddgiProbeInstances);
-                    m_ddgiProbeCount = uint32_t(rows.size());
+                    m_ddgiProbeBda[c] = m_context->GetBufferDeviceAddress(m_ddgiProbeInstances[c]);
+                    m_ddgiProbeCount[c] = uint32_t(rows.size());
                 }
             }
         }
-        if (m_ddgiProbeCount > 0 && m_ddgiProbeBda != 0) {
-            smvk::giprobe::GiProbeVolumeRow ddgiRow{};
-            ddgiRow.instances = m_ddgiProbeInstances;
-            ddgiRow.instancesBda = m_ddgiProbeBda;
-            ddgiRow.instanceCount = m_ddgiProbeCount;
-            ddgiRow.volumeIndex = 0; // unused in lattice mode
+        // One row per cascade, each tinted so the levels read at a glance:
+        // fine = cyan, coarse = orange (the legend lives in the Debug panel).
+        static constexpr float kCascadeColors[smvk::ddgi::kDdgiCascadeCount][3] = {
+            {0.20f, 0.90f, 0.90f}, // fine
+            {1.00f, 0.60f, 0.20f}, // coarse
+        };
+        smvk::giprobe::GiProbeVolumeRow ddgiRows[smvk::ddgi::kDdgiCascadeCount]{};
+        uint32_t rowCount = 0;
+        for (uint32_t c = 0; c < m_ddgiVolumes.size(); ++c) {
+            if (m_ddgiProbeCount[c] == 0 || m_ddgiProbeBda[c] == 0)
+                continue;
+            ddgiRows[rowCount].instances = m_ddgiProbeInstances[c];
+            ddgiRows[rowCount].instancesBda = m_ddgiProbeBda[c];
+            ddgiRows[rowCount].instanceCount = m_ddgiProbeCount[c];
+            ddgiRows[rowCount].volumeIndex = 0; // unused in lattice mode
+            ddgiRows[rowCount].markerColor[0] = kCascadeColors[c][0];
+            ddgiRows[rowCount].markerColor[1] = kCascadeColors[c][1];
+            ddgiRows[rowCount].markerColor[2] = kCascadeColors[c][2];
+            ++rowCount;
+        }
+        if (rowCount > 0) {
             const float markerGain = frameExposure > 1e-9f ? 1.0f / frameExposure : 1.0f;
             m_giProbeVisual.AppendPass(*m_rendergraph,
                                        sceneHdrView,
@@ -22086,8 +22093,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                        frameData.viewProj,
                                        m_cameraPositioner.cameraPosition_,
                                        std::max(m_giProbePointMaxDist, 1.0f),
-                                       &ddgiRow,
-                                       1,
+                                       ddgiRows,
+                                       rowCount,
                                        0, // frame BDA unused in lattice mode
                                        smvk::giprobe::kGiProbeModeLattice,
                                        markerGain);

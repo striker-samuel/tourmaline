@@ -69,12 +69,14 @@ static_assert(sizeof(GiProbeInstance) == 32, "HLSL mirror (giprobe.vert.hlsl)");
 // One per-volume draw: the instance buffer + its device address + the
 // volume INDEX (0..7 — the VS reads layer slots as
 // giVolumeLayerTable[volumeIndex * 10 + t/l], exactly like
-// SgGiVolumeSample's stride-10 table).
+// SgGiVolumeSample's stride-10 table). markerColor colors the LATTICE
+// mode (2) markers (per-cascade debug tint); ignored by modes 0/1.
 struct GiProbeVolumeRow {
     BufferHandle instances{};
     uint64_t instancesBda = 0;
     uint32_t instanceCount = 0;
     uint32_t volumeIndex = 0;
+    float markerColor[3] = {0.42f, 0.47f, 0.58f};
 };
 
 // The pass's own push block — must mirror giprobe.vert.hlsl exactly
@@ -92,9 +94,11 @@ struct alignas(16) GiProbePush {
                               //    display-authored colors, the flat-view
                               //    pre-scale convention (the baked-GI mode
                               //    is physical radiance, never scaled)
-    uint32_t pad_{};          // 100 (16-align tail; 112 total)
+    float markerColor[3] = {0.42f, 0.47f, 0.58f}; // 108 lattice marker color (display units)
+    uint32_t pad_{};                              // 120 16-align tail; 128 total
+    uint32_t pad2_{};                             // 124
 };
-static_assert(sizeof(GiProbePush) == 112);
+static_assert(sizeof(GiProbePush) == 128);
 
 // Probe color modes (GiProbePush::mode; the VS branch selector).
 inline constexpr uint32_t kGiProbeModeBakedGI = 0;

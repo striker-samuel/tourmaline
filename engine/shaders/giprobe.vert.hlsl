@@ -54,7 +54,11 @@ struct GiProbePush
     uint volumeIndex;    // 88 the volume index (0..7; giVolumeLayerTable row = volumeIndex * 10)
     uint mode;           // 92 0 baked GI, 1 visibility, 2 lattice
     float markerGain;    // 96 1/exposure for the marker modes (1/2)
-    uint pad_;           // 100 (16-align tail; 112 total)
+    float markerR;       // 100 lattice marker color (display units, pre-scaled)
+    float markerG;       // 104
+    float markerB;       // 108
+    uint pad_;           // 112
+    uint pad2_;          // 116
 };
 
 GPU_PUSH(GiProbePush, pb);
@@ -101,8 +105,9 @@ VSOut mainVS(VSIn IN, uint instanceIndex : SV_InstanceID)
     {
         // Display-authored marker color: pre-scale by 1/exposure (the
         // flat-debug-view convention) or the manual physical exposure
-        // (~0.001) crushes it to black through the tonemap.
-        OUT.color = float3(0.42, 0.47, 0.58) * pb.markerGain;
+        // (~0.001) crushes it to black through the tonemap. The color is
+        // per-cascade (set by the host so fine/coarse read at a glance).
+        OUT.color = float3(pb.markerR, pb.markerG, pb.markerB) * pb.markerGain;
         OUT.pos = mul(pb.viewProj, float4(worldPos, 1.0));
         return OUT;
     }

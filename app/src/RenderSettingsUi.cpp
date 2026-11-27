@@ -1144,6 +1144,17 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                     ImGui::Checkbox("DDGI probe grid", &m_ddgiShowProbes);
                     if (m_ddgiShowProbes && m_ddgiVolumes.empty())
                         ImGui::TextDisabled("DDGI not active - select the DDGI GI source first");
+                    if (m_ddgiShowProbes && !m_ddgiVolumes.empty()) {
+                        // Cascade legend (the marker tints set in the probe
+                        // draw): cyan = fine, orange = coarse.
+                        ImGui::TextDisabled("cascade legend:");
+                        ImGui::SameLine();
+                        ImGui::TextColored(ImVec4(0.20f, 0.90f, 0.90f, 1.0f), "fine");
+                        ImGui::SameLine();
+                        ImGui::TextDisabled("|");
+                        ImGui::SameLine();
+                        ImGui::TextColored(ImVec4(1.00f, 0.60f, 0.20f, 1.0f), "coarse");
+                    }
                     if (m_regLoaded || m_giVolumesLoaded) {
                         // All R / F8 stops (including off).
                         // Select Lit so the debug shader is visible.

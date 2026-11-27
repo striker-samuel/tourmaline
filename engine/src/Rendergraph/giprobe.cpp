@@ -62,6 +62,9 @@ void RecordGiProbes(CommandBuffer& cmd, const FrameContext& fc, const PassData& 
         push.volumeIndex = r.volumeIndex;
         push.mode = f.colorMode;
         push.markerGain = f.markerGain;
+        push.markerColor[0] = r.markerColor[0];
+        push.markerColor[1] = r.markerColor[1];
+        push.markerColor[2] = r.markerColor[2];
         cmd.PushConstants(0, sizeof(push), &push, ShaderStage::All);
         // ONE instanced call per volume: the shared icosphere over this
         // volume's instance rows (SV_InstanceID-indexed).

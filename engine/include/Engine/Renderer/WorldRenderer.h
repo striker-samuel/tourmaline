@@ -5117,9 +5117,11 @@ class WorldRenderer : public IRenderer {
     // mode-2 lattice, no bake fetch). Strided to the draw cap; rebuilt when
     // the volumes change (m_ddgiProbesDirty).
     bool m_ddgiShowProbes = false;
-    smvk::Holder<smvk::BufferHandle> m_ddgiProbeInstances;
-    uint64_t m_ddgiProbeBda = 0;
-    uint32_t m_ddgiProbeCount = 0;
+    // Per-cascade lattice instance tables (key-7 debug draw): one buffer per
+    // cascade so each can carry its own marker color.
+    smvk::Holder<smvk::BufferHandle> m_ddgiProbeInstances[smvk::ddgi::kDdgiCascadeCount];
+    uint64_t m_ddgiProbeBda[smvk::ddgi::kDdgiCascadeCount] = {0, 0};
+    uint32_t m_ddgiProbeCount[smvk::ddgi::kDdgiCascadeCount] = {0, 0};
     bool m_ddgiProbesDirty = true;
     // ---- Screen-adaptive screen-space probes (#410) runtime state. The irradiance field
     // is a ping-ponged tile-grid history: the trace+blend pass reads
