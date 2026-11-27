@@ -1041,7 +1041,12 @@ float4 SMAANeighborhoodBlendingPS(float2 texcoord,
         float4 color = SMAASampleLevelZero(colorTex, texcoord);
 
         #if SMAA_REPROJECTION
-        float2 velocity = SMAA_DECODE_VELOCITY(SMAASampleLevelZero(velocityTex, texcoord));
+        // The velocity buffer stores prevUV - currUV (motionvector.frag.hlsl);
+        // SMAA_VELOCITY_JITTER_DELTA is prevJitter - currJitter in the SAME
+        // convention. Fetch the RAW vector (not SMAA_DECODE_VELOCITY, which
+        // negates for the resolve's reprojection) so subtracting the jitter
+        // delta leaves TRUE motion only.
+        float2 velocity = SMAASampleLevelZero(velocityTex, texcoord).rg;
 
         // Pack TRUE motion into the alpha channel (the resolve compares
         // magnitudes to attenuate stale history): strip the known
@@ -1070,8 +1075,9 @@ float4 SMAANeighborhoodBlendingPS(float2 texcoord,
 
         #if SMAA_REPROJECTION
         // Antialias velocity for proper reprojection in a later stage:
-        float2 velocity = blendingWeight.x * SMAA_DECODE_VELOCITY(SMAASampleLevelZero(velocityTex, blendingCoord.xy));
-        velocity += blendingWeight.y * SMAA_DECODE_VELOCITY(SMAASampleLevelZero(velocityTex, blendingCoord.zw));
+        // fetch the RAW vector (see the no-blend branch above).
+        float2 velocity = blendingWeight.x * SMAASampleLevelZero(velocityTex, blendingCoord.xy).rg;
+        velocity += blendingWeight.y * SMAASampleLevelZero(velocityTex, blendingCoord.zw).rg;
 
         // Pack TRUE motion into the alpha channel (attenuation input);
         // the jitter delta is spatially constant, so stripping it after
