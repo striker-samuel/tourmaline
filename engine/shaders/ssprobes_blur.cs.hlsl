@@ -3,7 +3,7 @@
 #include "common.hlsli"
 #include "dof.hlsli"
 
-// Screen-adaptive SDF GI (#410) spatial resolve: a depth-aware 5x5 box blur
+// Screen-adaptive screen-space probes (#410) spatial resolve: a depth-aware 5x5 box blur
 // over the tile-grid irradiance history. The per-tile cosine-weighted
 // estimate is Monte-Carlo noisy (~15% at 6 rays/tile even after the EMA),
 // and diffuse irradiance is inherently low-frequency, so a spatial smooth
@@ -16,9 +16,9 @@
 // (the raw field the trace just wrote) and writes a transient smoothed copy.
 
 [[vk::binding(2, 0)]]
-RWTexture2D<float4> sdfGiBlurStorage[];
+RWTexture2D<float4> ssProbesBlurStorage[];
 
-struct SdfGiBlurPush {
+struct SsProbesBlurPush {
     uint srcImageIndex; // history[writeSlot] (sampled read)
     uint outImageIndex; // smoothed output (storage write)
     uint outWidth;
@@ -27,7 +27,7 @@ struct SdfGiBlurPush {
     uint samplerIndex;
     uint pad0, pad1;
 };
-GPU_PUSH(SdfGiBlurPush, sp);
+GPU_PUSH(SsProbesBlurPush, sp);
 
 [numthreads(8, 8, 1)]
 void mainCS(uint3 tid : SV_DispatchThreadID) {
@@ -70,5 +70,5 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
             wsum += 1.0f;
         }
     }
-    sdfGiBlurStorage[sp.outImageIndex][tid.xy] = float4(sum / max(wsum, 1e-6f), 1.0f);
+    ssProbesBlurStorage[sp.outImageIndex][tid.xy] = float4(sum / max(wsum, 1e-6f), 1.0f);
 }

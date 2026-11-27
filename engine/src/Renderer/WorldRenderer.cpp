@@ -836,14 +836,14 @@ static std::optional<AmbientMode> AmbientModeFromPin(std::string_view v) {
         return AmbientMode::Off;
     if (v == "ddgi" || v == "dynamic")
         return AmbientMode::Ddgi;
-    if (v == "sdfgi" || v == "sdf_gi")
-        return AmbientMode::SdfGi;
+    if (v == "ssprobes" || v == "screenprobes")
+        return AmbientMode::SsProbes;
     return std::nullopt;
 }
 
-// ---- Screen-adaptive SDF GI (#410) pass plumbing (mirrors ddgi.h) ----
+// ---- Screen-adaptive screen-space probes (#410) pass plumbing (mirrors ddgi.h) ----
 namespace {
-struct SdfGiPush {
+struct SsProbesPush {
     uint64_t frameUniforms = 0, sceneAddress = 0;
     uint32_t depthTextureIndex = 0;
     uint32_t prevImageIndex = 0;    // history[writeSlot ^ 1] (sampled read)
@@ -856,35 +856,37 @@ struct SdfGiPush {
     uint32_t rays = 0, updateIndex = 0, samplerIndex = 0;
     float blendAlpha = 0; // EMA blend factor (1 = full replace, reset)
 };
-struct SdfGiFrame {
+struct SsProbesFrame {
     smvk::ShaderProgram* program = nullptr;
-    SdfGiPush push{};
+    SsProbesPush push{};
     uint32_t w = 0, h = 0;
 };
-void RecordSdfGi(smvk::CommandBuffer& cmd, const smvk::FrameContext& fc, const smvk::PassData& pd) {
-    const auto& f = fc.rg->FrameData().Get<SdfGiFrame>(pd.frameSlot);
+void RecordSsProbes(smvk::CommandBuffer& cmd,
+                    const smvk::FrameContext& fc,
+                    const smvk::PassData& pd) {
+    const auto& f = fc.rg->FrameData().Get<SsProbesFrame>(pd.frameSlot);
     cmd.BindComputePipeline(*f.program);
-    cmd.PushConstants(0, sizeof(SdfGiPush), &f.push, smvk::ShaderStage::Compute);
+    cmd.PushConstants(0, sizeof(SsProbesPush), &f.push, smvk::ShaderStage::Compute);
     cmd.Dispatch((f.w + 7u) / 8u, (f.h + 7u) / 8u, 1u);
 }
-struct SdfGiBlurPush {
+struct SsProbesBlurPush {
     uint32_t srcImageIndex = 0; // history[writeSlot] (sampled read)
     uint32_t outImageIndex = 0; // smoothed output (storage write)
     uint32_t outWidth = 0, outHeight = 0;
     uint32_t depthTextureIndex = 0; // full-res depth (bilateral guide)
     uint32_t samplerIndex = 0, pad0 = 0, pad1 = 0;
 };
-struct SdfGiBlurFrame {
+struct SsProbesBlurFrame {
     smvk::ShaderProgram* program = nullptr;
-    SdfGiBlurPush push{};
+    SsProbesBlurPush push{};
     uint32_t w = 0, h = 0;
 };
-void RecordSdfGiBlur(smvk::CommandBuffer& cmd,
-                     const smvk::FrameContext& fc,
-                     const smvk::PassData& pd) {
-    const auto& f = fc.rg->FrameData().Get<SdfGiBlurFrame>(pd.frameSlot);
+void RecordSsProbesBlur(smvk::CommandBuffer& cmd,
+                        const smvk::FrameContext& fc,
+                        const smvk::PassData& pd) {
+    const auto& f = fc.rg->FrameData().Get<SsProbesBlurFrame>(pd.frameSlot);
     cmd.BindComputePipeline(*f.program);
-    cmd.PushConstants(0, sizeof(SdfGiBlurPush), &f.push, smvk::ShaderStage::Compute);
+    cmd.PushConstants(0, sizeof(SsProbesBlurPush), &f.push, smvk::ShaderStage::Compute);
     cmd.Dispatch((f.w + 7u) / 8u, (f.h + 7u) / 8u, 1u);
 }
 } // namespace
@@ -1265,10 +1267,10 @@ bool WorldRenderer::onAttach() {
         // TOURMALINE_DDGI=1, or the view silently shows Lit).
         else if (dv == "ddgi" || dv == "ddgi_irradiance" || dv == "ddgiirradiance")
             m_debugView = ViewMode::DdgiIrradiance;
-        // SDF GI irradiance debug view (the raw screen-adaptive surface-cache
-        // irradiance; the SdfGi ambient source must be active, else Lit).
-        else if (dv == "sdfgi" || dv == "sdfgi_irradiance")
-            m_debugView = ViewMode::SdfGiIrradiance;
+        // screen-space probes irradiance debug view (the raw screen-adaptive surface-cache
+        // irradiance; the SsProbes ambient source must be active, else Lit).
+        else if (dv == "ssprobes" || dv == "ssprobes_irradiance")
+            m_debugView = ViewMode::ScreenSpaceProbesIrradiance;
         else
             std::cerr << "[WorldRenderer] unknown TOURMALINE_DEBUGVIEW value: " << dv << "\n";
     }
@@ -6122,11 +6124,13 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
     data.staticSdfEnabled = staticSdfAddr != 0u ? 1u : 0u;
     data.staticSdfMaxTrace = m_sdfDebugMaxTrace;
     data.staticSdfColorMode = m_sdfDebugColorMode;
-    data.sdfGiEnabled = (m_ambientMode == AmbientMode::SdfGi && m_sdfGiReady) ? 1u : 0u;
-    data.sdfGiImageIndex = m_sdfGiBlurIndex; // Main samples the smoothed copy
-    data.sdfGiTileGrid = m_sdfGiTileCountX | (m_sdfGiTileCountY << 16);
-    data.sdfGiDebug =
-        (m_ambientMode == AmbientMode::SdfGi && m_debugView == ViewMode::SdfGiIrradiance) ? 1u : 0u;
+    data.ssProbesEnabled = (m_ambientMode == AmbientMode::SsProbes && m_ssProbesReady) ? 1u : 0u;
+    data.ssProbesImageIndex = m_ssProbesBlurIndex; // Main samples the smoothed copy
+    data.ssProbesTileGrid = m_ssProbesTileCountX | (m_ssProbesTileCountY << 16);
+    data.ssProbesDebug = (m_ambientMode == AmbientMode::SsProbes &&
+                          m_debugView == ViewMode::ScreenSpaceProbesIrradiance)
+                             ? 1u
+                             : 0u;
 
     m_context->UploadDataToBuffer(m_resources.frameUniforms,
                                   &data,
@@ -15580,8 +15584,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         !ShaderLodActive() && !m_wireframe &&
         (m_debugView == ViewMode::Lit || m_debugView == ViewMode::Meshlets ||
          m_debugView == ViewMode::Lods || m_debugView == ViewMode::DdgiIrradiance ||
-         m_debugView == ViewMode::SdfGiIrradiance || m_debugView == ViewMode::MotionVectors ||
-         DebugFsForView(m_debugView).has_value()) &&
+         m_debugView == ViewMode::ScreenSpaceProbesIrradiance ||
+         m_debugView == ViewMode::MotionVectors || DebugFsForView(m_debugView).has_value()) &&
         gpuSceneGiReady;
     // KD diagnostic: the full raster-mode breakdown (the temporal gate
     // downstream only names its own conditions - this names every reason
@@ -19539,7 +19543,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         }
     }
     bool ddgiSdfReady = false;
-    if ((m_ambientMode == AmbientMode::Ddgi || m_ambientMode == AmbientMode::SdfGi) && m_world) {
+    if ((m_ambientMode == AmbientMode::Ddgi || m_ambientMode == AmbientMode::SsProbes) && m_world) {
         m_ddgiSdfGpu.SetWholeScene(true);
         ddgiSdfReady = m_ddgiSdfGpu.Update(*m_context, *m_world, sdfEye);
         (void)ddgiSdfReady; // whole-scene SDF residency (relocation + #410)
@@ -19586,42 +19590,42 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     }
 
     // ---------------------------------------------------------------------
-    // Screen-adaptive SDF GI (#410): a ping-ponged tile-grid irradiance
+    // Screen-adaptive screen-space probes (#410): a ping-ponged tile-grid irradiance
     // history. The trace+blend pass reads history[writeSlot ^ 1], traces a
     // rotating tile subset (1/4 per frame) through the SDF, and EMA-blends
     // into history[writeSlot], which Main samples as the diffuse ambient
     // owner. Amortizing the trace over 4 frames keeps the per-frame ray
     // budget near the #410 spec's ~4k rays while the EMA converges the field.
     // ---------------------------------------------------------------------
-    const bool sdfGiWants = m_ambientMode == AmbientMode::SdfGi && m_world && ddgiSdfReady;
-    if (sdfGiWants) {
+    const bool ssProbesWants = m_ambientMode == AmbientMode::SsProbes && m_world && ddgiSdfReady;
+    if (ssProbesWants) {
         const uint32_t tileGridX = (renderExtent.width + 15u) / 16u;
         const uint32_t tileGridY = (renderExtent.height + 15u) / 16u;
-        if (m_sdfGiImage[0].empty() || m_sdfGiTileCountX != tileGridX ||
-            m_sdfGiTileCountY != tileGridY) {
+        if (m_ssProbesImage[0].empty() || m_ssProbesTileCountX != tileGridX ||
+            m_ssProbesTileCountY != tileGridY) {
             for (uint32_t slot = 0; slot < 2; ++slot) {
-                if (!m_sdfGiLogical[slot].empty())
-                    m_rendergraph->FreeImageView(m_sdfGiLogical[slot]);
-                m_sdfGiImage[slot] = {};
-                m_sdfGiView[slot] = {};
-                m_sdfGiBindless[slot] = {};
-                m_sdfGiImageIndex[slot] = UINT32_MAX;
-                m_sdfGiLogical[slot] = {};
-                if (!m_sdfGiWorldPosLogical[slot].empty())
-                    m_rendergraph->FreeImageView(m_sdfGiWorldPosLogical[slot]);
-                m_sdfGiWorldPos[slot] = {};
-                m_sdfGiWorldPosView[slot] = {};
-                m_sdfGiWorldPosBindless[slot] = {};
-                m_sdfGiWorldPosIndex[slot] = UINT32_MAX;
-                m_sdfGiWorldPosLogical[slot] = {};
+                if (!m_ssProbesLogical[slot].empty())
+                    m_rendergraph->FreeImageView(m_ssProbesLogical[slot]);
+                m_ssProbesImage[slot] = {};
+                m_ssProbesView[slot] = {};
+                m_ssProbesBindless[slot] = {};
+                m_ssProbesImageIndex[slot] = UINT32_MAX;
+                m_ssProbesLogical[slot] = {};
+                if (!m_ssProbesWorldPosLogical[slot].empty())
+                    m_rendergraph->FreeImageView(m_ssProbesWorldPosLogical[slot]);
+                m_ssProbesWorldPos[slot] = {};
+                m_ssProbesWorldPosView[slot] = {};
+                m_ssProbesWorldPosBindless[slot] = {};
+                m_ssProbesWorldPosIndex[slot] = UINT32_MAX;
+                m_ssProbesWorldPosLogical[slot] = {};
             }
-            if (!m_sdfGiBlurLogical.empty())
-                m_rendergraph->FreeImageView(m_sdfGiBlurLogical);
-            m_sdfGiBlurImage = {};
-            m_sdfGiBlurView = {};
-            m_sdfGiBlurBindless = {};
-            m_sdfGiBlurIndex = UINT32_MAX;
-            m_sdfGiBlurLogical = {};
+            if (!m_ssProbesBlurLogical.empty())
+                m_rendergraph->FreeImageView(m_ssProbesBlurLogical);
+            m_ssProbesBlurImage = {};
+            m_ssProbesBlurView = {};
+            m_ssProbesBlurBindless = {};
+            m_ssProbesBlurIndex = UINT32_MAX;
+            m_ssProbesBlurLogical = {};
             for (uint32_t slot = 0; slot < 2; ++slot) {
                 smvk::ImageCreateInfo ci{};
                 ci.extent = {tileGridX, tileGridY, 1};
@@ -19633,24 +19637,24 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                            smvk::ImageUsage::TransferDst;
                 ci.mipLevels = 1;
                 ci.arrayLayers = 1;
-                ci.name = slot == 0 ? "sdfGiIrradianceA" : "sdfGiIrradianceB";
+                ci.name = slot == 0 ? "ssProbesIrradianceA" : "ssProbesIrradianceB";
                 const size_t zeroBytes = size_t(tileGridX) * tileGridY * 16u;
                 std::vector<uint8_t> zeros(zeroBytes, 0);
-                m_sdfGiImage[slot] = m_context->CreateImage(ci, zeros.data());
-                if (!m_sdfGiImage[slot].empty()) {
+                m_ssProbesImage[slot] = m_context->CreateImage(ci, zeros.data());
+                if (!m_ssProbesImage[slot].empty()) {
                     smvk::ImageViewCreateInfo vci{};
                     vci.viewType = smvk::ImageViewType::View2D;
                     vci.format = smvk::Format::Undefined;
                     vci.subresourceRange = {smvk::ImageAspect::Color, 0, 1, 0, 1};
                     vci.name = ci.name;
-                    m_sdfGiView[slot] = m_context->CreateImageView(m_sdfGiImage[slot], vci);
-                    m_sdfGiBindless[slot] = m_context->CreateBindlessImage(
-                        m_sdfGiView[slot], smvk::ImageLayout::General);
-                    if (!m_sdfGiBindless[slot].empty()) {
-                        m_sdfGiImageIndex[slot] =
-                            m_context->GetBindlessIndex(m_sdfGiBindless[slot]);
-                        m_sdfGiLogical[slot] = m_rendergraph->AddExternalImageView(
-                            m_sdfGiView[slot], smvk::Format::RGBA32_Float, ci.name);
+                    m_ssProbesView[slot] = m_context->CreateImageView(m_ssProbesImage[slot], vci);
+                    m_ssProbesBindless[slot] = m_context->CreateBindlessImage(
+                        m_ssProbesView[slot], smvk::ImageLayout::General);
+                    if (!m_ssProbesBindless[slot].empty()) {
+                        m_ssProbesImageIndex[slot] =
+                            m_context->GetBindlessIndex(m_ssProbesBindless[slot]);
+                        m_ssProbesLogical[slot] = m_rendergraph->AddExternalImageView(
+                            m_ssProbesView[slot], smvk::Format::RGBA32_Float, ci.name);
                     }
                 }
                 // Per-tile surface world position (reprojection/disocclusion
@@ -19664,25 +19668,25 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                 smvk::ImageUsage::TransferDst;
                     wci.mipLevels = 1;
                     wci.arrayLayers = 1;
-                    wci.name = slot == 0 ? "sdfGiWorldPosA" : "sdfGiWorldPosB";
+                    wci.name = slot == 0 ? "ssProbesWorldPosA" : "ssProbesWorldPosB";
                     const size_t zeroBytes = size_t(tileGridX) * tileGridY * 16u;
                     std::vector<uint8_t> zeros(zeroBytes, 0);
-                    m_sdfGiWorldPos[slot] = m_context->CreateImage(wci, zeros.data());
-                    if (!m_sdfGiWorldPos[slot].empty()) {
+                    m_ssProbesWorldPos[slot] = m_context->CreateImage(wci, zeros.data());
+                    if (!m_ssProbesWorldPos[slot].empty()) {
                         smvk::ImageViewCreateInfo vci{};
                         vci.viewType = smvk::ImageViewType::View2D;
                         vci.format = smvk::Format::Undefined;
                         vci.subresourceRange = {smvk::ImageAspect::Color, 0, 1, 0, 1};
                         vci.name = wci.name;
-                        m_sdfGiWorldPosView[slot] =
-                            m_context->CreateImageView(m_sdfGiWorldPos[slot], vci);
-                        m_sdfGiWorldPosBindless[slot] = m_context->CreateBindlessImage(
-                            m_sdfGiWorldPosView[slot], smvk::ImageLayout::General);
-                        if (!m_sdfGiWorldPosBindless[slot].empty()) {
-                            m_sdfGiWorldPosIndex[slot] =
-                                m_context->GetBindlessIndex(m_sdfGiWorldPosBindless[slot]);
-                            m_sdfGiWorldPosLogical[slot] = m_rendergraph->AddExternalImageView(
-                                m_sdfGiWorldPosView[slot], smvk::Format::RGBA32_Float, wci.name);
+                        m_ssProbesWorldPosView[slot] =
+                            m_context->CreateImageView(m_ssProbesWorldPos[slot], vci);
+                        m_ssProbesWorldPosBindless[slot] = m_context->CreateBindlessImage(
+                            m_ssProbesWorldPosView[slot], smvk::ImageLayout::General);
+                        if (!m_ssProbesWorldPosBindless[slot].empty()) {
+                            m_ssProbesWorldPosIndex[slot] =
+                                m_context->GetBindlessIndex(m_ssProbesWorldPosBindless[slot]);
+                            m_ssProbesWorldPosLogical[slot] = m_rendergraph->AddExternalImageView(
+                                m_ssProbesWorldPosView[slot], smvk::Format::RGBA32_Float, wci.name);
                         }
                     }
                 }
@@ -19695,62 +19699,62 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 ci.usage = smvk::ImageUsage::Sampled | smvk::ImageUsage::Storage;
                 ci.mipLevels = 1;
                 ci.arrayLayers = 1;
-                ci.name = "sdfGiIrradianceBlur";
-                m_sdfGiBlurImage = m_context->CreateImage(ci, nullptr);
-                if (!m_sdfGiBlurImage.empty()) {
+                ci.name = "ssProbesIrradianceBlur";
+                m_ssProbesBlurImage = m_context->CreateImage(ci, nullptr);
+                if (!m_ssProbesBlurImage.empty()) {
                     smvk::ImageViewCreateInfo vci{};
                     vci.viewType = smvk::ImageViewType::View2D;
                     vci.format = smvk::Format::Undefined;
                     vci.subresourceRange = {smvk::ImageAspect::Color, 0, 1, 0, 1};
                     vci.name = ci.name;
-                    m_sdfGiBlurView = m_context->CreateImageView(m_sdfGiBlurImage, vci);
-                    m_sdfGiBlurBindless =
-                        m_context->CreateBindlessImage(m_sdfGiBlurView, smvk::ImageLayout::General);
-                    if (!m_sdfGiBlurBindless.empty()) {
-                        m_sdfGiBlurIndex = m_context->GetBindlessIndex(m_sdfGiBlurBindless);
-                        m_sdfGiBlurLogical = m_rendergraph->AddExternalImageView(
-                            m_sdfGiBlurView, smvk::Format::RGBA32_Float, ci.name);
+                    m_ssProbesBlurView = m_context->CreateImageView(m_ssProbesBlurImage, vci);
+                    m_ssProbesBlurBindless = m_context->CreateBindlessImage(
+                        m_ssProbesBlurView, smvk::ImageLayout::General);
+                    if (!m_ssProbesBlurBindless.empty()) {
+                        m_ssProbesBlurIndex = m_context->GetBindlessIndex(m_ssProbesBlurBindless);
+                        m_ssProbesBlurLogical = m_rendergraph->AddExternalImageView(
+                            m_ssProbesBlurView, smvk::Format::RGBA32_Float, ci.name);
                     }
                 }
             }
-            m_sdfGiTileCountX = tileGridX;
-            m_sdfGiTileCountY = tileGridY;
-            m_sdfGiUpdateIndex = 0;
+            m_ssProbesTileCountX = tileGridX;
+            m_ssProbesTileCountY = tileGridY;
+            m_ssProbesUpdateIndex = 0;
         }
-        if (m_sdfGiModule.empty()) {
-            m_sdfGiModule = m_context->CreateShaderModule(
-                smvk::shaders::Read("content/shaders/sdfgi.cs.hlsl.spv"), "sdfGi");
-            if (!m_sdfGiModule.empty()) {
-                smvk::Shader s{.module = m_sdfGiModule,
+        if (m_ssProbesModule.empty()) {
+            m_ssProbesModule = m_context->CreateShaderModule(
+                smvk::shaders::Read("content/shaders/ssprobes.cs.hlsl.spv"), "ssProbes");
+            if (!m_ssProbesModule.empty()) {
+                smvk::Shader s{.module = m_ssProbesModule,
                                .entryPoint = "mainCS",
                                .stage = smvk::ShaderStage::Compute};
-                m_sdfGiProgram = {.shaders = {s}, .shaderCount = 1};
+                m_ssProbesProgram = {.shaders = {s}, .shaderCount = 1};
             }
         }
-        if (m_sdfGiBlurModule.empty()) {
-            m_sdfGiBlurModule = m_context->CreateShaderModule(
-                smvk::shaders::Read("content/shaders/sdfgi_blur.cs.hlsl.spv"), "sdfGiBlur");
-            if (!m_sdfGiBlurModule.empty()) {
-                smvk::Shader s{.module = m_sdfGiBlurModule,
+        if (m_ssProbesBlurModule.empty()) {
+            m_ssProbesBlurModule = m_context->CreateShaderModule(
+                smvk::shaders::Read("content/shaders/ssprobes_blur.cs.hlsl.spv"), "ssProbesBlur");
+            if (!m_ssProbesBlurModule.empty()) {
+                smvk::Shader s{.module = m_ssProbesBlurModule,
                                .entryPoint = "mainCS",
                                .stage = smvk::ShaderStage::Compute};
-                m_sdfGiBlurProgram = {.shaders = {s}, .shaderCount = 1};
+                m_ssProbesBlurProgram = {.shaders = {s}, .shaderCount = 1};
             }
         }
-        m_sdfGiReady = !m_sdfGiImage[0].empty() && !m_sdfGiImage[1].empty() &&
-                       m_sdfGiImageIndex[0] != UINT32_MAX && m_sdfGiImageIndex[1] != UINT32_MAX &&
-                       !m_sdfGiLogical[0].empty() && !m_sdfGiLogical[1].empty() &&
-                       !m_sdfGiWorldPos[0].empty() && !m_sdfGiWorldPos[1].empty() &&
-                       m_sdfGiWorldPosIndex[0] != UINT32_MAX &&
-                       m_sdfGiWorldPosIndex[1] != UINT32_MAX &&
-                       !m_sdfGiWorldPosLogical[0].empty() && !m_sdfGiWorldPosLogical[1].empty() &&
-                       !m_sdfGiBlurImage.empty() && m_sdfGiBlurIndex != UINT32_MAX &&
-                       !m_sdfGiBlurLogical.empty() && m_sdfGiProgram.shaderCount != 0 &&
-                       m_sdfGiBlurProgram.shaderCount != 0;
-        if (m_sdfGiReady) {
-            const uint32_t cur = m_sdfGiWriteSlot;
+        m_ssProbesReady =
+            !m_ssProbesImage[0].empty() && !m_ssProbesImage[1].empty() &&
+            m_ssProbesImageIndex[0] != UINT32_MAX && m_ssProbesImageIndex[1] != UINT32_MAX &&
+            !m_ssProbesLogical[0].empty() && !m_ssProbesLogical[1].empty() &&
+            !m_ssProbesWorldPos[0].empty() && !m_ssProbesWorldPos[1].empty() &&
+            m_ssProbesWorldPosIndex[0] != UINT32_MAX && m_ssProbesWorldPosIndex[1] != UINT32_MAX &&
+            !m_ssProbesWorldPosLogical[0].empty() && !m_ssProbesWorldPosLogical[1].empty() &&
+            !m_ssProbesBlurImage.empty() && m_ssProbesBlurIndex != UINT32_MAX &&
+            !m_ssProbesBlurLogical.empty() && m_ssProbesProgram.shaderCount != 0 &&
+            m_ssProbesBlurProgram.shaderCount != 0;
+        if (m_ssProbesReady) {
+            const uint32_t cur = m_ssProbesWriteSlot;
             const uint32_t prev = cur ^ 1u;
-            auto& pass = m_rendergraph->AddComputePass("SdfGiTrace");
+            auto& pass = m_rendergraph->AddComputePass("SsProbesTrace");
             const uint64_t sdfSceneAddr = m_ddgiSdfGpu.SceneAddress(*m_context);
             const uint32_t depthIndex = m_viewportResources.renderDepth.bindlessIndex;
             {
@@ -19771,7 +19775,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 prevReq.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
                 prevReq.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
                 prevReq.layout = smvk::ImageLayout::General;
-                pass.AddImageHint(m_sdfGiLogical[prev], prevReq);
+                pass.AddImageHint(m_ssProbesLogical[prev], prevReq);
             }
             {
                 // Current history: General (storage write); the paired READ hint
@@ -19780,7 +19784,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 writeReq.barrierMasks.accessMask = smvk::AccessFlags::ShaderWrite;
                 writeReq.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
                 writeReq.layout = smvk::ImageLayout::General;
-                pass.AddImageHint(m_sdfGiLogical[cur], writeReq);
+                pass.AddImageHint(m_ssProbesLogical[cur], writeReq);
             }
             {
                 // Previous world position: sampled read (reprojection guide).
@@ -19788,7 +19792,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 prevPosReq.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
                 prevPosReq.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
                 prevPosReq.layout = smvk::ImageLayout::General;
-                pass.AddImageHint(m_sdfGiWorldPosLogical[prev], prevPosReq);
+                pass.AddImageHint(m_ssProbesWorldPosLogical[prev], prevPosReq);
             }
             {
                 // Current world position: General (storage write).
@@ -19796,22 +19800,22 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 writePosReq.barrierMasks.accessMask = smvk::AccessFlags::ShaderWrite;
                 writePosReq.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
                 writePosReq.layout = smvk::ImageLayout::General;
-                pass.AddImageHint(m_sdfGiWorldPosLogical[cur], writePosReq);
+                pass.AddImageHint(m_ssProbesWorldPosLogical[cur], writePosReq);
             }
-            SdfGiPush push{};
+            SsProbesPush push{};
             push.frameUniforms = frameUniformsAddress;
             push.sceneAddress = sdfSceneAddr;
             push.depthTextureIndex = depthIndex;
-            push.prevImageIndex = m_sdfGiImageIndex[prev];
-            push.outImageIndex = m_sdfGiImageIndex[cur];
-            push.prevWorldPosIndex = m_sdfGiWorldPosIndex[prev];
-            push.outWorldPosIndex = m_sdfGiWorldPosIndex[cur];
+            push.prevImageIndex = m_ssProbesImageIndex[prev];
+            push.outImageIndex = m_ssProbesImageIndex[cur];
+            push.prevWorldPosIndex = m_ssProbesWorldPosIndex[prev];
+            push.outWorldPosIndex = m_ssProbesWorldPosIndex[cur];
             push.outWidth = tileGridX;
             push.outHeight = tileGridY;
             push.invDepthW = 1.0f / float(std::max(1u, renderExtent.width));
             push.invDepthH = 1.0f / float(std::max(1u, renderExtent.height));
             push.rays = 6u;
-            const uint32_t updateIndex = m_sdfGiUpdateIndex++;
+            const uint32_t updateIndex = m_ssProbesUpdateIndex++;
             push.updateIndex = updateIndex;
             push.samplerIndex = pointSampler;
             // First 4 frames full-replace (the history starts uninitialized and
@@ -19820,21 +19824,21 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // full-replace pass (the post-increment value would demote subset 3
             // to an EMA blend against garbage history).
             push.blendAlpha = (updateIndex < 4u) ? 1.0f : 0.25f;
-            SdfGiFrame frame{&m_sdfGiProgram, push, tileGridX, tileGridY};
-            m_rendergraph->PassFrameData<SdfGiFrame>(pass) = frame;
-            pass.SetRecordFn(&RecordSdfGi);
-            m_sdfGiWriteSlot = cur ^ 1u;
+            SsProbesFrame frame{&m_ssProbesProgram, push, tileGridX, tileGridY};
+            m_rendergraph->PassFrameData<SsProbesFrame>(pass) = frame;
+            pass.SetRecordFn(&RecordSsProbes);
+            m_ssProbesWriteSlot = cur ^ 1u;
 
             // Spatial resolve: depth-aware 5x5 box blur of the just-written
             // history so the Monte-Carlo tile noise doesn't read as surface
             // detail, without bleeding across silhouettes.
-            auto& blurPass = m_rendergraph->AddComputePass("SdfGiBlur");
+            auto& blurPass = m_rendergraph->AddComputePass("SsProbesBlur");
             {
                 smvk::ImageSyncRequest readReq{};
                 readReq.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
                 readReq.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
                 readReq.layout = smvk::ImageLayout::General;
-                blurPass.AddImageHint(m_sdfGiLogical[cur], readReq);
+                blurPass.AddImageHint(m_ssProbesLogical[cur], readReq);
             }
             {
                 // The full-res depth, sampled as the bilateral guide.
@@ -19849,21 +19853,21 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 writeReq.barrierMasks.accessMask = smvk::AccessFlags::ShaderWrite;
                 writeReq.barrierMasks.stageMask = smvk::PipelineStageBit_Compute;
                 writeReq.layout = smvk::ImageLayout::General;
-                blurPass.AddImageHint(m_sdfGiBlurLogical, writeReq);
+                blurPass.AddImageHint(m_ssProbesBlurLogical, writeReq);
             }
-            SdfGiBlurPush blurPush{};
-            blurPush.srcImageIndex = m_sdfGiImageIndex[cur];
-            blurPush.outImageIndex = m_sdfGiBlurIndex;
+            SsProbesBlurPush blurPush{};
+            blurPush.srcImageIndex = m_ssProbesImageIndex[cur];
+            blurPush.outImageIndex = m_ssProbesBlurIndex;
             blurPush.outWidth = tileGridX;
             blurPush.outHeight = tileGridY;
             blurPush.depthTextureIndex = depthIndex;
             blurPush.samplerIndex = pointSampler;
-            SdfGiBlurFrame blurFrame{&m_sdfGiBlurProgram, blurPush, tileGridX, tileGridY};
-            m_rendergraph->PassFrameData<SdfGiBlurFrame>(blurPass) = blurFrame;
-            blurPass.SetRecordFn(&RecordSdfGiBlur);
+            SsProbesBlurFrame blurFrame{&m_ssProbesBlurProgram, blurPush, tileGridX, tileGridY};
+            m_rendergraph->PassFrameData<SsProbesBlurFrame>(blurPass) = blurFrame;
+            blurPass.SetRecordFn(&RecordSsProbesBlur);
         }
     } else {
-        m_sdfGiReady = false;
+        m_ssProbesReady = false;
     }
 
     // useMsaa is hoisted above the fc fill (the stencil layer gate + the
@@ -19904,23 +19908,23 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         for (auto& vol : m_ddgiVolumes)
             vol.AddMainReadHints(mainPass, m_ddgiWriteSlot ^ 1u);
     }
-    // SDF GI (#410): the paired READ half of the irradiance write->read
+    // screen-space probes (#410): the paired READ half of the irradiance write->read
     // edge (the contact-shadow pattern). Main's lit body fetches the tile
-    // grid through the bindless array (frame.sdfGiImageIndex) — invisible
+    // grid through the bindless array (frame.ssProbesImageIndex) — invisible
     // to CollectPassUsages — so this hint guarantees Main sorts AFTER this
-    // frame's SdfGiTrace and drives the General -> ShaderReadOnlyOptimal
+    // frame's SsProbesTrace and drives the General -> ShaderReadOnlyOptimal
     // transition of the storage write.
-    // SDF GI (#410): the paired READ half of the blur write->read edge (the
+    // screen-space probes (#410): the paired READ half of the blur write->read edge (the
     // contact-shadow pattern). Main's lit body fetches the smoothed tile grid
-    // through the bindless array (frame.sdfGiImageIndex) — invisible to
+    // through the bindless array (frame.ssProbesImageIndex) — invisible to
     // CollectPassUsages — so this hint guarantees Main sorts AFTER this
-    // frame's SdfGiBlur.
-    if (m_ambientMode == AmbientMode::SdfGi && !m_sdfGiBlurLogical.empty()) {
-        smvk::ImageSyncRequest sdfGiRead{};
-        sdfGiRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
-        sdfGiRead.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
-        sdfGiRead.layout = smvk::ImageLayout::General;
-        mainPass.AddImageHint(m_sdfGiBlurLogical, sdfGiRead);
+    // frame's SsProbesBlur.
+    if (m_ambientMode == AmbientMode::SsProbes && !m_ssProbesBlurLogical.empty()) {
+        smvk::ImageSyncRequest ssProbesRead{};
+        ssProbesRead.barrierMasks.accessMask = smvk::AccessFlags::ShaderRead;
+        ssProbesRead.barrierMasks.stageMask = smvk::PipelineStageBit_Fragment;
+        ssProbesRead.layout = smvk::ImageLayout::General;
+        mainPass.AddImageHint(m_ssProbesBlurLogical, ssProbesRead);
     }
     // Shader failure and missing multisample sampling support degrade to hardware AVERAGE.
     const bool customMsaaResolve = useMsaa && m_aaMode == AaMode::Msaa2xCustom &&

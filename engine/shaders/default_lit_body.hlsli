@@ -1778,24 +1778,24 @@ float envVis = 1.0f;
     }
 
     // ---------------------------------------------------------------
-    // Screen-adaptive SDF GI (#410): the lit body samples the tile-grid
+    // Screen-adaptive screen-space probes (#410): the lit body samples the tile-grid
     // irradiance image traced through the SDF, as the diffuse ambient owner.
     // The image stores E (the cosine-weighted hemispherical irradiance), so
     // the diffuse term is kD * baseColor * E/pi, the DDGI convention.
-    // sdfGiDebug = 1 renders the raw field (HDR, no albedo), the DDGI debug
+    // ssProbesDebug = 1 renders the raw field (HDR, no albedo), the DDGI debug
     // convention: E/pi is the diffuse radiance, normalized by the sky scale
     // so sky-lit ≈ 1.0 and occluded ≈ 0 regardless of the sky intensity.
     // ---------------------------------------------------------------
-    if (frame.sdfGiEnabled != 0u && !isBlendMat)
+    if (frame.ssProbesEnabled != 0u && !isBlendMat)
     {
-        Texture2D sdfGiTex = textures[NonUniformResourceIndex(frame.sdfGiImageIndex)];
-        const float3 e = sdfGiTex.SampleLevel(samplers[0], IN.uv, 0).rgb;
-        if (frame.sdfGiDebug != 0u)
+        Texture2D ssProbesTex = textures[NonUniformResourceIndex(frame.ssProbesImageIndex)];
+        const float3 e = ssProbesTex.SampleLevel(samplers[0], IN.uv, 0).rgb;
+        if (frame.ssProbesDebug != 0u)
         {
             OUT.outAoTerm = float4(0.0f, 0.0f, 0.0f, 0.0f);
             OUT.outEnvSpec = float4(0.0f, 0.0f, 0.0f, 0.0f);
-            const float sdfGiNorm = max(frame.env.ground.w, 1e-4f);
-            OUT.outColor = float4(SanitizeHdr(e / PI / sdfGiNorm * 1000.0f), 1.0f);
+            const float ssProbesNorm = max(frame.env.ground.w, 1e-4f);
+            OUT.outColor = float4(SanitizeHdr(e / PI / ssProbesNorm * 1000.0f), 1.0f);
             return OUT;
         }
         ambient = kD * baseColor * (e / PI) * occlusion;

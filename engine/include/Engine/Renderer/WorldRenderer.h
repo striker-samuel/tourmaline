@@ -274,8 +274,8 @@ enum class AmbientMode : int {
     Baked = 5,     // All minus the sky fallback (baked GI isolation)
     Ddgi = 6,      // dynamic diffuse GI (probe grid, ray-query updates) — the
                    // diffuse ambient owner; baked GI + sky IBL diffuse are off
-    SdfGi = 7,     // screen-adaptive SDF surface irradiance cache (#410) — the
-                   // diffuse ambient owner, one-bounce prototype
+    SsProbes = 7,  // screen-space probes (#410): a screen-tile surface irradiance
+                   // cache with temporal accumulation — the diffuse ambient owner
 };
 inline const char* AmbientModeName(AmbientMode m) {
     switch (m) {
@@ -293,8 +293,8 @@ inline const char* AmbientModeName(AmbientMode m) {
         return "Baked (no sky fallback)";
     case AmbientMode::Ddgi:
         return "Dynamic (DDGI)";
-    case AmbientMode::SdfGi:
-        return "Dynamic (SDF GI)";
+    case AmbientMode::SsProbes:
+        return "Dynamic (screen-space probes)";
     }
     return "?";
 }
@@ -581,11 +581,11 @@ enum class ViewMode : int {
     // Renders through the lit path with the SDF debug FS swap; needs the
     // static SDF residency published (frame.staticSdfScene), else MAGENTA.
     SdfScene = 34,
-    // Screen-adaptive SDF GI irradiance (combo/env only): the raw SDF GI
+    // Screen-adaptive screen-space probes irradiance (combo/env only): the raw screen-space probes
     // surface-cache irradiance E at each lit pixel (HDR, no albedo) —
-    // rendered through the LIT path with the SdfGi debug flag set. Needs the
-    // SdfGi ambient source active, else it falls back to plain Lit.
-    SdfGiIrradiance = 35,
+    // rendered through the LIT path with the SsProbes debug flag set. Needs the
+    // SsProbes ambient source active, else it falls back to plain Lit.
+    ScreenSpaceProbesIrradiance = 35,
 };
 
 // The diffuse SSGI debug views (see the ViewMode block): rendered by
@@ -1258,13 +1258,14 @@ struct FrameUniforms {
     float staticSdfMaxTrace = 50.0f; // 3532 max sphere-trace distance (world units)
     uint32_t staticSdfColorMode = 0; // 3536 0=baseColor,1=materialId,2=meshId,
                                      //      3=normal,4=distance,5=roughness,6=metallic,7=emissive
-    // Screen-adaptive SDF GI (#410): a screen-space diffuse irradiance image
-    // the lit body samples when AmbientMode::SdfGi is active. The 12-byte
+    // Screen-adaptive screen-space probes (#410): a screen-space diffuse irradiance image
+    // the lit body samples when AmbientMode::SsProbes is active. The 12-byte
     // pre-DDGI tail pad absorbs these three words (sizeof stays 3552).
-    uint32_t sdfGiEnabled = 0;    // 3540 1 = sample the SDF GI irradiance
-    uint32_t sdfGiImageIndex = 0; // 3544 bindless sampled-image index
-    uint32_t sdfGiTileGrid = 0;   // 3548 x | (y << 16) tile grid (pixels = grid * 16)
-    uint32_t sdfGiDebug = 0;      // 3552 1 = render the raw SDF GI irradiance (debug view)
+    uint32_t ssProbesEnabled = 0;    // 3540 1 = sample the screen-space probes irradiance
+    uint32_t ssProbesImageIndex = 0; // 3544 bindless sampled-image index
+    uint32_t ssProbesTileGrid = 0;   // 3548 x | (y << 16) tile grid (pixels = grid * 16)
+    uint32_t ssProbesDebug =
+        0; // 3552 1 = render the raw screen-space probes irradiance (debug view)
 };
 // FrameUniforms layout insurance: the HLSL mirror (common.hlsli) reads
 // every field by absolute offset — any drift desyncs the GPU reads.
@@ -1395,18 +1396,20 @@ static_assert(offsetof(FrameUniforms, staticSdfMaxTrace) == 3532,
               "staticSdfMaxTrace offset: HLSL mirror");
 static_assert(offsetof(FrameUniforms, staticSdfColorMode) == 3536,
               "staticSdfColorMode offset: HLSL mirror");
-static_assert(offsetof(FrameUniforms, sdfGiEnabled) == 3540, "sdfGiEnabled offset: HLSL mirror");
-static_assert(offsetof(FrameUniforms, sdfGiImageIndex) == 3544,
-              "sdfGiImageIndex offset: HLSL mirror");
-static_assert(offsetof(FrameUniforms, sdfGiTileGrid) == 3548, "sdfGiTileGrid offset: HLSL mirror");
-static_assert(offsetof(FrameUniforms, sdfGiDebug) == 3552, "sdfGiDebug offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, ssProbesEnabled) == 3540,
+              "ssProbesEnabled offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, ssProbesImageIndex) == 3544,
+              "ssProbesImageIndex offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, ssProbesTileGrid) == 3548,
+              "ssProbesTileGrid offset: HLSL mirror");
+static_assert(offsetof(FrameUniforms, ssProbesDebug) == 3552, "ssProbesDebug offset: HLSL mirror");
 static_assert(sizeof(FrameUniforms) == 3568,
               "FrameUniforms size: HLSL mirror (the motion tail appended "
               "relativeViewProj + cameraOriginHigh/Low 3424 -> 3520, then the "
               "staticSdfScene BDA 8-aligns to 3520 -> 3528 and the 16-byte "
               "struct pad rounds it to 3536; the SdfScene debug controls "
               "append 3536 -> 3540 and the 16-byte pad rounds it to 3552; the "
-              "SDF GI tail appends 3540 -> 3552 and sdfGiDebug 3552 -> 3556, "
+              "screen-space probes tail appends 3540 -> 3552 and ssProbesDebug 3552 -> 3556, "
               "16-byte pad rounds it to 3568); "
               "the GI-blend tail grew the struct 2160 -> 2500; "
               "the §1.1 layer tables append 2500 -> 3140, the 64-bit telemetry BDA 8-aligns to "
@@ -5056,36 +5059,36 @@ class WorldRenderer : public IRenderer {
     uint64_t m_ddgiProbeBda = 0;
     uint32_t m_ddgiProbeCount = 0;
     bool m_ddgiProbesDirty = true;
-    // ---- Screen-adaptive SDF GI (#410) runtime state. The irradiance field
+    // ---- Screen-adaptive screen-space probes (#410) runtime state. The irradiance field
     // is a ping-ponged tile-grid history: the trace+blend pass reads
     // history[writeSlot ^ 1] and EMA-blends a rotating tile subset into
     // history[writeSlot], a spatial blur smooths it, and Main samples the
     // smoothed copy as the diffuse ambient owner. A parallel world-position
     // history[2] enables camera-motion reprojection + disocclusion reset.
-    smvk::Holder<smvk::ShaderModuleHandle> m_sdfGiModule;
-    smvk::ShaderProgram m_sdfGiProgram{};
-    smvk::Holder<smvk::ImageHandle> m_sdfGiImage[2];
-    smvk::Holder<smvk::ImageViewHandle> m_sdfGiView[2];         // keeps the view alive
-    smvk::Holder<smvk::BindlessImageHandle> m_sdfGiBindless[2]; // keeps the descriptor alive
-    smvk::LogicalImageViewHandle m_sdfGiLogical[2]{};           // the render-graph logical view
-    uint32_t m_sdfGiImageIndex[2] = {UINT32_MAX, UINT32_MAX};   // bindless sampled-image index
-    smvk::Holder<smvk::ImageHandle> m_sdfGiWorldPos[2];         // per-tile surface world position
-    smvk::Holder<smvk::ImageViewHandle> m_sdfGiWorldPosView[2];
-    smvk::Holder<smvk::BindlessImageHandle> m_sdfGiWorldPosBindless[2];
-    smvk::LogicalImageViewHandle m_sdfGiWorldPosLogical[2]{};
-    uint32_t m_sdfGiWorldPosIndex[2] = {UINT32_MAX, UINT32_MAX};
-    uint32_t m_sdfGiWriteSlot = 0;
+    smvk::Holder<smvk::ShaderModuleHandle> m_ssProbesModule;
+    smvk::ShaderProgram m_ssProbesProgram{};
+    smvk::Holder<smvk::ImageHandle> m_ssProbesImage[2];
+    smvk::Holder<smvk::ImageViewHandle> m_ssProbesView[2];         // keeps the view alive
+    smvk::Holder<smvk::BindlessImageHandle> m_ssProbesBindless[2]; // keeps the descriptor alive
+    smvk::LogicalImageViewHandle m_ssProbesLogical[2]{};           // the render-graph logical view
+    uint32_t m_ssProbesImageIndex[2] = {UINT32_MAX, UINT32_MAX};   // bindless sampled-image index
+    smvk::Holder<smvk::ImageHandle> m_ssProbesWorldPos[2]; // per-tile surface world position
+    smvk::Holder<smvk::ImageViewHandle> m_ssProbesWorldPosView[2];
+    smvk::Holder<smvk::BindlessImageHandle> m_ssProbesWorldPosBindless[2];
+    smvk::LogicalImageViewHandle m_ssProbesWorldPosLogical[2]{};
+    uint32_t m_ssProbesWorldPosIndex[2] = {UINT32_MAX, UINT32_MAX};
+    uint32_t m_ssProbesWriteSlot = 0;
     // Spatial-blur pass (reads history[writeSlot], writes a transient smooth copy).
-    smvk::Holder<smvk::ShaderModuleHandle> m_sdfGiBlurModule;
-    smvk::ShaderProgram m_sdfGiBlurProgram{};
-    smvk::Holder<smvk::ImageHandle> m_sdfGiBlurImage;
-    smvk::Holder<smvk::ImageViewHandle> m_sdfGiBlurView;
-    smvk::Holder<smvk::BindlessImageHandle> m_sdfGiBlurBindless;
-    smvk::LogicalImageViewHandle m_sdfGiBlurLogical{};
-    uint32_t m_sdfGiBlurIndex = UINT32_MAX;
-    uint32_t m_sdfGiTileCountX = 0, m_sdfGiTileCountY = 0;
-    uint32_t m_sdfGiUpdateIndex = 0;
-    bool m_sdfGiReady = false;
+    smvk::Holder<smvk::ShaderModuleHandle> m_ssProbesBlurModule;
+    smvk::ShaderProgram m_ssProbesBlurProgram{};
+    smvk::Holder<smvk::ImageHandle> m_ssProbesBlurImage;
+    smvk::Holder<smvk::ImageViewHandle> m_ssProbesBlurView;
+    smvk::Holder<smvk::BindlessImageHandle> m_ssProbesBlurBindless;
+    smvk::LogicalImageViewHandle m_ssProbesBlurLogical{};
+    uint32_t m_ssProbesBlurIndex = UINT32_MAX;
+    uint32_t m_ssProbesTileCountX = 0, m_ssProbesTileCountY = 0;
+    uint32_t m_ssProbesUpdateIndex = 0;
+    bool m_ssProbesReady = false;
     float m_rayTracedSunShadowDistance = 200.0f;
     float m_rayTracedSunShadowBias = 0.02f;
     int m_rayTracedSunShadowResolutionDivisor = 2;

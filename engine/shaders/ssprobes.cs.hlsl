@@ -4,7 +4,7 @@
 #include "static_sdf_trace.hlsli"
 #include "dof.hlsli"
 
-// Screen-adaptive SDF surface irradiance cache (#410, one-bounce minimal):
+// Screen-adaptive screen-space surface irradiance cache (#410, one-bounce minimal):
 // for each screen tile, reconstruct the visible surface from depth, then
 // trace cosine-weighted hemisphere rays through the SDF with material hit
 // lighting and accumulate the diffuse irradiance into a screen-space image
@@ -12,9 +12,9 @@
 // voxel cache / feedback yet), comparable to the DDGI diffuse path.
 
 [[vk::binding(2, 0)]]
-RWTexture2D<float4> sdfGiStorage[];
+RWTexture2D<float4> ssProbesStorage[];
 
-struct SdfGiPush {
+struct SsProbesPush {
     GPU_PTR_READ(FrameUniforms) frameUniforms;
     GPU_PTR_READ(StaticSdfSceneHeader) scene;
     uint depthTextureIndex;
@@ -31,13 +31,13 @@ struct SdfGiPush {
     uint samplerIndex;
     float blendAlpha;        // EMA blend factor (1 = full replace)
 };
-GPU_PUSH(SdfGiPush, sp);
+GPU_PUSH(SsProbesPush, sp);
 
 // Cosine-weighted hemisphere direction around +Z (the tangent-frame normal):
 // z = sqrt(u) so the sample density is proportional to cos(theta), which the
 // diffuse irradiance estimate integrates with E = (pi / N) * sum(L_i) (the
 // cosine is absorbed into the sampling density, so no per-ray cos factor).
-float3 SdfGiRayDirection(uint ray, uint count, uint updateIndex) {
+float3 SsProbesRayDirection(uint ray, uint count, uint updateIndex) {
     const float u = (float(ray) + 0.5f) / float(count);
     const float v = frac(float(ray) * 0.61803398875f +
                          float(updateIndex % 4096u) * 0.754877666f);
@@ -48,7 +48,7 @@ float3 SdfGiRayDirection(uint ray, uint count, uint updateIndex) {
 }
 
 // Build an orthonormal basis from a unit normal (Z = normal).
-void SdfGiBasis(float3 n, out float3 t, out float3 b) {
+void SsProbesBasis(float3 n, out float3 t, out float3 b) {
     const float3 up = abs(n.y) < 0.999f ? float3(0, 1, 0) : float3(1, 0, 0);
     t = normalize(cross(up, n));
     b = cross(n, t);
@@ -72,8 +72,8 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     // makes any surface that later reappears here read as disoccluded.
     const float3 missColor = DdgiSkyRadiance(frame, float3(0, 1, 0)) * 3.14159265358979f;
     if (DofIsBackgroundOrGarbage(ndcD)) {
-        sdfGiStorage[sp.outImageIndex][tid.xy] = float4(missColor, 1.0f);
-        sdfGiStorage[sp.outWorldPosIndex][tid.xy] = float4(1e30f, 1e30f, 1e30f, 0.0f);
+        ssProbesStorage[sp.outImageIndex][tid.xy] = float4(missColor, 1.0f);
+        ssProbesStorage[sp.outWorldPosIndex][tid.xy] = float4(1e30f, 1e30f, 1e30f, 0.0f);
         return;
     }
 
@@ -112,8 +112,8 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
         // Disoccluded: reset to the sky estimate (a better first guess than
         // black for a newly revealed surface) and let the next trace converge.
         const float3 outE = disoccluded ? missColor : reprojE;
-        sdfGiStorage[sp.outImageIndex][tid.xy] = float4(outE, 1.0f);
-        sdfGiStorage[sp.outWorldPosIndex][tid.xy] = float4(worldPos, 0.0f);
+        ssProbesStorage[sp.outImageIndex][tid.xy] = float4(outE, 1.0f);
+        ssProbesStorage[sp.outWorldPosIndex][tid.xy] = float4(worldPos, 0.0f);
         return;
     }
 
@@ -168,13 +168,13 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     }
 
     float3 tangent, bitangent;
-    SdfGiBasis(normal, tangent, bitangent);
+    SsProbesBasis(normal, tangent, bitangent);
 
     // One-bounce cosine-weighted hemisphere trace with material lighting.
     float3 acc = float3(0.0f, 0.0f, 0.0f);
     const float bias = 0.1f; // self-hit guard
     [loop] for (uint r = 0; r < sp.rays; ++r) {
-        const float3 localDir = SdfGiRayDirection(r, sp.rays, sp.updateIndex);
+        const float3 localDir = SsProbesRayDirection(r, sp.rays, sp.updateIndex);
         const float3 worldDir = tangent * localDir.x + bitangent * localDir.y +
                                 normal * localDir.z;
 
@@ -210,6 +210,6 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     const float3 outE = (disoccluded || sp.blendAlpha >= 1.0f)
                             ? irradiance
                             : lerp(reprojE, irradiance, sp.blendAlpha);
-    sdfGiStorage[sp.outImageIndex][tid.xy] = float4(outE, 1.0f);
-    sdfGiStorage[sp.outWorldPosIndex][tid.xy] = float4(worldPos, 0.0f);
+    ssProbesStorage[sp.outImageIndex][tid.xy] = float4(outE, 1.0f);
+    ssProbesStorage[sp.outWorldPosIndex][tid.xy] = float4(worldPos, 0.0f);
 }
