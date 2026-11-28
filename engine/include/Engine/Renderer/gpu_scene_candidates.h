@@ -42,6 +42,18 @@ inline bool GpuSceneFusedCount() {
     return fused;
 }
 
+// Opt-in fused prefix-add + work-scatter (candidate C): the scatter computes
+// localOffset + groupBase on the fly and the groups scan publishes the
+// terminal total, so the separate prefix-add kernel is skipped. Default OFF
+// (the add kernel runs) until parity + performance are established.
+inline bool GpuSceneFusedWorkAdd() {
+    static const bool fused = [] {
+        const char* e = std::getenv("TOURMALINE_GPU_SCENE_FUSED_WORK_ADD");
+        return e && e[0] == '1' && e[1] == '\0';
+    }();
+    return fused;
+}
+
 // GPU binary-searches ranges[].members.z (candidateBase), then resolves
 // leaves -> members -> instances using *generational* row references.
 // GPU-compatible HLSL mirror: gpu_scene_instance_cull.cs.hlsl.

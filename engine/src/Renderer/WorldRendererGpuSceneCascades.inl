@@ -266,7 +266,8 @@ if (s_gpuSceneShadows && m_gpuSceneRasterEnabled && m_gpuSceneDatabaseReady &&
                                                 addresses, candidates,
                                                 workSelect, workPrefix, workScatter) ||
                 !validator.PrepareParallelWorkPrefix(*m_context, flight,
-                                                     workBlock, workGroups, workAdd) ||
+                                                     workBlock, workGroups, workAdd,
+                                                     workScatter) ||
                 !validator.PrepareRasterCommands(
                     *m_context, flight,
                     m_gpuScenePersistentGeometry.DeviceAddress(*m_context, flight),
@@ -434,7 +435,7 @@ if (s_gpuSceneVisibilityProd && s_gpuSceneShadows && m_gpuSceneRasterEnabled &&
                                                 addresses, instanceCount, workSelect,
                                                 workPrefix, workScatter) ||
                 !validator.PrepareParallelWorkPrefix(*m_context, flight, workBlock,
-                                                     workGroups, workAdd) ||
+                                                     workGroups, workAdd, workScatter) ||
                 !validator.PrepareRasterCommands(
                     *m_context, flight,
                     m_gpuScenePersistentGeometry.DeviceAddress(*m_context, flight),

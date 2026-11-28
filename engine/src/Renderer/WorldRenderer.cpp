@@ -9563,10 +9563,12 @@ void RecordGpuSceneCullChain(smvk::CommandBuffer& cmd,
         cmd.BindComputePipeline(f.workScanPrograms[1]);
         cmd.PushConstants(0, sizeof(f.workGroups), &f.workGroups, smvk::ShaderStage::Compute);
         cmd.Dispatch(1, 1, 1);
-        GpuSceneComputeDependency(cmd);
-        cmd.BindComputePipeline(f.workScanPrograms[2]);
-        cmd.PushConstants(0, sizeof(f.workAdd), &f.workAdd, smvk::ShaderStage::Compute);
-        cmd.Dispatch((f.workAdd.candidateCount + 255u) / 256u, 1, 1);
+        if (!tour::gpu_scene::GpuSceneFusedWorkAdd()) {
+            GpuSceneComputeDependency(cmd);
+            cmd.BindComputePipeline(f.workScanPrograms[2]);
+            cmd.PushConstants(0, sizeof(f.workAdd), &f.workAdd, smvk::ShaderStage::Compute);
+            cmd.Dispatch((f.workAdd.candidateCount + 255u) / 256u, 1, 1);
+        }
     } else {
         cmd.BindComputePipeline(f.workPrograms[1]);
         cmd.PushConstants(0, sizeof(f.workPrefix), &f.workPrefix, smvk::ShaderStage::Compute);
@@ -9726,10 +9728,12 @@ void RecordGpuSceneCascadeBuild(smvk::CommandBuffer& cmd,
     cmd.BindComputePipeline(f.workScanPrograms[1]);
     cmd.PushConstants(0, sizeof(f.workGroups), &f.workGroups, smvk::ShaderStage::Compute);
     cmd.Dispatch(1, 1, 1);
-    GpuSceneComputeDependency(cmd);
-    cmd.BindComputePipeline(f.workScanPrograms[2]);
-    cmd.PushConstants(0, sizeof(f.workAdd), &f.workAdd, smvk::ShaderStage::Compute);
-    cmd.Dispatch((f.candidates + 255u) / 256u, 1, 1);
+    if (!tour::gpu_scene::GpuSceneFusedWorkAdd()) {
+        GpuSceneComputeDependency(cmd);
+        cmd.BindComputePipeline(f.workScanPrograms[2]);
+        cmd.PushConstants(0, sizeof(f.workAdd), &f.workAdd, smvk::ShaderStage::Compute);
+        cmd.Dispatch((f.candidates + 255u) / 256u, 1, 1);
+    }
     GpuSceneComputeDependency(cmd);
     cmd.BindComputePipeline(f.workPrograms[2]);
     cmd.PushConstants(0, sizeof(f.workScatter), &f.workScatter, smvk::ShaderStage::Compute);
@@ -9791,10 +9795,12 @@ void RecordGpuSceneCascadeBuildFused(smvk::CommandBuffer& cmd,
     cmd.BindComputePipeline(f.workScanPrograms[1]);
     cmd.PushConstants(0, sizeof(f.workGroups), &f.workGroups, smvk::ShaderStage::Compute);
     cmd.Dispatch(1, 1, 1);
-    cmd.EmitGlobalMemoryBarrier();
-    cmd.BindComputePipeline(f.workScanPrograms[2]);
-    cmd.PushConstants(0, sizeof(f.workAdd), &f.workAdd, smvk::ShaderStage::Compute);
-    cmd.Dispatch((f.instanceCount + 255u) / 256u, 1, 1);
+    if (!tour::gpu_scene::GpuSceneFusedWorkAdd()) {
+        cmd.EmitGlobalMemoryBarrier();
+        cmd.BindComputePipeline(f.workScanPrograms[2]);
+        cmd.PushConstants(0, sizeof(f.workAdd), &f.workAdd, smvk::ShaderStage::Compute);
+        cmd.Dispatch((f.instanceCount + 255u) / 256u, 1, 1);
+    }
     cmd.EmitGlobalMemoryBarrier();
     cmd.BindComputePipeline(f.workPrograms[2]);
     cmd.PushConstants(0, sizeof(f.workScatter), &f.workScatter, smvk::ShaderStage::Compute);
@@ -16048,7 +16054,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     m_gpuSceneWorkScanPrograms[1].shaderCount == 1 &&
                     m_gpuSceneWorkScanPrograms[2].shaderCount == 1 &&
                     m_gpuSceneValidator.PrepareParallelWorkPrefix(
-                        *m_context, fb.frameIndex, workBlock, workGroups, workAdd);
+                        *m_context, fb.frameIndex, workBlock, workGroups, workAdd, workScatter);
                 const bool workReady = workPrepared && (!gpuSceneRasterMode || parallelScanReady);
                 // Streaming-demand feedback: the work selector emits one
                 // DemandEntry per candidate; read it back in UpdateReadbacks

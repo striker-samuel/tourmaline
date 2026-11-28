@@ -6,10 +6,12 @@
 #define GS_MAX_CANDIDATES 1048576u
 #define GS_MAX_ROWS 4194304u
 #define GS_MAX_WORK 1048576u
+#define GS_MAX_GROUPS 4096u
 #define GS_INVALID 0xffffffffu
 struct WorkChoice { uint4 identity; uint4 range; };
 struct Choices { WorkChoice rows[GS_MAX_CANDIDATES]; };
 struct Offsets { uint values[GS_MAX_CANDIDATES + 1u]; };
+struct Groups { uint values[GS_MAX_GROUPS]; };
 struct Submeshes { GpuSceneSubmeshRow rows[GS_MAX_ROWS]; };
 struct WorkRow { uint4 identity; uint4 detail; };
 // identity: instance slot, instance generation, registered geometry, material.
@@ -20,10 +22,12 @@ struct WorkRow { uint4 identity; uint4 detail; };
 struct WorkOutput { WorkRow rows[GS_MAX_WORK]; };
 struct Push {
     GPU_PTR_READ(Choices) choices;
-    GPU_PTR_READ(Offsets) offsets;
+    GPU_PTR_READ(Offsets) offsets;   // LOCAL offsets (block scan), not global
     GPU_PTR_READ(Submeshes) submeshes;
     GPU_PTR_WRITE(WorkOutput) output;
-    uint4 limits; // candidateCount, submeshSlots, workCapacity, reserved
+    uint4 limits; // candidateCount, submeshSlots, workCapacity, fused-add flag
+    GPU_PTR_READ(Groups) bases;      // exclusive group base (fused prefix-add)
+    uint2 _pad;                      // match the C++ 16-byte-aligned struct (64B)
 };
 GPU_PUSH(Push, pcW);
 [numthreads(64,1,1)]
@@ -36,7 +40,15 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     const uint count = choice.range.x;
     const uint slots = min(pcW.limits.y, GS_MAX_ROWS);
     if (first >= slots || count > slots - first || count > 16u) return;
+    // Fused prefix-add (opt-in, limits.w): global offset = local offset +
+    // exclusive group base. When off, the prefix-add kernel already added the
+    // base to the materialized offsets, so the base is skipped. A branch (not
+    // a ternary) so the fused-visibility path (serial prefix, no bases buffer)
+    // never dereferences the null bases pointer.
+    const uint group = i / 256u;
     uint outputSlot = pcW.offsets.Get().values[i];
+    if (pcW.limits.w != 0u)
+        outputSlot += pcW.bases.Get().values[group];
     for (uint j=0u; j<count; ++j) {
         const uint subSlot = first + j;
         const GpuSceneSubmeshRow sub = pcW.submeshes.Get().rows[subSlot];
