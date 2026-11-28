@@ -981,6 +981,8 @@ class CandidateValidator {
         MeshletPsoCountPush psoCount{};
         PsoPrefixScanPush psoScan{}; // the unchanged #301 kernel
         MeshletPsoScatterPush psoScatter{};
+        MeshletPsoAppendPush psoAppend{}; // candidate E: replaces count/scan/scatter
+        MeshletPsoClearPush psoClear{};   // candidate E: zeroes the class counts
         // Consumer state.
         smvk::BufferHandle commands{};    // 20B VkDrawIndexedIndirectCommand rows
         smvk::BufferHandle classCounts{}; // 4 exact GPU counts + 4 overflow words
@@ -1179,6 +1181,20 @@ class CandidateValidator {
         plan.psoScatter.commandCapacity = commandCapacity;
         std::copy_n(binOffsets, 4, plan.psoScatter.binOffsets);
         std::copy_n(binCapacities, 4, plan.psoScatter.binCapacities);
+        // Candidate E: the atomic-append replacement (candidates in, compact
+        // commands + running per-class counts out) and its counter clear.
+        plan.psoAppend = {};
+        plan.psoAppend.candidates = candidates;
+        plan.psoAppend.meshletOffsets = offsets;
+        plan.psoAppend.classCounts = classCounts;
+        plan.psoAppend.commands = commands;
+        plan.psoAppend.workCapacity = extent;
+        plan.psoAppend.candidateCapacity = candidateCapacity;
+        plan.psoAppend.commandCapacity = commandCapacity;
+        std::copy_n(binOffsets, 4, plan.psoAppend.binOffsets);
+        std::copy_n(binCapacities, 4, plan.psoAppend.binCapacities);
+        plan.psoClear = {};
+        plan.psoClear.classCounts = classCounts;
         plan.commands = f.meshletCommands;
         plan.classCounts = f.meshletClassCounts;
         plan.candidateCapacity = candidateCapacity;

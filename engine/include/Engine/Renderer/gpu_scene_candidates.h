@@ -54,6 +54,19 @@ inline bool GpuSceneFusedWorkAdd() {
     return fused;
 }
 
+// Opt-in wave-aggregated atomic append (candidate E): the meshlet compact
+// PSO count -> prefix-scan -> scatter chain collapses to a single
+// atomic-append dispatch (plus a counter clear). Default OFF (the atomics-
+// free prefix runs) until parity + performance are established. Requires the
+// append + clear kernels to be present; otherwise the prefix path is retained.
+inline bool GpuSceneAtomicAppend() {
+    static const bool enabled = [] {
+        const char* e = std::getenv("TOURMALINE_GPU_SCENE_ATOMIC_APPEND");
+        return e && e[0] == '1' && e[1] == '\0';
+    }();
+    return enabled;
+}
+
 // GPU binary-searches ranges[].members.z (candidateBase), then resolves
 // leaves -> members -> instances using *generational* row references.
 // GPU-compatible HLSL mirror: gpu_scene_instance_cull.cs.hlsl.

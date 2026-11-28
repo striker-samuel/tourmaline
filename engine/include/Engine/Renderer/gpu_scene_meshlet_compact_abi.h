@@ -29,7 +29,8 @@ struct alignas(16) CompactMeshletCandidate {
 [[nodiscard]] inline uint32_t CompactMeshletSurvivorClass(
     const CompactMeshletCandidate& candidate) noexcept {
     return candidate.indexCount != 0u && candidate.rasterClass < 4u
-        ? candidate.rasterClass : std::numeric_limits<uint32_t>::max();
+               ? candidate.rasterClass
+               : std::numeric_limits<uint32_t>::max();
 }
 struct MeshletCandidateCountPush {
     uint64_t work = 0, workOffsets = 0, meshes = 0;
@@ -60,6 +61,23 @@ struct MeshletPsoScatterPush {
     alignas(16) uint32_t binOffsets[4]{};
     alignas(16) uint32_t binCapacities[4]{};
 };
+// Candidate E: the wave-aggregated atomic-append single-pass replacement for
+// the count -> scan -> scatter prefix. The classCounts `counts` words are
+// zeroed by a preceding clear dispatch, then accumulate via InterlockedAdd;
+// their final value is the per-class draw count the device reads for
+// vkCmdDrawIndexedIndirectCount. No block totals / block bases are needed.
+struct MeshletPsoAppendPush {
+    uint64_t candidates = 0, meshletOffsets = 0;
+    uint64_t classCounts = 0, commands = 0;
+    uint32_t workCapacity = 0, candidateCapacity = 0;
+    uint32_t commandCapacity = 0, reserved = 0;
+    alignas(16) uint32_t binOffsets[4]{};
+    alignas(16) uint32_t binCapacities[4]{};
+};
+// The clear helper's only input is the classCounts buffer (8 words).
+struct MeshletPsoClearPush {
+    uint64_t classCounts = 0;
+};
 static_assert(sizeof(CompactMeshletCandidate) == 32);
 static_assert(offsetof(CompactMeshletCandidate, originalWorkSlot) == 12);
 static_assert(offsetof(CompactMeshletCandidate, rasterClass) == 16);
@@ -70,6 +88,10 @@ static_assert(sizeof(MeshletPsoCountPush) == 40);
 static_assert(sizeof(MeshletPsoScatterPush) == 96);
 static_assert(offsetof(MeshletPsoScatterPush, binOffsets) == 64);
 static_assert(offsetof(MeshletPsoScatterPush, binCapacities) == 80);
+static_assert(sizeof(MeshletPsoAppendPush) == 80);
+static_assert(offsetof(MeshletPsoAppendPush, binOffsets) == 48);
+static_assert(offsetof(MeshletPsoAppendPush, binCapacities) == 64);
+static_assert(sizeof(MeshletPsoClearPush) == 8);
 // C++ mirror of the candidate scatter's View buffer input (the HLSL
 // DoubleFloat3 origin + six origin-relative frustum planes, 128 bytes).
 // The planes come from LegacyRelativeFrustum: w already folds the origin,
