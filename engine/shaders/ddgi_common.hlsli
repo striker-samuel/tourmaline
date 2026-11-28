@@ -30,11 +30,18 @@ struct RayMaterial {
 };
 struct RayMaterialBuffer { RayMaterial items[1]; };
 // Shared static vertex positions (R32G32B32, 12 bytes/vertex) and indices
-// (uint32, 4 bytes/index) for the hardware-RT hit-normal fetch. These are the
-// same monoblocks the BLAS geometry references, so firstIndex/baseVertex map
-// a committed triangle straight to its three vertices.
-struct GpuPositions { float3 values[1]; };
+// (uint32, 4 bytes/index) for the hardware-RT hit-normal fetch. Positions are
+// read as raw uint words (3 per vertex) because a float3 member would be
+// std430-aligned to 16 bytes and misread the 12-byte-packed position heap.
+struct GpuPositions { uint word[1]; };
 struct GpuIndices { uint values[1]; };
+// Decode one R32G32B32 vertex position from the raw uint-word heap.
+float3 DdgiPosition(GPU_PTR_READ(GpuPositions) positions, uint vertex) {
+    const uint base = vertex * 3u;
+    return float3(asfloat(positions.Get().word[base + 0u]),
+                  asfloat(positions.Get().word[base + 1u]),
+                  asfloat(positions.Get().word[base + 2u]));
+}
 // One probe volume's lookup descriptor (mirror of smvk::ddgi::VolumeDesc,
 // 64 bytes). Carries both history-slot BDAs; the lit shader picks the
 // published slot via DdgiParams::slot.

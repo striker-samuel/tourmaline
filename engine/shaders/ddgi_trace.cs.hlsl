@@ -91,9 +91,9 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
             const uint i0 = sp.indices.Get().values[mat.firstIndex + primIndex * 3u + 0u];
             const uint i1 = sp.indices.Get().values[mat.firstIndex + primIndex * 3u + 1u];
             const uint i2 = sp.indices.Get().values[mat.firstIndex + primIndex * 3u + 2u];
-            const float3 p0 = sp.positions.Get().values[mat.baseVertex + i0];
-            const float3 p1 = sp.positions.Get().values[mat.baseVertex + i1];
-            const float3 p2 = sp.positions.Get().values[mat.baseVertex + i2];
+            const float3 p0 = DdgiPosition(sp.positions, mat.baseVertex + i0);
+            const float3 p1 = DdgiPosition(sp.positions, mat.baseVertex + i1);
+            const float3 p2 = DdgiPosition(sp.positions, mat.baseVertex + i2);
             float3 normal = cross(p1 - p0, p2 - p0);
             const float normalLen2 = dot(normal, normal);
             normal = normalLen2 > 1e-8f ? normal * rsqrt(normalLen2) : -direction;
