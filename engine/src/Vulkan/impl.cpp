@@ -15888,6 +15888,23 @@ void smvk::CommandBuffer::EmitGlobalMemoryBarrier() {
     dep.pMemoryBarriers = &mb;
     vkCmdPipelineBarrier2(cmd, &dep);
 }
+void smvk::CommandBuffer::EmitComputeMemoryBarrier(bool consumesIndirect) {
+    VkCommandBuffer cmd = reinterpret_cast<VkCommandBuffer>(cmdOpaque_);
+    VkMemoryBarrier2 mb{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
+    mb.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    mb.srcAccessMask = VK_ACCESS_2_SHADER_WRITE_BIT;
+    mb.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    mb.dstAccessMask = VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
+    if (consumesIndirect) {
+        // vkCmdDispatchIndirect reads arguments in DRAW_INDIRECT, not COMPUTE.
+        mb.dstStageMask |= VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT;
+        mb.dstAccessMask |= VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT;
+    }
+    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+    dep.memoryBarrierCount = 1;
+    dep.pMemoryBarriers = &mb;
+    vkCmdPipelineBarrier2(cmd, &dep);
+}
 void smvk::CommandBuffer::DrawIndexedIndirect(BufferHandle buffer,
                                               uint64_t offset,
                                               uint32_t drawCount,
