@@ -41,7 +41,7 @@ namespace engine {
 // so the authored scene wins. Nullopt = unset = scene seed wins.
 enum class OnOffPin { Off, On };
 enum class AaPin { Off, Msaa2x, Smaa1x, SmaaT2x, Msaa2xCustom };
-enum class AoPin { None, Ssao, Sao };
+enum class AoPin { None, Ssao, Sao, Cortao };
 
 struct RunConfig {
     // Optional repeatable gameplay seed, from TOURMALINE_RNG_SEED.

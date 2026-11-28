@@ -982,6 +982,9 @@ void WorldRenderer::ApplyHeadlessPostfxOverrides() {
         case AoPin::Sao:
             m_aoMode = AoMode::Sao;
             break;
+        case AoPin::Cortao:
+            m_aoMode = AoMode::Cortao;
+            break;
         }
     }
     // Deterministic A/B helper: manual exposure removes the eye
@@ -13878,6 +13881,13 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         m_viewportResources.motionBlur.Ensure(
             *m_context, *m_rendergraph, renderExtent, MakeMotionBlurDesc());
         m_viewportResources.ssgi.Ensure(*m_context, *m_rendergraph, renderExtent, MakeSsgiDesc());
+        {
+            // CORTAO (default AO): prepass/main/filter compute targets +
+            // the composed HDR. Ensure'ed here (not during pass recording)
+            // so resize teardown runs in the resource phase.
+            smvk::cortao::CortaoDesc cortaoDesc{};
+            m_viewportResources.cortao.Ensure(*m_context, *m_rendergraph, renderExtent, cortaoDesc);
+        }
         smvk::BloomDesc frameBloomDesc = MakeBloomDesc();
         frameBloomDesc.useFft = m_bloomUseFft;
         m_viewportResources.bloom.Ensure(*m_context, *m_rendergraph, renderExtent, frameBloomDesc);
@@ -20673,6 +20683,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // chain avoids unnecessary processing cost.
     // ---------------------------------------------------------------------
     bool ssgiAoEmitted = false;
+    bool cortaoEmitted = false;
     uint64_t ssgiHzbAddr = 0;
     uint32_t ssgiHzbMips = 0;
     smvk::LogicalBufferHandle ssgiHzbLogical{};
@@ -20690,6 +20701,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                  !m_viewportResources.renderDepth.logicalView.empty() &&
                                  m_viewportResources.renderDepth.bindlessIndex != UINT32_MAX;
         const bool aoWanted = m_passes.ssao && m_aoMode != AoMode::None &&
+                              m_aoMode != AoMode::Cortao && // CORTAO has its own chain (no HZB)
                               m_ssaoIntensity > 0.0f
                               // FlatDebugViewActive: the AO chain runs under the Ssgi*
                               // views too (Main's lit exports are valid there + the
@@ -20778,7 +20790,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // the diffuse-baseline third output when both run.
         ssgiDiffuseChainOn =
             ssgiDiffuseWantsHzb && ssgiHzbBuilt && ssgiHzbMips != 0 && fc.ssrGbufferWanted;
-        if (aoWanted && ssgiHzbBuilt && ssgiHzbMips != 0) {
+        if (aoWanted && ssgiHzbBuilt && ssgiHzbMips != 0 && m_aoMode != AoMode::Cortao) {
             smvk::SsgiDesc ssgiDesc = MakeSsgiDesc();
             ssgiDesc.radius = m_ssaoRadius;
             ssgiDesc.bias = m_ssaoBias;
@@ -20834,6 +20846,42 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     : smvk::LogicalImageViewHandle{});
             ssgiAoEmitted = true;
         }
+        // CORTAO (Circular Occluder RT-AO): prepass + main + filter compute
+        // chain -> full-res R32 occlusion, then a simple full-res compose
+        // (hdr - aoTerm*(1-aoEff)) that mirrors the SSGI reconstruction.
+        const bool cortaoWanted = m_passes.ssao && m_aoMode == AoMode::Cortao &&
+                                  m_ssaoIntensity > 0.0f && !FlatDebugViewActive() &&
+                                  m_viewportResources.cortao.Valid();
+        if (cortaoWanted) {
+            const bool gbufferOn = fc.ssrGbufferWanted && m_viewportResources.ssr.gbuffer.Valid();
+            CORTAO::CORTAOConfigurationParameters cfg{};
+            cfg.width = renderExtent.width;
+            cfg.height = renderExtent.height;
+            cfg.mipCount = smvk::cortao::kMipCount;
+            cfg.randomSeed = (uint32_t)(m_frameCounter * 747796405u + 2891336453u);
+            cfg.flipY = true; // Vulkan Y-flip (the proj below is pre-flip)
+            cfg.projectionMatrix = m_camera.getProjMatrix();
+            cfg.inverseProjectionMatrix = glm::inverse(cfg.projectionMatrix);
+            // Reversed-Z: pass near/far swapped (CORTAO expects near > far).
+            cfg.nearPlane = kMainViewFarPlane;
+            cfg.farPlane = default_near_clip;
+            m_viewportResources.cortao.AddAoPasses(
+                *m_rendergraph,
+                cfg,
+                m_viewportResources.renderDepth.logicalView,
+                m_viewportResources.renderDepth.bindlessIndex,
+                gbufferOn ? m_viewportResources.ssr.gbuffer.logical
+                          : smvk::LogicalImageViewHandle{},
+                gbufferOn ? m_viewportResources.ssr.gbuffer.bindlessIndex : UINT32_MAX,
+                frameUniformsAddress);
+            m_viewportResources.cortao.AddComposePass(*m_rendergraph,
+                                                      m_viewportResources.hdr.logicalView,
+                                                      m_viewportResources.hdr.bindlessIndex,
+                                                      m_viewportResources.ssgi.aoTerm.logical,
+                                                      m_viewportResources.ssgi.aoTerm.bindlessIndex,
+                                                      m_ssaoIntensity);
+            cortaoEmitted = true;
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -20861,9 +20909,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // SSR (below), MotionBlur and DOF may further update this target.
     // No additional copy is performed when these effects are disabled.
     smvk::LogicalImageViewHandle sceneHdrView =
-        ssgiAoEmitted ? m_viewportResources.ssgi.OutputView() : m_viewportResources.hdr.logicalView;
-    uint32_t sceneHdrBindless = ssgiAoEmitted ? m_viewportResources.ssgi.OutputBindless()
-                                              : m_viewportResources.hdr.bindlessIndex;
+        ssgiAoEmitted   ? m_viewportResources.ssgi.OutputView()
+        : cortaoEmitted ? m_viewportResources.cortao.OutputView()
+                        : m_viewportResources.hdr.logicalView;
+    uint32_t sceneHdrBindless = ssgiAoEmitted   ? m_viewportResources.ssgi.OutputBindless()
+                                : cortaoEmitted ? m_viewportResources.cortao.OutputBindless()
+                                                : m_viewportResources.hdr.bindlessIndex;
     // The env-specular export's chain twin (the SSR replacement-composite
     // contract): the compose-scaled export when the AO compose ran (the
     // export then sits at the exact aoEff depth the base's env-spec

@@ -260,8 +260,11 @@ RunConfig RunConfig::Parse() {
             c.ao = AoPin::Ssao;
         else if (StrCaseCmp(ao.c_str(), "sao") == 0)
             c.ao = AoPin::Sao;
+        else if (StrCaseCmp(ao.c_str(), "cortao") == 0)
+            c.ao = AoPin::Cortao;
         else
-            std::fprintf(stderr, "[RunConfig] bad TOURMALINE_AO (want off|ssao|sao): %s\n", v);
+            std::fprintf(
+                stderr, "[RunConfig] bad TOURMALINE_AO (want off|ssao|sao|cortao): %s\n", v);
     }
     if ((v = Get("TOURMALINE_AUTO_EXPOSURE")) != nullptr)
         c.autoExposure = std::atoi(v) != 0;
@@ -710,6 +713,8 @@ void RunConfig::Log() const {
             return "ssao";
         case AoPin::Sao:
             return "sao";
+        case AoPin::Cortao:
+            return "cortao";
         }
         return "?";
     };

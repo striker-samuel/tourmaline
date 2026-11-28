@@ -2454,6 +2454,8 @@ constexpr VkSamplerAddressMode toVkSamplerAddressMode(smvk::AddressMode a) {
         return VK_SAMPLER_ADDRESS_MODE_MIRRORED_REPEAT;
     case smvk::AddressMode::ClampToEdge:
         return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
+    case smvk::AddressMode::ClampToBorder:
+        return VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_BORDER;
     default:
         return VK_SAMPLER_ADDRESS_MODE_REPEAT;
     }
@@ -2471,7 +2473,7 @@ void static CreateSampler(const smvk::SamplerCreateInfo& samplerCreateInfo, VkSa
     samplerInfo.mipLodBias = samplerCreateInfo.mipLodBias;
     samplerInfo.minLod = samplerCreateInfo.minLod;
     samplerInfo.maxLod = samplerCreateInfo.maxLod;
-    samplerInfo.borderColor = VK_BORDER_COLOR_INT_OPAQUE_BLACK;
+    samplerInfo.borderColor = VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
     samplerInfo.unnormalizedCoordinates = VK_FALSE;
     samplerInfo.compareEnable = samplerCreateInfo.compareEnable ? VK_TRUE : VK_FALSE;
     samplerInfo.compareOp = toVkCompareOp(samplerCreateInfo.compareOp);

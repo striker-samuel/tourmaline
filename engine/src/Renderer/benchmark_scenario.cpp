@@ -6,15 +6,15 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
-#include <chrono>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
-#include <thread>
 #include <system_error>
+#include <thread>
 #ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
@@ -69,8 +69,7 @@ bool ValidSourceArgs(const std::vector<std::string>& args) {
     for (size_t i = 0; i < args.size(); i += 2) {
         const auto& flag = args[i];
         const auto& value = args[i + 1];
-        if (value.empty() || value == "." || value == ".." ||
-            value.rfind("--", 0) == 0)
+        if (value.empty() || value == "." || value == ".." || value.rfind("--", 0) == 0)
             return false;
         if (flag == "--project")
             ++projects;
@@ -115,7 +114,8 @@ bool Save(const Scenario& scenario, std::string& message) {
         return false;
     }
     if (!ValidSourceArgs(scenario.sourceArgs)) {
-        message = "Invalid source arguments: expected cooked --pak/--project and optional scene selectors.";
+        message = "Invalid source arguments: expected cooked --pak/--project and optional scene "
+                  "selectors.";
         return false;
     }
     const fs::path catalog = FindCatalog();
@@ -255,7 +255,8 @@ void WorldRenderer::ExportBenchmarkScenario() {
     }
     s.environment["TOURMALINE_AO"] = m_aoMode == AoMode::None   ? "off"
                                      : m_aoMode == AoMode::Ssao ? "ssao"
-                                                                : "sao";
+                                     : m_aoMode == AoMode::Sao  ? "sao"
+                                                                : "cortao";
     switch (m_textureFiltering) {
     case TextureFiltering::Trilinear:
         s.environment["TOURMALINE_TEXTURE_FILTER"] = "trilinear";

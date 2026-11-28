@@ -67,6 +67,7 @@
 #include <Engine/Renderer/texture_streamer.h>
 #include <Engine/Rendergraph/bloom.h>
 #include <Engine/Rendergraph/cascadedshadowmap.h>
+#include <Engine/Rendergraph/cortao.h>
 #include <Engine/Rendergraph/deferredshadow.h>
 #include <Engine/Rendergraph/depth.h>
 #include <Engine/Rendergraph/dlss.h>
@@ -1712,6 +1713,8 @@ struct ViewportResources {
     smvk::ExposureMeter exposure;   // histogram meter + compute program (auto-exposure)
     smvk::Ssgi
         ssgi; // SSGI post chain: shared MAX-HZB + AO raw/blur/compose + Main's aoTerm MRT targets
+    smvk::cortao::Cortao cortao; // CORTAO (Circular Occluder RT-AO): prepass/main/filter compute
+                                 // chain + R8 occlusion
     smvk::ScreenSpaceDiffuseGi
         ssgiDiffuse; // diffuse SSGI chain: half-res cosine trace + blur/temporal + the
                      // ambient-replacement compose (Engine/Rendergraph/ssgi_diffuse.h)
@@ -5531,9 +5534,9 @@ class WorldRenderer : public IRenderer {
     // deprecated and removed). Runs AFTER Main (Main exports the
     // AO-sensitive lighting through an aoTerm MRT target, the compose
     // subtracts aoTerm*(1-aoEff) from the HDR — no temporal lag, Main
-    // never samples AO). O cycles No AO -> SSAO -> SAO. ----
-    enum class AoMode : int { None = 0, Ssao = 1, Sao = 2 };
-    AoMode m_aoMode = AoMode::Sao;
+    // never samples AO). O cycles No AO -> SSAO -> SAO -> CORTAO. ----
+    enum class AoMode : int { None = 0, Ssao = 1, Sao = 2, Cortao = 3 };
+    AoMode m_aoMode = AoMode::Cortao;
     float m_ssaoRadius = 0.5f;        // view-space sample radius (m, shared SSAO/SAO)
     float m_ssaoBias = 0.025f;        // self-occlusion / horizon bias
     float m_ssaoIntensity = 1.0f;     // compose-side aoEff lerp (was default_lit's hot.aoIntensity)

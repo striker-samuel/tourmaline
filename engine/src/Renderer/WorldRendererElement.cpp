@@ -258,7 +258,7 @@ void WorldRendererElement::HandleShortcuts() {
         // AoMode is a nested WorldRenderer enum — qualify (unlike the
         // namespace-scope AaMode/ViewMode/DsDebugViz).
         m_renderer.m_aoMode = static_cast<WorldRenderer::AoMode>(
-            (static_cast<int>(m_renderer.m_aoMode) + 1) % 3); // None -> Ssao -> Sao
+            (static_cast<int>(m_renderer.m_aoMode) + 1) % 4); // None -> Ssao -> Sao -> Cortao
     }
     if (m_input.isKeyPressed(keybind::BLOOM_TOGGLE)) {
         m_renderer.m_bloomEnabled = !m_renderer.m_bloomEnabled;
