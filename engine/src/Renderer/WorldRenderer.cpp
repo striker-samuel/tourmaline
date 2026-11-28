@@ -15682,7 +15682,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         if (s_kdRasterMode++ < 6)
             std::fprintf(stderr,
                          "[KD] raster mode: env=%d validate=%d eligible=%d(%u/%u) "
-                         "program=%d shaderLod=%d wire=%d view=%d gi=%d\n",
+                         "program=%zu shaderLod=%d wire=%d view=%d gi=%d\n",
                          m_gpuSceneRasterEnabled ? 1 : 0,
                          s_gpuSceneValidate ? 1 : 0,
                          m_gpuSceneRasterEligible ? 1 : 0,
@@ -18861,7 +18861,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     if (m_frameCounter == 30u)
         std::fprintf(stderr,
                      "[TaskMeshDiag] frame30 taskTemporalActive=%d temporalReady=%d "
-                     "depthProgram=%d\n",
+                     "depthProgram=%zu\n",
                      taskTemporalActive ? 1 : 0,
                      m_gpuSceneTaskTemporalReady ? 1 : 0,
                      m_gpuSceneTaskDepthProgram.shaderCount);
