@@ -30,7 +30,7 @@
 #include <Engine/Renderer/renderview.h>
 #include <Engine/Rendergraph/terrain_meta.h>
 #include <Engine/Rendergraph/terrain_occlusion.h>
-#include <Engine/Scene/m_hierarchy.h>
+#include <Engine/Scene/scene.h>
 #include <cstdio>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtx/matrix_decompose.hpp>
@@ -1421,12 +1421,13 @@ void World::MergePage(WorldPage& cluster, uint32_t clusterOrdinal, bool isIdenti
                 nodeMap[s] = static_cast<NodeId>(dst);
                 m_hierarchy.localTransform[size_t(dst)] = cs.localTransform[s];
                 m_hierarchy.globalTransform[size_t(dst)] = cs.globalTransform[s];
-                m_hierarchy.localTransformDouble[size_t(dst)] = s < cs.localTransformDouble.size()
-                                                              ? cs.localTransformDouble[s]
-                                                              : glm::dmat4(cs.localTransform[s]);
+                m_hierarchy.localTransformDouble[size_t(dst)] =
+                    s < cs.localTransformDouble.size() ? cs.localTransformDouble[s]
+                                                       : glm::dmat4(cs.localTransform[s]);
                 m_hierarchy.globalTransformDouble[size_t(dst)] =
                     tour::transformhierarchy::GlobalTransformDouble(cs, s);
-                m_hierarchy.localTransformFloatShadow[size_t(dst)] = m_hierarchy.localTransform[size_t(dst)];
+                m_hierarchy.localTransformFloatShadow[size_t(dst)] =
+                    m_hierarchy.localTransform[size_t(dst)];
                 // Flag tables: per-slot guarded copies (missing table ==
                 // defaults; addNode already pushed zeros). staticNode is
                 // rebuilt wholesale by RebuildStaticCache below.
@@ -1520,12 +1521,14 @@ void World::MergePage(WorldPage& cluster, uint32_t clusterOrdinal, bool isIdenti
         // (world_entity_tests: resolve/schemafold name-at-row-node).
         if (!isIdentityPrimary) {
             const uint32_t clusterNameOffset = static_cast<uint32_t>(m_hierarchy.nodeNames.size());
-            m_hierarchy.nodeNames.insert(m_hierarchy.nodeNames.end(), cs.nodeNames.begin(), cs.nodeNames.end());
+            m_hierarchy.nodeNames.insert(
+                m_hierarchy.nodeNames.end(), cs.nodeNames.begin(), cs.nodeNames.end());
             for (uint32_t s = 0; s < clusterSlotCount; ++s) {
                 if (nodeMap[s] == UINT32_MAX || s >= cs.metadata.size())
                     continue;
                 if (cs.metadata[s].name != 0xFFFFFFFFu)
-                    SetNodeNameIndex(m_hierarchy, nodeMap[s], cs.metadata[s].name + clusterNameOffset);
+                    SetNodeNameIndex(
+                        m_hierarchy, nodeMap[s], cs.metadata[s].name + clusterNameOffset);
                 SetNodeUuidRaw(m_hierarchy, nodeMap[s], cs.metadata[s].uuid);
                 m_hierarchy.metadata[nodeMap[s]].lightLayerMask = cs.metadata[s].lightLayerMask;
             }
@@ -1688,7 +1691,8 @@ void World::MergePage(WorldPage& cluster, uint32_t clusterOrdinal, bool isIdenti
                 tour::transformhierarchy::SetPhysicsBody(m_hierarchy, nodeMap[row.node], row.body);
         for (const tour::transformhierarchy::TriggerVolumeRow& row : cs.tables.triggerVolumes)
             if (row.node < nodeMap.size() && nodeMap[row.node] != UINT32_MAX)
-                tour::transformhierarchy::SetTriggerVolume(m_hierarchy, nodeMap[row.node], row.trigger);
+                tour::transformhierarchy::SetTriggerVolume(
+                    m_hierarchy, nodeMap[row.node], row.trigger);
         // Project-defined schema associations (node_schema.h): the
         // cooked value bytes ride VERBATIM (no decode at fold time
         // — the generated project::types own the decode), nodes
@@ -2059,7 +2063,8 @@ bool World::SetNodeRotation(NodeHandle node, const glm::quat& rotation) {
         return false;
     glm::vec3 position{}, scale{};
     glm::quat previous{};
-    if (!DecomposeNodeTrs(m_hierarchy.localTransform[NodeHandleSlot(node)], position, previous, scale))
+    if (!DecomposeNodeTrs(
+            m_hierarchy.localTransform[NodeHandleSlot(node)], position, previous, scale))
         return false;
     const glm::mat4 frame = glm::translate(glm::mat4(1.0f), position) *
                             glm::mat4_cast(glm::normalize(rotation)) *
@@ -2106,7 +2111,8 @@ NodeHandle World::AddNode(const glm::mat4& localFrame, NodeHandle parent) {
         return kNodeInvalidHandle;
     }
     highWater = generation;
-    m_hierarchy.nodeGeneration[size_t(node)] = tour::transformhierarchy::kNodeSlotAliveBit | generation;
+    m_hierarchy.nodeGeneration[size_t(node)] =
+        tour::transformhierarchy::kNodeSlotAliveBit | generation;
     const NodeHandle handle = MakeNodeHandle(m_hierarchy, NodeId(node));
     gameNodes_.insert(handle);
     if (!gpuSceneGameNodeRegistration)

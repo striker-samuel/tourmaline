@@ -23,7 +23,7 @@
 #include <Engine/Rendergraph/terrain_hfield.h>
 #include <Engine/Scene/entity_handle.h> // smvk::AudioSourceHandle (typed)
 #include <Engine/Scene/region_registry.h>
-#include <Engine/Scene/m_hierarchy.h>
+#include <Engine/Scene/scene.h>
 #include <Engine/Scene/world_scene_instances.h>
 #include <Engine/Utils/bvh.h>
 
@@ -286,12 +286,14 @@ struct World {
             return owner_.SetNodeScale(handle_, scale);
         }
         bool SetPhysicsBody(const tour::transformhierarchy::ScenePhysicsBody& body) const {
-            return owner_.IsGameNode(handle_) && tour::transformhierarchy::SetPhysicsBody(
-                                                     owner_.m_hierarchy, NodeHandleSlot(handle_), body);
+            return owner_.IsGameNode(handle_) &&
+                   tour::transformhierarchy::SetPhysicsBody(
+                       owner_.m_hierarchy, NodeHandleSlot(handle_), body);
         }
         bool SetAudioRoom(const tour::transformhierarchy::SceneAudioRoom& room) const {
-            return owner_.IsGameNode(handle_) && tour::transformhierarchy::SetAudioRoom(
-                                                     owner_.m_hierarchy, NodeHandleSlot(handle_), room);
+            return owner_.IsGameNode(handle_) &&
+                   tour::transformhierarchy::SetAudioRoom(
+                       owner_.m_hierarchy, NodeHandleSlot(handle_), room);
         }
         bool SetTriggerVolume(const tour::transformhierarchy::SceneTriggerVolume& trigger) const {
             return owner_.IsGameNode(handle_) &&

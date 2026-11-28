@@ -20,7 +20,7 @@
 #include <Engine/Memory/uri_map.h>
 #include <Engine/Renderer/geometry_upload.h>
 #include <Engine/Renderer/mesh.h>
-#include <Engine/Scene/m_hierarchy.h>
+#include <Engine/Scene/scene.h>
 #include <Engine/Utils/bvh.h>
 #include <Engine/smvk.h>
 

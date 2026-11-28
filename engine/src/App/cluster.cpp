@@ -6,7 +6,7 @@
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/static_vertex_heap.h>
 #include <Engine/Renderer/vertex_pack.h>
-#include <Engine/Scene/m_hierarchy.h>
+#include <Engine/Scene/scene.h>
 
 #include <cstdio>
 

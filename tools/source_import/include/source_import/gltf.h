@@ -717,14 +717,14 @@ inline void GltfToCluster(
     // materials back to glTF material indices exactly.
     importer.setModelUriBase(inGltfModelPath.generic_string());
 
-    assert(out.scene.hierarchy.empty());
+    assert(out.m_hierarchy.hierarchy.empty());
 
     // WorldPage-scene root (index 0, parent = -1). Imported glTF scene roots
     // attach underneath it so addNode() always sees a valid parent index.
-    const int root = addNode(out.scene, -1, 0);
+    const int root = addNode(out.m_hierarchy, -1, 0);
 
-    out.scene.localTransform[root] = glm::mat4(1.0f);
-    out.scene.globalTransform[root] = glm::mat4(1.0f);
+    out.m_hierarchy.localTransform[root] = glm::mat4(1.0f);
+    out.m_hierarchy.globalTransform[root] = glm::mat4(1.0f);
 
     // The source adapter owns selected-scene root semantics.
     const auto& selectedRoots =
@@ -744,11 +744,11 @@ inline void GltfToCluster(
     // imported as static geometry.
     importer.BuildSkinData();
 
-    importer.applyPreTransform(out.scene, root);
+    importer.applyPreTransform(out.m_hierarchy, root);
 
-    RebuildStaticCache(out.scene);
-    markAsChanged(out.scene, root);
-    recalculateGlobalTransforms(out.scene);
+    RebuildStaticCache(out.m_hierarchy);
+    markAsChanged(out.m_hierarchy, root);
+    recalculateGlobalTransforms(out.m_hierarchy);
     // (No LOD world-error finalize at import time: cooked sibling errors
     // stay MESH-LOCAL (scale-free) in the artifact - the renderer applies
     // each instance's own world scale at pick time (World::SelectLodIndex).
