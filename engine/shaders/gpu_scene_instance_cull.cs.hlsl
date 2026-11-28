@@ -17,6 +17,7 @@
 #define GPU_SCENE_MAX_PASSED_RANGES   65536u
 #define GPU_SCENE_MAX_CANDIDATES      1048576u
 #define GPU_SCENE_MAX_ROW_SLOTS       4194304u
+#define GPU_SCENE_MAX_GROUPS          16384u // ceil(MAX_CANDIDATES / 64)
 
 struct GpuScenePassedRange {
     uint4 members; // x member row first, y count, z candidate prefix
@@ -45,6 +46,11 @@ struct GpuSceneInstances {
 };
 struct GpuSceneMeshes {
     GpuSceneMeshRow rows[GPU_SCENE_MAX_ROW_SLOTS];
+};
+// Fused compact-count output: per-64-candidate-group visible counts, written
+// by the cull workgroup so the separate compact-count kernel is unnecessary.
+struct GpuSceneGroupCounts {
+    uint values[GPU_SCENE_MAX_GROUPS];
 };
 // Explicit per-view data buffer instead of 128+ bytes of push constants.
 struct GpuSceneCullView {
@@ -77,6 +83,7 @@ struct GpuSceneInstanceCullPush {
     // a caster deeper than w can never shadow a visible surface.
     float4 shadowCullParams;
     GPU_PTR_READ(GpuSceneShadowHizView) shadowHiz; // null = HZB cull off
+    GPU_PTR_WRITE(GpuSceneGroupCounts) groupCounts; // null = don't emit counts
 };
 GPU_PUSH(GpuSceneInstanceCullPush, pcS);
 
@@ -230,20 +237,20 @@ bool SweptShadowOccluded(float3 center, float radius, float3 camFwd,
     return true;
 }
 
-[numthreads(64, 1, 1)]
-void mainCS(uint3 tid : SV_DispatchThreadID) {
-    const uint candidate = tid.x;
+// Computes the cull verdict for one candidate and reports whether it is a
+// visible, generation-valid instance (exactly what the retired compact-count
+// kernel counted: v.x != 0xffffffff && v.y != 0 && v.z != 0). Early returns
+// are safe here — they only set visible=false and return the sentinel; the
+// caller still reaches its workgroup reduction.
+uint4 GpuSceneComputeVerdict(uint candidate, out bool visible) {
+    visible = false;
+    uint4 value = uint4(0xFFFFFFFFu, 0u, 0u, 0u);
     if (candidate >= pcS.counts.y || candidate >= GPU_SCENE_MAX_CANDIDATES)
-        return;
-
-    // Always initialize; no previous-frame verdict can leak into this slot.
-    GpuSceneCullVerdict result;
-    result.value = uint4(0xFFFFFFFFu, 0u, 0u, 0u);
-    pcS.verdicts.Get().values[candidate] = result;
+        return value;
 
     const uint rangeCount = min(pcS.counts.x, GPU_SCENE_MAX_PASSED_RANGES);
     if (rangeCount == 0u)
-        return;
+        return value;
 
     // Upper_bound(range.members.z, candidate). Candidate prefix offsets
     // are monotonically increasing, generated and capped by the CPU.
@@ -255,40 +262,40 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
         else hi = mid;
     }
     if (lo == 0u)
-        return;
+        return value;
     const GpuScenePassedRange range =
         pcS.ranges.Get().ranges[lo - 1u];
     const uint local = candidate - range.members.z;
     if (local >= range.members.y)
-        return;
+        return value;
 
     // Validate the entire leaf-to-member relationship against this flight
     // snapshot, including its generation and current contiguous span.
     if (range.leaf.x >= min(pcS.counts2.x, GPU_SCENE_MAX_ROW_SLOTS))
-        return;
+        return value;
     const GpuSceneLeafRow leaf = pcS.leaves.Get().rows[range.leaf.x];
     if (leaf.identity.y != 1u || leaf.identity.x != range.leaf.y ||
         leaf.value.range.x != range.members.x ||
         leaf.value.range.y != range.members.y)
-        return;
+        return value;
     if (range.members.x >= min(pcS.counts.z, GPU_SCENE_MAX_ROW_SLOTS) ||
         local >= min(pcS.counts.z, GPU_SCENE_MAX_ROW_SLOTS) - range.members.x)
-        return;
+        return value;
 
     const uint memberIndex = range.members.x + local;
     const GpuSceneLeafMemberRow member =
         pcS.members.Get().rows[memberIndex];
     if (member.identity.y != 1u)
-        return;
+        return value;
     const uint instanceId = member.value.ref.x;
     const uint instanceGen = member.value.ref.y;
     if (instanceId >= min(pcS.counts.w, GPU_SCENE_MAX_ROW_SLOTS))
-        return;
+        return value;
     const GpuSceneInstanceRow instance =
         pcS.instances.Get().rows[instanceId];
     if (instance.identity.y != 1u ||
         instance.identity.x != instanceGen)
-        return;
+        return value;
 
     // Production GPU Main only: a slot is admitted if and only if this
     // flight's mask records its exact generation. A retired/recycled slot
@@ -298,14 +305,14 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
     // leaves the pointer null and must never issue an owner-mask load.
     if (pcS.counts2.w != 0u) {
         if (pcS.ownerGenerations.Get().generations[instanceId] != instanceGen)
-            return;
+            return value;
     }
 
     // Shadow views must reject non-casters before building work. Bit 1 of
     // counts2.z requests CastShadow; bit 0 retains the view-valid flag.
     if ((pcS.counts2.z & 2u) != 0u &&
         (instance.value.refs.w & (1u << 5)) == 0u)
-        return;
+        return value;
 
     // Unknown/incomplete mesh bounds: fail OPEN, not invisible.
     bool bypass = true;
@@ -347,10 +354,42 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
                                         pcS.shadowHiz.Get());
         }
     }
-    const bool visible = !shadowCulled &&
+    const bool vis = !shadowCulled &&
         (bypass || (pcS.counts2.z & 1u) == 0u ||
          GpuSceneSphereVisible(instance.value, pcS.view.Get()));
-    result.value = uint4(instanceId, instanceGen, visible ? 1u : 0u,
-                         bypass ? 1u : 0u);
-    pcS.verdicts.Get().values[candidate] = result;
+    visible = vis;
+    value = uint4(instanceId, instanceGen, vis ? 1u : 0u,
+                  bypass ? 1u : 0u);
+    return value;
+}
+
+groupshared uint gsVotes[64];
+
+[numthreads(64, 1, 1)]
+void mainCS(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID,
+            uint3 gtid : SV_GroupThreadID) {
+    const uint candidate = tid.x;
+
+    // Always initialize in-range slots; no previous-frame verdict can leak.
+    bool visible = false;
+    const uint4 value = GpuSceneComputeVerdict(candidate, visible);
+    if (candidate < pcS.counts.y && candidate < GPU_SCENE_MAX_CANDIDATES) {
+        GpuSceneCullVerdict result;
+        result.value = value;
+        pcS.verdicts.Get().values[candidate] = result;
+    }
+
+    // Fuse the compact-count stage: reduce the per-thread visible flags and
+    // publish the per-group count so the caller can skip the count kernel.
+    // The count buffer is created by the CPU alongside the verdicts, so the
+    // groupCounts pointer is always valid when this shader is dispatched.
+    gsVotes[gtid.x] = visible ? 1u : 0u;
+    GroupMemoryBarrierWithGroupSync();
+    [unroll] for (uint s = 32u; s > 0u; s >>= 1u) {
+        if (gtid.x < s)
+            gsVotes[gtid.x] += gsVotes[gtid.x + s];
+        GroupMemoryBarrierWithGroupSync();
+    }
+    if (gtid.x == 0u)
+        pcS.groupCounts.Get().values[gid.x] = gsVotes[0];
 }

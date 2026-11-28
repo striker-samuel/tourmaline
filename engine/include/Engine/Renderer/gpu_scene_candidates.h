@@ -80,15 +80,20 @@ struct InstanceCullGpuPush {
     // BDA of a GpuSceneShadowHizView (per frame, shared across cascades).
     // Nonzero enables the swept-volume HZB occlusion test on shadow casters.
     uint64_t shadowHiz = 0;
+    // BDA of the per-group visible-count buffer (GpuSceneGroupCounts). The
+    // cull workgroup publishes the fused compact-count so the caller skips
+    // the separate compact-count kernel. Created alongside the verdicts.
+    uint64_t groupCounts = 0;
 };
 static_assert(sizeof(InstanceCullGpuView) == 128);
 static_assert(offsetof(InstanceCullGpuView, inwardPlanes) == 32);
-static_assert(sizeof(InstanceCullGpuPush) == 120);
+static_assert(sizeof(InstanceCullGpuPush) == 128);
 static_assert(offsetof(InstanceCullGpuPush, counts) == 56);
 static_assert(offsetof(InstanceCullGpuPush, counts2) == 72);
 static_assert(offsetof(InstanceCullGpuPush, ownerGenerations) == 88);
 static_assert(offsetof(InstanceCullGpuPush, shadowCullParams) == 96);
 static_assert(offsetof(InstanceCullGpuPush, shadowHiz) == 112);
+static_assert(offsetof(InstanceCullGpuPush, groupCounts) == 120);
 
 // Shadow-caster HZB occlusion context (one per frame, shared across all
 // cascades). The cascade cull projects each caster's swept shadow volume
