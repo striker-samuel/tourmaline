@@ -32,9 +32,30 @@ struct TaskMeshDispatchPush {
     uint32_t workCapacity = 0, taskGroupCapacity = 0;
     uint32_t maxX = 0, maxY = 0;
 };
+// Candidate E: the wave-aggregated atomic-append replacement for the
+// count -> scan -> scatter chain. taskOffsets[workCapacity] is the running
+// counter (cleared by TaskMeshGroupClearPush, then accumulated), and its final
+// value is the DrawMeshTasksIndirect count task_dispatch reads. No block sums
+// or block bases are needed.
+struct TaskMeshGroupAppendPush {
+    uint64_t work = 0, sceneOffsets = 0, meshes = 0;
+    uint64_t aliases = 0, geometry = 0, groups = 0, taskOffsets = 0;
+    uint32_t sceneCandidateCount = 0, workCapacity = 0;
+    uint32_t taskGroupCapacity = 0, meshCount = 0;
+    uint32_t aliasCount = 0, geometryCount = 0, clusterCount = 0;
+    uint32_t reserved = 0;
+};
+// Candidate E helper: zero the append counter word.
+struct TaskMeshGroupClearPush {
+    uint64_t taskOffsets = 0;
+    uint32_t workCapacity = 0;
+    uint32_t reserved = 0;
+};
 static_assert(sizeof(TaskMeshGroupCountPush) == 72);
 static_assert(sizeof(TaskMeshGroupScatterPush) == 56);
 static_assert(sizeof(TaskMeshDispatchPush) == 32);
+static_assert(sizeof(TaskMeshGroupAppendPush) == 88);
+static_assert(sizeof(TaskMeshGroupClearPush) == 16);
 
 struct TaskMeshInputs {
     uint64_t work = 0, sceneOffsets = 0, meshes = 0, aliases = 0;
@@ -91,6 +112,8 @@ struct TaskMeshDispatchPlan {
     ParallelWorkAddPush scanAdd{};
     TaskMeshGroupScatterPush scatter{};
     TaskMeshDispatchPush indirect{};
+    TaskMeshGroupAppendPush append{}; // candidate E: replaces count/scan/scatter
+    TaskMeshGroupClearPush clear{};   // candidate E: zeroes the append counter
     TaskMeshGpuPush graphics{};
     uint32_t workCapacity = 0;
     uint32_t taskGroupCapacity = 0;
@@ -391,6 +414,24 @@ class TaskMeshRuntime {
                         in.workCapacity,
                         groupCapacity,
                         in.meshCount};
+        // Candidate E: the atomic-append replacement (work rows in, task-group
+        // records + running total out) and its counter clear. The counter IS
+        // taskOffsets[workCapacity], so task_dispatch reads the same total.
+        next.append = {in.work,
+                       in.sceneOffsets,
+                       in.meshes,
+                       in.aliases,
+                       in.geometry,
+                       groups,
+                       offsets,
+                       in.sceneCandidateCount,
+                       in.workCapacity,
+                       groupCapacity,
+                       in.meshCount,
+                       in.aliasCount,
+                       in.geometryCount,
+                       in.clusterCount};
+        next.clear = {offsets, in.workCapacity, 0u};
         // Task-dispatch X/Y grid, sized from the device's mesh-shader limits
         // (VkPhysicalDeviceMeshShaderPropertiesEXT) instead of a hardcoded
         // 1024x1024. The old fixed grid capped the total at 1,048,576 task
