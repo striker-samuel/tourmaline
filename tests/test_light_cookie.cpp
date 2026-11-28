@@ -56,7 +56,7 @@ struct Fixture {
 void BuildFixture(Fixture& f, SceneLight::Type lightType = SceneLight::Type::Spot) {
     auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
-    ::TransformHierarchy& cs = cluster->scene;
+    ::TransformHierarchy& cs = cluster->m_hierarchy;
     const int root = addNode(cs, -1, 0);
 
     // Occluder quad (two triangles) at z=-2.

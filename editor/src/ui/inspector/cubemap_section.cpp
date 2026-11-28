@@ -61,9 +61,9 @@ void EditorApp::DrawCubemapSection(uint32_t node) {
     // PINNED specular probe. Position = the node's translate (gizmo);
     // the influence radius below. Baked by the cook's --cubemap stage
     // as a 'pin' row (wins weight ties at load).
-    if (!m_world || node >= m_world->scene.hierarchy.size())
+    if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     auto it = FindCubemap(scene, node);
     if (!it)
         return;

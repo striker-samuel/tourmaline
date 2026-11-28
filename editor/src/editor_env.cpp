@@ -45,10 +45,10 @@ float StrFloat(const std::string& s, float fallback) {
 } // namespace
 
 void EditorApp::MarkEnvNode(uint32_t node) {
-    if (!m_world || node >= m_world->scene.hierarchy.size())
+    if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
         return;
-    if (!FindEnv(m_world->scene, node)) {
-        SetEnv(m_world->scene,
+    if (!FindEnv(m_world->m_hierarchy, node)) {
+        SetEnv(m_world->m_hierarchy,
                node,
                CurrentEnv()); // start from the current source // start from the current source
         Log("Node " + std::to_string(node) + " marked as Environment.");
@@ -59,7 +59,7 @@ void EditorApp::MarkEnvNode(uint32_t node) {
 void EditorApp::UnmarkEnvNode(uint32_t node) {
     if (!m_world)
         return;
-    if (RemoveEnv(m_world->scene, node) && m_envCurrent == node)
+    if (RemoveEnv(m_world->m_hierarchy, node) && m_envCurrent == node)
         m_envCurrent = UINT32_MAX; // fall back to the editor default
     ResolveSceneEnv();
 }
@@ -71,19 +71,19 @@ void EditorApp::ResolveSceneEnv() {
     // writer besides the tour/cook loaders.
     if (!m_world)
         return;
-    const tour::transformhierarchy::SceneEnv* src = &m_world->scene.defaultEnvironment;
+    const tour::transformhierarchy::SceneEnv* src = &m_world->m_hierarchy.defaultEnvironment;
     if (m_envCurrent != UINT32_MAX) {
-        auto it = FindEnv(m_world->scene, m_envCurrent);
+        auto it = FindEnv(m_world->m_hierarchy, m_envCurrent);
         if (it)
             src = &it->environment;
         else
             m_envCurrent = UINT32_MAX;
     }
-    m_world->scene.environment = *src;
+    m_world->m_hierarchy.environment = *src;
     // Preview only: never change the authored default/per-node environment.
     // A cooked scene retains its base look until gameplay opts in to a clock.
     if (m_dayNight.enabled) {
-        auto& env = m_world->scene.environment;
+        auto& env = m_world->m_hierarchy.environment;
         const auto sun = m_dayNight.physical ? daynight::SolarPosition(m_dayNight)
                                              : daynight::ArtisticPosition(m_dayNight.hour);
         env.sunAzimuth = sun.azimuth;
@@ -100,15 +100,15 @@ void EditorApp::ResolveSceneEnv() {
         env.skyColor = glm::mix(env.skyColor, glm::vec3(0.85f, 0.31f, 0.14f), twilight * 0.45f);
         env.skyIntensity = src->skyIntensity * (0.01f + 0.99f * daylight);
     }
-    m_world->scene.envAuthored = true;
+    m_world->m_hierarchy.envAuthored = true;
     // Persist the selection (default block = none): cluster resolve
     // merges it first-valid-wins like defaultCameraNode, so the pick
     // survives pak round-trips instead of living only in editor state.
-    m_world->scene.activeEnvironment = m_envCurrent;
+    m_world->m_hierarchy.activeEnvironment = m_envCurrent;
     // Render settings resolve alongside (the split look is scene-global:
     // no source selection — the default block IS the look).
-    m_world->scene.renderSettings = m_world->scene.defaultRenderSettings;
-    m_world->scene.hasRenderSettings = true;
+    m_world->m_hierarchy.renderSettings = m_world->m_hierarchy.defaultRenderSettings;
+    m_world->m_hierarchy.hasRenderSettings = true;
 }
 
 void EditorApp::DrawEnvPanel() {
@@ -136,7 +136,7 @@ void EditorApp::DrawEnvPanel() {
     if (ImGui::BeginCombo("Source##env", curLabel.c_str())) {
         if (ImGui::Selectable("Editor default", m_envCurrent == UINT32_MAX))
             m_envCurrent = UINT32_MAX;
-        for (const EnvRow& _row : m_world->scene.tables.envs) {
+        for (const EnvRow& _row : m_world->m_hierarchy.tables.envs) {
             const NodeId node = _row.node;
             const auto& env = _row.environment;
             const std::string label = "Node " + std::to_string(node);
@@ -169,7 +169,7 @@ void EditorApp::DrawEnvPanel() {
         // transform box; see EnvVolume). Created on first edit below
         // (inheriting the look's priority, so legacy zones don't jump);
         // absent = legacy zone behavior.
-        auto& scene = m_world->scene;
+        auto& scene = m_world->m_hierarchy;
         const EnvVolumeRow* vit = FindEnvVolume(scene, m_envCurrent);
         const bool hasEntry = vit != nullptr;
         EnvVolume tmp = hasEntry ? vit->volume : EnvVolume{};
@@ -988,7 +988,7 @@ void EditorApp::DrawRenderSettingsPanel() {
         ImGui::Text("No scene - open a scene to author the look.");
         return;
     }
-    SceneRenderSettings& r = m_world->scene.defaultRenderSettings;
+    SceneRenderSettings& r = m_world->m_hierarchy.defaultRenderSettings;
     // PERSISTENCE PARITY with every other authored value: the look
     // is SCENE state (render.* keys ride the tour), so edits must
     // mark the doc dirty like a transform edit does — the old panel
@@ -1132,8 +1132,8 @@ void EditorApp::DrawRenderSettingsPanel() {
     ImGui::PopID(); // render_settings_panel
     // Rows write the default block — resolve into the rendered look
     // (the renderer seeds from scene.renderSettings).
-    m_world->scene.renderSettings = r;
-    m_world->scene.hasRenderSettings = true;
+    m_world->m_hierarchy.renderSettings = r;
+    m_world->m_hierarchy.hasRenderSettings = true;
     // The finished-edit edge (see lookBefore above): one autosave
     // per settled edit, never per drag tick.
     if (std::memcmp(&lookBefore, &r, sizeof(lookBefore)) != 0)
@@ -1150,7 +1150,7 @@ void EditorApp::DrawRenderSettingsPanel() {
     // knobs hit the WYSIWYG view immediately (and the App-parity contract
     // holds — the seed and the live push are one code path).
     if (m_wysiwyg && m_wysiwygValid)
-        m_wysiwyg->PushPostfxEnv(r, m_world->scene.environment);
+        m_wysiwyg->PushPostfxEnv(r, m_world->m_hierarchy.environment);
 }
 
 void EditorApp::DrawWorldPanel() {
@@ -1178,7 +1178,7 @@ void EditorApp::DrawWorldPanel() {
     {
         std::vector<uint32_t> cams;
         if (m_world) {
-            for (const CameraRow& _row : m_world->scene.tables.cameras) {
+            for (const CameraRow& _row : m_world->m_hierarchy.tables.cameras) {
                 const NodeId n = _row.node;
                 cams.push_back(n);
             }
@@ -1186,13 +1186,13 @@ void EditorApp::DrawWorldPanel() {
         }
         // Dangling selection (camera deleted/detached) reads as none.
         if (m_defaultCameraNode != UINT32_MAX &&
-            (!m_world || m_defaultCameraNode >= m_world->scene.hierarchy.size() ||
-             !FindCamera(m_world->scene, m_defaultCameraNode)))
+            (!m_world || m_defaultCameraNode >= m_world->m_hierarchy.hierarchy.size() ||
+             !FindCamera(m_world->m_hierarchy, m_defaultCameraNode)))
             m_defaultCameraNode = UINT32_MAX;
         const std::string none = "None (generic framing)";
         std::string cur = (m_defaultCameraNode == UINT32_MAX)
                               ? none
-                              : getNodeName(m_world->scene, int(m_defaultCameraNode));
+                              : getNodeName(m_world->m_hierarchy, int(m_defaultCameraNode));
         if (cur.empty())
             cur = "Camera #" + std::to_string(m_defaultCameraNode);
         ImGui::SetNextItemWidth(-60.0f);
@@ -1203,7 +1203,7 @@ void EditorApp::DrawWorldPanel() {
             }
             for (uint32_t n : cams) {
                 const bool sel = n == m_defaultCameraNode;
-                std::string label = getNodeName(m_world->scene, int(n));
+                std::string label = getNodeName(m_world->m_hierarchy, int(n));
                 if (label.empty())
                     label = "Camera #" + std::to_string(n);
                 // Multiple camera nodes may share a display name.
@@ -1292,12 +1292,12 @@ void EditorApp::SaveEnvToDoc(smvk::tour::Doc& doc) const {
     // defaults stand in for the scene blocks.
     const tour::transformhierarchy::SceneEnv sceneDefault{};
     const tour::transformhierarchy::SceneEnv& def =
-        m_world ? m_world->scene.defaultEnvironment : sceneDefault;
+        m_world ? m_world->m_hierarchy.defaultEnvironment : sceneDefault;
     saveEnv("env.default", UINT32_MAX, def);
     // Sort env nodes for deterministic files.
     std::vector<uint32_t> nodes;
     if (m_world) {
-        for (const EnvRow& _row : m_world->scene.tables.envs) {
+        for (const EnvRow& _row : m_world->m_hierarchy.tables.envs) {
             const NodeId n = _row.node;
             nodes.push_back(n);
         }
@@ -1306,7 +1306,7 @@ void EditorApp::SaveEnvToDoc(smvk::tour::Doc& doc) const {
             const int cn = WorldToCluster(n);
             if (cn < 0)
                 continue; // unmapped node: keep the file loadable
-            saveEnv("env.n", uint32_t(cn), (*FindEnv(m_world->scene, n)).environment);
+            saveEnv("env.n", uint32_t(cn), (*FindEnv(m_world->m_hierarchy, n)).environment);
         }
     }
     // Env-volume settings (envvol.n groups, one per node carrying an
@@ -1314,7 +1314,7 @@ void EditorApp::SaveEnvToDoc(smvk::tour::Doc& doc) const {
     {
         std::vector<uint32_t> vnodes;
         if (m_world) {
-            for (const EnvVolumeRow& _row : m_world->scene.tables.envVolumes) {
+            for (const EnvVolumeRow& _row : m_world->m_hierarchy.tables.envVolumes) {
                 const NodeId n = _row.node;
                 vnodes.push_back(n);
             }
@@ -1323,7 +1323,7 @@ void EditorApp::SaveEnvToDoc(smvk::tour::Doc& doc) const {
                 const int cn = WorldToCluster(n);
                 if (cn < 0)
                     continue; // unmapped node: keep the file loadable
-                const EnvVolume& v = (*FindEnvVolume(m_world->scene, n)).volume;
+                const EnvVolume& v = (*FindEnvVolume(m_world->m_hierarchy, n)).volume;
                 put("envvol.n.node", std::to_string(uint32_t(cn)));
                 put("envvol.n.mask", std::to_string(v.infMask & 63u));
                 put("envvol.n.priority", std::to_string(v.priority));
@@ -1339,7 +1339,7 @@ void EditorApp::SaveEnvToDoc(smvk::tour::Doc& doc) const {
     {
         const SceneRenderSettings sceneRenderDefault{};
         const SceneRenderSettings& r =
-            m_world ? m_world->scene.defaultRenderSettings : sceneRenderDefault;
+            m_world ? m_world->m_hierarchy.defaultRenderSettings : sceneRenderDefault;
         put("render.bloomEnabled", r.bloomEnabled ? "1" : "0");
         put("render.bloomIntensity", std::to_string(r.bloomIntensity));
         put("render.bloomThreshold", std::to_string(r.bloomThreshold));
@@ -1374,7 +1374,7 @@ void EditorApp::SaveEnvToDoc(smvk::tour::Doc& doc) const {
     }
     // Analytic env-zone master switch (scene-level; see
     // Rendergraph/envzones.h). Absent = the Scene default ON.
-    put("env.zonesEnabled", (m_world && m_world->scene.envZonesEnabled) ? "1" : "0");
+    put("env.zonesEnabled", (m_world && m_world->m_hierarchy.envZonesEnabled) ? "1" : "0");
     if (m_envCurrent != UINT32_MAX) {
         const int cn = WorldToCluster(m_envCurrent);
         if (cn >= 0)
@@ -1398,7 +1398,7 @@ void EditorApp::LoadEnvFromDoc(const smvk::tour::Doc& doc) {
     // no scene to seed.
     if (!m_world)
         return;
-    auto& scene = m_world->scene;
+    auto& scene = m_world->m_hierarchy;
     m_dayNight = daynight::Settings{}; // avoid carrying settings into another scene
                                        // Editor default for new/unauthored scene looks. Authored
     // render.autoExposure from the tour is parsed below and wins.
@@ -1668,8 +1668,8 @@ void EditorApp::SaveDefaultCameraToDoc(smvk::tour::Doc& doc) const {
     // member valid; the cook warns + drops unresolvable values).
     if (m_defaultCameraNode == UINT32_MAX || !m_world)
         return;
-    if (m_defaultCameraNode >= m_world->scene.hierarchy.size() ||
-        !(FindCamera(m_world->scene, m_defaultCameraNode) != nullptr))
+    if (m_defaultCameraNode >= m_world->m_hierarchy.hierarchy.size() ||
+        !(FindCamera(m_world->m_hierarchy, m_defaultCameraNode) != nullptr))
         return; // dangling (deleted/detached camera): save as none
     const int k = CreatedCameraIndex(m_defaultCameraNode);
     std::string val;
@@ -1692,7 +1692,7 @@ void EditorApp::LoadDefaultCameraFromDoc(const smvk::tour::Doc& doc) {
     m_defaultCameraNode = UINT32_MAX;
     if (!m_world)
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     for (const auto& [key, val] : doc.editorSettings) {
         if (key != "camera.default" || val.empty())
             continue;

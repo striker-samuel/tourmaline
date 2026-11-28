@@ -601,11 +601,11 @@ void TestWorldManifestBlob() {
         c->SetOfflineMode(true);
         const auto mh = c->UploadMesh(MakeQuad());
         c->RegisterMeshUri(uri, mh);
-        const int root = addNode(c->scene, -1, 0);
-        const int n = addNode(c->scene, root, 1);
-        SetMesh(c->scene, uint32_t(n), mh.index());
-        MarkSubtreeStatic(c->scene, n);
-        setNodeName(c->scene, n, nodeName);
+        const int root = addNode(c->m_hierarchy, -1, 0);
+        const int n = addNode(c->m_hierarchy, root, 1);
+        SetMesh(c->m_hierarchy, uint32_t(n), mh.index());
+        MarkSubtreeStatic(c->m_hierarchy, n);
+        setNodeName(c->m_hierarchy, n, nodeName);
         return c;
     };
     auto a = makeScene("m#a", "A");
@@ -1634,15 +1634,15 @@ void TestNodeSchemas() {
     {
         auto c = std::make_unique<smvk::WorldPage>(nullptr);
         c->SetOfflineMode(true);
-        const int root = addNode(c->scene, -1, 0);
-        const int child = addNode(c->scene, root, 1);
+        const int root = addNode(c->m_hierarchy, -1, 0);
+        const int child = addNode(c->m_hierarchy, root, 1);
         // The cooked value block: the schema's defaults.
         std::vector<uint8_t> values(schema.valueBytes, 0);
         for (const smvk::SchemaField& f : schema.fields)
             std::memcpy(values.data() + f.offset,
                         f.defaultValue.data(),
                         std::min(f.defaultValue.size(), values.size() - f.offset));
-        Check(SetSchemaAssoc(c->scene, NodeId(child), 3001, values), "schema.set-assoc");
+        Check(SetSchemaAssoc(c->m_hierarchy, NodeId(child), 3001, values), "schema.set-assoc");
         smvk::PakWriter w;
         std::string serr;
         smvk::WorldPageSerializeStats stats;
@@ -1677,7 +1677,7 @@ void TestNodeSchemas() {
         {
             auto bare = std::make_unique<smvk::WorldPage>(nullptr);
             bare->SetOfflineMode(true);
-            addNode(bare->scene, -1, 0);
+            addNode(bare->m_hierarchy, -1, 0);
             smvk::PakWriter w2;
             Check(smvk::SerializeCluster(*bare, w2, nullptr, &serr), "schema.serialize-bare");
             auto img2 = w2.Finalize();
@@ -2375,19 +2375,19 @@ void TestLodSelection() {
         lod1.simplifyError = 0.5f; // MESH-LOCAL (scale-free by contract)
         lod1.triCount = 1;
         cluster->RegisterMeshLod(uri1, lod1);
-        const int root = addNode(cluster->scene, -1, 0);
-        const int n1 = addNode(cluster->scene, root, 1);
-        SetMesh(cluster->scene, uint32_t(n1), mh.index());
+        const int root = addNode(cluster->m_hierarchy, -1, 0);
+        const int n1 = addNode(cluster->m_hierarchy, root, 1);
+        SetMesh(cluster->m_hierarchy, uint32_t(n1), mh.index());
         // Explicit opt-in: the ShaderLodPolicy default is vertex-lit OFF
         // (the derivation only stamps it when DeriveConfig::shaderLods
         // is set), so this test material programs it on by hand.
         MaterialCreateInfo shaderLodCi{};
         shaderLodCi.allowFarVertexLit = true;
         const auto shaderLodMatH = cluster->CreateMaterial(shaderLodCi);
-        SetMaterial(cluster->scene, uint32_t(n1), shaderLodMatH.index());
-        cluster->scene.localTransform[n1] = glm::scale(glm::mat4(1.0f), glm::vec3(3.0f));
-        markAsChanged(cluster->scene, root);
-        recalculateGlobalTransforms(cluster->scene);
+        SetMaterial(cluster->m_hierarchy, uint32_t(n1), shaderLodMatH.index());
+        cluster->m_hierarchy.localTransform[n1] = glm::scale(glm::mat4(1.0f), glm::vec3(3.0f));
+        markAsChanged(cluster->m_hierarchy, root);
+        recalculateGlobalTransforms(cluster->m_hierarchy);
         // (No finalize: the sibling error stays MESH-LOCAL. The node's
         // world scale (3x) turns it into the 1.5 world error AT THE PICK -
         // SelectLodIndex's instanceWorldScale, exactly like
@@ -2488,7 +2488,7 @@ void TestLodSelection() {
         // the node: far eye (5000m) -> LOD1 in budget, near eye (100m)
         // -> LOD0 (err 1.5 projects ~19.5px).
         NodeId rn = 0;
-        for (const MeshRow& row : world.scene.tables.meshes)
+        for (const MeshRow& row : world.m_hierarchy.tables.meshes)
             rn = row.node; // the single renderable node
         LodFrameInputs in{};
         in.viewportHeight = h;
@@ -2587,10 +2587,10 @@ void TestLodSelection() {
             const auto h2 = c.UploadMesh(q);
             const std::string uri2 = "models/q.gltf#mesh.5/prim.0";
             c.RegisterMeshUri(uri2, h2);
-            const int n2 = addNode(c.scene, 0, 2);
-            SetMesh(c.scene, uint32_t(n2), h2.index());
-            markAsChanged(c.scene, 0);
-            recalculateGlobalTransforms(c.scene);
+            const int n2 = addNode(c.m_hierarchy, 0, 2);
+            SetMesh(c.m_hierarchy, uint32_t(n2), h2.index());
+            markAsChanged(c.m_hierarchy, 0);
+            recalculateGlobalTransforms(c.m_hierarchy);
             world.ResolveAndFixup_pages();
             Check(world.meshLocations.size() == 2, "lod.shader.meshes2");
             uint32_t cookedMesh = UINT32_MAX, uncookedMesh = UINT32_MAX;
@@ -2725,12 +2725,12 @@ void TestCookLodSiblingsLightmap() {
     // path, which is never lightmapped).
     MaterialCreateInfo ci{};
     const auto matH = cluster->CreateMaterial(ci);
-    const int root = addNode(cluster->scene, -1, 0);
-    const int n1 = addNode(cluster->scene, root, 1);
-    SetMesh(cluster->scene, uint32_t(n1), mh.index());
-    SetMaterial(cluster->scene, uint32_t(n1), matH.index());
-    markAsChanged(cluster->scene, root);
-    recalculateGlobalTransforms(cluster->scene);
+    const int root = addNode(cluster->m_hierarchy, -1, 0);
+    const int n1 = addNode(cluster->m_hierarchy, root, 1);
+    SetMesh(cluster->m_hierarchy, uint32_t(n1), mh.index());
+    SetMaterial(cluster->m_hierarchy, uint32_t(n1), matH.index());
+    markAsChanged(cluster->m_hierarchy, root);
+    recalculateGlobalTransforms(cluster->m_hierarchy);
 
     std::unordered_map<uint32_t, std::vector<uint32_t>> charts;
     charts.emplace(mh.index(), chartOf);
@@ -2808,11 +2808,11 @@ void TestCookLodSiblingsLightmap() {
     const auto mh2 = cluster->UploadMesh(grid2);
     const std::string uri2 = "models/lm.gltf#mesh.1/prim.0";
     cluster->RegisterMeshUri(uri2, mh2);
-    const int n2 = addNode(cluster->scene, root, 1);
-    SetMesh(cluster->scene, uint32_t(n2), mh2.index());
-    SetMaterial(cluster->scene, uint32_t(n2), matH.index());
-    markAsChanged(cluster->scene, root);
-    recalculateGlobalTransforms(cluster->scene);
+    const int n2 = addNode(cluster->m_hierarchy, root, 1);
+    SetMesh(cluster->m_hierarchy, uint32_t(n2), mh2.index());
+    SetMaterial(cluster->m_hierarchy, uint32_t(n2), matH.index());
+    markAsChanged(cluster->m_hierarchy, root);
+    recalculateGlobalTransforms(cluster->m_hierarchy);
     Check(CookLodSiblings(*cluster, cfg, mcfg, so), "lmlod.cook2.ok");
     auto sib2H = cluster->FindMeshByUri(uri2 + "/lod1");
     Check(sib2H && sib2H->valid(), "lmlod.unlit.sib");
@@ -2847,18 +2847,18 @@ void TestLightmapChartTable() {
     cluster->RegisterMeshUri("models/lm.gltf#mesh.2/prim.0", mhC);
     MaterialCreateInfo ci{};
     const auto matH = cluster->CreateMaterial(ci);
-    const int root = addNode(cluster->scene, -1, 0);
-    const int nA = addNode(cluster->scene, root, 1);
-    const int nB = addNode(cluster->scene, root, 1);
-    const int nC = addNode(cluster->scene, root, 1);
-    SetMesh(cluster->scene, uint32_t(nA), mhA.index());
-    SetMesh(cluster->scene, uint32_t(nB), mhB.index());
-    SetMesh(cluster->scene, uint32_t(nC), mhC.index());
-    SetMaterial(cluster->scene, uint32_t(nA), matH.index());
-    SetMaterial(cluster->scene, uint32_t(nB), matH.index());
-    SetMaterial(cluster->scene, uint32_t(nC), matH.index());
-    markAsChanged(cluster->scene, root);
-    recalculateGlobalTransforms(cluster->scene);
+    const int root = addNode(cluster->m_hierarchy, -1, 0);
+    const int nA = addNode(cluster->m_hierarchy, root, 1);
+    const int nB = addNode(cluster->m_hierarchy, root, 1);
+    const int nC = addNode(cluster->m_hierarchy, root, 1);
+    SetMesh(cluster->m_hierarchy, uint32_t(nA), mhA.index());
+    SetMesh(cluster->m_hierarchy, uint32_t(nB), mhB.index());
+    SetMesh(cluster->m_hierarchy, uint32_t(nC), mhC.index());
+    SetMaterial(cluster->m_hierarchy, uint32_t(nA), matH.index());
+    SetMaterial(cluster->m_hierarchy, uint32_t(nB), matH.index());
+    SetMaterial(cluster->m_hierarchy, uint32_t(nC), matH.index());
+    markAsChanged(cluster->m_hierarchy, root);
+    recalculateGlobalTransforms(cluster->m_hierarchy);
 
     World world;
     world.RegisterPage(std::move(cluster));
@@ -3017,22 +3017,22 @@ void TestClusterSerializeCook() {
     }
 
     // Scene: root + one renderable node.
-    const int root = addNode(cluster->scene, -1, 0);
-    const int child = addNode(cluster->scene, root, 1);
-    SetMesh(cluster->scene, uint32_t(child), mh.index());
-    SetMaterial(cluster->scene, uint32_t(child), math.index());
-    setNodeName(cluster->scene, child, "QuadNode");
+    const int root = addNode(cluster->m_hierarchy, -1, 0);
+    const int child = addNode(cluster->m_hierarchy, root, 1);
+    SetMesh(cluster->m_hierarchy, uint32_t(child), mh.index());
+    SetMaterial(cluster->m_hierarchy, uint32_t(child), math.index());
+    setNodeName(cluster->m_hierarchy, child, "QuadNode");
     // Explicit animation references (the scene blob's trailing v16
     // section — the self-contained anim pipeline): the cooked asset
     // records its .tourAnim clip paths; the tail-layout assertions below
     // pin the wire format (the section is the LAST thing in the blob).
-    cluster->scene.animClipRefs = {
+    cluster->m_hierarchy.animClipRefs = {
         "demo/knight.anim0_rig.anim",
         "demo/knight.anim1_walk.anim",
     };
     // A cooked static mark alongside (the trailing v2 section): authored
     // marks serialize verbatim for the runtime to honor.
-    MarkSubtreeStatic(cluster->scene, root);
+    MarkSubtreeStatic(cluster->m_hierarchy, root);
 
     // Cooked punctual light carrying the static flag (bake source —
     // lightmap/probe harvest + runtime forward+ exclusion; see
@@ -3050,9 +3050,9 @@ void TestClusterSerializeCook() {
     const WorldPageLightHandle lh = cluster->CreateLight(lightDef);
     Check(lh.valid(), "cook.light.handle");
     Check(cluster->RegisterLightUri("models/q.gltf#light.0", lh), "cook.light.uri");
-    const int lightNode = addNode(cluster->scene, root, 1);
-    SetLight(cluster->scene, NodeId(lightNode), lh.index());
-    setNodeName(cluster->scene, lightNode, "LampNode");
+    const int lightNode = addNode(cluster->m_hierarchy, root, 1);
+    SetLight(cluster->m_hierarchy, NodeId(lightNode), lh.index());
+    setNodeName(cluster->m_hierarchy, lightNode, "LampNode");
 
     PakWriter writer;
     WorldPageSerializeStats stats;
@@ -3110,14 +3110,14 @@ void TestClusterSerializeCook() {
                     expect.push_back(uint8_t((v >> (8 * i)) & 0xFF));
             };
             putU32(2);
-            putU32(uint32_t(cluster->scene.animClipRefs[0].size()));
+            putU32(uint32_t(cluster->m_hierarchy.animClipRefs[0].size()));
             expect.insert(expect.end(),
-                          cluster->scene.animClipRefs[0].begin(),
-                          cluster->scene.animClipRefs[0].end());
-            putU32(uint32_t(cluster->scene.animClipRefs[1].size()));
+                          cluster->m_hierarchy.animClipRefs[0].begin(),
+                          cluster->m_hierarchy.animClipRefs[0].end());
+            putU32(uint32_t(cluster->m_hierarchy.animClipRefs[1].size()));
             expect.insert(expect.end(),
-                          cluster->scene.animClipRefs[1].begin(),
-                          cluster->scene.animClipRefs[1].end());
+                          cluster->m_hierarchy.animClipRefs[1].begin(),
+                          cluster->m_hierarchy.animClipRefs[1].end());
             // The v17 per-node volumetric-shadow caster section trails
             // the anim refs (u32 nodeCount + nodeCount flag bytes; this
             // scene never marks a caster, so the writer emits the
@@ -3128,8 +3128,8 @@ void TestClusterSerializeCook() {
             // AssetTests.exe kept passing (the targeted App-only
             // rebuilds never relinked it), loud in CI where every build
             // is fresh.
-            putU32(uint32_t(cluster->scene.hierarchy.size()));
-            expect.insert(expect.end(), cluster->scene.hierarchy.size(), uint8_t(0));
+            putU32(uint32_t(cluster->m_hierarchy.hierarchy.size()));
+            expect.insert(expect.end(), cluster->m_hierarchy.hierarchy.size(), uint8_t(0));
             // The v18 audio-source section trails the caster bytes
             // (u32 rowCount — this scene carries no audio sources, so
             // the writer emits the zero-row form; see the dedicated
@@ -3704,21 +3704,21 @@ void TestStaticCollapse() {
     const WorldPageMaterialHandle math = cluster->CreateMaterial(ci);
     const uint32_t matIdx = math.index();
 
-    const int root = addNode(cluster->scene, -1, 0);
-    const int n1 = addNode(cluster->scene, root, 1);
-    const int n2 = addNode(cluster->scene, root, 1);
+    const int root = addNode(cluster->m_hierarchy, -1, 0);
+    const int n1 = addNode(cluster->m_hierarchy, root, 1);
+    const int n2 = addNode(cluster->m_hierarchy, root, 1);
     const WorldPageStaticMeshHandle h1 = cluster->UploadMesh(q1);
     const WorldPageStaticMeshHandle h2 = cluster->UploadMesh(q2);
-    SetMesh(cluster->scene, uint32_t(n1), h1.index());
-    SetMesh(cluster->scene, uint32_t(n2), h2.index());
-    SetMaterial(cluster->scene, uint32_t(n1), matIdx);
-    SetMaterial(cluster->scene, uint32_t(n2), matIdx);
-    cluster->scene.localTransform[n2] =
+    SetMesh(cluster->m_hierarchy, uint32_t(n1), h1.index());
+    SetMesh(cluster->m_hierarchy, uint32_t(n2), h2.index());
+    SetMaterial(cluster->m_hierarchy, uint32_t(n1), matIdx);
+    SetMaterial(cluster->m_hierarchy, uint32_t(n2), matIdx);
+    cluster->m_hierarchy.localTransform[n2] =
         glm::translate(glm::mat4(1.0f), glm::vec3(1.0f, 0.0f, 0.0f));
-    MarkSubtreeStatic(cluster->scene, n1);
-    MarkSubtreeStatic(cluster->scene, n2);
-    markAsChanged(cluster->scene, root);
-    recalculateGlobalTransforms(cluster->scene);
+    MarkSubtreeStatic(cluster->m_hierarchy, n1);
+    MarkSubtreeStatic(cluster->m_hierarchy, n2);
+    markAsChanged(cluster->m_hierarchy, root);
+    recalculateGlobalTransforms(cluster->m_hierarchy);
 
     StaticMergeOptions opts;
     opts.deleteSources = true;
@@ -3740,7 +3740,7 @@ void TestStaticCollapse() {
             }
             Check(minAll == 0.0f && maxAll == 2.0f, "collapse.baked.transform");
         }
-        Check(IsStaticNode(cluster->scene, mr.blocks[0].node), "collapse.block.static");
+        Check(IsStaticNode(cluster->m_hierarchy, mr.blocks[0].node), "collapse.block.static");
     }
 }
 
@@ -3757,11 +3757,11 @@ void TestMultiSceneSerialize() {
         MaterialCreateInfo ci{};
         const WorldPageMaterialHandle math = cluster->CreateMaterial(ci);
         cluster->RegisterMaterialUri(matUri, math);
-        const int root = addNode(cluster->scene, -1, 0);
-        const int n = addNode(cluster->scene, root, 1);
-        SetMesh(cluster->scene, uint32_t(n), mh.index());
-        SetMaterial(cluster->scene, uint32_t(n), math.index());
-        setNodeName(cluster->scene, n, nodeName);
+        const int root = addNode(cluster->m_hierarchy, -1, 0);
+        const int n = addNode(cluster->m_hierarchy, root, 1);
+        SetMesh(cluster->m_hierarchy, uint32_t(n), mh.index());
+        SetMaterial(cluster->m_hierarchy, uint32_t(n), math.index());
+        setNodeName(cluster->m_hierarchy, n, nodeName);
         return cluster;
     };
     auto a = makeScene("m#shared", "m#matA", "NodeA");
@@ -3802,7 +3802,7 @@ void TestMultiSceneSerialize() {
     a->RegisterGiBinding(GiBinding::Kind::RegManifest, "0123456789abcdef0123456789abcdef");
     b->RegisterGiBinding(GiBinding::Kind::GiVolumeManifest, "fedcba9876543210fedcba9876543210");
     a->RegisterGiBinding(GiBinding::Kind::Cubemap, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-    MarkDitherCloseup(a->scene, 1);
+    MarkDitherCloseup(a->m_hierarchy, 1);
     PakWriter writerGi;
     Check(SerializeClusters(clusters, {"Alpha", "Beta"}, writerGi, nullptr, &err),
           "multiscene.gi.serialize.ok");
@@ -3862,8 +3862,8 @@ void TestAudioSceneSection() {
     auto mkCluster = []() {
         auto c = std::make_unique<smvk::WorldPage>(nullptr);
         c->SetOfflineMode(true);
-        addNode(c->scene, -1, 0);                    // root (slot 0)
-        const int emitter = addNode(c->scene, 0, 1); // slot 1
+        addNode(c->m_hierarchy, -1, 0);                    // root (slot 0)
+        const int emitter = addNode(c->m_hierarchy, 0, 1); // slot 1
         SceneAudioSource src;
         src.volume = 0.8f;
         src.spatial = true;
@@ -3876,7 +3876,7 @@ void TestAudioSceneSection() {
         bells.gain = 1.5f;
         bells.loop = true;
         src.sounds.push_back(bells);
-        SetAudioSource(c->scene, NodeId(emitter), src);
+        SetAudioSource(c->m_hierarchy, NodeId(emitter), src);
         return c;
     };
     const std::string paths[1] = {"content/audio/bells.wav"};
@@ -4000,8 +4000,8 @@ void TestAudioRoomSection() {
     auto mkCluster = []() {
         auto c = std::make_unique<smvk::WorldPage>(nullptr);
         c->SetOfflineMode(true);
-        addNode(c->scene, -1, 0);                     // root (slot 0)
-        const int roomNode = addNode(c->scene, 0, 1); // slot 1
+        addNode(c->m_hierarchy, -1, 0);                     // root (slot 0)
+        const int roomNode = addNode(c->m_hierarchy, 0, 1); // slot 1
         ::tour::transformhierarchy::SceneAudioRoom room;
         room.enabled = true;
         room.priority = 3;
@@ -4011,12 +4011,12 @@ void TestAudioRoomSection() {
         room.rt60 = 2.5f;
         room.damping = 0.7f;
         room.transitionSeconds = 0.5f;
-        ::tour::transformhierarchy::SetAudioRoom(c->scene, NodeId(roomNode), room);
+        ::tour::transformhierarchy::SetAudioRoom(c->m_hierarchy, NodeId(roomNode), room);
         // A second DISABLED room on the root exercises the flags bit.
         ::tour::transformhierarchy::SceneAudioRoom off;
         off.enabled = false;
         off.priority = 9;
-        ::tour::transformhierarchy::SetAudioRoom(c->scene, NodeId(0), off);
+        ::tour::transformhierarchy::SetAudioRoom(c->m_hierarchy, NodeId(0), off);
         return c;
     };
     {
@@ -4119,7 +4119,7 @@ void TestAudioRoomSection() {
         auto c = mkCluster();
         ::tour::transformhierarchy::AudioRoomRow orphan;
         orphan.node = 99; // no such slot in the 2-node cluster
-        c->scene.tables.audioRooms.push_back(orphan);
+        c->m_hierarchy.tables.audioRooms.push_back(orphan);
         PakWriter w;
         std::string err;
         Check(!SerializeClusters(
@@ -4143,11 +4143,11 @@ void TestStaticBvhSection() {
         c->SetOfflineMode(true);
         const WorldPageStaticMeshHandle mh = c->UploadMesh(MakeQuad());
         c->RegisterMeshUri("models/bvh.gltf#mesh.0", mh);
-        const int root = addNode(c->scene, -1, 0);
-        const int child = addNode(c->scene, root, 1);
-        SetMesh(c->scene, uint32_t(child), mh.index());
-        MarkSubtreeStatic(c->scene, root);
-        recalculateGlobalTransforms(c->scene);
+        const int root = addNode(c->m_hierarchy, -1, 0);
+        const int child = addNode(c->m_hierarchy, root, 1);
+        SetMesh(c->m_hierarchy, uint32_t(child), mh.index());
+        MarkSubtreeStatic(c->m_hierarchy, root);
+        recalculateGlobalTransforms(c->m_hierarchy);
         return c;
     };
     auto cook = [](WorldPage& c, std::vector<uint8_t>& img, WorldPageSerializeStats& stats) {
@@ -4256,8 +4256,8 @@ void TestStaticBvhSection() {
         auto c = mkCluster();
         glm::mat4 moved(1.0f);
         moved[3] = glm::vec4(2.0f, 0.0f, 0.0f, 1.0f); // translate x+2 (column-major)
-        c->scene.localTransform[1] = moved;
-        recalculateGlobalTransforms(c->scene);
+        c->m_hierarchy.localTransform[1] = moved;
+        recalculateGlobalTransforms(c->m_hierarchy);
         std::vector<uint8_t> img;
         WorldPageSerializeStats stats;
         cook(*c, img, stats);
@@ -4290,9 +4290,9 @@ void TestNodeNameStripping() {
         // sections; the structure round-trips unchanged.
         auto c = std::make_unique<smvk::WorldPage>(nullptr);
         c->SetOfflineMode(true);
-        addNode(c->scene, -1, 0);
-        const int child = addNode(c->scene, 0, 1);
-        setNodeName(c->scene, child, "QuadNode");
+        addNode(c->m_hierarchy, -1, 0);
+        const int child = addNode(c->m_hierarchy, 0, 1);
+        setNodeName(c->m_hierarchy, child, "QuadNode");
         PakWriter w;
         std::string err;
         Check(SerializeClusters(

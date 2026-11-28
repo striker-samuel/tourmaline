@@ -104,7 +104,7 @@ inline Json WorldState(const tour::World& world,
                        const tour::RandomService& rng,
                        const glm::vec3& cameraPosition,
                        const glm::vec3& cameraForward) {
-    const auto& graph = world.scene;
+    const auto& graph = world.m_hierarchy;
     Json state = {
         {"scope", "engine-scene-graph-v1"},
         {"topology_revision", world.gpuSceneTopologyRevision},

@@ -30,8 +30,8 @@ bool EditorApp::ExtractPlacementMesh(uint32_t worldNode,
     const size_t vcount = up->vertices.size();
     if (vcount == 0 || vcount > 600000)
         return false;
-    const glm::mat4 model = m_world->scene.globalTransform.size() > worldNode
-                                ? m_world->scene.globalTransform[worldNode]
+    const glm::mat4 model = m_world->m_hierarchy.globalTransform.size() > worldNode
+                                ? m_world->m_hierarchy.globalTransform[worldNode]
                                 : glm::mat4(1.0f);
     out.positions.reserve(vcount);
     for (size_t v = 0; v < vcount; ++v)
@@ -91,7 +91,7 @@ bool EditorApp::BuildPlacementPointCloud(int strokeIndex,
         error = "PointCloud: source stroke index is out of range";
         return false;
     }
-    const TransformHierarchy& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->m_hierarchy;
     std::unordered_map<std::string, uint32_t> byUuid;
     for (uint32_t node = 0; node < scene.hierarchy.size(); ++node) {
         if (!IsNodeAlive(scene, node) || m_deletedNodes.contains(node))
@@ -149,7 +149,7 @@ void EditorApp::CheckSurfaceBrushPlacementChanges() {
         hash ^= b;
         hash *= 1099511628211ull;
     };
-    const TransformHierarchy& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->m_hierarchy;
     std::unordered_map<std::string, uint32_t> byUuid;
     byUuid.reserve(scene.hierarchy.size());
     for (uint32_t i = 0; i < scene.hierarchy.size(); ++i) {

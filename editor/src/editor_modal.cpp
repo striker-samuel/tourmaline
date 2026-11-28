@@ -483,7 +483,7 @@ void EditorApp::ModalDuplicate() {
 
 void EditorApp::RestoreIsolation() {
     if (m_isolateVisibility.active() && m_world)
-        m_isolateVisibility.restore(m_world->scene.hidden);
+        m_isolateVisibility.restore(m_world->m_hierarchy.hidden);
     else
         m_isolateVisibility.abandon();
 }
@@ -500,7 +500,7 @@ void EditorApp::ModalIsolateSelect() {
         Log("Isolate Select: off (original visibility restored).");
         return;
     }
-    const TransformHierarchy& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->m_hierarchy;
     std::vector<int> parents;
     parents.reserve(scene.hierarchy.size());
     for (const auto& node : scene.hierarchy)
@@ -512,7 +512,7 @@ void EditorApp::ModalIsolateSelect() {
         if (node < scene.hierarchy.size() && !m_deletedNodes.contains(node) &&
             !InDisabledRefSubtree(node))
             targets.push_back(node);
-    if (m_isolateVisibility.begin(m_world->scene.hidden, parents, targets))
+    if (m_isolateVisibility.begin(m_world->m_hierarchy.hidden, parents, targets))
         Log("Isolate Select: " + std::to_string(targets.size()) +
             " selected root(s); Ctrl+1 to restore.");
     else
@@ -535,12 +535,12 @@ void EditorApp::ModalToggleVisibility() {
         return;
     bool hide = false;
     const uint32_t primary = m_selected != UINT32_MAX ? m_selected : targets[0];
-    if (primary < m_world->scene.hierarchy.size())
-        hide = IsVisibleNode(m_world->scene, int(primary));
+    if (primary < m_world->m_hierarchy.hierarchy.size())
+        hide = IsVisibleNode(m_world->m_hierarchy, int(primary));
     int n = 0;
     int skippedRef = 0;
     for (uint32_t t : targets) {
-        if (t == UINT32_MAX || t >= m_world->scene.hierarchy.size() || m_deletedNodes.contains(t))
+        if (t == UINT32_MAX || t >= m_world->m_hierarchy.hierarchy.size() || m_deletedNodes.contains(t))
             continue;
         if (IsRefPlaceholder(t)) {
             // Placeholder visibility is owned by the reference's
@@ -552,7 +552,7 @@ void EditorApp::ModalToggleVisibility() {
         EditCmd c{};
         c.verb = EditVerb::SetVisibility;
         c.node = t;
-        const bool hidden = IsHiddenNode(m_world->scene, int(t));
+        const bool hidden = IsHiddenNode(m_world->m_hierarchy, int(t));
         c.afterFlag = hide;
         c.beforeFlag = hidden;
         Do(c);
@@ -621,7 +621,7 @@ void EditorApp::ModalWireframeToggle() {
 void EditorApp::ModalGroupSelection() {
     if (!m_world || m_selection.empty() || m_imguiFocusInPlacementGraph)
         return;
-    const TransformHierarchy& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->m_hierarchy;
     // Keep selected roots only: nesting a selected parent and child in
     // the group must not flatten the child's original hierarchy.
     std::vector<uint32_t> roots;
@@ -671,14 +671,14 @@ void EditorApp::ModalGroupSelection() {
     // preserve each child's current world transform without shifting it.
     Do(create);
     const uint32_t group = m_selected;
-    if (group == UINT32_MAX || group >= m_world->scene.hierarchy.size())
+    if (group == UINT32_MAX || group >= m_world->m_hierarchy.hierarchy.size())
         return;
     for (uint32_t n : roots) {
         EditCmd c{};
         c.verb = EditVerb::Parent;
         c.node = n;
         c.node2 = group;
-        c.beforeParent = uint32_t(m_world->scene.hierarchy[n].parent);
+        c.beforeParent = uint32_t(m_world->m_hierarchy.hierarchy[n].parent);
         Do(c);
     }
     m_selection = {group};
@@ -700,21 +700,21 @@ void EditorApp::ModalParentSelection() {
     const uint32_t target = m_selected; // newest = last selected
     uint32_t moved = 0;
     for (uint32_t n : m_selection) {
-        if (n == target || n >= m_world->scene.hierarchy.size())
+        if (n == target || n >= m_world->m_hierarchy.hierarchy.size())
             continue;
-        if (uint32_t(m_world->scene.hierarchy[n].parent) == target)
+        if (uint32_t(m_world->m_hierarchy.hierarchy[n].parent) == target)
             continue; // already under the target
         EditCmd c{};
         c.verb = EditVerb::Parent;
         c.node = n;
         c.node2 = target;
-        c.beforeParent = uint32_t(m_world->scene.hierarchy[n].parent);
-        c.afterText = getNodeName(m_world->scene, int(target));
+        c.beforeParent = uint32_t(m_world->m_hierarchy.hierarchy[n].parent);
+        c.afterText = getNodeName(m_world->m_hierarchy, int(target));
         Do(c);
         ++moved;
     }
     Log("Parent: " + std::to_string(moved) + " node(s) under '" +
-        getNodeName(m_world->scene, int(target)) + "'.");
+        getNodeName(m_world->m_hierarchy, int(target)) + "'.");
 }
 
 void EditorApp::ModalUnparentSelection() {
@@ -724,15 +724,15 @@ void EditorApp::ModalUnparentSelection() {
         return;
     uint32_t moved = 0;
     for (uint32_t n : m_selection) {
-        if (n == 0 || n >= m_world->scene.hierarchy.size())
+        if (n == 0 || n >= m_world->m_hierarchy.hierarchy.size())
             continue;
-        if (m_world->scene.hierarchy[n].parent <= 0)
+        if (m_world->m_hierarchy.hierarchy[n].parent <= 0)
             continue; // already at the root
         EditCmd c{};
         c.verb = EditVerb::Parent;
         c.node = n;
         c.node2 = 0; // the cluster root
-        c.beforeParent = uint32_t(m_world->scene.hierarchy[n].parent);
+        c.beforeParent = uint32_t(m_world->m_hierarchy.hierarchy[n].parent);
         Do(c);
         ++moved;
     }
@@ -786,7 +786,7 @@ void EditorApp::ModalGiVolumePreviewCycle() {
     static const char* kNames[5] = {"off", "wireframe", "solid", "probes", "lattice (pre-bake)"};
     m_giVolumePreviewMode = (m_giVolumePreviewMode + 1) % 5;
     if (m_giVolumePreviewMode == 4) {
-        const size_t authored = m_world ? m_world->scene.tables.giVolumes.size() : 0;
+        const size_t authored = m_world ? m_world->m_hierarchy.tables.giVolumes.size() : 0;
         Log(authored ? "GI volume preview: lattice (pre-bake) — " + std::to_string(authored) +
                            " authored volume(s)"
                      : "GI volume preview: lattice (pre-bake) — no authored GI "

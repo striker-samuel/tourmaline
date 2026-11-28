@@ -106,10 +106,10 @@ void EditorApp::DisplaceCreatedUnderRef(size_t refIdx) {
     if (ph == UINT32_MAX)
         return;
     auto underRef = [&](uint32_t n) {
-        for (int a = (n < m_world->scene.hierarchy.size()) ? m_world->scene.hierarchy[n].parent
+        for (int a = (n < m_world->m_hierarchy.hierarchy.size()) ? m_world->m_hierarchy.hierarchy[n].parent
                                                            : -1;
-             a >= 0 && size_t(a) < m_world->scene.hierarchy.size();
-             a = m_world->scene.hierarchy[size_t(a)].parent)
+             a >= 0 && size_t(a) < m_world->m_hierarchy.hierarchy.size();
+             a = m_world->m_hierarchy.hierarchy[size_t(a)].parent)
             if (uint32_t(a) == ph)
                 return true;
         return false;
@@ -118,21 +118,21 @@ void EditorApp::DisplaceCreatedUnderRef(size_t refIdx) {
     // subtree. (Displacement placeholders themselves always live at
     // root, so they never qualify.)
     std::vector<uint32_t> displaced;
-    for (const LightRow& _row : m_world->scene.tables.lights) {
+    for (const LightRow& _row : m_world->m_hierarchy.tables.lights) {
         const NodeId n = _row.node;
         const auto& li = _row.light;
         (void)li;
         if (CreatedLightIndex(n) >= 0 && underRef(n))
             displaced.push_back(n);
     }
-    for (const GiVolumeRow& _row : m_world->scene.tables.giVolumes) {
+    for (const GiVolumeRow& _row : m_world->m_hierarchy.tables.giVolumes) {
         const NodeId n = _row.node;
         const auto& cv = _row.volume;
         (void)cv;
         if (CreatedGiVolumeIndex(n) >= 0 && underRef(n))
             displaced.push_back(n);
     }
-    for (const CubemapRow& _row : m_world->scene.tables.cubemaps) {
+    for (const CubemapRow& _row : m_world->m_hierarchy.tables.cubemaps) {
         const NodeId n = _row.node;
         const auto& cm = _row.cubemap;
         (void)cm;
@@ -149,7 +149,7 @@ void EditorApp::DisplaceCreatedUnderRef(size_t refIdx) {
     // Group by original direct parent: one placeholder each.
     std::map<uint32_t, std::vector<uint32_t>> byParent;
     for (uint32_t n : displaced)
-        byParent[uint32_t(m_world->scene.hierarchy[n].parent)].push_back(n);
+        byParent[uint32_t(m_world->m_hierarchy.hierarchy[n].parent)].push_back(n);
     const std::string& refName = m_references[refIdx].name;
     for (auto& [parent, nodes] : byParent) {
         // Always mint a fresh placeholder (deterministic replay: the
@@ -189,18 +189,18 @@ void EditorApp::RestoreRefPlaceholders(size_t refIdx) {
         return;
     const std::string& refName = m_references[refIdx].name;
     bool any = false;
-    for (uint32_t n = 0; n < uint32_t(m_world->scene.hierarchy.size()); ++n) {
+    for (uint32_t n = 0; n < uint32_t(m_world->m_hierarchy.hierarchy.size()); ++n) {
         uint32_t origParent = UINT32_MAX;
-        if (!ParseRefPlaceholder(refName, getNodeName(m_world->scene, int(n)), origParent))
+        if (!ParseRefPlaceholder(refName, getNodeName(m_world->m_hierarchy, int(n)), origParent))
             continue;
-        if (origParent >= m_world->scene.hierarchy.size()) {
+        if (origParent >= m_world->m_hierarchy.hierarchy.size()) {
             Log("Reference '" + refName + "': placeholder #" + std::to_string(n) +
                 " names a gone parent (skipped).");
             continue;
         }
         std::vector<uint32_t> kids;
-        for (int c = m_world->scene.hierarchy[n].firstChild; c >= 0;
-             c = m_world->scene.hierarchy[size_t(c)].nextSibling)
+        for (int c = m_world->m_hierarchy.hierarchy[n].firstChild; c >= 0;
+             c = m_world->m_hierarchy.hierarchy[size_t(c)].nextSibling)
             kids.push_back(uint32_t(c));
         for (uint32_t k : kids) {
             if (m_deletedNodes.contains(k))
@@ -230,7 +230,7 @@ void EditorApp::RebuildDisabledRefHides() {
         return;
     for (size_t i = 0; i < m_references.size(); ++i) {
         const uint32_t ph = RefPlaceholderNode(i);
-        if (ph == UINT32_MAX || ph >= m_world->scene.hierarchy.size()) {
+        if (ph == UINT32_MAX || ph >= m_world->m_hierarchy.hierarchy.size()) {
             if (m_world)
                 Log("Reference '" + m_references[i].source +
                     "': placeholder not bound — "
@@ -246,10 +246,10 @@ void EditorApp::RebuildDisabledRefHides() {
         // tree; the runtime draw-list build is untouched). Enabled:
         // clear any inherited hidden state.
         if (m_references[i].enabled) {
-            ClearHidden(m_world->scene, int(ph));
+            ClearHidden(m_world->m_hierarchy, int(ph));
             continue;
         }
-        MarkHidden(m_world->scene, int(ph));
+        MarkHidden(m_world->m_hierarchy, int(ph));
         m_disabledRefRoots.insert(ph);
     }
 }
@@ -573,9 +573,9 @@ bool EditorApp::SetSceneReferenceEnabled(size_t idx, bool enabled) {
         // would fight the flag on every toggle/reload). Apply the
         // hide/show straight onto the scene instead.
         if (enabled)
-            ClearHidden(m_world->scene, int(ph));
+            ClearHidden(m_world->m_hierarchy, int(ph));
         else
-            MarkHidden(m_world->scene, int(ph));
+            MarkHidden(m_world->m_hierarchy, int(ph));
         AutosaveTour(); // the flag rides the same doc
         Log(std::string("Reference ") + (enabled ? "shown" : "hidden") + ": '" +
             m_references[idx].source + "' (placeholder #" + std::to_string(ph) +
@@ -601,7 +601,7 @@ uint32_t EditorApp::RefPlaceholderNode(size_t idx) const {
     // index assumption), index fallback second.
     const std::string want = "REF " + m_references[idx].name;
     for (uint32_t ph : m_refPlaceholders)
-        if (ph != UINT32_MAX && getNodeName(m_world->scene, int(ph)) == want)
+        if (ph != UINT32_MAX && getNodeName(m_world->m_hierarchy, int(ph)) == want)
             return ph;
     if (idx < m_refPlaceholders.size())
         return m_refPlaceholders[idx];
@@ -659,7 +659,7 @@ bool EditorApp::ReloadReferencesViaTemp() {
     if (!savedCams.empty())
         m_editorCams = savedCams;
     if (ok && m_world) {
-        const uint32_t n = uint32_t(m_world->scene.hierarchy.size());
+        const uint32_t n = uint32_t(m_world->m_hierarchy.hierarchy.size());
         if (savedSelected != UINT32_MAX && savedSelected < n) {
             m_selected = savedSelected;
             m_selection.clear();
@@ -765,7 +765,7 @@ void EditorApp::DrawReferencesPanel() {
             else if (resolved != r.source)
                 ImGui::TextColored(ImVec4(0.55f, 0.85f, 1.0f, 1.0f), "-> %s", resolved.c_str());
             ImGui::TableSetColumnIndex(4);
-            ImGui::Text("%d", (bound && m_world) ? RefSubtreeSize(m_world->scene, ph) : 0);
+            ImGui::Text("%d", (bound && m_world) ? RefSubtreeSize(m_world->m_hierarchy, ph) : 0);
             ImGui::TableSetColumnIndex(5);
             if (!isRoot) {
                 if (isTour && fileOk && ImGui::SmallButton("Edit prefab")) {

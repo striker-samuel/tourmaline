@@ -65,9 +65,9 @@ void EditorApp::DrawAudioSection(uint32_t node) {
     // GLOBAL transform at use, so parenting applies like meshes.
     // Undoable SetAudioAttr/AddAudioSound/RemoveAudioSound edits
     // persisted as the tabulated tour verbs (cooks replay them).
-    if (!m_world || node >= m_world->scene.hierarchy.size())
+    if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     AudioSourceRow* it = FindAudioSource(scene, node);
     if (!it)
         return;

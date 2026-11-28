@@ -87,9 +87,9 @@ const smvk::MeshData* EditorApp::MeshUploadOf(uint32_t worldMeshIdx) const {
 }
 
 const smvk::MeshData* EditorApp::NodeMeshUpload(uint32_t node) const {
-    if (!m_world || node >= m_world->scene.hierarchy.size())
+    if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
         return nullptr;
-    const MeshRow* row = FindMesh(m_world->scene, node);
+    const MeshRow* row = FindMesh(m_world->m_hierarchy, node);
     if (!row)
         return nullptr;
     return MeshUploadOf(row->mesh);
@@ -146,7 +146,7 @@ std::optional<EditorApp::PickHit> EditorApp::PickNode(int vpIdx,
                                                       float mouseX,
                                                       float mouseY,
                                                       smvk::Extent2D extent) const {
-    if (!m_world || m_world->scene.hierarchy.empty())
+    if (!m_world || m_world->m_hierarchy.hierarchy.empty())
         return std::nullopt;
     glm::vec3 origin;
     const glm::mat4 viewProj = m_viewports[std::clamp(vpIdx, 0, kMaxViewports - 1)].viewProj;
@@ -159,12 +159,12 @@ std::optional<EditorApp::PickHit> EditorApp::PickNode(int vpIdx,
     const smvk::IteratorFlags req = smvk::IteratorFlags(smvk::IteratorFlagBit_Renderable |
                                                         smvk::IteratorFlagBit_StaticVertexFmt);
     m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
-        if (!IsVisibleNode(m_world->scene, int(item.node)))
+        if (!IsVisibleNode(m_world->m_hierarchy, int(item.node)))
             return; // hidden subtrees are not pickable
         smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
         if (!mesh)
             return;
-        const glm::mat4& model = m_world->scene.globalTransform[item.node];
+        const glm::mat4& model = m_world->m_hierarchy.globalTransform[item.node];
         glm::vec3 c;
         float r = 0.0f;
         smvk::MeshBoundsToWorld(model, mesh->geometry.aabbMin, mesh->geometry.aabbMax, c, r);
@@ -301,14 +301,14 @@ std::optional<EditorApp::PickHit> EditorApp::PickGizmoMarker(int vpIdx,
     // MODAL: markers only draw (and only pick) in LIGHTING mode.
     if (m_mode != EditorMode::Lighting)
         return std::nullopt;
-    if (!m_world || m_world->scene.hierarchy.empty())
+    if (!m_world || m_world->m_hierarchy.hierarchy.empty())
         return std::nullopt;
     if (extent.width == 0 || extent.height == 0)
         return std::nullopt;
     const glm::mat4 viewProj = m_viewports[std::clamp(vpIdx, 0, kMaxViewports - 1)].viewProj;
     glm::vec3 origin;
     const glm::vec3 dir = MouseRay(mouseX, mouseY, extent, viewProj, origin);
-    const TransformHierarchy& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->m_hierarchy;
     PickHit best{};
     best.t = FLT_MAX;
     bool found = false;
@@ -403,7 +403,7 @@ std::optional<EditorApp::SubHit> EditorApp::PickSubObject(int vpIdx,
                                                           smvk::Extent2D extent) const {
     // Brute-force triangle walk (no acceleration structures, per request):
     // closest triangle under the cursor + nearest of its 3 verts.
-    if (!m_world || m_world->scene.hierarchy.empty())
+    if (!m_world || m_world->m_hierarchy.hierarchy.empty())
         return std::nullopt;
     glm::vec3 origin;
     const glm::mat4 viewProj = m_viewports[std::clamp(vpIdx, 0, kMaxViewports - 1)].viewProj;
@@ -414,12 +414,12 @@ std::optional<EditorApp::SubHit> EditorApp::PickSubObject(int vpIdx,
     const smvk::IteratorFlags req = smvk::IteratorFlags(smvk::IteratorFlagBit_Renderable |
                                                         smvk::IteratorFlagBit_StaticVertexFmt);
     m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
-        if (!IsVisibleNode(m_world->scene, int(item.node)))
+        if (!IsVisibleNode(m_world->m_hierarchy, int(item.node)))
             return;
         smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
         if (!mesh)
             return;
-        const glm::mat4& model = m_world->scene.globalTransform[item.node];
+        const glm::mat4& model = m_world->m_hierarchy.globalTransform[item.node];
         glm::vec3 c;
         float r = 0.0f;
         smvk::MeshBoundsToWorld(model, mesh->geometry.aabbMin, mesh->geometry.aabbMax, c, r);
@@ -488,16 +488,16 @@ std::optional<EditorApp::SubHit> EditorApp::PickFlatUvWindow(float mouseX,
 	// Candidate set: selection subtree when something is selected.
 	std::unordered_set<uint32_t> subtree;
 	bool useSubtree = (m_selected != UINT32_MAX &&
-		m_selected < m_world->scene.hierarchy.size());
+		m_selected < m_world->m_hierarchy.hierarchy.size());
 	if (useSubtree) {
 		std::vector<uint32_t> stack{ m_selected };
 		while (!stack.empty()) {
 			const uint32_t n = stack.back();
 			stack.pop_back();
-			if (n >= m_world->scene.hierarchy.size() || !subtree.insert(n).second)
+			if (n >= m_world->m_hierarchy.hierarchy.size() || !subtree.insert(n).second)
 				continue;
-			for (int c = m_world->scene.hierarchy[n].firstChild; c != -1;
-				c = m_world->scene.hierarchy[c].nextSibling)
+			for (int c = m_world->m_hierarchy.hierarchy[n].firstChild; c != -1;
+				c = m_world->m_hierarchy.hierarchy[c].nextSibling)
 				stack.push_back(uint32_t(c));
 		}
 	}
@@ -509,7 +509,7 @@ std::optional<EditorApp::SubHit> EditorApp::PickFlatUvWindow(float mouseX,
 		const float v = ((c.y - a.y) * (p.x - c.x) + (a.x - c.x) * (p.y - c.y)) / d;
 		return u >= -1e-4f && v >= -1e-4f && (u + v) <= 1.0f + 1e-4f;
 	};
-	for (const MeshRow& row : m_world->scene.tables.meshes) {
+	for (const MeshRow& row : m_world->m_hierarchy.tables.meshes) {
 		const uint32_t node = row.node;
 		const uint32_t meshIdx = row.mesh;
 		if (useSubtree && !subtree.contains(node))
@@ -596,7 +596,7 @@ bool EditorApp::SelectedFaceWorld(glm::vec3 outW[3]) const {
     // World positions of the selected triangle (brute-force read, no
     // acceleration structures; selection only, never edited).
     if (m_selFaceNode == UINT32_MAX || m_selFaceTri == UINT32_MAX || !m_world ||
-        m_selFaceNode >= m_world->scene.hierarchy.size())
+        m_selFaceNode >= m_world->m_hierarchy.hierarchy.size())
         return false;
     const smvk::MeshData* up = NodeMeshUpload(m_selFaceNode);
     if (!up || m_selFaceTri >= up->indices.size() / 3)
@@ -604,7 +604,7 @@ bool EditorApp::SelectedFaceWorld(glm::vec3 outW[3]) const {
     const uint32_t ix[3] = {up->indices[size_t(m_selFaceTri) * 3 + 0],
                             up->indices[size_t(m_selFaceTri) * 3 + 1],
                             up->indices[size_t(m_selFaceTri) * 3 + 2]};
-    const glm::mat4& model = m_world->scene.globalTransform[m_selFaceNode];
+    const glm::mat4& model = m_world->m_hierarchy.globalTransform[m_selFaceNode];
     for (int k = 0; k < 3; ++k) {
         if (ix[k] >= up->vertices.size())
             return false;
@@ -615,12 +615,12 @@ bool EditorApp::SelectedFaceWorld(glm::vec3 outW[3]) const {
 
 bool EditorApp::SelectedVertWorld(glm::vec3& outW) const {
     if (m_selVertNode == UINT32_MAX || m_selVertIdx == UINT32_MAX || !m_world ||
-        m_selVertNode >= m_world->scene.hierarchy.size())
+        m_selVertNode >= m_world->m_hierarchy.hierarchy.size())
         return false;
     const smvk::MeshData* up = NodeMeshUpload(m_selVertNode);
     if (!up || m_selVertIdx >= up->vertices.size())
         return false;
-    outW = glm::vec3(m_world->scene.globalTransform[m_selVertNode] *
+    outW = glm::vec3(m_world->m_hierarchy.globalTransform[m_selVertNode] *
                      glm::vec4(up->vertices[m_selVertIdx].pos, 1.0f));
     return true;
 }

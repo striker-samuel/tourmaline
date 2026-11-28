@@ -87,7 +87,7 @@ void EditorApp::DrawInspector() {
         DrawWorldPanel();
         return;
     }
-    if (!m_world || m_selected == UINT32_MAX || m_selected >= m_world->scene.hierarchy.size()) {
+    if (!m_world || m_selected == UINT32_MAX || m_selected >= m_world->m_hierarchy.hierarchy.size()) {
         ImGui::TextDisabled("Nothing selected.");
         ImGui::TextWrapped(
             "Click a mesh in the viewport or pick a node in the outliner. "
@@ -96,7 +96,7 @@ void EditorApp::DrawInspector() {
             "top of the outliner.");
         return;
     }
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     const uint32_t node = m_selected;
     const attr::ScopedID nodeId{int(node)};
     // Highlight properties at their edit sites (local overrides win

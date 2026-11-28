@@ -29,7 +29,7 @@ std::vector<uint32_t> CollectStaticRenderNodes(const ::TransformHierarchy& scene
 
 StaticMergeResult CollapseStaticSubtrees(WorldPage& cluster, const StaticMergeOptions& opts) {
     StaticMergeResult result;
-    ::TransformHierarchy& scene = cluster.scene;
+    ::TransformHierarchy& scene = cluster.m_hierarchy;
 
     if (scene.staticRoot.size() != scene.hierarchy.size())
         RebuildStaticCache(scene);

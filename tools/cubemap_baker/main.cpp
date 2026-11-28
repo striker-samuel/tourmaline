@@ -719,7 +719,7 @@ int main(int argc, char** argv) {
                     return vfs.TryRead(p);
                 return std::nullopt;
             };
-            addNode(cluster->scene, -1, 0); // empty scene root (editor parity)
+            addNode(cluster->m_hierarchy, -1, 0); // empty scene root (editor parity)
             auto texSrc = std::make_shared<VfsTextureSource>(&vfs, smvk::vfs::BaseDir(artPath));
             const size_t built = BuildFromMeshAsset(*cluster,
                                                     nullptr,

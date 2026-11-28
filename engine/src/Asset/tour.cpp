@@ -4040,7 +4040,7 @@ bool ApplyTourToCluster(WorldPage& cluster,
             err->clear();
         return true;
     };
-    TransformHierarchy& scene = cluster.scene;
+    TransformHierarchy& scene = cluster.m_hierarchy;
     // LOGICAL TARGET RESOLUTION (the Item-6 layer): a command carrying
     // uuid/name keys resolves through the Delete chain — uuid exact ->
     // unique full name -> DAG path suffix -> the numeric id as the

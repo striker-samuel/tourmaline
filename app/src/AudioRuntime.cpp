@@ -156,7 +156,7 @@ class AudioRuntimeElement final : public engine::IAppElement {
                 continue;
             const auto& merged = ci < world->pageMergedNodes.size() ? world->pageMergedNodes[ci]
                                                                     : std::vector<uint32_t>{};
-            for (const AudioSourceRow& row : cluster->scene.tables.audioSources) {
+            for (const AudioSourceRow& row : cluster->m_hierarchy.tables.audioSources) {
                 const EmitterKey key{cluster, row.node};
                 liveEmitters.insert(key);
                 const uint32_t mergedNode =
@@ -170,7 +170,7 @@ class AudioRuntimeElement final : public engine::IAppElement {
                 continue;
             const EmitterKey key{e.owner, e.clusterNode};
             liveEmitters.insert(key);
-            const AudioSourceRow* row = FindAudioSource(e.owner->scene, e.clusterNode);
+            const AudioSourceRow* row = FindAudioSource(e.owner->m_hierarchy, e.clusterNode);
             if (row)
                 UpdateEmitter(*world, key, &row->source, e.mergedNode, listener);
         }
@@ -210,7 +210,7 @@ class AudioRuntimeElement final : public engine::IAppElement {
                 tour::WorldPage* cluster = world->pages[ci].get();
                 if (!cluster)
                     continue;
-                for (const AudioSourceRow& row : cluster->scene.tables.audioSources)
+                for (const AudioSourceRow& row : cluster->m_hierarchy.tables.audioSources)
                     for (const AudioSoundRef& s : row.source.sounds)
                         if (s.soundId != 0)
                             referenced.insert(s.soundId);
@@ -218,7 +218,7 @@ class AudioRuntimeElement final : public engine::IAppElement {
             for (const tour::World::AudioSourceEntity& e : world->audioEntities) {
                 if (!e.alive || !e.owner)
                     continue;
-                const AudioSourceRow* row = FindAudioSource(e.owner->scene, e.clusterNode);
+                const AudioSourceRow* row = FindAudioSource(e.owner->m_hierarchy, e.clusterNode);
                 if (row)
                     for (const AudioSoundRef& s : row->source.sounds)
                         if (s.soundId != 0)
@@ -273,7 +273,7 @@ class AudioRuntimeElement final : public engine::IAppElement {
                 *err = "node " + std::to_string(mergedNode) + " carries no live audio source";
             return {};
         }
-        const AudioSourceRow* row = FindAudioSource(key.cluster->scene, key.node);
+        const AudioSourceRow* row = FindAudioSource(key.cluster->m_hierarchy, key.node);
         if (!row) {
             if (err)
                 *err = "the emitter's durable row vanished (a rebuild"
@@ -315,8 +315,8 @@ class AudioRuntimeElement final : public engine::IAppElement {
 
     bool SetVolume(tour::World& world, uint32_t mergedNode, float vol) {
         bool wrote = false;
-        if (mergedNode < world.scene.hierarchy.size()) {
-            AudioSourceRow* row = FindAudioSource(world.scene, mergedNode);
+        if (mergedNode < world.m_hierarchy.hierarchy.size()) {
+            AudioSourceRow* row = FindAudioSource(world.m_hierarchy, mergedNode);
             if (row) {
                 row->source.volume = std::max(vol, 0.0f);
                 wrote = true;
@@ -326,7 +326,7 @@ class AudioRuntimeElement final : public engine::IAppElement {
         // across resolves.
         const EmitterKey key = FindEmitterByMergedNode(world, mergedNode);
         if (key.cluster) {
-            AudioSourceRow* row = FindAudioSource(key.cluster->scene, key.node);
+            AudioSourceRow* row = FindAudioSource(key.cluster->m_hierarchy, key.node);
             if (row) {
                 row->source.volume = std::max(vol, 0.0f);
                 wrote = true;
@@ -395,7 +395,7 @@ class AudioRuntimeElement final : public engine::IAppElement {
                 continue;
             const auto& merged = ci < world.pageMergedNodes.size() ? world.pageMergedNodes[ci]
                                                                    : std::vector<uint32_t>{};
-            for (const AudioSourceRow& row : cluster->scene.tables.audioSources) {
+            for (const AudioSourceRow& row : cluster->m_hierarchy.tables.audioSources) {
                 const uint32_t m = row.node < merged.size() ? merged[row.node] : UINT32_MAX;
                 if (m == mergedNode)
                     return EmitterKey{cluster, row.node};
@@ -415,10 +415,10 @@ class AudioRuntimeElement final : public engine::IAppElement {
                        const SceneAudioSource* def,
                        uint32_t mergedNode,
                        const ListenerPose& listener) {
-        if (!def || mergedNode == UINT32_MAX || mergedNode >= world.scene.globalTransform.size())
+        if (!def || mergedNode == UINT32_MAX || mergedNode >= world.m_hierarchy.globalTransform.size())
             return;
         EmitterState& state = m_emitters[key];
-        const glm::vec3 pos = glm::vec3(world.scene.globalTransform[mergedNode][3]);
+        const glm::vec3 pos = glm::vec3(world.m_hierarchy.globalTransform[mergedNode][3]);
         // Autoplay: the authored playOnLoad fires ONCE per scene life
         // (a rebuild drops the state, a fresh scene re-fires — the
         // authored intent).
@@ -518,7 +518,7 @@ class AudioRuntimeElement final : public engine::IAppElement {
             if (!cluster || cluster->isDynamic)
                 continue; // authored rooms only (v1)
             for (const tour::transformhierarchy::AudioRoomRow& row :
-                 cluster->scene.tables.audioRooms)
+                 cluster->m_hierarchy.tables.audioRooms)
                 if (row.room.enabled)
                     rooms.push_back({cluster, ci, row.node, &row.room});
         }
@@ -547,11 +547,11 @@ class AudioRuntimeElement final : public engine::IAppElement {
                                      ? world.pageMergedNodes[r.clusterIndex]
                                      : std::vector<uint32_t>{};
             const uint32_t m = r.clusterNode < merged.size() ? merged[r.clusterNode] : UINT32_MAX;
-            if (m == UINT32_MAX || m >= world.scene.globalTransform.size())
+            if (m == UINT32_MAX || m >= world.m_hierarchy.globalTransform.size())
                 continue;
             const tour::transformhierarchy::SpatialVolumeBox box =
                 tour::transformhierarchy::VolumeBoxFromGlobalTransform(
-                    world.scene.globalTransform[m]);
+                    world.m_hierarchy.globalTransform[m]);
             if (!box.Valid())
                 continue; // degenerate/flat: covers nothing
             anyShape = true;

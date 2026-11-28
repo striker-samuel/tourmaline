@@ -175,7 +175,7 @@ std::vector<uint32_t> EditorApp::MatchOverrideNodes(const std::string& pattern,
         errOut = e.what();
         return out;
     }
-    const TransformHierarchy& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->m_hierarchy;
     for (uint32_t n = 0; n < uint32_t(scene.hierarchy.size()); ++n) {
         const std::string nm = getNodeName(scene, int(n));
         if (nm.empty())
@@ -197,7 +197,7 @@ int EditorApp::CountOverrideMatches(const std::string& pattern) const {
         return 0;
     try {
         std::regex rx(pattern, std::regex::ECMAScript | std::regex::optimize);
-        const TransformHierarchy& scene = m_world->scene;
+        const TransformHierarchy& scene = m_world->m_hierarchy;
         int count = 0;
         for (uint32_t n = 0; n < uint32_t(scene.hierarchy.size()); ++n) {
             const std::string nm = getNodeName(scene, int(n));
@@ -229,7 +229,7 @@ void EditorApp::ApplyOverrideRule(OverrideRule& r) {
         r.lastError = err;
         return;
     }
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     int touched = 0;
     for (uint32_t n : hits) {
         if (r.attr == smvk::tour::OverrideAttr::Plug ? HasLocalPlugOverride(n, r.plug)
@@ -365,7 +365,7 @@ void EditorApp::UnapplyOverrideRule(OverrideRule& r) {
         r.applied.clear();
         return;
     }
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     for (auto it = r.applied.rbegin(); it != r.applied.rend(); ++it) {
         const uint32_t n = it->node;
         if (n >= scene.hierarchy.size())
@@ -481,7 +481,7 @@ void EditorApp::ReapplyAllOverrides() {
     for (auto& r : m_overrideRules)
         if (r.enabled)
             ApplyOverrideRule(r);
-    if (m_world && !m_plugGraph.Evaluate(m_world->scene))
+    if (m_world && !m_plugGraph.Evaluate(m_world->m_hierarchy))
         Log("tour: some connectAttr sources or destinations are unavailable.");
 }
 
@@ -702,9 +702,9 @@ void EditorApp::NoteLocalOverrideWritten(uint32_t node, smvk::tour::OverrideAttr
     }
 }
 void EditorApp::ReassertWideOverrides(uint32_t node) {
-    if (!m_world || node >= m_world->scene.hierarchy.size())
+    if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
         return;
-    const std::string nm = getNodeName(m_world->scene, int(node));
+    const std::string nm = getNodeName(m_world->m_hierarchy, int(node));
     if (nm.empty())
         return;
     for (auto& r : m_overrideRules) {
@@ -731,7 +731,7 @@ void EditorApp::ReassertWideOverrides(uint32_t node) {
         if (!hit)
             continue;
         // Capture before + write (same guards as ApplyOverrideRule).
-        TransformHierarchy& scene = m_world->scene;
+        TransformHierarchy& scene = m_world->m_hierarchy;
         OverrideApplied a{};
         a.node = node;
         switch (r.attr) {
@@ -898,9 +898,9 @@ const EditorApp::OverrideRule* EditorApp::LastWideRuleFor(smvk::tour::OverrideAt
 
 void EditorApp::DrawInspectorOverrides(uint32_t node) {
     using smvk::tour::OverrideAttr;
-    if (!m_world || node >= m_world->scene.hierarchy.size())
+    if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     const std::string nm = getNodeName(scene, int(node));
     ImGui::Separator();
     ImGui::Text("Overrides (Clarisse-style)");
@@ -1196,8 +1196,8 @@ void EditorApp::DrawOverridesPanel() {
         if (ImGui::Button("Connect")) {
             using namespace tour::transformhierarchy::plugs;
             if (m_connectSourceNode < 0 || m_connectDestNode < 0 || !m_world ||
-                uint32_t(m_connectSourceNode) >= m_world->scene.hierarchy.size() ||
-                uint32_t(m_connectDestNode) >= m_world->scene.hierarchy.size()) {
+                uint32_t(m_connectSourceNode) >= m_world->m_hierarchy.hierarchy.size() ||
+                uint32_t(m_connectDestNode) >= m_world->m_hierarchy.hierarchy.size()) {
                 Log("connectAttr: node ID out of range");
             } else {
                 Connection e{};
@@ -1206,14 +1206,14 @@ void EditorApp::DrawOverridesPanel() {
                 e.destination = {uint32_t(m_connectDestNode),
                                  std::string(kDescriptors[m_connectDestPlug].path)};
                 Value value;
-                if (!Read(m_world->scene, e.source.node, e.source.plug, value) ||
-                    !Read(m_world->scene, e.destination.node, e.destination.plug, value)) {
+                if (!Read(m_world->m_hierarchy, e.source.node, e.source.plug, value) ||
+                    !Read(m_world->m_hierarchy, e.destination.node, e.destination.plug, value)) {
                     Log("connectAttr: source/destination component is not present");
                 } else {
                     Graph next = m_plugGraph;
                     if (next.Connect(e)) {
                         m_plugGraph = std::move(next);
-                        m_plugGraph.Evaluate(m_world->scene);
+                        m_plugGraph.Evaluate(m_world->m_hierarchy);
                         AutosaveTour();
                     } else
                         Log("connectAttr: type mismatch or cycle");

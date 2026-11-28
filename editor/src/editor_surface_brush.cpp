@@ -36,10 +36,10 @@ void EditorApp::SurfaceBrushSample(int viewport, float x, float y) {
     // same camera convention and returns the frontmost visible triangle,
     // avoiding a GPU synchronization/readback stall for each brush dab.
     const auto hit = PickNode(viewport, x, y, ext);
-    if (!hit || hit->node >= m_world->scene.globalTransform.size() ||
+    if (!hit || hit->node >= m_world->m_hierarchy.globalTransform.size() ||
         m_deletedNodes.contains(hit->node))
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     const glm::mat4 parentWorld = scene.globalTransform[hit->node];
     // Mint an identity only for touched nodes. SaveTour already emits
     // SetUuid for metadata UUIDs, so this survives scene re-imports.
@@ -171,7 +171,7 @@ void EditorApp::DrawSurfaceBrushPanel() {
             // surface object; positions are already parent-local.
             uint32_t created = 0;
             for (const surface::Stroke& s : m_surfaceStrokes) {
-                const uint32_t parent = ResolveStrokeParent(m_world->scene, s);
+                const uint32_t parent = ResolveStrokeParent(m_world->m_hierarchy, s);
                 if (parent == UINT32_MAX || m_deletedNodes.contains(parent))
                     continue;
                 for (const glm::vec3& local : s.points) {
@@ -504,12 +504,12 @@ void EditorApp::DrawSurfaceBrushOverlay() {
             return true;
         };
         auto draw = [&](const surface::Stroke& stroke, ImU32 color) {
-            const uint32_t parent = ResolveStrokeParent(m_world->scene, stroke);
+            const uint32_t parent = ResolveStrokeParent(m_world->m_hierarchy, stroke);
             if (parent == UINT32_MAX || m_deletedNodes.contains(parent) ||
-                parent >= m_world->scene.globalTransform.size() ||
-                !IsVisibleNode(m_world->scene, int(parent)))
+                parent >= m_world->m_hierarchy.globalTransform.size() ||
+                !IsVisibleNode(m_world->m_hierarchy, int(parent)))
                 return;
-            const glm::mat4& transform = m_world->scene.globalTransform[parent];
+            const glm::mat4& transform = m_world->m_hierarchy.globalTransform[parent];
             ImVec2 last{};
             bool lastValid = false;
             for (const glm::vec3& local : stroke.points) {

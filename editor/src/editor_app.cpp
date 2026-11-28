@@ -73,8 +73,8 @@ bool EditorApp::SceneEmpty() const {
     // opens gone (paks run in the App), every non-empty editor scene is
     // definition-backed by construction.
     return !m_world ||
-           (m_world->scene.tables.meshes.empty() && m_world->scene.tables.lights.empty() &&
-            m_world->scene.tables.cameras.empty());
+           (m_world->m_hierarchy.tables.meshes.empty() && m_world->m_hierarchy.tables.lights.empty() &&
+            m_world->m_hierarchy.tables.cameras.empty());
 }
 
 bool EditorApp::OpenScene(const std::string& path) {
@@ -785,7 +785,7 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& pathIn, const std::string& 
     // log replays on top (below). No side imports: `path` non-empty
     // is a direct glTF open (its file IS the root reference's
     // source); empty means the opened tour carries the source.
-    addNode(cluster.scene, -1, 0); // empty scene root
+    addNode(cluster.m_hierarchy, -1, 0); // empty scene root
     Log(std::string("Binding scene definition (textures: ") +
         (m_textureStreamer ? (m_texMode == TexMode::Coarse ? "coarsest-only" : "streaming")
                            : "full") +
@@ -994,7 +994,7 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& pathIn, const std::string& 
     // WorldPage base for tour id translation (single-cluster scenes only).
     m_clusterBase = UINT32_MAX;
     if (m_world->pages.size() == 1 &&
-        m_world->scene.hierarchy.size() == 1 + m_world->pages[0]->scene.hierarchy.size())
+        m_world->m_hierarchy.hierarchy.size() == 1 + m_world->pages[0]->m_hierarchy.hierarchy.size())
         m_clusterBase = 1;
     // Map the reference placeholder CLUSTER ids -> world ids (cluster
     // base just became valid). Root references carry a -1 sentinel (no
@@ -1084,7 +1084,7 @@ bool EditorApp::LoadGltfIntoWorld(const std::string& pathIn, const std::string& 
                   sizeof(buf),
                   "Loaded '%s' (nodes=%zu meshes=%zu materials=%zu)",
                   path.c_str(),
-                  m_world->scene.hierarchy.size(),
+                  m_world->m_hierarchy.hierarchy.size(),
                   m_world->meshLocations.size(),
                   m_world->materialLocations.size());
     Log(buf);
@@ -1263,11 +1263,11 @@ bool EditorApp::TryLoadGiVolumes() {
         std::string path;
     };
     std::vector<Bound> bound;
-    for (const GiVolumeRow& row : m_world->scene.tables.giVolumes)
+    for (const GiVolumeRow& row : m_world->m_hierarchy.tables.giVolumes)
         if (!row.volume.bakeSource.empty())
             bound.push_back({row.node, row.volume.bakeSource});
     if (bound.empty()) {
-        const bool hasGiVolumes = !m_world->scene.tables.giVolumes.empty();
+        const bool hasGiVolumes = !m_world->m_hierarchy.tables.giVolumes.empty();
         Log(hasGiVolumes ? "Convex GI volumes: authored but none baked (bake via "
                            "Bake GI / the cook; the bake stamps the tour's giAsset "
                            "records)"
@@ -1582,7 +1582,7 @@ void EditorApp::UpdateTextureStreaming(smvk::Extent2D renderExtent) {
                 const smvk::Material* mat = m_world->GetMaterial(item.material);
                 if (!mat)
                     return;
-                const glm::mat4& model = m_world->scene.globalTransform[item.node];
+                const glm::mat4& model = m_world->m_hierarchy.globalTransform[item.node];
                 // The node origin can coincide with the camera while clipping.
                 // Avoid turning a near-zero heuristic distance into a mip-0
                 // request for every texture on the intersected object.
@@ -1800,7 +1800,7 @@ void EditorApp::UpdateCamera(float dt) {
 }
 
 bool EditorApp::SelectionBounds(glm::vec3& outCenter, float& outRadius) {
-    if (!m_world || m_selected == UINT32_MAX || m_selected >= m_world->scene.hierarchy.size())
+    if (!m_world || m_selected == UINT32_MAX || m_selected >= m_world->m_hierarchy.hierarchy.size())
         return false;
     // Union AABB over the selected subtree's mesh nodes (same union the
     // gizmo highlight draws in editor_gizmo.cpp).
@@ -1810,18 +1810,18 @@ bool EditorApp::SelectionBounds(glm::vec3& outCenter, float& outRadius) {
     while (!stack.empty()) {
         const uint32_t n = stack.back();
         stack.pop_back();
-        if (n >= m_world->scene.hierarchy.size())
+        if (n >= m_world->m_hierarchy.hierarchy.size())
             continue;
-        for (int c = m_world->scene.hierarchy[n].firstChild; c != -1;
-             c = m_world->scene.hierarchy[c].nextSibling)
+        for (int c = m_world->m_hierarchy.hierarchy[n].firstChild; c != -1;
+             c = m_world->m_hierarchy.hierarchy[c].nextSibling)
             stack.push_back(uint32_t(c));
-        const MeshRow* meshRow = FindMesh(m_world->scene, n);
+        const MeshRow* meshRow = FindMesh(m_world->m_hierarchy, n);
         if (!meshRow)
             continue;
         smvk::StaticMesh* mesh = m_world->GetMesh(meshRow->mesh);
         if (!mesh)
             continue;
-        const glm::mat4& model = m_world->scene.globalTransform[n];
+        const glm::mat4& model = m_world->m_hierarchy.globalTransform[n];
         for (int k = 0; k < 8; ++k) {
             const glm::vec3 corner((k & 1) ? mesh->geometry.aabbMax.x : mesh->geometry.aabbMin.x,
                                    (k & 2) ? mesh->geometry.aabbMax.y : mesh->geometry.aabbMin.y,
@@ -1834,7 +1834,7 @@ bool EditorApp::SelectionBounds(glm::vec3& outCenter, float& outRadius) {
     }
     if (!has) {
         // No mesh under the selection: pivot on the node origin.
-        outCenter = glm::vec3(m_world->scene.globalTransform[m_selected][3]);
+        outCenter = glm::vec3(m_world->m_hierarchy.globalTransform[m_selected][3]);
         outRadius = 0.5f;
         return true;
     }
@@ -1865,7 +1865,7 @@ bool EditorApp::SelectionPivotCenter(glm::vec3& outCenter) {
     // pivot the gizmo transforms about). Single selection = the
     // primary's subtree bounds (SelectionBounds semantics); nothing
     // selected = false.
-    if (!m_world || m_selected == UINT32_MAX || m_selected >= m_world->scene.hierarchy.size())
+    if (!m_world || m_selected == UINT32_MAX || m_selected >= m_world->m_hierarchy.hierarchy.size())
         return false;
     if (m_selection.size() <= 1) {
         glm::vec3 c;
@@ -1880,24 +1880,24 @@ bool EditorApp::SelectionPivotCenter(glm::vec3& outCenter) {
     bool has = false;
     std::unordered_set<uint32_t> seen;
     for (uint32_t root : m_selection) {
-        if (root >= m_world->scene.hierarchy.size() || !seen.insert(root).second)
+        if (root >= m_world->m_hierarchy.hierarchy.size() || !seen.insert(root).second)
             continue;
         std::vector<uint32_t> stack{root};
         while (!stack.empty()) {
             const uint32_t n = stack.back();
             stack.pop_back();
-            if (n >= m_world->scene.hierarchy.size() || !seen.insert(n).second)
+            if (n >= m_world->m_hierarchy.hierarchy.size() || !seen.insert(n).second)
                 continue;
-            for (int c = m_world->scene.hierarchy[n].firstChild; c != -1;
-                 c = m_world->scene.hierarchy[c].nextSibling)
+            for (int c = m_world->m_hierarchy.hierarchy[n].firstChild; c != -1;
+                 c = m_world->m_hierarchy.hierarchy[c].nextSibling)
                 stack.push_back(uint32_t(c));
-            const MeshRow* meshRow = FindMesh(m_world->scene, n);
+            const MeshRow* meshRow = FindMesh(m_world->m_hierarchy, n);
             if (!meshRow)
                 continue;
             smvk::StaticMesh* mesh = m_world->GetMesh(meshRow->mesh);
             if (!mesh)
                 continue;
-            const glm::mat4& model = m_world->scene.globalTransform[n];
+            const glm::mat4& model = m_world->m_hierarchy.globalTransform[n];
             for (int k = 0; k < 8; ++k) {
                 const glm::vec3 corner(
                     (k & 1) ? mesh->geometry.aabbMax.x : mesh->geometry.aabbMin.x,
@@ -2010,13 +2010,13 @@ void EditorApp::DrawFrame() {
             if (selList) {
                 selDone = true;
                 for (const auto& item : m_world->drawItems) {
-                    const glm::mat4& g = m_world->scene.globalTransform[item.node];
+                    const glm::mat4& g = m_world->m_hierarchy.globalTransform[item.node];
                     std::fprintf(stderr,
                                  "[SELLIST] node=%u parent=%d basis "
                                  "x=(%.3f,%.3f,%.3f) y=(%.3f,%.3f,%.3f) "
                                  "z=(%.3f,%.3f,%.3f)\n",
                                  item.node,
-                                 m_world->scene.hierarchy[item.node].parent,
+                                 m_world->m_hierarchy.hierarchy[item.node].parent,
                                  g[0][0],
                                  g[0][1],
                                  g[0][2],
@@ -2028,11 +2028,11 @@ void EditorApp::DrawFrame() {
                                  g[2][2]);
                 }
                 std::fflush(stderr);
-            } else if (selNode >= 0 && selNode < int(m_world->scene.hierarchy.size())) {
+            } else if (selNode >= 0 && selNode < int(m_world->m_hierarchy.hierarchy.size())) {
                 selDone = true;
                 m_selected = uint32_t(selNode);
                 std::cerr << "[SELECT] dev pin: node " << selNode << " selected ("
-                          << m_world->scene.hierarchy.size() << " nodes)\n";
+                          << m_world->m_hierarchy.hierarchy.size() << " nodes)\n";
                 std::fflush(stderr);
             }
         }

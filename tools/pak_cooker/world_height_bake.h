@@ -36,7 +36,7 @@ inline uint64_t RasterPlacedHeight(const smvk::terrain::TerrainMeta& meta,
     for (const smvk::WorldPage* cluster : scenes) {
         if (!cluster)
             continue;
-        const auto& scene = cluster->scene;
+        const auto& scene = cluster->m_hierarchy;
         for (const MeshRow& row : scene.tables.meshes) {
             if (size_t(row.node) >= scene.globalTransform.size())
                 continue;

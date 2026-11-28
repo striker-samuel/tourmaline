@@ -6,7 +6,7 @@
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/static_vertex_heap.h>
 #include <Engine/Renderer/vertex_pack.h>
-#include <Engine/Scene/scene.h>
+#include <Engine/Scene/m_hierarchy.h>
 
 #include <cstdio>
 
@@ -532,10 +532,10 @@ bool smvk::WorldPage::SampleAnimationPose(float dt) {
             animTime_ -= clip.duration;
     }
     for (const touranim::Track& t : clip.tracks) {
-        if (t.joint >= scene.localTransform.size())
+        if (t.joint >= m_hierarchy.localTransform.size())
             continue;
         const glm::vec4 v = touranim::SampleTrack(t, animTime_);
-        glm::mat4 local = scene.localTransform[t.joint];
+        glm::mat4 local = m_hierarchy.localTransform[t.joint];
         // Decompose the current local (the bind channels for untracked
         // axes; exact round trip for TRS-authored locals).
         const glm::vec3 T(local[3]);
@@ -572,24 +572,24 @@ bool smvk::WorldPage::SampleAnimationPose(float dt) {
         // A scene mutation must pass through the journal-producing API;
         // direct localTransform writes can leave GPU-scene mirrors stale.
         if (!tour::transformhierarchy::SetLocalTransform(
-                scene, MakeNodeHandle(scene, t.joint), local))
+                m_hierarchy, MakeNodeHandle(m_hierarchy, t.joint), local))
             return false;
     }
-    recalculateGlobalTransforms(scene);
+    recalculateGlobalTransforms(m_hierarchy);
     return true;
 }
 
 bool smvk::WorldPage::SampleAnimation(float dt, std::vector<glm::mat4>& outPalette) {
     if (!SampleAnimationPose(dt))
         return false;
-    touranim::BuildSkinPalette(scene, skeleton, outPalette);
+    touranim::BuildSkinPalette(m_hierarchy, skeleton, outPalette);
     return true;
 }
 
 bool smvk::WorldPage::SampleAnimation(float dt, tour::mem::FrameVector<glm::mat4>& outPalette) {
     if (!SampleAnimationPose(dt))
         return false;
-    touranim::BuildSkinPalette(scene, skeleton, outPalette);
+    touranim::BuildSkinPalette(m_hierarchy, skeleton, outPalette);
     return true;
 }
 

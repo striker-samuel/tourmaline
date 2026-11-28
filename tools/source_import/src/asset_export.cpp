@@ -1658,9 +1658,9 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
             importer.setDeriveShaderLods(config.shaderLods);
             importer.setAutoKtx(true);
             importer.setModelUriBase(gltfPath.generic_string());
-            const int root = addNode(partCluster->scene, -1, 0);
-            partCluster->scene.localTransform[size_t(root)] = glm::mat4(1.0f);
-            partCluster->scene.globalTransform[size_t(root)] = glm::mat4(1.0f);
+            const int root = addNode(partCluster->m_hierarchy, -1, 0);
+            partCluster->m_hierarchy.localTransform[size_t(root)] = glm::mat4(1.0f);
+            partCluster->m_hierarchy.globalTransform[size_t(root)] = glm::mat4(1.0f);
             const auto& roots = part.activeRoots.empty() ? part.roots : part.activeRoots;
             importer.preloadTextures();
             fprintf(stderr, "[import] deriving meshes (roots=%zu)...\n", roots.size());
@@ -1678,10 +1678,10 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
             importer.BuildSkinData();
             fprintf(stderr, "[import] skin done\n");
             fflush(stderr);
-            RebuildStaticCache(partCluster->scene);
+            RebuildStaticCache(partCluster->m_hierarchy);
             fprintf(stderr, "[import] static-cache done\n");
             fflush(stderr);
-            recalculateGlobalTransforms(partCluster->scene);
+            recalculateGlobalTransforms(partCluster->m_hierarchy);
             fprintf(stderr, "[import] transforms done\n");
             fflush(stderr);
             gltfNodeMap = importer.gltfNodeMap();
@@ -1692,7 +1692,7 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
         // cluster material URIs carry "<...>#mat.<gltf index>").
         MeshAsset mesh;
         {
-            const TransformHierarchy& scene = partCluster->scene;
+            const TransformHierarchy& scene = partCluster->m_hierarchy;
             const size_t nodeCount = scene.hierarchy.size();
             mesh.nodes.resize(nodeCount);
             for (size_t i = 0; i < nodeCount; ++i) {
@@ -2152,9 +2152,9 @@ bool DeriveNativeAssets(const smvk::source::Scene& native,
                 glm::vec3 basisScale(1.0f);
                 {
                     const glm::mat4 rawLocal = native.nodes[size_t(target)].localTransform;
-                    if (joint < int(cluster->scene.localTransform.size())) {
+                    if (joint < int(cluster->m_hierarchy.localTransform.size())) {
                         basis =
-                            cluster->scene.localTransform[size_t(joint)] * glm::inverse(rawLocal);
+                            cluster->m_hierarchy.localTransform[size_t(joint)] * glm::inverse(rawLocal);
                         basisScale = glm::vec3(glm::length(glm::vec3(basis[0])),
                                                glm::length(glm::vec3(basis[1])),
                                                glm::length(glm::vec3(basis[2])));

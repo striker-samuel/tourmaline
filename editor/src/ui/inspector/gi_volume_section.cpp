@@ -61,9 +61,9 @@ void EditorApp::DrawGiVolumeSection(uint32_t node) {
     // box shape from the node's TRS (translate = center, scale = full
     // extents), bake params below. Undoable SetGiVolumeAttr edits persisted
     // as setGiVolumeAttr tour verbs so cooks replay them.
-    if (!m_world || node >= m_world->scene.hierarchy.size())
+    if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     auto it = FindGiVolume(scene, node);
     if (!it)
         return;

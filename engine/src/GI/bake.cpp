@@ -940,7 +940,7 @@ GiStaticLightCounts CollectStaticBakeLights(const WorldPage& cluster,
                                             GiTraceScene& out,
                                             const glm::vec3& aimAxis) {
     return CollectStaticBakeLightsImpl(
-        cluster.scene,
+        cluster.m_hierarchy,
         [&cluster](uint32_t, uint32_t lightIdx) -> const SceneLight* {
             const WorldPageLightHandle handle = cluster.lights.getHandle(lightIdx);
             if (!handle.valid())
@@ -1257,7 +1257,7 @@ void BuildTraceSceneFromCluster(WorldPage& cluster,
                                 const GiSceneBuildOptions& opts,
                                 GiTraceScene& out,
                                 std::string& err) {
-    ::TransformHierarchy& scene = cluster.scene;
+    ::TransformHierarchy& scene = cluster.m_hierarchy;
     recalculateGlobalTransforms(scene);
     AssembleTraceScene(
         scene,
@@ -1291,7 +1291,7 @@ void ExtractTraceSceneFromWorld(World& world,
                                 const GiSceneBuildOptions& opts,
                                 GiTraceScene& out,
                                 std::string& err) {
-    ::TransformHierarchy& scene = world.scene;
+    ::TransformHierarchy& scene = world.m_hierarchy;
     // The merged scene's globals are the authoritative node transforms
     // (the editor keeps them current, but a snapshot must never trust an
     // incremental update it did not observe) - the same call the cook

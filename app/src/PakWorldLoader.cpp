@@ -83,7 +83,7 @@ void AttachClips(tour::WorldPage& c, const std::string& stem, app::ProjectRuntim
     // 2) The recorded refs (the cooked asset's explicit animation
     // references — the pak is self-contained: the refs name the
     // embedded blobs the pak_cooker packed).
-    for (const std::string& ref : c.scene.animClipRefs)
+    for (const std::string& ref : c.m_hierarchy.animClipRefs)
         if (!ref.empty())
             candidates.push_back(ref);
     // 3) Legacy demo-dir enumeration (pre-ref paks only) —
@@ -92,7 +92,7 @@ void AttachClips(tour::WorldPage& c, const std::string& stem, app::ProjectRuntim
     // '<stem>.anim<idx>_<sanitized glTF animation name>.anim',
     // so enumerate the demo dir for '<stem>.anim*' rather than
     // guessing a label — the union is sorted, so this is stable).
-    if (c.scene.animClipRefs.empty()) {
+    if (c.m_hierarchy.animClipRefs.empty()) {
         const std::string prefix = "demo/" + stem + ".anim";
         for (const std::string& e : session.Registry().ListPathsUnder("demo")) {
             if (e.size() >= prefix.size() + 5 && e.compare(0, prefix.size(), prefix) == 0 &&
@@ -197,7 +197,7 @@ void PostLoadTail(tour::World& world, const std::string& pakStem, app::ProjectRu
     }
     if (std::getenv("TOURMALINE_KD")) {
         int n = 0;
-        for (const MeshRow& row : world.scene.tables.meshes) {
+        for (const MeshRow& row : world.m_hierarchy.tables.meshes) {
             const uint32_t node = row.node;
             const uint32_t meshIdx = row.mesh;
             if (meshIdx >= world.meshLocations.size())
@@ -205,7 +205,7 @@ void PostLoadTail(tour::World& world, const std::string& pakStem, app::ProjectRu
             tour::WorldPage* cl = world.meshLocations[meshIdx].cluster;
             if (!cl || !cl->hasSkeleton)
                 continue;
-            const glm::mat4& g = world.scene.globalTransform[node];
+            const glm::mat4& g = world.m_hierarchy.globalTransform[node];
             std::cerr << "[KD] merged meshNode=" << node << " t=(" << g[3].x << "," << g[3].y << ","
                       << g[3].z << ") sc=(" << glm::length(glm::vec3(g[0])) << ","
                       << glm::length(glm::vec3(g[1])) << "," << glm::length(glm::vec3(g[2]))
@@ -232,7 +232,7 @@ void PostLoadTail(tour::World& world, const std::string& pakStem, app::ProjectRu
 void ApplyCookedStaticFlags(tour::World& world, const std::string& pakName) {
     for (auto& clusterPtr : world.pages) {
         tour::WorldPage* c = clusterPtr.get();
-        if (!c || c->scene.hierarchy.empty())
+        if (!c || c->m_hierarchy.hierarchy.empty())
             continue;
         if (c->hasSkeleton)
             continue; // skinned clusters stay dynamic (the anim driver) —
@@ -247,7 +247,7 @@ void ApplyCookedStaticFlags(tour::World& world, const std::string& pakName) {
             std::cerr << "[App] cluster '" << pakName
                       << "' (legacyStaticFallback) freezing its roots viewer-side"
                          " to engage the GPU-scene path\n";
-            MarkSubtreeStatic(c->scene, 0);
+            MarkSubtreeStatic(c->m_hierarchy, 0);
             continue;
         }
         // STRICT COOKED-BVH GATE (fail on open): a non-skinned pak WITHOUT
@@ -265,7 +265,7 @@ void ApplyCookedStaticFlags(tour::World& world, const std::string& pakName) {
         }
         // A cooked (new) pak honors the serialized static section verbatim
         // (all-zero == authored all-dynamic).
-        if (c->scene.staticRootsSerialized)
+        if (c->m_hierarchy.staticRootsSerialized)
             continue;
         // Skew: BVH section present but static section missing — freeze for
         // safety (the meshes otherwise carry no static marking).
@@ -273,7 +273,7 @@ void ApplyCookedStaticFlags(tour::World& world, const std::string& pakName) {
                   << "' carries no serialized static section (a legacy pak);"
                      " freezing its roots viewer-side — recook for authored"
                      " static flags\n";
-        MarkSubtreeStatic(c->scene, 0);
+        MarkSubtreeStatic(c->m_hierarchy, 0);
     }
 }
 

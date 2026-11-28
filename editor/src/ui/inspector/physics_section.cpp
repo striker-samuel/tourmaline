@@ -57,9 +57,9 @@
 namespace editor {
 void EditorApp::DrawPhysicsBodySection(uint32_t node) {
     const attr::ScopedID componentId("physics_body");
-    if (!m_world || node >= m_world->scene.hierarchy.size())
+    if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
         return;
-    auto* row = tour::transformhierarchy::FindPhysicsBody(m_world->scene, node);
+    auto* row = tour::transformhierarchy::FindPhysicsBody(m_world->m_hierarchy, node);
     if (!row)
         return;
     if (attr::ComponentHeader("Physics Body / Collider")) {

@@ -39,7 +39,7 @@ namespace editor {
 // preview and the borrowed renderer must see the same current paths.
 void EditorApp::ApplyGiAssetBindingsToScene() {
     if (m_world) {
-        TransformHierarchy& liveScene = m_world->scene;
+        TransformHierarchy& liveScene = m_world->m_hierarchy;
         liveScene.giWorldSource.clear();
         liveScene.giWorldGuid.clear();
         liveScene.giWorldInputHash.clear();
@@ -101,7 +101,7 @@ void EditorApp::ApplyGiAssetBindingsToScene() {
 }
 
 void EditorApp::ReadLocalTRS(uint32_t node, glm::vec3& t, glm::vec3& rDeg, glm::vec3& s) const {
-    transform::ReadLocalTRS(m_world->scene.localTransform[node], t, rDeg, s);
+    transform::ReadLocalTRS(m_world->m_hierarchy.localTransform[node], t, rDeg, s);
 }
 
 void EditorApp::WriteLocalTRS(uint32_t node,
@@ -113,9 +113,9 @@ void EditorApp::WriteLocalTRS(uint32_t node,
     const glm::mat4 candidate = LocalMatrixFromTRS(t, rDeg, s);
     if (!transform::Finite(candidate))
         return;
-    m_world->scene.localTransform[node] = candidate;
-    markAsChanged(m_world->scene, int(node));
-    recalculateGlobalTransforms(m_world->scene);
+    m_world->m_hierarchy.localTransform[node] = candidate;
+    markAsChanged(m_world->m_hierarchy, int(node));
+    recalculateGlobalTransforms(m_world->m_hierarchy);
 }
 
 // Current shared-material attr value (matches tour ApplyMatAttr fields).
@@ -300,7 +300,7 @@ int EditorApp::WorldToCluster(uint32_t worldNode) const {
     if (worldNode < m_clusterBase)
         return -1;
     const uint32_t cn = worldNode - m_clusterBase;
-    if (cn >= m_world->pages[0]->scene.hierarchy.size())
+    if (cn >= m_world->pages[0]->m_hierarchy.hierarchy.size())
         return -1;
     return int(cn);
 }
@@ -334,7 +334,7 @@ int EditorApp::PageMatToWorld(uint32_t poolIdx) const {
 void EditorApp::ExecCmd(EditCmd& c, bool forward) {
     if (!m_world)
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     switch (c.verb) {
     case EditVerb::Rename: {
         const std::string& name = forward ? c.afterText : c.beforeText;
@@ -794,11 +794,11 @@ void EditorApp::ExecCmd(EditCmd& c, bool forward) {
 // addresses later creates via kCreateLightRefBase (creation order).
 // ---------------------------------------------------------------------------
 uint32_t EditorApp::DefaultCreateParent() const {
-    if (!m_world || m_world->scene.hierarchy.empty())
+    if (!m_world || m_world->m_hierarchy.hierarchy.empty())
         return UINT32_MAX;
     // The primary cluster's root: WorldToCluster maps it to cluster id
     // 0, so the tour stays replayable on a fresh import.
-    if (m_clusterBase != UINT32_MAX && m_clusterBase < m_world->scene.hierarchy.size())
+    if (m_clusterBase != UINT32_MAX && m_clusterBase < m_world->m_hierarchy.hierarchy.size())
         return m_clusterBase;
     return 0;
 }
@@ -807,7 +807,7 @@ std::string EditorApp::UniqueLightName(bool spot) const {
     const char* base = spot ? "Spot" : "Point";
     int n = 1;
     if (m_world)
-        for (const LightRow& row : m_world->scene.tables.lights) {
+        for (const LightRow& row : m_world->m_hierarchy.tables.lights) {
             const ::SceneLight* L = FindNodeLight(row.node, nullptr);
             if (L && (L->type == ::SceneLight::Type::Spot) == spot)
                 ++n;
@@ -829,7 +829,7 @@ int EditorApp::CreatedLightIndex(uint32_t worldNode) const {
         const EditCmd& h = m_history[i];
         if (h.verb != EditVerb::CreateLight)
             continue;
-        if (!m_world || FindLight(m_world->scene, h.node) == nullptr)
+        if (!m_world || FindLight(m_world->m_hierarchy, h.node) == nullptr)
             continue; // deleted (tombstoned): not in the file's ref space
         if (!CreateCmdEmitsInTour(*this, h))
             continue; // emission dropped (parent unresolvable)
@@ -864,7 +864,7 @@ int EditorApp::CreatedGiVolumeIndex(uint32_t worldNode) const {
         const EditCmd& h = m_history[i];
         if (h.verb != EditVerb::CreateGiVolume)
             continue;
-        if (!m_world || FindGiVolume(m_world->scene, h.node) == nullptr)
+        if (!m_world || FindGiVolume(m_world->m_hierarchy, h.node) == nullptr)
             continue; // deleted (tombstoned): not in the file's ref space
         if (!CreateCmdEmitsInTour(*this, h))
             continue; // emission dropped (parent unresolvable)
@@ -882,8 +882,8 @@ std::string EditorApp::UniqueGiVolumeName() const {
         for (;;) {
             const std::string want = "GIVolume_" + std::to_string(n);
             bool taken = false;
-            for (size_t i = 0; i < m_world->scene.hierarchy.size() && !taken; ++i)
-                taken = getNodeName(m_world->scene, int(i)) == want;
+            for (size_t i = 0; i < m_world->m_hierarchy.hierarchy.size() && !taken; ++i)
+                taken = getNodeName(m_world->m_hierarchy, int(i)) == want;
             if (!taken)
                 break;
             ++n;
@@ -900,7 +900,7 @@ int EditorApp::CreatedCubemapIndex(uint32_t worldNode) const {
         const EditCmd& h = m_history[i];
         if (h.verb != EditVerb::CreateCubemap)
             continue;
-        if (!m_world || FindCubemap(m_world->scene, h.node) == nullptr)
+        if (!m_world || FindCubemap(m_world->m_hierarchy, h.node) == nullptr)
             continue; // deleted (tombstoned): not in the file's ref space
         if (!CreateCmdEmitsInTour(*this, h))
             continue; // emission dropped (parent unresolvable)
@@ -918,8 +918,8 @@ std::string EditorApp::UniqueCubemapName() const {
         for (;;) {
             const std::string want = "Cube_" + std::to_string(n);
             bool taken = false;
-            for (size_t i = 0; i < m_world->scene.hierarchy.size() && !taken; ++i)
-                taken = getNodeName(m_world->scene, int(i)) == want;
+            for (size_t i = 0; i < m_world->m_hierarchy.hierarchy.size() && !taken; ++i)
+                taken = getNodeName(m_world->m_hierarchy, int(i)) == want;
             if (!taken)
                 break;
             ++n;
@@ -938,7 +938,7 @@ int EditorApp::CreatedCameraIndex(uint32_t worldNode) const {
         const EditCmd& h = m_history[i];
         if (h.verb != EditVerb::CreateCamera)
             continue;
-        if (!m_world || FindCamera(m_world->scene, h.node) == nullptr)
+        if (!m_world || FindCamera(m_world->m_hierarchy, h.node) == nullptr)
             continue; // deleted (tombstoned): not in the file's ref space
         if (!CreateCmdEmitsInTour(*this, h))
             continue; // emission dropped (parent unresolvable)
@@ -956,8 +956,8 @@ std::string EditorApp::UniqueCameraName() const {
         for (;;) {
             const std::string want = "Camera_" + std::to_string(n);
             bool taken = false;
-            for (size_t i = 0; i < m_world->scene.hierarchy.size() && !taken; ++i)
-                taken = getNodeName(m_world->scene, int(i)) == want;
+            for (size_t i = 0; i < m_world->m_hierarchy.hierarchy.size() && !taken; ++i)
+                taken = getNodeName(m_world->m_hierarchy, int(i)) == want;
             if (!taken)
                 break;
             ++n;
@@ -977,7 +977,7 @@ int EditorApp::CreatedAudioSourceIndex(uint32_t worldNode) const {
         const EditCmd& h = m_history[i];
         if (h.verb != EditVerb::CreateAudioSource)
             continue;
-        if (!m_world || FindAudioSource(m_world->scene, h.node) == nullptr)
+        if (!m_world || FindAudioSource(m_world->m_hierarchy, h.node) == nullptr)
             continue; // deleted (tombstoned): not in the file's ref space
         if (!CreateCmdEmitsInTour(*this, h))
             continue; // emission dropped (parent unresolvable)
@@ -998,8 +998,8 @@ std::string EditorApp::UniqueAudioSourceName() const {
             const std::string want =
                 n == 1 ? std::string("AudioSource") : "AudioSource" + std::to_string(n);
             bool taken = false;
-            for (size_t i = 0; i < m_world->scene.hierarchy.size() && !taken; ++i)
-                taken = getNodeName(m_world->scene, int(i)) == want;
+            for (size_t i = 0; i < m_world->m_hierarchy.hierarchy.size() && !taken; ++i)
+                taken = getNodeName(m_world->m_hierarchy, int(i)) == want;
             if (!taken)
                 return want;
             ++n;
@@ -1018,7 +1018,7 @@ int EditorApp::CreatedAudioRoomIndex(uint32_t worldNode) const {
         const EditCmd& h = m_history[i];
         if (h.verb != EditVerb::CreateAudioRoom)
             continue;
-        if (!m_world || tour::transformhierarchy::FindAudioRoom(m_world->scene, h.node) == nullptr)
+        if (!m_world || tour::transformhierarchy::FindAudioRoom(m_world->m_hierarchy, h.node) == nullptr)
             continue; // deleted (tombstoned): not in the file's ref space
         if (!CreateCmdEmitsInTour(*this, h))
             continue; // emission dropped (parent unresolvable)
@@ -1038,8 +1038,8 @@ std::string EditorApp::UniqueAudioRoomName() const {
             const std::string want =
                 n == 1 ? std::string("AudioRoom") : "AudioRoom" + std::to_string(n);
             bool taken = false;
-            for (size_t i = 0; i < m_world->scene.hierarchy.size() && !taken; ++i)
-                taken = getNodeName(m_world->scene, int(i)) == want;
+            for (size_t i = 0; i < m_world->m_hierarchy.hierarchy.size() && !taken; ++i)
+                taken = getNodeName(m_world->m_hierarchy, int(i)) == want;
             if (!taken)
                 return want;
             ++n;
@@ -1055,8 +1055,8 @@ std::string EditorApp::UniqueLocatorName() const {
         for (;;) {
             const std::string want = "Locator_" + std::to_string(n);
             bool taken = false;
-            for (size_t i = 0; i < m_world->scene.hierarchy.size() && !taken; ++i)
-                taken = getNodeName(m_world->scene, int(i)) == want;
+            for (size_t i = 0; i < m_world->m_hierarchy.hierarchy.size() && !taken; ++i)
+                taken = getNodeName(m_world->m_hierarchy, int(i)) == want;
             if (!taken)
                 break;
             ++n;
@@ -1072,8 +1072,8 @@ std::string EditorApp::UniqueTerrainName() const {
         for (;;) {
             const std::string want = "Terrain_" + std::to_string(n);
             bool taken = false;
-            for (size_t i = 0; i < m_world->scene.hierarchy.size() && !taken; ++i)
-                taken = getNodeName(m_world->scene, int(i)) == want;
+            for (size_t i = 0; i < m_world->m_hierarchy.hierarchy.size() && !taken; ++i)
+                taken = getNodeName(m_world->m_hierarchy, int(i)) == want;
             if (!taken)
                 break;
             ++n;
@@ -1105,8 +1105,8 @@ std::string EditorApp::UniqueCopyName(const std::string& base) const {
     for (int n = 1;; ++n) {
         const std::string want = prefix + "_" + std::to_string(n);
         bool taken = false;
-        for (size_t i = 0; i < m_world->scene.hierarchy.size() && !taken; ++i)
-            taken = getNodeName(m_world->scene, int(i)) == want;
+        for (size_t i = 0; i < m_world->m_hierarchy.hierarchy.size() && !taken; ++i)
+            taken = getNodeName(m_world->m_hierarchy, int(i)) == want;
         if (!taken)
             return want;
     }
@@ -1144,7 +1144,7 @@ bool EditorApp::CreateCmdEmitsInTour(const EditorApp& app, const EditCmd& h) {
     // recorded creation-time parent.
     if (!app.m_world)
         return false;
-    const TransformHierarchy& scene = app.m_world->scene;
+    const TransformHierarchy& scene = app.m_world->m_hierarchy;
     const uint32_t created = h.node;
     if (created == UINT32_MAX || created >= scene.hierarchy.size())
         return false;
@@ -1204,7 +1204,7 @@ uint32_t EditorApp::CreateEmitParent(const EditorApp& app, const EditCmd& h) {
     // own no cluster id — their Parent lines could never persist).
     if (!app.m_world)
         return UINT32_MAX;
-    const TransformHierarchy& scene = app.m_world->scene;
+    const TransformHierarchy& scene = app.m_world->m_hierarchy;
     if (h.node == UINT32_MAX || h.node >= scene.hierarchy.size())
         return UINT32_MAX;
     const int p = scene.hierarchy[h.node].parent;
@@ -1231,7 +1231,7 @@ bool EditorApp::IsCreatedChild(const EditorApp& app, uint32_t childNode) {
 bool EditorApp::ParentResolvesInTour(const EditorApp& app, uint32_t parentSlot) {
     if (!app.m_world)
         return false;
-    const TransformHierarchy& scene = app.m_world->scene;
+    const TransformHierarchy& scene = app.m_world->m_hierarchy;
     if (parentSlot == UINT32_MAX || parentSlot >= scene.hierarchy.size())
         return false;
     if (parentSlot == 0)
@@ -1277,7 +1277,7 @@ void EditorApp::DraftCreateTerrain(const TerrainDraft& d) {
     c.node = UINT32_MAX; // assigned at forward execution
     c.node2 = (d.tilesX & 0xFFFFu) | ((d.tilesZ & 0xFFFFu) << 16);
     // Parent rides beforeParent (node2 is the tile split now).
-    c.beforeParent = (m_selected != UINT32_MAX && m_selected < m_world->scene.hierarchy.size())
+    c.beforeParent = (m_selected != UINT32_MAX && m_selected < m_world->m_hierarchy.hierarchy.size())
                          ? m_selected
                          : DefaultCreateParent();
     c.afterText = d.name;
@@ -1298,7 +1298,7 @@ void EditorApp::DraftCreateLight(bool spot) {
     c.node = UINT32_MAX; // assigned at forward execution
     const uint32_t sel = m_selected;
     c.node2 =
-        (sel != UINT32_MAX && sel < m_world->scene.hierarchy.size()) ? sel : DefaultCreateParent();
+        (sel != UINT32_MAX && sel < m_world->m_hierarchy.hierarchy.size()) ? sel : DefaultCreateParent();
     c.afterText = UniqueLightName(spot);
     c.afterVec = ActiveCam().target;
     c.lightType = spot ? 2u : 1u;
@@ -1322,7 +1322,7 @@ void EditorApp::DraftCreateCamera() {
     c.node = UINT32_MAX; // assigned at forward execution
     const uint32_t sel = m_selected;
     c.node2 =
-        (sel != UINT32_MAX && sel < m_world->scene.hierarchy.size()) ? sel : DefaultCreateParent();
+        (sel != UINT32_MAX && sel < m_world->m_hierarchy.hierarchy.size()) ? sel : DefaultCreateParent();
     c.afterText = UniqueCameraName();
     // Spawn at the active camera target, aimed back at the active camera
     // eye (so the first look-through frames what you were seeing).
@@ -1356,7 +1356,7 @@ void EditorApp::DraftCreateAudioSource() {
     c.node = UINT32_MAX; // assigned at forward execution
     const uint32_t sel = m_selected;
     c.node2 =
-        (sel != UINT32_MAX && sel < m_world->scene.hierarchy.size()) ? sel : DefaultCreateParent();
+        (sel != UINT32_MAX && sel < m_world->m_hierarchy.hierarchy.size()) ? sel : DefaultCreateParent();
     c.afterText = UniqueAudioSourceName();
     // Spawn at the active camera target (what you're looking at — the
     // emitter is a world-placement authoring act). The payload plants
@@ -1411,8 +1411,8 @@ void EditorApp::DraftCreateSpatialVolume() {
     std::string name = "SpatialVolume";
     for (uint32_t suffix = 2;; ++suffix) {
         bool taken = false;
-        for (size_t i = 0; i < m_world->scene.hierarchy.size(); ++i)
-            if (getNodeName(m_world->scene, int(i)) == name) {
+        for (size_t i = 0; i < m_world->m_hierarchy.hierarchy.size(); ++i)
+            if (getNodeName(m_world->m_hierarchy, int(i)) == name) {
                 taken = true;
                 break;
             }
@@ -1425,7 +1425,7 @@ void EditorApp::DraftCreateSpatialVolume() {
     c.node = UINT32_MAX;
     const uint32_t sel = m_selected;
     c.node2 =
-        (sel != UINT32_MAX && sel < m_world->scene.hierarchy.size()) ? sel : DefaultCreateParent();
+        (sel != UINT32_MAX && sel < m_world->m_hierarchy.hierarchy.size()) ? sel : DefaultCreateParent();
     c.afterText = name;
     c.afterVec = ActiveCam().target;
     c.svec = glm::vec3(8.0f, 4.0f, 8.0f);
@@ -1447,8 +1447,8 @@ void EditorApp::FinishSpatialVolumeBrush() {
     std::string name = "SpatialVolume";
     for (uint32_t suffix = 2;; ++suffix) {
         bool taken = false;
-        for (size_t i = 0; i < m_world->scene.hierarchy.size(); ++i)
-            if (getNodeName(m_world->scene, int(i)) == name) {
+        for (size_t i = 0; i < m_world->m_hierarchy.hierarchy.size(); ++i)
+            if (getNodeName(m_world->m_hierarchy, int(i)) == name) {
                 taken = true;
                 break;
             }
@@ -1481,7 +1481,7 @@ void EditorApp::DraftCreateLocator() {
     c.node = UINT32_MAX; // assigned at forward execution
     const uint32_t sel = m_selected;
     c.node2 =
-        (sel != UINT32_MAX && sel < m_world->scene.hierarchy.size()) ? sel : DefaultCreateParent();
+        (sel != UINT32_MAX && sel < m_world->m_hierarchy.hierarchy.size()) ? sel : DefaultCreateParent();
     c.afterText = UniqueLocatorName();
     // Spawn at the active camera target (what you're looking at — the
     // most likely intent for a spawn point / trigger / patrol marker).
@@ -1495,7 +1495,7 @@ void EditorApp::DraftCreateLocator() {
 void EditorApp::ExecCreateLight(EditCmd& c) {
     if (!m_world)
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     uint32_t parent = c.node2;
     if (parent == UINT32_MAX || parent >= scene.hierarchy.size())
         parent = DefaultCreateParent();
@@ -1555,9 +1555,9 @@ void EditorApp::ExecCreateLight(EditCmd& c) {
 // node — the scene arrays no longer shrink past it the way the old
 // pop-back did by accident.
 void EditorApp::RetireCreatedNode(uint32_t n) {
-    if (!m_world || n == UINT32_MAX || n >= m_world->scene.hierarchy.size())
+    if (!m_world || n == UINT32_MAX || n >= m_world->m_hierarchy.hierarchy.size())
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     if (!IsNodeAlive(scene, n))
         return; // already retired (double undo): no-op
     const int p = scene.hierarchy[n].parent;
@@ -1588,7 +1588,7 @@ void EditorApp::RetireCreatedNode(uint32_t n) {
 void EditorApp::ExecUncreateLight(EditCmd& c) {
     if (!m_world)
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     const uint32_t n = c.node;
     if (n == UINT32_MAX || n >= scene.hierarchy.size())
         return;
@@ -1638,7 +1638,7 @@ void EditorApp::ExecUncreateLight(EditCmd& c) {
 void EditorApp::ExecCreateCamera(EditCmd& c) {
     if (!m_world)
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     uint32_t parent = c.node2;
     if (parent == UINT32_MAX || parent >= scene.hierarchy.size())
         parent = DefaultCreateParent();
@@ -1691,7 +1691,7 @@ void EditorApp::ExecCreateCamera(EditCmd& c) {
 void EditorApp::ExecUncreateCamera(EditCmd& c) {
     if (!m_world)
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     const uint32_t n = c.node;
     if (n == UINT32_MAX || n >= scene.hierarchy.size())
         return;
@@ -1744,7 +1744,7 @@ void EditorApp::ExecUncreateCamera(EditCmd& c) {
 void EditorApp::ExecCreateAudioSource(EditCmd& c) {
     if (!m_world)
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     uint32_t parent = c.node2;
     if (parent == UINT32_MAX || parent >= scene.hierarchy.size())
         parent = DefaultCreateParent();
@@ -1789,7 +1789,7 @@ void EditorApp::ExecCreateAudioSource(EditCmd& c) {
 void EditorApp::ExecUncreateAudioSource(EditCmd& c) {
     if (!m_world)
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     const uint32_t n = c.node;
     if (n == UINT32_MAX || n >= scene.hierarchy.size())
         return;
@@ -1834,7 +1834,7 @@ void EditorApp::DraftCreateAudioRoom() {
     c.node = UINT32_MAX; // assigned at forward execution
     const uint32_t sel = m_selected;
     c.node2 =
-        (sel != UINT32_MAX && sel < m_world->scene.hierarchy.size()) ? sel : DefaultCreateParent();
+        (sel != UINT32_MAX && sel < m_world->m_hierarchy.hierarchy.size()) ? sel : DefaultCreateParent();
     c.afterText = UniqueAudioRoomName();
     c.afterVec = ActiveCam().target;
     c.svec = glm::vec3(8.0f, 4.0f, 8.0f); // 8x4x8 m authoring box
@@ -1844,7 +1844,7 @@ void EditorApp::DraftCreateAudioRoom() {
 void EditorApp::ExecCreateAudioRoom(EditCmd& c) {
     if (!m_world)
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     uint32_t parent = c.node2;
     if (parent == UINT32_MAX || parent >= scene.hierarchy.size())
         parent = DefaultCreateParent();
@@ -1887,7 +1887,7 @@ void EditorApp::ExecCreateAudioRoom(EditCmd& c) {
 void EditorApp::ExecUncreateAudioRoom(EditCmd& c) {
     if (!m_world)
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     const uint32_t n = c.node;
     if (n == UINT32_MAX || n >= scene.hierarchy.size())
         return;
@@ -1929,7 +1929,7 @@ void EditorApp::DraftCreateGiVolume() {
     c.node = UINT32_MAX; // assigned at forward execution
     const uint32_t sel = m_selected;
     c.node2 =
-        (sel != UINT32_MAX && sel < m_world->scene.hierarchy.size()) ? sel : DefaultCreateParent();
+        (sel != UINT32_MAX && sel < m_world->m_hierarchy.hierarchy.size()) ? sel : DefaultCreateParent();
     c.afterText = UniqueGiVolumeName();
     c.afterVec = ActiveCam().target;
     c.svec = glm::vec3(8.0f); // 8 m authoring box
@@ -1945,7 +1945,7 @@ void EditorApp::DraftCreateGiVolume() {
 void EditorApp::ExecCreateGiVolume(EditCmd& c) {
     if (!m_world)
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     uint32_t parent = c.node2;
     if (parent == UINT32_MAX || parent >= scene.hierarchy.size())
         parent = DefaultCreateParent();
@@ -1989,7 +1989,7 @@ void EditorApp::ExecCreateGiVolume(EditCmd& c) {
 void EditorApp::ExecUncreateGiVolume(EditCmd& c) {
     if (!m_world)
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     const uint32_t n = c.node;
     if (n == UINT32_MAX || n >= scene.hierarchy.size())
         return;
@@ -2025,7 +2025,7 @@ void EditorApp::ExecUncreateGiVolume(EditCmd& c) {
 uint32_t EditorApp::FindExportSettingsNode() const {
     if (!m_world)
         return UINT32_MAX;
-    const TransformHierarchy& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->m_hierarchy;
     // The FIRST in node id order = THE one (the singleton rule; the
     // auto-seed keeps it at exactly one — duplicates only via hand
     // edits or referenced scenes, first wins like every consumer).
@@ -2047,7 +2047,7 @@ const SceneExportSettings& EditorApp::ExportCfg() const {
     static const SceneExportSettings kDefaults{};
     if (!m_world)
         return kDefaults;
-    const TransformHierarchy& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->m_hierarchy;
     const uint32_t n = FindExportSettingsNode();
     if (n == UINT32_MAX)
         return kDefaults;
@@ -2083,7 +2083,7 @@ void EditorApp::DraftCreateExportSettings() {
 void EditorApp::ExecCreateExportSettings(EditCmd& c) {
     if (!m_world)
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     uint32_t parent = c.node2;
     if (parent == UINT32_MAX || parent >= scene.hierarchy.size())
         parent = DefaultCreateParent();
@@ -2115,7 +2115,7 @@ void EditorApp::ExecCreateExportSettings(EditCmd& c) {
 void EditorApp::ExecUncreateExportSettings(EditCmd& c) {
     if (!m_world)
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     const uint32_t n = c.node;
     if (n == UINT32_MAX || n >= scene.hierarchy.size())
         return;
@@ -2144,9 +2144,9 @@ bool EditorApp::ReadNodeExportAttr(uint32_t node,
     num = 0.0;
     flag = false;
     text.clear();
-    if (!m_world || node >= m_world->scene.hierarchy.size())
+    if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
         return false;
-    const TransformHierarchy& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->m_hierarchy;
     auto it = FindExport(scene, node);
     if (!it)
         return false;
@@ -2218,9 +2218,9 @@ bool EditorApp::WriteNodeExportAttr(uint32_t node,
                                     double num,
                                     bool flag,
                                     const std::string& text) {
-    if (!m_world || node >= m_world->scene.hierarchy.size())
+    if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
         return false;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     auto it = FindExport(scene, node);
     if (!it)
         return false;
@@ -2260,7 +2260,7 @@ int EditorApp::CreatedExportIndex(uint32_t worldNode) const {
         const EditCmd& h = m_history[i];
         if (h.verb != EditVerb::CreateExportSettings)
             continue;
-        if (!m_world || !(FindExport(m_world->scene, h.node) != nullptr))
+        if (!m_world || !(FindExport(m_world->m_hierarchy, h.node) != nullptr))
             continue; // deleted (tombstoned): not in the file's ref space
         if (!CreateCmdEmitsInTour(*this, h))
             continue; // emission dropped (parent unresolvable)
@@ -2294,7 +2294,7 @@ void EditorApp::DraftCreateCubemap() {
     c.node = UINT32_MAX; // assigned at forward execution
     const uint32_t sel = m_selected;
     c.node2 =
-        (sel != UINT32_MAX && sel < m_world->scene.hierarchy.size()) ? sel : DefaultCreateParent();
+        (sel != UINT32_MAX && sel < m_world->m_hierarchy.hierarchy.size()) ? sel : DefaultCreateParent();
     c.afterText = UniqueCubemapName();
     // Use active cam target as default position; user can override via gizmo
     c.afterVec = ActiveCam().target;
@@ -2305,7 +2305,7 @@ void EditorApp::DraftCreateCubemap() {
 void EditorApp::ExecCreateCubemap(EditCmd& c) {
     if (!m_world)
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     uint32_t parent = c.node2;
     if (parent == UINT32_MAX || parent >= scene.hierarchy.size())
         parent = DefaultCreateParent();
@@ -2342,7 +2342,7 @@ void EditorApp::ExecCreateCubemap(EditCmd& c) {
 void EditorApp::ExecUncreateCubemap(EditCmd& c) {
     if (!m_world)
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     const uint32_t n = c.node;
     if (n == UINT32_MAX || n >= scene.hierarchy.size())
         return;
@@ -2378,7 +2378,7 @@ void EditorApp::ExecUncreateCubemap(EditCmd& c) {
 void EditorApp::ExecDelete(EditCmd& c) {
     if (!m_world)
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     const uint32_t n = c.node;
     if (n == UINT32_MAX || n == 0 || n >= scene.hierarchy.size())
         return; // 0 = scene root: never a delete target
@@ -2511,7 +2511,7 @@ void EditorApp::ExecDelete(EditCmd& c) {
 void EditorApp::ExecUndelete(EditCmd& c) {
     if (!m_world)
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     const uint32_t n = c.node;
     if (n == UINT32_MAX || n >= scene.hierarchy.size())
         return;
@@ -2608,7 +2608,7 @@ void EditorApp::DeleteSelection() {
     std::vector<size_t> refIdxs;
     std::vector<uint32_t> refPhNodes;
     for (uint32_t t : targets) {
-        if (t == UINT32_MAX || !m_world || t >= m_world->scene.hierarchy.size())
+        if (t == UINT32_MAX || !m_world || t >= m_world->m_hierarchy.hierarchy.size())
             continue;
         if (!IsRefPlaceholder(t))
             continue;
@@ -2620,11 +2620,11 @@ void EditorApp::DeleteSelection() {
     auto underRefRemoval = [&](uint32_t n) {
         if (refPhNodes.empty() || !m_world)
             return false;
-        for (uint32_t a = n; a < m_world->scene.hierarchy.size();) {
+        for (uint32_t a = n; a < m_world->m_hierarchy.hierarchy.size();) {
             for (uint32_t ph : refPhNodes)
                 if (a == ph)
                     return true;
-            const int p = m_world->scene.hierarchy[a].parent;
+            const int p = m_world->m_hierarchy.hierarchy[a].parent;
             if (p < 0)
                 return false;
             a = uint32_t(p);
@@ -2644,7 +2644,7 @@ void EditorApp::DeleteSelection() {
         return true;
     };
     for (uint32_t n : targets) {
-        if (n == UINT32_MAX || n >= m_world->scene.hierarchy.size())
+        if (n == UINT32_MAX || n >= m_world->m_hierarchy.hierarchy.size())
             continue;
         if (m_deletedNodes.contains(n))
             continue; // already deleted
@@ -2659,7 +2659,7 @@ void EditorApp::DeleteSelection() {
             // ordinary deletes so one rebind covers everything.
             auto it = std::find(m_refPlaceholders.begin(), m_refPlaceholders.end(), n);
             if (it == m_refPlaceholders.end()) {
-                Log("Delete: '" + getNodeName(m_world->scene, int(n)) +
+                Log("Delete: '" + getNodeName(m_world->m_hierarchy, int(n)) +
                     "' is a reference placeholder — remove the reference "
                     "itself (References panel).");
                 continue;
@@ -2673,7 +2673,7 @@ void EditorApp::DeleteSelection() {
         // removed vanishes with the reference — a per-node delete
         // on top would only leave an orphan command behind.
         if (underRefRemoval(n)) {
-            Log("Delete: '" + getNodeName(m_world->scene, int(n)) +
+            Log("Delete: '" + getNodeName(m_world->m_hierarchy, int(n)) +
                 "' goes away with its reference (skipped).");
             continue;
         }
@@ -2738,7 +2738,7 @@ void EditorApp::DuplicateSelection() {
     std::vector<uint32_t> created; // new ids, in target order
     int skippedMesh = 0, skippedTerrain = 0, skippedRef = 0;
     for (uint32_t t : targets) {
-        if (t == UINT32_MAX || t >= m_world->scene.hierarchy.size() || m_deletedNodes.contains(t))
+        if (t == UINT32_MAX || t >= m_world->m_hierarchy.hierarchy.size() || m_deletedNodes.contains(t))
             continue;
         if (IsRefPlaceholder(t)) {
             // The placeholder IS the reference binding anchor —
@@ -2755,13 +2755,13 @@ void EditorApp::DuplicateSelection() {
         }
         // WorldPage-backed mesh nodes own no create verb (imported
         // geometry — a duplicate needs an instancing system).
-        if (FindMesh(m_world->scene, t) != nullptr) {
+        if (FindMesh(m_world->m_hierarchy, t) != nullptr) {
             ++skippedMesh;
             continue;
         }
         // Same parent, live transform, unique copy name.
-        const int parent = m_world->scene.hierarchy[t].parent;
-        const std::string name = UniqueCopyName(getNodeName(m_world->scene, int(t)));
+        const int parent = m_world->m_hierarchy.hierarchy[t].parent;
+        const std::string name = UniqueCopyName(getNodeName(m_world->m_hierarchy, int(t)));
         glm::vec3 tr, rot, sc;
         ReadLocalTRS(t, tr, rot, sc);
         EditCmd c{};
@@ -2789,7 +2789,7 @@ void EditorApp::DuplicateSelection() {
             c.camNear = C->nearClip;
             c.camFar = C->farClip;
             c.camOrthoHalfH = C->orthoHalfH;
-        } else if (FindAudioSource(m_world->scene, t) != nullptr) {
+        } else if (FindAudioSource(m_world->m_hierarchy, t) != nullptr) {
             // Audio source: the payload is INLINE (no pool), so
             // duplication seeds audioDupFrom — ExecCreateAudioSource
             // copies the source node's LIVE row, and post-creation
@@ -2800,7 +2800,7 @@ void EditorApp::DuplicateSelection() {
             c.afterText = name;
             c.afterVec = tr;
             c.audioDupFrom = t;
-        } else if (tour::transformhierarchy::FindAudioRoom(m_world->scene, t) != nullptr) {
+        } else if (tour::transformhierarchy::FindAudioRoom(m_world->m_hierarchy, t) != nullptr) {
             // Audio room: the inline-payload duplicate (audioDupFrom's twin,
             // roomDupFrom seeds the LIVE row copy).
             c.verb = EditVerb::CreateAudioRoom;
@@ -2809,13 +2809,13 @@ void EditorApp::DuplicateSelection() {
             c.afterVec = tr;
             c.svec = sc;
             c.roomDupFrom = t;
-        } else if (const CubemapRow* cmit = FindCubemap(m_world->scene, t)) {
+        } else if (const CubemapRow* cmit = FindCubemap(m_world->m_hierarchy, t)) {
             c.verb = EditVerb::CreateCubemap;
             c.node2 = parent < 0 ? UINT32_MAX : uint32_t(parent);
             c.afterText = name;
             c.afterVec = tr;
             c.cubemapRadius = cmit->cubemap.radius;
-        } else if (const GiVolumeRow* cvit = FindGiVolume(m_world->scene, t)) {
+        } else if (const GiVolumeRow* cvit = FindGiVolume(m_world->m_hierarchy, t)) {
             c.verb = EditVerb::CreateGiVolume;
             c.node2 = parent < 0 ? UINT32_MAX : uint32_t(parent);
             c.afterText = name;
@@ -2881,7 +2881,7 @@ void EditorApp::DuplicateSelection() {
 void EditorApp::ExecCreateTransform(EditCmd& c) {
     if (!m_world)
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     uint32_t parent = c.node2;
     if (parent == UINT32_MAX || parent >= scene.hierarchy.size())
         parent = DefaultCreateParent();
@@ -2914,7 +2914,7 @@ void EditorApp::ExecCreateTransform(EditCmd& c) {
 void EditorApp::ExecUncreateTransform(EditCmd& c) {
     if (!m_world)
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     const uint32_t n = c.node;
     if (n == UINT32_MAX || n >= scene.hierarchy.size())
         return;
@@ -2943,10 +2943,10 @@ bool EditorApp::ReadNodeLightAttr(uint32_t node,
     flag = false;
     text.clear();
     if (attr == "receiverMask") {
-        if (!m_world || node >= m_world->scene.hierarchy.size())
+        if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
             return false;
-        num = node < m_world->scene.metadata.size()
-                  ? double(m_world->scene.metadata[node].lightLayerMask)
+        num = node < m_world->m_hierarchy.metadata.size()
+                  ? double(m_world->m_hierarchy.metadata[node].lightLayerMask)
                   : 4294967295.0;
         return true;
     }
@@ -2981,7 +2981,7 @@ bool EditorApp::ReadNodeLightAttr(uint32_t node,
     } else if (attr == "layerMask") {
         num = double(L->layerMask);
     } else if (attr == "position" || attr == "rotation") {
-        if (!m_world || node >= m_world->scene.hierarchy.size())
+        if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
             return false;
         glm::vec3 t, r, s;
         ReadLocalTRS(node, t, r, s);
@@ -3000,7 +3000,7 @@ bool EditorApp::WriteNodeLightAttr(uint32_t node,
                                    const std::string& text) {
     if (!m_world)
         return false;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     if (attr == "receiverMask") {
         if (node >= scene.hierarchy.size())
             return false;
@@ -3081,7 +3081,7 @@ bool EditorApp::ReadNodePhysicsBodyAttr(uint32_t node,
     flag = false;
     if (!m_world)
         return false;
-    const auto* row = tour::transformhierarchy::FindPhysicsBody(m_world->scene, node);
+    const auto* row = tour::transformhierarchy::FindPhysicsBody(m_world->m_hierarchy, node);
     if (!row)
         return false;
     const auto& b = row->body;
@@ -3117,7 +3117,7 @@ bool EditorApp::WriteNodePhysicsBodyAttr(uint32_t node,
                                          bool flag) {
     if (!m_world)
         return false;
-    auto* row = tour::transformhierarchy::FindPhysicsBody(m_world->scene, node);
+    auto* row = tour::transformhierarchy::FindPhysicsBody(m_world->m_hierarchy, node);
     if (!row || !std::isfinite(number))
         return false;
     auto& b = row->body;
@@ -3158,7 +3158,7 @@ bool EditorApp::ReadNodeTriggerVolumeAttr(uint32_t node,
     text.clear();
     if (!m_world)
         return false;
-    const auto* row = tour::transformhierarchy::FindTriggerVolume(m_world->scene, node);
+    const auto* row = tour::transformhierarchy::FindTriggerVolume(m_world->m_hierarchy, node);
     if (!row)
         return false;
     if (attr == "enabled")
@@ -3178,7 +3178,7 @@ bool EditorApp::WriteNodeTriggerVolumeAttr(uint32_t node,
                                            const std::string& text) {
     if (!m_world)
         return false;
-    auto* row = tour::transformhierarchy::FindTriggerVolume(m_world->scene, node);
+    auto* row = tour::transformhierarchy::FindTriggerVolume(m_world->m_hierarchy, node);
     if (!row)
         return false;
     if (attr == "enabled")
@@ -3200,9 +3200,9 @@ bool EditorApp::ReadNodeGiVolumeAttr(uint32_t node,
     v4 = glm::vec4(0.0f);
     num = 0.0;
     text.clear();
-    if (!m_world || node >= m_world->scene.hierarchy.size())
+    if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
         return false;
-    const TransformHierarchy& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->m_hierarchy;
     auto it = FindGiVolume(scene, node);
     if (!it)
         return false;
@@ -3240,9 +3240,9 @@ bool EditorApp::WriteNodeGiVolumeAttr(uint32_t node,
                                       const glm::vec4& v4,
                                       double num,
                                       const std::string& text) {
-    if (!m_world || node >= m_world->scene.hierarchy.size())
+    if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
         return false;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     auto it = FindGiVolume(scene, node);
     if (!it)
         return false;
@@ -3292,9 +3292,9 @@ bool EditorApp::GiVolumeOBB(uint32_t node,
                             glm::vec3& center,
                             glm::mat3& axes,
                             glm::vec3& half) const {
-    if (!m_world || node >= m_world->scene.hierarchy.size())
+    if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
         return false;
-    const TransformHierarchy& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->m_hierarchy;
     if (!FindGiVolume(scene, node))
         return false;
     if (node >= scene.globalTransform.size())
@@ -3351,9 +3351,9 @@ bool EditorApp::ReadNodeCubemapAttr(uint32_t node,
     v4 = glm::vec4(0.0f);
     num = 0.0;
     text.clear();
-    if (!m_world || node >= m_world->scene.hierarchy.size())
+    if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
         return false;
-    const TransformHierarchy& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->m_hierarchy;
     auto it = FindCubemap(scene, node);
     if (!it)
         return false;
@@ -3377,9 +3377,9 @@ bool EditorApp::WriteNodeCubemapAttr(uint32_t node,
                                      const glm::vec4& v4,
                                      double num,
                                      const std::string& text) {
-    if (!m_world || node >= m_world->scene.hierarchy.size())
+    if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
         return false;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     auto it = FindCubemap(scene, node);
     if (!it)
         return false;
@@ -3427,7 +3427,7 @@ bool EditorApp::ReadNodeCameraAttr(uint32_t node,
     } else if (attr == "name") {
         text = C->name;
     } else if (attr == "position" || attr == "rotation") {
-        if (!m_world || node >= m_world->scene.hierarchy.size())
+        if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
             return false;
         glm::vec3 t, r, s;
         ReadLocalTRS(node, t, r, s);
@@ -3445,7 +3445,7 @@ bool EditorApp::WriteNodeCameraAttr(uint32_t node,
                                     const std::string& text) {
     if (!m_world)
         return false;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     auto cit = FindCamera(scene, node);
     if (!cit || cit->camera >= m_world->cameraLocations.size())
         return false;
@@ -3504,9 +3504,9 @@ bool EditorApp::ReadNodeAudioSourceAttr(uint32_t node,
     num = 0.0;
     flag = false;
     text.clear();
-    if (!m_world || node >= m_world->scene.hierarchy.size())
+    if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
         return false;
-    const TransformHierarchy& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->m_hierarchy;
     const AudioSourceRow* row = FindAudioSource(scene, node);
     if (!row)
         return false;
@@ -3541,9 +3541,9 @@ bool EditorApp::WriteNodeAudioSourceAttr(uint32_t node,
                                          double num,
                                          bool flag,
                                          const std::string& text) {
-    if (!m_world || node >= m_world->scene.hierarchy.size())
+    if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
         return false;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     AudioSourceRow* row = FindAudioSource(scene, node);
     if (!row)
         return false;
@@ -3594,9 +3594,9 @@ bool EditorApp::ReadNodeAudioRoomAttr(uint32_t node,
     num = 0.0;
     flag = false;
     text.clear();
-    if (!m_world || node >= m_world->scene.hierarchy.size())
+    if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
         return false;
-    const TransformHierarchy& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->m_hierarchy;
     const tour::transformhierarchy::AudioRoomRow* row =
         tour::transformhierarchy::FindAudioRoom(scene, node);
     if (!row)
@@ -3641,9 +3641,9 @@ bool EditorApp::WriteNodeAudioRoomAttr(uint32_t node,
                                        double num,
                                        bool flag,
                                        const std::string& text) {
-    if (!m_world || node >= m_world->scene.hierarchy.size())
+    if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
         return false;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     tour::transformhierarchy::AudioRoomRow* row =
         tour::transformhierarchy::FindAudioRoom(scene, node);
     if (!row)
@@ -3702,7 +3702,7 @@ void EditorApp::AddNodeAudioSound(uint32_t node,
     // window (the tour parser enforces the same).
     if (!m_world)
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     AudioSourceRow* row = FindAudioSource(scene, node);
     if (!row)
         return;
@@ -3727,7 +3727,7 @@ bool EditorApp::RemoveNodeAudioSound(uint32_t node,
     // False when no such slot existed (a no-op remove).
     if (!m_world)
         return false;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     AudioSourceRow* row = FindAudioSource(scene, node);
     if (!row)
         return false;
@@ -4178,12 +4178,12 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c, smvk::tour::Co
         if (cn < 0)
             return false;
         out.node = uint32_t(cn);
-        out.name = getNodeName(app.m_world->scene, int(c.node));
+        out.name = getNodeName(app.m_world->m_hierarchy, int(c.node));
         // The LOGICAL TARGET KEY (Item 6): record the node's uuid when
         // it holds one (the save-time pre-pass mints them for
         // ambiguous/unnamed targets; the identity map emits the uuid
         // lines, so the cook replay can resolve it).
-        out.uuid = GetNodeUuid(app.m_world->scene, c.node);
+        out.uuid = GetNodeUuid(app.m_world->m_hierarchy, c.node);
         return true;
     };
     // Symbolic -p form for a parent (world id): recorded uuid hex when
@@ -4191,9 +4191,9 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c, smvk::tour::Co
     // name/path when named, else empty (numeric -p fallback). Follows
     // the tour's string/dag rule: names first, uuids for the unnamed.
     auto parentRefFor = [&](uint32_t worldParent) {
-        if (!app.m_world || worldParent >= app.m_world->scene.hierarchy.size())
+        if (!app.m_world || worldParent >= app.m_world->m_hierarchy.hierarchy.size())
             return std::string();
-        const TransformHierarchy& scene = app.m_world->scene;
+        const TransformHierarchy& scene = app.m_world->m_hierarchy;
         const std::string nm = getNodeName(scene, int(worldParent));
         if (!nm.empty()) {
             const std::string p = smvk::tour::DagShortestUniquePath(scene, worldParent);
@@ -4446,7 +4446,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c, smvk::tour::Co
         out.verb = smvk::tour::Verb::Parent;
         out.node2 = uint32_t(pn);
         out.parentRef = parentRefFor(c.node2);
-        out.name = getNodeName(app.m_world->scene, int(c.node));
+        out.name = getNodeName(app.m_world->m_hierarchy, int(c.node));
         return true;
     }
     case EditVerb::CreateLight: {
@@ -4454,7 +4454,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c, smvk::tour::Co
         // params may have been attr-edited after creation (those later
         // SetLightAttr commands re-emit harmlessly and idempotently).
         const uint32_t created = c.node;
-        if (created == UINT32_MAX || created >= app.m_world->scene.hierarchy.size())
+        if (created == UINT32_MAX || created >= app.m_world->m_hierarchy.hierarchy.size())
             return false;
         const ::SceneLight* L = app.FindNodeLight(created, nullptr);
         if (!L)
@@ -4476,7 +4476,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c, smvk::tour::Co
             else
                 return false;
         }
-        const glm::vec3 t = glm::vec3(app.m_world->scene.localTransform[created][3]);
+        const glm::vec3 t = glm::vec3(app.m_world->m_hierarchy.localTransform[created][3]);
         out.verb = smvk::tour::Verb::CreateNode;
         out.nodeType = (L->type == ::SceneLight::Type::Spot) ? "spotLight" : "pointLight";
         out.node = uint32_t(pp);
@@ -4497,7 +4497,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c, smvk::tour::Co
         // tiles may have been re-material-edited after creation (those
         // later AssignMaterial/SetTranslate commands ride along).
         const uint32_t created = c.node;
-        if (created == UINT32_MAX || created >= app.m_world->scene.hierarchy.size())
+        if (created == UINT32_MAX || created >= app.m_world->m_hierarchy.hierarchy.size())
             return false;
         // Deleted (tombstoned) group: drop the creation from the file
         // entirely — the created-light detached precedent.
@@ -4521,7 +4521,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c, smvk::tour::Co
             else
                 return false;
         }
-        const glm::vec3 t = glm::vec3(app.m_world->scene.localTransform[created][3]);
+        const glm::vec3 t = glm::vec3(app.m_world->m_hierarchy.localTransform[created][3]);
         out.verb = smvk::tour::Verb::CreateNode;
         out.nodeType = "terrain";
         out.node = uint32_t(pp);
@@ -4542,7 +4542,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c, smvk::tour::Co
         // so a deleted one must not emit — same tombstone contract as
         // the detached-light check).
         const uint32_t created = c.node;
-        if (created == UINT32_MAX || created >= app.m_world->scene.hierarchy.size())
+        if (created == UINT32_MAX || created >= app.m_world->m_hierarchy.hierarchy.size())
             return false;
         if (app.m_deletedNodes.contains(created))
             return false;
@@ -4565,7 +4565,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c, smvk::tour::Co
         out.nodeType = "transform";
         out.node = uint32_t(pp);
         out.parentRef = parentRefFor(liveParent);
-        out.text = getNodeName(app.m_world->scene, int(created));
+        out.text = getNodeName(app.m_world->m_hierarchy, int(created));
         out.vec = t;
         out.vec4 = glm::vec4(r, 0.0f);
         out.svec = s;
@@ -4613,9 +4613,9 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c, smvk::tour::Co
         // (those later SetGiVolumeAttr commands re-emit harmlessly and
         // idempotently — the light precedent).
         const uint32_t created = c.node;
-        if (created == UINT32_MAX || created >= app.m_world->scene.hierarchy.size())
+        if (created == UINT32_MAX || created >= app.m_world->m_hierarchy.hierarchy.size())
             return false;
-        auto cvit = FindGiVolume(app.m_world->scene, created);
+        auto cvit = FindGiVolume(app.m_world->m_hierarchy, created);
         if (!cvit)
             return false; // detached (tombstoned): nothing to persist
         if (app.m_deletedNodes.contains(created))
@@ -4638,7 +4638,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c, smvk::tour::Co
         out.nodeType = "givolume";
         out.node = uint32_t(pp);
         out.parentRef = parentRefFor(liveParent);
-        out.text = getNodeName(app.m_world->scene, int(created));
+        out.text = getNodeName(app.m_world->m_hierarchy, int(created));
         out.vec = t;
         out.svec = glm::vec3(std::max(s.x, 1e-3f), std::max(s.y, 1e-3f), std::max(s.z, 1e-3f));
         out.vec4 = glm::vec4(float(cvit->volume.priority),
@@ -4678,9 +4678,9 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c, smvk::tour::Co
         // radius may have been attr-edited after creation (those later
         // SetCubemapAttr commands re-emit harmlessly and idempotently).
         const uint32_t created = c.node;
-        if (created == UINT32_MAX || created >= app.m_world->scene.hierarchy.size())
+        if (created == UINT32_MAX || created >= app.m_world->m_hierarchy.hierarchy.size())
             return false;
-        auto cmit = FindCubemap(app.m_world->scene, created);
+        auto cmit = FindCubemap(app.m_world->m_hierarchy, created);
         if (!cmit)
             return false; // detached (tombstoned): nothing to persist
         if (app.m_deletedNodes.contains(created))
@@ -4708,7 +4708,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c, smvk::tour::Co
         out.nodeType = "cubemap";
         out.node = uint32_t(pp);
         out.parentRef = parentRefFor(liveParent);
-        out.text = getNodeName(app.m_world->scene, int(created));
+        out.text = getNodeName(app.m_world->m_hierarchy, int(created));
         out.vec = t;
         out.number = double(cmit->cubemap.radius);
         return true;
@@ -4736,7 +4736,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c, smvk::tour::Co
         // lens may have been attr-edited after creation (those later
         // SetCamAttr commands re-emit harmlessly and idempotently).
         const uint32_t created = c.node;
-        if (created == UINT32_MAX || created >= app.m_world->scene.hierarchy.size())
+        if (created == UINT32_MAX || created >= app.m_world->m_hierarchy.hierarchy.size())
             return false;
         const ::SceneCamera* C = app.FindNodeCamera(created);
         if (!C)
@@ -4761,7 +4761,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c, smvk::tour::Co
         out.nodeType = "camera";
         out.node = uint32_t(pp);
         out.parentRef = parentRefFor(liveParent);
-        out.text = getNodeName(app.m_world->scene, int(created));
+        out.text = getNodeName(app.m_world->m_hierarchy, int(created));
         out.vec = t;
         out.svec = r;
         out.vec4 = glm::vec4(C->projection == ::SceneCamera::Projection::Orthographic ? 1.0f : 0.0f,
@@ -4797,9 +4797,9 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c, smvk::tour::Co
         // later SetAudioAttr/AddAudioSound/RemoveAudioSound commands,
         // which re-emit idempotently — the exportSettings pattern.
         const uint32_t created = c.node;
-        if (created == UINT32_MAX || created >= app.m_world->scene.hierarchy.size())
+        if (created == UINT32_MAX || created >= app.m_world->m_hierarchy.hierarchy.size())
             return false;
-        if (FindAudioSource(app.m_world->scene, created) == nullptr)
+        if (FindAudioSource(app.m_world->m_hierarchy, created) == nullptr)
             return false; // detached (tombstoned): nothing to persist
         if (app.m_deletedNodes.contains(created))
             return false;
@@ -4820,7 +4820,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c, smvk::tour::Co
         out.verb = smvk::tour::Verb::CreateAudioSource;
         out.node = uint32_t(pp);
         out.parentRef = parentRefFor(liveParent);
-        out.text = getNodeName(app.m_world->scene, int(created));
+        out.text = getNodeName(app.m_world->m_hierarchy, int(created));
         out.vec = t;
         return true;
     }
@@ -4877,9 +4877,9 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c, smvk::tour::Co
         // Scale cases). The PAYLOAD rides the later SetAudioRoomAttr
         // commands (idempotent re-emission).
         const uint32_t created = c.node;
-        if (created == UINT32_MAX || created >= app.m_world->scene.hierarchy.size())
+        if (created == UINT32_MAX || created >= app.m_world->m_hierarchy.hierarchy.size())
             return false;
-        if (tour::transformhierarchy::FindAudioRoom(app.m_world->scene, created) == nullptr)
+        if (tour::transformhierarchy::FindAudioRoom(app.m_world->m_hierarchy, created) == nullptr)
             return false; // detached (tombstoned): nothing to persist
         if (app.m_deletedNodes.contains(created))
             return false;
@@ -4897,7 +4897,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c, smvk::tour::Co
         out.verb = smvk::tour::Verb::CreateAudioRoom;
         out.node = uint32_t(pp);
         out.parentRef = parentRefFor(liveParent);
-        out.text = getNodeName(app.m_world->scene, int(created));
+        out.text = getNodeName(app.m_world->m_hierarchy, int(created));
         out.vec = t;
         out.svec = s; // FULL extents (the scale channel)
         return true;
@@ -4996,9 +4996,9 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c, smvk::tour::Co
         // attr payload rides the following SetExportAttr commands
         // (live-state emission there, like the GI-volume family).
         const uint32_t created = c.node;
-        if (created == UINT32_MAX || created >= app.m_world->scene.hierarchy.size())
+        if (created == UINT32_MAX || created >= app.m_world->m_hierarchy.hierarchy.size())
             return false;
-        if (!FindExport(app.m_world->scene, created))
+        if (!FindExport(app.m_world->m_hierarchy, created))
             return false; // detached (tombstoned): nothing to persist
         if (app.m_deletedNodes.contains(created))
             return false;
@@ -5022,7 +5022,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c, smvk::tour::Co
         // The main scene root is addressed by numeric parent 0; a
         // symbolic root path is not replayable in a standalone .tour.
         out.parentRef = liveParent == 0 ? std::string{} : parentRefFor(liveParent);
-        out.text = getNodeName(app.m_world->scene, int(created));
+        out.text = getNodeName(app.m_world->m_hierarchy, int(created));
         out.vec = t;
         return true;
     }
@@ -5059,7 +5059,7 @@ bool EditorApp::CmdToTour(const EditorApp& app, const EditCmd& c, smvk::tour::Co
         if (!needNode())
             return false;
         out.verb = smvk::tour::Verb::Delete;
-        const std::string& u = GetNodeUuid(app.m_world->scene, c.node);
+        const std::string& u = GetNodeUuid(app.m_world->m_hierarchy, c.node);
         if (!u.empty())
             out.uuid = u;
         return true;
@@ -5362,7 +5362,7 @@ bool EditorApp::SaveTourTo(const std::string& tp, bool becomeTarget, bool allowE
     // kept). Covers Delete targets AND symbolic parent targets (a
     // parent addressed by uuid must exist in the file) — named parents
     // resolve by name and need nothing.
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     auto held = [&](const std::string& hex, uint32_t except) {
         for (uint32_t n = 0; n < scene.metadata.size(); ++n) {
             const std::string& u = scene.metadata[n].uuid;
@@ -5697,7 +5697,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
             return true;
         }
         const uint32_t w = app.PageToWorld(raw);
-        if (w == UINT32_MAX || w >= app.m_world->scene.hierarchy.size())
+        if (w == UINT32_MAX || w >= app.m_world->m_hierarchy.hierarchy.size())
             return false;
         worldNode = w;
         return true;
@@ -5712,21 +5712,21 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
     // lane is tc.parentRef).
     auto resolveTarget = [&](const smvk::tour::Command& tc, uint32_t& worldNode) -> bool {
         if (!tc.uuid.empty()) {
-            const TransformHierarchy& ws = app.m_world->scene;
+            const TransformHierarchy& ws = app.m_world->m_hierarchy;
             for (uint32_t n = 0; n < ws.metadata.size(); ++n)
                 if (n < ws.hierarchy.size() && ws.metadata[n].uuid == tc.uuid) {
                     worldNode = n;
                     return true;
                 }
         }
-        if (!tc.name.empty() && smvk::tour::ResolveDagPath(app.m_world->scene, tc.name, worldNode))
+        if (!tc.name.empty() && smvk::tour::ResolveDagPath(app.m_world->m_hierarchy, tc.name, worldNode))
             return true;
         return resolveRef(tc.node, worldNode);
     };
     uint32_t node = UINT32_MAX;
     (void)resolveTarget(tc, node); // UINT32_MAX on miss; needNode rejects
     auto needNode = [&]() -> bool {
-        if (node == UINT32_MAX || node >= app.m_world->scene.hierarchy.size())
+        if (node == UINT32_MAX || node >= app.m_world->m_hierarchy.hierarchy.size())
             return false;
         out.node = node;
         return true;
@@ -5737,28 +5737,28 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
             return false;
         out.verb = EditVerb::Rename;
         out.afterText = tc.text;
-        out.beforeText = getNodeName(app.m_world->scene, int(node));
+        out.beforeText = getNodeName(app.m_world->m_hierarchy, int(node));
         return true;
     case smvk::tour::Verb::SetTranslate:
         if (!needNode())
             return false;
         out.verb = EditVerb::Translate;
         out.afterVec = tc.vec;
-        out.beforeMat = app.m_world->scene.localTransform[node];
+        out.beforeMat = app.m_world->m_hierarchy.localTransform[node];
         return true;
     case smvk::tour::Verb::SetRotate:
         if (!needNode())
             return false;
         out.verb = EditVerb::Rotate;
         out.afterVec = tc.vec;
-        out.beforeMat = app.m_world->scene.localTransform[node];
+        out.beforeMat = app.m_world->m_hierarchy.localTransform[node];
         return true;
     case smvk::tour::Verb::SetScale:
         if (!needNode())
             return false;
         out.verb = EditVerb::Scale;
         out.afterVec = tc.vec;
-        out.beforeMat = app.m_world->scene.localTransform[node];
+        out.beforeMat = app.m_world->m_hierarchy.localTransform[node];
         return true;
     case smvk::tour::Verb::AssignMaterial: {
         if (!needNode())
@@ -5768,7 +5768,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
             return false;
         out.verb = EditVerb::AssignMaterial;
         out.material = tc.material == UINT32_MAX ? UINT32_MAX : uint32_t(wm);
-        const MaterialRow* row = FindMaterial(app.m_world->scene, node);
+        const MaterialRow* row = FindMaterial(app.m_world->m_hierarchy, node);
         out.beforeMaterial = row ? row->material : UINT32_MAX;
         return true;
     }
@@ -5802,7 +5802,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
         out.verb = EditVerb::SetNoLightmap;
         out.afterFlag = tc.flag;
         out.beforeFlag =
-            node < app.m_world->scene.noLightmap.size() && app.m_world->scene.noLightmap[node] != 0;
+            node < app.m_world->m_hierarchy.noLightmap.size() && app.m_world->m_hierarchy.noLightmap[node] != 0;
         return true;
     case smvk::tour::Verb::SetLightmap:
         if (!needNode())
@@ -5810,29 +5810,29 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
         out.verb = EditVerb::SetLightmap;
         out.afterFlag = tc.flag;
         out.beforeFlag =
-            node < app.m_world->scene.lightmap.size() && app.m_world->scene.lightmap[node] != 0;
+            node < app.m_world->m_hierarchy.lightmap.size() && app.m_world->m_hierarchy.lightmap[node] != 0;
         return true;
     case smvk::tour::Verb::SetDitherCloseup:
         if (!needNode())
             return false;
         out.verb = EditVerb::SetDitherCloseup;
         out.afterFlag = tc.flag;
-        out.beforeFlag = node < app.m_world->scene.ditherCloseup.size() &&
-                         app.m_world->scene.ditherCloseup[node] != 0;
+        out.beforeFlag = node < app.m_world->m_hierarchy.ditherCloseup.size() &&
+                         app.m_world->m_hierarchy.ditherCloseup[node] != 0;
         return true;
     case smvk::tour::Verb::SetCastsVolumetricShadow:
         if (!needNode())
             return false;
         out.verb = EditVerb::SetCastsVolumetricShadow;
         out.afterFlag = tc.flag;
-        out.beforeFlag = IsCastsVolumetricShadowNode(app.m_world->scene, int(node));
+        out.beforeFlag = IsCastsVolumetricShadowNode(app.m_world->m_hierarchy, int(node));
         return true;
     case smvk::tour::Verb::SetIgnoreSdfBake:
         if (!needNode())
             return false;
         out.verb = EditVerb::SetIgnoreSdfBake;
         out.afterFlag = tc.flag;
-        out.beforeFlag = IsIgnoreSdfBakeNode(app.m_world->scene, int(node));
+        out.beforeFlag = IsIgnoreSdfBakeNode(app.m_world->m_hierarchy, int(node));
         return true;
     case smvk::tour::Verb::SetVisibility:
         if (!needNode())
@@ -5840,7 +5840,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
         out.verb = EditVerb::SetVisibility;
         out.afterFlag = tc.flag;
         out.beforeFlag =
-            node < app.m_world->scene.hidden.size() && app.m_world->scene.hidden[node] != 0;
+            node < app.m_world->m_hierarchy.hidden.size() && app.m_world->m_hierarchy.hidden[node] != 0;
         return true;
     case smvk::tour::Verb::SetStatic:
         if (!needNode())
@@ -5848,7 +5848,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
         out.verb = EditVerb::SetStatic;
         out.afterFlag = tc.flag;
         out.beforeFlag =
-            node < app.m_world->scene.staticRoot.size() && app.m_world->scene.staticRoot[node] != 0;
+            node < app.m_world->m_hierarchy.staticRoot.size() && app.m_world->m_hierarchy.staticRoot[node] != 0;
         return true;
     case smvk::tour::Verb::Parent: {
         if (!needNode())
@@ -5858,24 +5858,24 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
         // path (created-terrain refs included, as before).
         uint32_t wp = UINT32_MAX;
         if (!tc.parentRef.empty()) {
-            if (!smvk::tour::ResolveParentTarget(app.m_world->scene, tc.parentRef, wp))
+            if (!smvk::tour::ResolveParentTarget(app.m_world->m_hierarchy, tc.parentRef, wp))
                 return false;
         } else if (!resolveRef(tc.node2, wp)) {
             return false;
         }
         out.verb = EditVerb::Parent;
         out.node2 = wp;
-        out.beforeParent = uint32_t(app.m_world->scene.hierarchy[node].parent);
+        out.beforeParent = uint32_t(app.m_world->m_hierarchy.hierarchy[node].parent);
         return true;
     }
     case smvk::tour::Verb::CreateTransform: {
         uint32_t wp = UINT32_MAX;
         if (!tc.parentRef.empty()) {
-            if (!smvk::tour::ResolveParentTarget(app.m_world->scene, tc.parentRef, wp))
+            if (!smvk::tour::ResolveParentTarget(app.m_world->m_hierarchy, tc.parentRef, wp))
                 return false;
         } else {
             wp = app.PageToWorld(tc.node);
-            if (wp == UINT32_MAX || wp >= app.m_world->scene.hierarchy.size())
+            if (wp == UINT32_MAX || wp >= app.m_world->m_hierarchy.hierarchy.size())
                 return false;
         }
         out.verb = EditVerb::CreateTransform;
@@ -5897,11 +5897,11 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
             return false;
         uint32_t wp = UINT32_MAX;
         if (!tc.parentRef.empty()) {
-            if (!smvk::tour::ResolveParentTarget(app.m_world->scene, tc.parentRef, wp))
+            if (!smvk::tour::ResolveParentTarget(app.m_world->m_hierarchy, tc.parentRef, wp))
                 return false;
         } else {
             wp = app.PageToWorld(tc.node);
-            if (wp == UINT32_MAX || wp >= app.m_world->scene.hierarchy.size())
+            if (wp == UINT32_MAX || wp >= app.m_world->m_hierarchy.hierarchy.size())
                 return false;
         }
         const std::string tn = t->name;
@@ -5997,8 +5997,8 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
         uint32_t target = UINT32_MAX;
         const uint32_t w = app.PageToWorld(tc.node);
         const uint32_t wid =
-            (w != UINT32_MAX && w < app.m_world->scene.hierarchy.size()) ? w : UINT32_MAX;
-        if (!smvk::tour::ResolveDeleteTarget(app.m_world->scene, tc.uuid, tc.name, wid, target))
+            (w != UINT32_MAX && w < app.m_world->m_hierarchy.hierarchy.size()) ? w : UINT32_MAX;
+        if (!smvk::tour::ResolveDeleteTarget(app.m_world->m_hierarchy, tc.uuid, tc.name, wid, target))
             return false;
         out.verb = EditVerb::Delete;
         out.node = target;
@@ -6007,11 +6007,11 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
     case smvk::tour::Verb::CreateLight: {
         uint32_t wp = UINT32_MAX;
         if (!tc.parentRef.empty()) {
-            if (!smvk::tour::ResolveParentTarget(app.m_world->scene, tc.parentRef, wp))
+            if (!smvk::tour::ResolveParentTarget(app.m_world->m_hierarchy, tc.parentRef, wp))
                 return false;
         } else {
             wp = app.PageToWorld(tc.node);
-            if (wp == UINT32_MAX || wp >= app.m_world->scene.hierarchy.size())
+            if (wp == UINT32_MAX || wp >= app.m_world->m_hierarchy.hierarchy.size())
                 return false;
         }
         out.verb = EditVerb::CreateLight;
@@ -6034,11 +6034,11 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
     case smvk::tour::Verb::CreateGiVolume: {
         uint32_t wp = UINT32_MAX;
         if (!tc.parentRef.empty()) {
-            if (!smvk::tour::ResolveParentTarget(app.m_world->scene, tc.parentRef, wp))
+            if (!smvk::tour::ResolveParentTarget(app.m_world->m_hierarchy, tc.parentRef, wp))
                 return false;
         } else {
             wp = app.PageToWorld(tc.node);
-            if (wp == UINT32_MAX || wp >= app.m_world->scene.hierarchy.size())
+            if (wp == UINT32_MAX || wp >= app.m_world->m_hierarchy.hierarchy.size())
                 return false;
         }
         out.verb = EditVerb::CreateGiVolume;
@@ -6056,11 +6056,11 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
     case smvk::tour::Verb::CreateCubemap: {
         uint32_t wp = UINT32_MAX;
         if (!tc.parentRef.empty()) {
-            if (!smvk::tour::ResolveParentTarget(app.m_world->scene, tc.parentRef, wp))
+            if (!smvk::tour::ResolveParentTarget(app.m_world->m_hierarchy, tc.parentRef, wp))
                 return false;
         } else {
             wp = app.PageToWorld(tc.node);
-            if (wp == UINT32_MAX || wp >= app.m_world->scene.hierarchy.size())
+            if (wp == UINT32_MAX || wp >= app.m_world->m_hierarchy.hierarchy.size())
                 return false;
         }
         out.verb = EditVerb::CreateCubemap;
@@ -6074,11 +6074,11 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
     case smvk::tour::Verb::CreateCamera: {
         uint32_t wp = UINT32_MAX;
         if (!tc.parentRef.empty()) {
-            if (!smvk::tour::ResolveParentTarget(app.m_world->scene, tc.parentRef, wp))
+            if (!smvk::tour::ResolveParentTarget(app.m_world->m_hierarchy, tc.parentRef, wp))
                 return false;
         } else {
             wp = app.PageToWorld(tc.node);
-            if (wp == UINT32_MAX || wp >= app.m_world->scene.hierarchy.size())
+            if (wp == UINT32_MAX || wp >= app.m_world->m_hierarchy.hierarchy.size())
                 return false;
         }
         out.verb = EditVerb::CreateCamera;
@@ -6097,11 +6097,11 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
     case smvk::tour::Verb::CreateTerrain: {
         uint32_t wp = UINT32_MAX;
         if (!tc.parentRef.empty()) {
-            if (!smvk::tour::ResolveParentTarget(app.m_world->scene, tc.parentRef, wp))
+            if (!smvk::tour::ResolveParentTarget(app.m_world->m_hierarchy, tc.parentRef, wp))
                 return false;
         } else {
             wp = app.PageToWorld(tc.node);
-            if (wp == UINT32_MAX || wp >= app.m_world->scene.hierarchy.size())
+            if (wp == UINT32_MAX || wp >= app.m_world->m_hierarchy.hierarchy.size())
                 return false;
         }
         out.verb = EditVerb::CreateTerrain;
@@ -6139,7 +6139,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
         } else {
             target = app.PageToWorld(tc.node);
         }
-        if (target == UINT32_MAX || target >= app.m_world->scene.hierarchy.size())
+        if (target == UINT32_MAX || target >= app.m_world->m_hierarchy.hierarchy.size())
             return false;
         out.verb = EditVerb::SetLightAttr;
         out.node = target;
@@ -6175,9 +6175,9 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
         } else {
             target = app.PageToWorld(tc.node);
         }
-        if (target == UINT32_MAX || target >= app.m_world->scene.hierarchy.size())
+        if (target == UINT32_MAX || target >= app.m_world->m_hierarchy.hierarchy.size())
             return false;
-        if (!(FindGiVolume(app.m_world->scene, target) != nullptr))
+        if (!(FindGiVolume(app.m_world->m_hierarchy, target) != nullptr))
             return false; // not a GI volume: orphan, preserved verbatim
         out.verb = EditVerb::SetGiVolumeAttr;
         out.node = target;
@@ -6205,9 +6205,9 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
         } else {
             target = app.PageToWorld(tc.node);
         }
-        if (target == UINT32_MAX || target >= app.m_world->scene.hierarchy.size())
+        if (target == UINT32_MAX || target >= app.m_world->m_hierarchy.hierarchy.size())
             return false;
-        if (!(FindCubemap(app.m_world->scene, target) != nullptr))
+        if (!(FindCubemap(app.m_world->m_hierarchy, target) != nullptr))
             return false; // not a capture: orphan, preserved verbatim
         out.verb = EditVerb::SetCubemapAttr;
         out.node = target;
@@ -6235,7 +6235,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
         } else {
             target = app.PageToWorld(tc.node);
         }
-        if (target == UINT32_MAX || target >= app.m_world->scene.hierarchy.size())
+        if (target == UINT32_MAX || target >= app.m_world->m_hierarchy.hierarchy.size())
             return false;
         if (!app.FindNodeCamera(target))
             return false; // not a camera: orphan, preserved verbatim
@@ -6257,11 +6257,11 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
     case smvk::tour::Verb::CreateAudioSource: {
         uint32_t wp = UINT32_MAX;
         if (!tc.parentRef.empty()) {
-            if (!smvk::tour::ResolveParentTarget(app.m_world->scene, tc.parentRef, wp))
+            if (!smvk::tour::ResolveParentTarget(app.m_world->m_hierarchy, tc.parentRef, wp))
                 return false;
         } else {
             wp = app.PageToWorld(tc.node);
-            if (wp == UINT32_MAX || wp >= app.m_world->scene.hierarchy.size())
+            if (wp == UINT32_MAX || wp >= app.m_world->m_hierarchy.hierarchy.size())
                 return false;
         }
         // The payload plants DEFAULT (the exportSettings pattern): the
@@ -6287,9 +6287,9 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
         } else {
             target = app.PageToWorld(tc.node);
         }
-        if (target == UINT32_MAX || target >= app.m_world->scene.hierarchy.size())
+        if (target == UINT32_MAX || target >= app.m_world->m_hierarchy.hierarchy.size())
             return false;
-        if (!(FindAudioSource(app.m_world->scene, target) != nullptr))
+        if (!(FindAudioSource(app.m_world->m_hierarchy, target) != nullptr))
             return false; // not an audio source: orphan, preserved verbatim
         out.verb = EditVerb::SetAudioAttr;
         out.node = target;
@@ -6319,9 +6319,9 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
         } else {
             target = app.PageToWorld(tc.node);
         }
-        if (target == UINT32_MAX || target >= app.m_world->scene.hierarchy.size())
+        if (target == UINT32_MAX || target >= app.m_world->m_hierarchy.hierarchy.size())
             return false;
-        if (!(FindAudioSource(app.m_world->scene, target) != nullptr))
+        if (!(FindAudioSource(app.m_world->m_hierarchy, target) != nullptr))
             return false; // not an audio source: orphan, preserved verbatim
         out.verb = EditVerb::AddAudioSound;
         out.node = target;
@@ -6345,9 +6345,9 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
         } else {
             target = app.PageToWorld(tc.node);
         }
-        if (target == UINT32_MAX || target >= app.m_world->scene.hierarchy.size())
+        if (target == UINT32_MAX || target >= app.m_world->m_hierarchy.hierarchy.size())
             return false;
-        if (!(FindAudioSource(app.m_world->scene, target) != nullptr))
+        if (!(FindAudioSource(app.m_world->m_hierarchy, target) != nullptr))
             return false; // not an audio source: orphan, preserved verbatim
         out.verb = EditVerb::RemoveAudioSound;
         out.node = target;
@@ -6359,11 +6359,11 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
     case smvk::tour::Verb::CreateAudioRoom: {
         uint32_t wp = UINT32_MAX;
         if (!tc.parentRef.empty()) {
-            if (!smvk::tour::ResolveParentTarget(app.m_world->scene, tc.parentRef, wp))
+            if (!smvk::tour::ResolveParentTarget(app.m_world->m_hierarchy, tc.parentRef, wp))
                 return false;
         } else {
             wp = app.PageToWorld(tc.node);
-            if (wp == UINT32_MAX || wp >= app.m_world->scene.hierarchy.size())
+            if (wp == UINT32_MAX || wp >= app.m_world->m_hierarchy.hierarchy.size())
                 return false;
         }
         // The payload plants DEFAULT: the properties ride the
@@ -6401,9 +6401,9 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
         } else {
             target = app.PageToWorld(tc.node);
         }
-        if (target == UINT32_MAX || target >= app.m_world->scene.hierarchy.size())
+        if (target == UINT32_MAX || target >= app.m_world->m_hierarchy.hierarchy.size())
             return false;
-        if (tour::transformhierarchy::FindAudioRoom(app.m_world->scene, target) == nullptr)
+        if (tour::transformhierarchy::FindAudioRoom(app.m_world->m_hierarchy, target) == nullptr)
             return false; // not an audio room: orphan, preserved verbatim
         out.verb = EditVerb::SetAudioRoomAttr;
         out.node = target;
@@ -6440,7 +6440,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
         } else
             target = app.PageToWorld(tc.node);
         if (target == UINT32_MAX ||
-            !tour::transformhierarchy::FindPhysicsBody(app.m_world->scene, target))
+            !tour::transformhierarchy::FindPhysicsBody(app.m_world->m_hierarchy, target))
             return false;
         out.verb = EditVerb::SetPhysicsBodyAttr;
         out.node = target;
@@ -6468,7 +6468,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
         } else
             target = app.PageToWorld(tc.node);
         if (target == UINT32_MAX ||
-            !tour::transformhierarchy::FindTriggerVolume(app.m_world->scene, target))
+            !tour::transformhierarchy::FindTriggerVolume(app.m_world->m_hierarchy, target))
             return false;
         out.verb = EditVerb::SetTriggerVolumeAttr;
         out.node = target;
@@ -6511,7 +6511,7 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
         } else {
             target = app.PageToWorld(tc.node);
         }
-        if (target == UINT32_MAX || target >= app.m_world->scene.hierarchy.size())
+        if (target == UINT32_MAX || target >= app.m_world->m_hierarchy.hierarchy.size())
             return false;
         out.verb =
             tc.verb == smvk::tour::Verb::AttachPhysicsBody     ? EditVerb::AttachPhysicsBody
@@ -6537,9 +6537,9 @@ bool EditorApp::TourToCmd(EditorApp& app, const smvk::tour::Command& tc, EditCmd
         } else {
             target = app.PageToWorld(tc.node);
         }
-        if (target == UINT32_MAX || target >= app.m_world->scene.hierarchy.size())
+        if (target == UINT32_MAX || target >= app.m_world->m_hierarchy.hierarchy.size())
             return false;
-        if (!(FindExport(app.m_world->scene, target) != nullptr))
+        if (!(FindExport(app.m_world->m_hierarchy, target) != nullptr))
             return false; // not the exportSettings node: orphan
         out.verb = EditVerb::SetExportAttr;
         out.node = target;
@@ -6700,8 +6700,8 @@ bool EditorApp::ReplayTourDoc(smvk::tour::Doc& doc, const std::string& sourcePat
         // parity: rejected when another live node already holds it.
         if (tc.verb == smvk::tour::Verb::SetUuid) {
             const uint32_t target = PageToWorld(tc.node);
-            if (target != UINT32_MAX && target < m_world->scene.hierarchy.size() &&
-                smvk::tour::SetNodeUuid(m_world->scene, target, tc.uuid)) {
+            if (target != UINT32_MAX && target < m_world->m_hierarchy.hierarchy.size() &&
+                smvk::tour::SetNodeUuid(m_world->m_hierarchy, target, tc.uuid)) {
                 ++applied;
             } else {
                 m_orphanTourCmds.push_back(tc);
@@ -6995,8 +6995,8 @@ uint32_t EditorApp::TerrainGroupOf(uint32_t node) const {
     if (m_terrainGroups.contains(node))
         return node;
     // Tile: resolve through the parent (tiles are direct children).
-    if (m_world && node < m_world->scene.hierarchy.size()) {
-        const int p = m_world->scene.hierarchy[node].parent;
+    if (m_world && node < m_world->m_hierarchy.hierarchy.size()) {
+        const int p = m_world->m_hierarchy.hierarchy[node].parent;
         if (p >= 0 && m_terrainGroups.contains(uint32_t(p)))
             return uint32_t(p);
     }
@@ -7012,7 +7012,7 @@ bool EditorApp::RebuildTerrainTiles(uint32_t groupNode,
     if (it == m_terrainGroups.end() || !m_world)
         return false;
     TerrainGroup& g = it->second;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     std::vector<uint32_t> touched;
     smvk::placement::TerrainBrushTouchedTiles(
         x0, x1, z0, z1, g.data.heights.width, g.data.tilesX, g.data.tilesZ, touched);
@@ -7055,7 +7055,7 @@ bool EditorApp::RebuildTerrainTiles(uint32_t groupNode,
 void EditorApp::ExecCreateTerrain(EditCmd& c) {
     if (!m_world || m_world->pages.empty() || !m_world->pages[0])
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     // Parent rides beforeParent (node2 packs the tile split). The draft
     // resolves it pre-execution; undo/replay read it back untouched.
     uint32_t parentNode = c.beforeParent;
@@ -7163,7 +7163,7 @@ void EditorApp::ExecCreateTerrain(EditCmd& c) {
 void EditorApp::ExecUncreateTerrain(EditCmd& c) {
     if (!m_world)
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     const uint32_t n = c.node;
     if (n == UINT32_MAX || n >= scene.hierarchy.size())
         return;
@@ -7399,7 +7399,7 @@ void EditorApp::AssignMaterialAsset(const std::string& assetPath) {
     // SELECTED subtree (one undoable AssignMaterial).
     if (!m_world || m_world->pages.empty() || !m_world->pages[0] || !m_context)
         return;
-    if (m_selected == UINT32_MAX || m_selected >= m_world->scene.hierarchy.size()) {
+    if (m_selected == UINT32_MAX || m_selected >= m_world->m_hierarchy.hierarchy.size()) {
         Log("Assets: material drop needs a selection (select a node "
             "first).");
         return;
@@ -7450,14 +7450,14 @@ void EditorApp::AssignMaterialAsset(const std::string& assetPath) {
     c.node = m_selected;
     c.material = worldIdx;
     uint32_t before = UINT32_MAX;
-    if (const MaterialRow* row = FindMaterial(m_world->scene, m_selected))
+    if (const MaterialRow* row = FindMaterial(m_world->m_hierarchy, m_selected))
         before = row->material;
     if (before == UINT32_MAX) {
         // No material on the node: seed a default first so the assign
         // round-trips (undo restores the default).
         const uint32_t def = EnsureDefaultMaterial();
         if (def != UINT32_MAX) {
-            SetMaterial(m_world->scene, m_selected, def);
+            SetMaterial(m_world->m_hierarchy, m_selected, def);
             before = def;
         }
     }

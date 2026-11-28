@@ -797,7 +797,7 @@ void EditorApp::DrawMaterialEditor() {
     {
         uint32_t selMat = UINT32_MAX;
         if (m_selected != UINT32_MAX) {
-            if (const MaterialRow* row = FindMaterial(m_world->scene, m_selected))
+            if (const MaterialRow* row = FindMaterial(m_world->m_hierarchy, m_selected))
                 selMat = row->material;
         }
         if (selMat != m_matEditorSelFromSel) {

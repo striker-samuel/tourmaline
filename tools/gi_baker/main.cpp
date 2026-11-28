@@ -838,7 +838,7 @@ int Run(Args& args) {
         for (const std::string& w : twarn)
             tool::err() << "Tour warning: " << w << std::endl;
         try {
-            addNode(cluster->scene, -1, 0); // empty scene root
+            addNode(cluster->m_hierarchy, -1, 0); // empty scene root
             if (!tour.references.empty())
                 ApplySceneReferences(*cluster,
                                      tour,
@@ -981,7 +981,7 @@ int Run(Args& args) {
                     return vfs.TryRead(p);
                 return std::nullopt;
             };
-            addNode(cluster->scene, -1, 0); // empty scene root (editor parity)
+            addNode(cluster->m_hierarchy, -1, 0); // empty scene root (editor parity)
             auto texSrc = std::make_shared<VfsTextureSource>(&vfs, smvk::vfs::BaseDir(artPath));
             const size_t built = BuildFromMeshAsset(*cluster,
                                                     nullptr,
@@ -1019,7 +1019,7 @@ int Run(Args& args) {
         std::string serr;
         std::vector<std::string> superseded;
         if (!smvk::tour::StampGiAssets(
-                tour, cluster->scene, createdGiVolumes, &serr, &superseded, &createdTransforms)) {
+                tour, cluster->m_hierarchy, createdGiVolumes, &serr, &superseded, &createdTransforms)) {
             tool::err() << "Tour giAsset stamp failed: " << serr << std::endl;
             return false;
         }
@@ -1054,13 +1054,13 @@ int Run(Args& args) {
     // probe lattice stays axis-aligned over the OBB's AABB (Bounds);
     // the plane weights carve the rotated hull.
     std::vector<GiVolumeSpecVolume> tourGiVolumes;
-    for (const GiVolumeRow& row : cluster->scene.tables.giVolumes) {
+    for (const GiVolumeRow& row : cluster->m_hierarchy.tables.giVolumes) {
         const NodeId node = row.node;
         const SceneGiVolume& def = row.volume;
-        if (node >= cluster->scene.globalTransform.size())
+        if (node >= cluster->m_hierarchy.globalTransform.size())
             continue;
         GiVolumeSpecVolume v{};
-        const glm::mat4& g = cluster->scene.globalTransform[node];
+        const glm::mat4& g = cluster->m_hierarchy.globalTransform[node];
         const glm::vec3 c(g[3]);
         glm::vec3 half;
         glm::mat3 axes;
@@ -1069,7 +1069,7 @@ int Run(Args& args) {
             half[i] = 0.5f * len;
             axes[i] = (len > 1e-6f) ? glm::vec3(g[i]) / len : glm::vec3(0.0f);
         }
-        v.def.name = getNodeName(cluster->scene, int(node));
+        v.def.name = getNodeName(cluster->m_hierarchy, int(node));
         if (v.def.name.empty())
             v.def.name = "givolume" + std::to_string(node);
         v.def.priority = def.priority;
@@ -1104,7 +1104,7 @@ int Run(Args& args) {
         // can be DIFFED against the baker's own inputs from the log
         // alone — an asymmetry between the two cluster builds names
         // itself without a debugger.
-        tool::out() << "  bake-input gate: env=" << smvk::gi::BakeEnvHash(cluster->scene)
+        tool::out() << "  bake-input gate: env=" << smvk::gi::BakeEnvHash(cluster->m_hierarchy)
                     << " lights=" << smvk::gi::BakeLightsHash(*cluster) << " grid=" << bakeGrid.root
                     << "\n";
     }
@@ -1148,8 +1148,8 @@ int Run(Args& args) {
     // forwarded to the trace-scene build options.
     if (!args.emissive)
         tool::out() << "  note: --emissive off (trace-scene option disabled)\n";
-    if (cluster->scene.envAuthored) {
-        const tour::transformhierarchy::SceneEnv& se = cluster->scene.environment;
+    if (cluster->m_hierarchy.envAuthored) {
+        const tour::transformhierarchy::SceneEnv& se = cluster->m_hierarchy.environment;
         buildOpts.env.sunAzimuthDeg = se.sunAzimuth;
         buildOpts.env.sunElevationDeg = se.sunElevation;
         buildOpts.env.sunIntensity = se.sunIntensity;
@@ -1548,9 +1548,9 @@ int Run(Args& args) {
             // is the editor's partial-bake path: an edit far outside a
             // volume's reach never re-traces it.
             if (spec.node != UINT32_MAX) {
-                auto cvIt = FindGiVolume(cluster->scene, spec.node);
+                auto cvIt = FindGiVolume(cluster->m_hierarchy, spec.node);
                 if (cvIt && !cvIt->volume.bakeSource.empty() &&
-                    spec.node < cluster->scene.globalTransform.size()) {
+                    spec.node < cluster->m_hierarchy.globalTransform.size()) {
                     smvk::gi::GiVolumeBakeConfigHashInputs hc{};
                     hc.captureDirs = cfg.captureDirs;
                     hc.maxBounces = cfg.maxBounces;
@@ -1567,7 +1567,7 @@ int Run(Args& args) {
                         smvk::gi::GiVolumeBakeUnitHash(bakeGrid,
                                                        *cluster,
                                                        cvIt->volume,
-                                                       cluster->scene.globalTransform[spec.node],
+                                                       cluster->m_hierarchy.globalTransform[spec.node],
                                                        hc);
                     // The skip requires the bound ARTIFACT to exist (a fresh
                     // project checkout/relocation carries the tour but not
@@ -1612,7 +1612,7 @@ int Run(Args& args) {
             float spacingLow = 0.0f, spacingHigh = 0.0f;
             const smvk::gi::GiVolumeLayoutSeed* seedPtr = nullptr;
             if (spec.node != UINT32_MAX) {
-                auto cvIt2 = FindGiVolume(cluster->scene, spec.node);
+                auto cvIt2 = FindGiVolume(cluster->m_hierarchy, spec.node);
                 if (cvIt2) {
                     seed.spacing = cvIt2->volume.optSpacing;
                     seed.phase[0] = cvIt2->volume.optPhase[0];
@@ -1690,7 +1690,7 @@ int Run(Args& args) {
             // extras carry no node and stay unbound (the pak embeds
             // exactly what the scene binds).
             if (spec.node != UINT32_MAX) {
-                auto cvIt = FindGiVolume(cluster->scene, spec.node);
+                auto cvIt = FindGiVolume(cluster->m_hierarchy, spec.node);
                 if (!cvIt) {
                     tool::err() << "baked volume's node " << spec.node
                                 << " not in the replayed scene — "
@@ -1701,7 +1701,7 @@ int Run(Args& args) {
                 cvIt->volume.bakeGuid.clear();
                 // The bake-input hash AT BAKE TIME (the pak gate's
                 // freshness check + the next run's skip).
-                if (spec.node < cluster->scene.globalTransform.size()) {
+                if (spec.node < cluster->m_hierarchy.globalTransform.size()) {
                     smvk::gi::GiVolumeBakeConfigHashInputs hc{};
                     hc.captureDirs = cfg.captureDirs;
                     hc.maxBounces = cfg.maxBounces;
@@ -1715,7 +1715,7 @@ int Run(Args& args) {
                         smvk::gi::GiVolumeBakeUnitHash(bakeGrid,
                                                        *cluster,
                                                        cvIt->volume,
-                                                       cluster->scene.globalTransform[spec.node],
+                                                       cluster->m_hierarchy.globalTransform[spec.node],
                                                        hc);
                 } else
                     cvIt->volume.bakeInputHash.clear();
@@ -1762,7 +1762,7 @@ int Run(Args& args) {
     // Reproduces cook-side lightmap faults without a pak cook.
     if (args.lmProbe > 0) {
         using namespace smvk::gi;
-        ::recalculateGlobalTransforms(cluster->scene);
+        ::recalculateGlobalTransforms(cluster->m_hierarchy);
         SgLightmapXatlasOptions xopts{};
         xopts.metersPerTexel = 1.0f / 5.66f; // converged night cook density (world)
         xopts.gutterTexels = 1;
@@ -1776,14 +1776,14 @@ int Run(Args& args) {
         std::vector<SgLightmapXatlasMeshInput> xins;
         std::vector<uint32_t> keys;
         uint32_t count = 0;
-        for (const MeshRow& row : cluster->scene.tables.meshes) {
+        for (const MeshRow& row : cluster->m_hierarchy.tables.meshes) {
             const NodeId node = row.node;
             const uint32_t meshIdx = row.mesh;
             if (count >= args.lmProbe)
                 break;
-            if (!IsVisibleNode(cluster->scene, int(node)))
+            if (!IsVisibleNode(cluster->m_hierarchy, int(node)))
                 continue; // hidden override: not charted
-            const MaterialRow* matRow = FindMaterial(cluster->scene, node);
+            const MaterialRow* matRow = FindMaterial(cluster->m_hierarchy, node);
             if (!matRow)
                 continue;
             const smvk::WorldPageMaterialHandle mh = cluster->materials.getHandle(matRow->material);
@@ -1798,12 +1798,12 @@ int Run(Args& args) {
             const smvk::MeshData* up = cluster->GetRetainedUpload(handle);
             if (!up || up->vertices.empty())
                 continue;
-            const glm::mat4 g = cluster->scene.globalTransform[node];
+            const glm::mat4 g = cluster->m_hierarchy.globalTransform[node];
             const float ws = std::max({glm::length(glm::vec3(g[0])),
                                        glm::length(glm::vec3(g[1])),
                                        glm::length(glm::vec3(g[2]))});
             LmWork w{};
-            w.name = getNodeName(cluster->scene, int(node));
+            w.name = getNodeName(cluster->m_hierarchy, int(node));
             w.up = up;
             w.g = g;
             works.push_back(std::move(w));

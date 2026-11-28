@@ -678,8 +678,8 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                 {
                     ImGui::Checkbox("Sky dome (K)", &m_skyEnabled);
                     if (m_world) {
-                        tour::transformhierarchy::SceneEnv& se = m_world->scene.environment;
-                        auto authored = [&]() { m_world->scene.envAuthored = true; };
+                        tour::transformhierarchy::SceneEnv& se = m_world->m_hierarchy.environment;
+                        auto authored = [&]() { m_world->m_hierarchy.envAuthored = true; };
                         ImGui::ColorEdit3("Sky color", &se.skyColor.x);
                         ImGui::DragFloat(
                             "Sky intensity (lux)", &se.skyIntensity, 5.0f, 0.0f, 10000.0f, "%.0f");
@@ -724,13 +724,13 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                     } else {
                         m_volumetricEnabled = false;
                     }
-                    if (m_world && m_world->scene.environment.fogQuality == 2) {
+                    if (m_world && m_world->m_hierarchy.environment.fogQuality == 2) {
                         // Re-declared for this block: the se/authored pair above
                         // lives inside the earlier `if (m_world)` scope, which
                         // MSVC leaks but GCC (correctly) does not - the Linux CI
                         // build failed with "'se' was not declared in this scope".
-                        tour::transformhierarchy::SceneEnv& se = m_world->scene.environment;
-                        auto authored = [&]() { m_world->scene.envAuthored = true; };
+                        tour::transformhierarchy::SceneEnv& se = m_world->m_hierarchy.environment;
+                        auto authored = [&]() { m_world->m_hierarchy.envAuthored = true; };
                         static const char* const kVolNames[5] = {"Low (8 steps)",
                                                                  "Medium (16 steps)",
                                                                  "High (32 steps)",
@@ -2973,7 +2973,7 @@ void WorldRenderer::DrawWorldMapWindow() {
     uint32_t nZones = 0, nZonesOff = 0, nGiVolumes = 0, nProbes = 0, nLights = 0, nDecals = 0;
     // ---- Env volumes: OBB XZ footprints + inf-face arrows ---------
     if (m_worldMapEnvVolumes && m_world) {
-        const ::TransformHierarchy& scene = m_world->scene;
+        const ::TransformHierarchy& scene = m_world->m_hierarchy;
         for (const EnvRow& envRow : scene.tables.envs) {
             const NodeId node = envRow.node;
             const tour::transformhierarchy::SceneEnv& env = envRow.environment;
@@ -3048,7 +3048,7 @@ void WorldRenderer::DrawWorldMapWindow() {
     }
     // ---- GI volumes -----------------------------------------------
     if (m_worldMapGiVolumes && m_world) {
-        const ::TransformHierarchy& scene = m_world->scene;
+        const ::TransformHierarchy& scene = m_world->m_hierarchy;
         for (const GiVolumeRow& giRow : scene.tables.giVolumes) {
             const NodeId node = giRow.node;
             if (node >= scene.globalTransform.size())
@@ -3247,14 +3247,14 @@ void WorldRenderer::DrawWorldMapWindow() {
         }
         if (m_world) {
             uint32_t dd = 0;
-            for (const DecalRow& decalRow : m_world->scene.tables.decals) {
+            for (const DecalRow& decalRow : m_world->m_hierarchy.tables.decals) {
                 const NodeId node = decalRow.node;
                 if (++dd > 256)
                     break;
-                if (node >= m_world->scene.globalTransform.size())
+                if (node >= m_world->m_hierarchy.globalTransform.size())
                     continue;
                 ++nDecals;
-                const glm::vec3 p(m_world->scene.globalTransform[node][3]);
+                const glm::vec3 p(m_world->m_hierarchy.globalTransform[node][3]);
                 dl->AddRectFilled(ImVec2(WX(p.x) - 3.0f, WZ(p.z) - 3.0f),
                                   ImVec2(WX(p.x) + 3.0f, WZ(p.z) + 3.0f),
                                   IM_COL32(230, 80, 220, 220));

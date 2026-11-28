@@ -2241,7 +2241,7 @@ class EditorApp : public tour::App {
     // block when a scene stands, defaults otherwise (sceneless-safe).
     const SceneRenderSettings& RenderLook() const;
     bool IsEnvNode(uint32_t node) const {
-        return m_world && FindEnv(m_world->scene, node) != nullptr;
+        return m_world && FindEnv(m_world->m_hierarchy, node) != nullptr;
     }
     void MarkEnvNode(uint32_t node); // flag node + copy current settings
     void UnmarkEnvNode(uint32_t node);

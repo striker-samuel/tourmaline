@@ -301,33 +301,33 @@ void RuntimeProcedurals::ApplyRuntimeProceduralRequest() {
             return;
         }
         // Preserve the old fixture until replacement allocation succeeds.
-        const int node = addNode(dyn.scene, -1, 0);
+        const int node = addNode(dyn.m_hierarchy, -1, 0);
         if (node < 0) {
             dyn.DestroyMesh(newMesh);
             dyn.DestroyMaterial(newMaterial);
             return;
         }
         if (m_runtimeProcNode != UINT32_MAX) {
-            RemoveMesh(dyn.scene, m_runtimeProcNode);
-            RemoveMaterial(dyn.scene, m_runtimeProcNode);
-            RetireNodeSlot(dyn.scene, m_runtimeProcNode);
+            RemoveMesh(dyn.m_hierarchy, m_runtimeProcNode);
+            RemoveMaterial(dyn.m_hierarchy, m_runtimeProcNode);
+            RetireNodeSlot(dyn.m_hierarchy, m_runtimeProcNode);
             m_retired.push_back({m_runtimeProcMesh, m_runtimeProcMaterial});
         }
         m_runtimeProcNode = uint32_t(node);
         const glm::vec3 center = m_renderer.CameraPositioner().cameraPosition_ +
                                  m_renderer.CameraPositioner().getForward() * m_runtimeProcDistance;
-        dyn.scene.localTransform[size_t(node)] = glm::translate(glm::mat4(1.0f), center);
-        dyn.scene.globalTransform[size_t(node)] = dyn.scene.localTransform[size_t(node)];
-        SetMesh(dyn.scene, uint32_t(node), newMesh.index());
-        SetMaterial(dyn.scene, uint32_t(node), newMaterial.index());
+        dyn.m_hierarchy.localTransform[size_t(node)] = glm::translate(glm::mat4(1.0f), center);
+        dyn.m_hierarchy.globalTransform[size_t(node)] = dyn.m_hierarchy.localTransform[size_t(node)];
+        SetMesh(dyn.m_hierarchy, uint32_t(node), newMesh.index());
+        SetMaterial(dyn.m_hierarchy, uint32_t(node), newMaterial.index());
         m_runtimeProcMesh = newMesh;
         m_runtimeProcMaterial = newMaterial;
     } else if (request == 2) {
         if (m_runtimeProcNode == UINT32_MAX)
             return;
-        RemoveMesh(dyn.scene, m_runtimeProcNode);
-        RemoveMaterial(dyn.scene, m_runtimeProcNode);
-        RetireNodeSlot(dyn.scene, m_runtimeProcNode);
+        RemoveMesh(dyn.m_hierarchy, m_runtimeProcNode);
+        RemoveMaterial(dyn.m_hierarchy, m_runtimeProcNode);
+        RetireNodeSlot(dyn.m_hierarchy, m_runtimeProcNode);
         m_runtimeProcNode = UINT32_MAX;
         m_retired.push_back({m_runtimeProcMesh, m_runtimeProcMaterial});
     }
@@ -360,7 +360,7 @@ void RuntimeProcedurals::ApplyRuntimeSpotRequest() {
         // == local).
         const glm::mat4 frame = glm::translate(glm::mat4(1.0f), cam.cameraPosition_) *
                                 glm::mat4_cast(cam.getOrientation());
-        const int node = addNode(dyn.scene, -1, 0);
+        const int node = addNode(dyn.m_hierarchy, -1, 0);
         if (node < 0)
             return;
         ::SceneLight def{};
@@ -374,19 +374,19 @@ void RuntimeProcedurals::ApplyRuntimeSpotRequest() {
         def.name = "runtime_spot";
         const smvk::WorldPageLightHandle handle = dyn.CreateLight(std::move(def));
         if (!handle.valid()) {
-            RetireNodeSlot(dyn.scene, node);
+            RetireNodeSlot(dyn.m_hierarchy, node);
             return;
         }
-        dyn.scene.localTransform[size_t(node)] = frame;
-        dyn.scene.globalTransform[size_t(node)] = frame;
-        SetLight(dyn.scene, uint32_t(node), handle.index());
+        dyn.m_hierarchy.localTransform[size_t(node)] = frame;
+        dyn.m_hierarchy.globalTransform[size_t(node)] = frame;
+        SetLight(dyn.m_hierarchy, uint32_t(node), handle.index());
         m_runtimeSpotNode = uint32_t(node);
         m_runtimeSpotLight = handle;
     } else if (request == 2) {
         if (m_runtimeSpotNode == UINT32_MAX)
             return;
-        RemoveLight(dyn.scene, m_runtimeSpotNode);
-        RetireNodeSlot(dyn.scene, m_runtimeSpotNode);
+        RemoveLight(dyn.m_hierarchy, m_runtimeSpotNode);
+        RetireNodeSlot(dyn.m_hierarchy, m_runtimeSpotNode);
         dyn.lights.destroy(m_runtimeSpotLight);
         m_runtimeSpotNode = UINT32_MAX;
         m_runtimeSpotLight = {};

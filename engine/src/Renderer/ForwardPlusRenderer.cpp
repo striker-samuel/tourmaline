@@ -98,7 +98,7 @@ void RecordPrepass(smvk::CommandBuffer& cmd,
         if (gpuRasterOwnsNode && gpuRasterOwnsNode(item.node))
             return; // depth/G-buffer already written by GPU scene
         const DitherCloseupState ditherState =
-            DitherCloseupStateFor(world->scene, int(item.node), ditherEye);
+            DitherCloseupStateFor(world->m_hierarchy, int(item.node), ditherEye);
         if (ditherState == DitherCloseupState::Hidden)
             return;
         const bool ditherFade = ditherState == DitherCloseupState::Fade;
@@ -112,9 +112,9 @@ void RecordPrepass(smvk::CommandBuffer& cmd,
         }
         if (!staticMask.empty() && item.node < staticMask.size() && staticMask[item.node] == 0)
             return;
-        if (item.node >= world->scene.globalTransform.size())
+        if (item.node >= world->m_hierarchy.globalTransform.size())
             return;
-        auto& model = world->scene.globalTransform[item.node];
+        auto& model = world->m_hierarchy.globalTransform[item.node];
         if (hasMainView && (item.flags & smvk::IteratorFlagBit_Static) == 0) {
             if (smvk::StaticMesh* baseDesc = world->GetMesh(item.mesh)) {
                 glm::vec3 c{0.0f};
@@ -489,9 +489,9 @@ void RecordOccluder(smvk::CommandBuffer& cmd,
             return;
         if (!staticMask.empty() && item.node < staticMask.size() && staticMask[item.node] == 0)
             return;
-        if (!world || item.node >= world->scene.globalTransform.size())
+        if (!world || item.node >= world->m_hierarchy.globalTransform.size())
             return;
-        auto& model = world->scene.globalTransform[item.node];
+        auto& model = world->m_hierarchy.globalTransform[item.node];
         smvk::StaticMesh* baseDesc = world->GetMesh(item.mesh);
         if (!baseDesc)
             return;

@@ -432,18 +432,18 @@ void TestReplay() {
     // never live on the (1MB) thread stack (see PakCooker).
     auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
-    const int root = addNode(cluster->scene, -1, 0);
-    const int g0 = addNode(cluster->scene, root, 1);
-    const int g1 = addNode(cluster->scene, root, 1);
-    setNodeName(cluster->scene, g0, "Wall");
-    setNodeName(cluster->scene, g1, "Floor");
+    const int root = addNode(cluster->m_hierarchy, -1, 0);
+    const int g0 = addNode(cluster->m_hierarchy, root, 1);
+    const int g1 = addNode(cluster->m_hierarchy, root, 1);
+    setNodeName(cluster->m_hierarchy, g0, "Wall");
+    setNodeName(cluster->m_hierarchy, g1, "Floor");
     smvk::MaterialCreateInfo ci{};
     ci.baseColorFactor = glm::vec4(1.0f);
     smvk::WorldPageMaterialHandle m0 = cluster->CreateMaterial(ci);
     smvk::WorldPageMaterialHandle m1 = cluster->CreateMaterial(ci);
-    SetMaterial(cluster->scene, uint32_t(g0), m0.index());
-    SetMaterial(cluster->scene, uint32_t(g1), m1.index());
-    RebuildStaticCache(cluster->scene);
+    SetMaterial(cluster->m_hierarchy, uint32_t(g0), m0.index());
+    SetMaterial(cluster->m_hierarchy, uint32_t(g1), m1.index());
+    RebuildStaticCache(cluster->m_hierarchy);
 
     smvk::tour::Doc doc;
     smvk::tour::Command c{};
@@ -505,32 +505,32 @@ void TestReplay() {
     std::vector<std::string> warns;
     std::string err;
     Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err), "tour replay ok");
-    Check(getNodeName(cluster->scene, g0) == "Shop_Wall", "replay rename");
-    Check(FindMaterial(cluster->scene, uint32_t(g0)) &&
-              FindMaterial(cluster->scene, uint32_t(g0))->material == m1.index(),
+    Check(getNodeName(cluster->m_hierarchy, g0) == "Shop_Wall", "replay rename");
+    Check(FindMaterial(cluster->m_hierarchy, uint32_t(g0)) &&
+              FindMaterial(cluster->m_hierarchy, uint32_t(g0))->material == m1.index(),
           "replay assign");
     const smvk::Material* mat = cluster->materials.get(m1);
     Check(mat && mat->values.params.y == 0.75f, "replay mattr");
-    Check(cluster->scene.noLightmap.size() == cluster->scene.hierarchy.size() &&
-              cluster->scene.noLightmap[size_t(g1)] == 1,
+    Check(cluster->m_hierarchy.noLightmap.size() == cluster->m_hierarchy.hierarchy.size() &&
+              cluster->m_hierarchy.noLightmap[size_t(g1)] == 1,
           "replay noLM");
-    Check(cluster->scene.localTransform[size_t(g1)][3].x == 1.0f, "replay TRS");
-    Check(cluster->scene.hierarchy[size_t(g0)].parent == g1, "replay parent");
+    Check(cluster->m_hierarchy.localTransform[size_t(g1)][3].x == 1.0f, "replay TRS");
+    Check(cluster->m_hierarchy.hierarchy[size_t(g0)].parent == g1, "replay parent");
     // Visibility: local hides g0; the wide ".*" rule skipped it (local
     // wins) and hit g1 instead; the later "Flo.*" rule re-showed g1.
-    Check(cluster->scene.hidden.size() == cluster->scene.hierarchy.size() &&
-              cluster->scene.hidden[size_t(g0)] == 1,
+    Check(cluster->m_hierarchy.hidden.size() == cluster->m_hierarchy.hierarchy.size() &&
+              cluster->m_hierarchy.hidden[size_t(g0)] == 1,
           "replay visibility local");
-    Check(cluster->scene.hidden[size_t(g1)] == 0, "replay visibility later-wins");
-    Check(!IsVisibleNode(cluster->scene, g0), "replay hidden effective");
+    Check(cluster->m_hierarchy.hidden[size_t(g1)] == 0, "replay visibility later-wins");
+    Check(!IsVisibleNode(cluster->m_hierarchy, g0), "replay hidden effective");
     // Material override ".*": g0 carries a LOCAL AssignMaterial (m1) — the
     // wide rule must not clobber it (local wins); g1 has no local, so the
     // rule assigns m0 there.
-    Check(FindMaterial(cluster->scene, uint32_t(g0)) &&
-              FindMaterial(cluster->scene, uint32_t(g0))->material == m1.index(),
+    Check(FindMaterial(cluster->m_hierarchy, uint32_t(g0)) &&
+              FindMaterial(cluster->m_hierarchy, uint32_t(g0))->material == m1.index(),
           "replay override local-wins");
-    Check(FindMaterial(cluster->scene, uint32_t(g1)) &&
-              FindMaterial(cluster->scene, uint32_t(g1))->material == m0.index(),
+    Check(FindMaterial(cluster->m_hierarchy, uint32_t(g1)) &&
+              FindMaterial(cluster->m_hierarchy, uint32_t(g1))->material == m0.index(),
           "replay override applies");
     Check(smvk::tour::OverrideAttrFromString("visibility", r.attr) &&
               r.attr == smvk::tour::OverrideAttr::Visibility,
@@ -652,7 +652,7 @@ void TestReferences() {
     // NOTE: heap-allocated (WorldPage embeds multi-MB pools).
     auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
-    addNode(cluster->scene, -1, 0); // cluster root (importer parity)
+    addNode(cluster->m_hierarchy, -1, 0); // cluster root (importer parity)
     std::vector<int> ph;
     std::vector<std::string> resolved;
     const size_t applied = ApplySceneReferences(*cluster,
@@ -670,18 +670,18 @@ void TestReferences() {
     Check(applied == 2, "ref nested applied (wheel + gear)");
     Check(ph.size() == 1, "ref placeholder list");
     if (ph.size() == 1 && ph[0] >= 0) {
-        const glm::mat4& placement = cluster->scene.localTransform[size_t(ph[0])];
+        const glm::mat4& placement = cluster->m_hierarchy.localTransform[size_t(ph[0])];
         Check(std::abs(placement[3].x - 1.0f) < 1e-4f && std::abs(placement[3].y - 2.0f) < 1e-4f &&
                   std::abs(placement[0].z + 2.0f) < 1e-4f &&
                   std::abs(placement[1].y - 3.0f) < 1e-4f,
               "ref prefab placeholder T*R*S");
     }
-    Check(findNodeByName(cluster->scene, "REF wheel") >= 0, "ref placeholder node");
+    Check(findNodeByName(cluster->m_hierarchy, "REF wheel") >= 0, "ref placeholder node");
     // Reference namespaces (Maya): the subtree takes '<ref>:' — root
     // namespace is the master tour (its nodes carry no prefix).
-    Check(findNodeByName(cluster->scene, "vehicle:Wheel") >= 0, "ref subtree namespaced");
-    Check(findNodeByName(cluster->scene, "REF gear") >= 0, "ref nested placeholder");
-    Check(findNodeByName(cluster->scene, "vehicle:gear:Gear") >= 0, "ref nested namespaced chain");
+    Check(findNodeByName(cluster->m_hierarchy, "vehicle:Wheel") >= 0, "ref subtree namespaced");
+    Check(findNodeByName(cluster->m_hierarchy, "REF gear") >= 0, "ref nested placeholder");
+    Check(findNodeByName(cluster->m_hierarchy, "vehicle:gear:Gear") >= 0, "ref nested namespaced chain");
     // Resolved sources: one canonical path per doc reference, in order
     // (the raw string is what the file says; this is what bound — the
     // wheel TOUR's resolved model source is its .geometry artifact).
@@ -694,7 +694,7 @@ void TestReferences() {
     back.references[0].nameSpace.clear();
     auto legacyCluster = std::make_unique<smvk::WorldPage>(nullptr);
     legacyCluster->SetOfflineMode(true);
-    addNode(legacyCluster->scene, -1, 0);
+    addNode(legacyCluster->m_hierarchy, -1, 0);
     Check(ApplySceneReferences(*legacyCluster,
                                back,
                                dir.generic_string(),
@@ -706,8 +706,8 @@ void TestReferences() {
                                0,
                                nullptr) == 2,
           "ref default namespace applied");
-    Check(findNodeByName(legacyCluster->scene, "wheel:Wheel") >= 0 &&
-              findNodeByName(legacyCluster->scene, "wheel:gear:Gear") >= 0,
+    Check(findNodeByName(legacyCluster->m_hierarchy, "wheel:Wheel") >= 0 &&
+              findNodeByName(legacyCluster->m_hierarchy, "wheel:gear:Gear") >= 0,
           "ref default namespace unchanged");
 
     // Multiple occurrences of the same .tour remain independently placed
@@ -727,7 +727,7 @@ void TestReferences() {
         instances.references.push_back(occurrence);
         auto world = std::make_unique<smvk::WorldPage>(nullptr);
         world->SetOfflineMode(true);
-        addNode(world->scene, -1, 0);
+        addNode(world->m_hierarchy, -1, 0);
         std::vector<int> placeholders;
         Check(ApplySceneReferences(*world,
                                    instances,
@@ -744,18 +744,18 @@ void TestReferences() {
                   placeholders[0] != placeholders[1],
               "prefab instances have distinct placeholders");
         if (placeholders.size() == 2 && placeholders[0] >= 0 && placeholders[1] >= 0)
-            Check(std::abs(world->scene.localTransform[size_t(placeholders[0])][3].x + 4.0f) <
+            Check(std::abs(world->m_hierarchy.localTransform[size_t(placeholders[0])][3].x + 4.0f) <
                           1e-4f &&
-                      std::abs(world->scene.localTransform[size_t(placeholders[1])][3].x - 6.0f) <
+                      std::abs(world->m_hierarchy.localTransform[size_t(placeholders[1])][3].x - 6.0f) <
                           1e-4f,
                   "prefab instance placements are independent");
-        Check(findNodeByName(world->scene, "left:Wheel") >= 0 &&
-                  findNodeByName(world->scene, "left:gear:Gear") >= 0 &&
-                  findNodeByName(world->scene, "right:Wheel") >= 0 &&
-                  findNodeByName(world->scene, "right:gear:Gear") >= 0,
+        Check(findNodeByName(world->m_hierarchy, "left:Wheel") >= 0 &&
+                  findNodeByName(world->m_hierarchy, "left:gear:Gear") >= 0 &&
+                  findNodeByName(world->m_hierarchy, "right:Wheel") >= 0 &&
+                  findNodeByName(world->m_hierarchy, "right:gear:Gear") >= 0,
               "prefab instances retain separate nested namespaces");
-        Check(findNodeByName(world->scene, "wheel_left:Wheel") < 0 &&
-                  findNodeByName(world->scene, "wheel_right:Wheel") < 0,
+        Check(findNodeByName(world->m_hierarchy, "wheel_left:Wheel") < 0 &&
+                  findNodeByName(world->m_hierarchy, "wheel_right:Wheel") < 0,
               "explicit namespace is independent of placeholder name");
     }
     // Cycle guard: a scene whose tour references itself inlines once.
@@ -774,7 +774,7 @@ void TestReferences() {
     selfDoc.references.push_back(sr);
     auto cluster2 = std::make_unique<smvk::WorldPage>(nullptr);
     cluster2->SetOfflineMode(true);
-    addNode(cluster2->scene, -1, 0);
+    addNode(cluster2->m_hierarchy, -1, 0);
     const size_t selfApplied = ApplySceneReferences(*cluster2,
                                                     selfDoc,
                                                     dir.generic_string(),
@@ -861,7 +861,7 @@ void TestNestedModernTourRoot() {
     doc.references.push_back(r2);
     auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
-    addNode(cluster->scene, -1, 0); // cluster root (importer parity)
+    addNode(cluster->m_hierarchy, -1, 0); // cluster root (importer parity)
     std::vector<int> ph;
     std::vector<std::string> issues;
     const size_t applied = ApplySceneReferences(*cluster,
@@ -878,20 +878,20 @@ void TestNestedModernTourRoot() {
     Check(applied == 2, "nested modern tour inlined once per occurrence");
     Check(issues.empty(), "nested modern tour no issues");
     Check(ph.size() == 2 && ph[0] >= 0 && ph[1] >= 0, "nested modern placeholder nodes");
-    Check(findNodeByName(cluster->scene, "REF cell") >= 0 &&
-              findNodeByName(cluster->scene, "REF cell_b") >= 0,
+    Check(findNodeByName(cluster->m_hierarchy, "REF cell") >= 0 &&
+              findNodeByName(cluster->m_hierarchy, "REF cell_b") >= 0,
           "nested modern placeholders named");
-    Check(findNodeByName(cluster->scene, "cell:Modern") >= 0 &&
-              findNodeByName(cluster->scene, "cell_b:Modern") >= 0,
+    Check(findNodeByName(cluster->m_hierarchy, "cell:Modern") >= 0 &&
+              findNodeByName(cluster->m_hierarchy, "cell_b:Modern") >= 0,
           "nested modern subtrees namespaced under their refs");
     // The root entry must be CONSUMED as the model source: an
     // unprefixed 'Modern' twin would mean the geometry imported a
     // second time, anchored unplaced at the owner's scene root.
-    Check(findNodeByName(cluster->scene, "Modern") < 0,
+    Check(findNodeByName(cluster->m_hierarchy, "Modern") < 0,
           "nested modern root consumed, not re-inlined");
     if (ph.size() == 2 && ph[0] >= 0 && ph[1] >= 0) {
-        const glm::mat4& a = cluster->scene.localTransform[size_t(ph[0])];
-        const glm::mat4& b = cluster->scene.localTransform[size_t(ph[1])];
+        const glm::mat4& a = cluster->m_hierarchy.localTransform[size_t(ph[0])];
+        const glm::mat4& b = cluster->m_hierarchy.localTransform[size_t(ph[1])];
         Check(std::abs(a[3].x - 5.0f) < 1e-4f && std::abs(a[3].z + 2.0f) < 1e-4f,
               "nested modern placeholder placement a");
         Check(std::abs(b[3].x + 5.0f) < 1e-4f && std::abs(b[3].z - 2.0f) < 1e-4f,
@@ -903,7 +903,7 @@ void TestNestedModernTourRoot() {
     {
         size_t withUri = 0, total = 0;
         std::unordered_set<uint32_t> seen;
-        for (const MeshRow& row : cluster->scene.tables.meshes) {
+        for (const MeshRow& row : cluster->m_hierarchy.tables.meshes) {
             if (!seen.insert(row.mesh).second)
                 continue;
             const smvk::WorldPageStaticMeshHandle h = cluster->staticMeshes.getHandle(row.mesh);
@@ -1009,7 +1009,7 @@ void TestRootReference() {
     // Bind parity A: definition build (empty root + root reference).
     auto defCluster = std::make_unique<smvk::WorldPage>(nullptr);
     defCluster->SetOfflineMode(true);
-    addNode(defCluster->scene, -1, 0);
+    addNode(defCluster->m_hierarchy, -1, 0);
     std::vector<int> defPh;
     std::vector<std::string> defResolved;
     smvk::tour::Doc defDoc; // root ref only (extra.geometry does not exist)
@@ -1037,7 +1037,7 @@ void TestRootReference() {
     Check(DecodeGltfSourceScene(model, native), "rootref decode for direct import");
     auto dirCluster = std::make_unique<smvk::WorldPage>(nullptr);
     dirCluster->SetOfflineMode(true);
-    addNode(dirCluster->scene, -1, 0);
+    addNode(dirCluster->m_hierarchy, -1, 0);
     {
         SourceSceneImporter importer(*dirCluster, native, gltf);
         importer.setTextureSource(std::make_shared<HostTextureSource>(dir));
@@ -1049,17 +1049,17 @@ void TestRootReference() {
     }
     // IDENTICAL builds: same node count, same names at the same ids
     // (no placeholder node, no namespace prefix).
-    Check(defCluster->scene.hierarchy.size() == dirCluster->scene.hierarchy.size(),
+    Check(defCluster->m_hierarchy.hierarchy.size() == dirCluster->m_hierarchy.hierarchy.size(),
           "rootref parity node count");
     bool namesMatch = true;
     for (size_t n = 0;
-         n < defCluster->scene.hierarchy.size() && n < dirCluster->scene.hierarchy.size();
+         n < defCluster->m_hierarchy.hierarchy.size() && n < dirCluster->m_hierarchy.hierarchy.size();
          ++n)
-        namesMatch = namesMatch && getNodeName(defCluster->scene, int(n)) ==
-                                       getNodeName(dirCluster->scene, int(n));
+        namesMatch = namesMatch && getNodeName(defCluster->m_hierarchy, int(n)) ==
+                                       getNodeName(dirCluster->m_hierarchy, int(n));
     Check(namesMatch, "rootref parity names/ids (no placeholder, no ns)");
-    Check(findNodeByName(defCluster->scene, "Alpha") == 1, "rootref first glTF root at id 1");
-    Check(findNodeByName(defCluster->scene, "REF scene") < 0, "rootref makes no placeholder");
+    Check(findNodeByName(defCluster->m_hierarchy, "Alpha") == 1, "rootref first glTF root at id 1");
+    Check(findNodeByName(defCluster->m_hierarchy, "REF scene") < 0, "rootref makes no placeholder");
     // Root + normal reference together: the normal one keeps its
     // placeholder and namespace; the root one stays bare.
     {
@@ -1097,7 +1097,7 @@ void TestRootReference() {
     {
         auto both = std::make_unique<smvk::WorldPage>(nullptr);
         both->SetOfflineMode(true);
-        addNode(both->scene, -1, 0);
+        addNode(both->m_hierarchy, -1, 0);
         std::vector<int> ph2;
         const size_t bothApplied = ApplySceneReferences(*both,
                                                         back,
@@ -1113,7 +1113,7 @@ void TestRootReference() {
                                                         nullptr);
         Check(bothApplied == 2, "rootref mixed applied");
         Check(ph2.size() == 2 && ph2[0] == -1 && ph2[1] >= 0, "rootref mixed placeholders");
-        Check(findNodeByName(both->scene, "extra:Extra") >= 0,
+        Check(findNodeByName(both->m_hierarchy, "extra:Extra") >= 0,
               "rootref normal ref still namespaced");
     }
     fs::remove_all(dir, ec);
@@ -1190,7 +1190,7 @@ void TestTourReferences() {
     auto freshCluster = []() {
         auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
-        addNode(cluster->scene, -1, 0); // cluster root (importer parity)
+        addNode(cluster->m_hierarchy, -1, 0); // cluster root (importer parity)
         return cluster;
     };
     // Master references the .tour (enabled by default).
@@ -1221,16 +1221,16 @@ void TestTourReferences() {
     // 3 Box's primitive-instance node (the import unrolls each gltf
     // primitive into a child node), 4 the created light (the artifact
     // build's contract: sub-tour id i lands at ph+1+i).
-    Check(findNodeByName(cluster->scene, "REF sub") == 1, "tourref placeholder");
-    Check(findNodeByName(cluster->scene, "sub:BoxRenamed") == 2,
+    Check(findNodeByName(cluster->m_hierarchy, "REF sub") == 1, "tourref placeholder");
+    Check(findNodeByName(cluster->m_hierarchy, "sub:BoxRenamed") == 2,
           "tourref replayed rename with offset");
-    Check(cluster->scene.hierarchy[size_t(2)].parent == 1, "tourref subtree parent");
-    Check(cluster->scene.localTransform[size_t(2)][3].x == 5.0f,
+    Check(cluster->m_hierarchy.hierarchy[size_t(2)].parent == 1, "tourref subtree parent");
+    Check(cluster->m_hierarchy.localTransform[size_t(2)][3].x == 5.0f,
           "tourref replayed transform with offset");
-    Check(findNodeByName(cluster->scene, "sub:Sub Spot") == 4,
+    Check(findNodeByName(cluster->m_hierarchy, "sub:Sub Spot") == 4,
           "tourref created light with offset parent");
     const uint32_t lightNode = 4;
-    const LightRow* lit = FindLight(cluster->scene, lightNode);
+    const LightRow* lit = FindLight(cluster->m_hierarchy, lightNode);
     Check(lit != nullptr, "tourref light link");
     if (lit != nullptr) {
         const ::SceneLight* L = cluster->lights.get(cluster->lights.getHandle(lit->light));
@@ -1238,8 +1238,8 @@ void TestTourReferences() {
                   (L->flags & ::SceneLight::kSceneLightFlag_CastShadow) != 0,
               "tourref -ref attr applied in replay");
     }
-    Check(findNodeByName(cluster->scene, "REF gear") >= 0, "tourref nested placeholder");
-    Check(findNodeByName(cluster->scene, "sub:gear:Gear") >= 0, "tourref nested namespaced chain");
+    Check(findNodeByName(cluster->m_hierarchy, "REF gear") >= 0, "tourref nested placeholder");
+    Check(findNodeByName(cluster->m_hierarchy, "sub:gear:Gear") >= 0, "tourref nested namespaced chain");
 
     // Multiple instances of the SAME .tour source must remain distinct:
     // each has an independent namespace and a different placement frame.
@@ -1267,14 +1267,14 @@ void TestTourReferences() {
                                                   0,
                                                   &placeholders);
         Check(count == 4 && placeholders.size() == 2, "prefab authored two nested instances");
-        Check(findNodeByName(c->scene, "left:BoxRenamed") >= 0 &&
-                  findNodeByName(c->scene, "right:BoxRenamed") >= 0 &&
-                  findNodeByName(c->scene, "left:gear:Gear") >= 0 &&
-                  findNodeByName(c->scene, "right:gear:Gear") >= 0,
+        Check(findNodeByName(c->m_hierarchy, "left:BoxRenamed") >= 0 &&
+                  findNodeByName(c->m_hierarchy, "right:BoxRenamed") >= 0 &&
+                  findNodeByName(c->m_hierarchy, "left:gear:Gear") >= 0 &&
+                  findNodeByName(c->m_hierarchy, "right:gear:Gear") >= 0,
               "prefab authored namespace isolation");
         if (placeholders.size() == 2 && placeholders[0] >= 0 && placeholders[1] >= 0) {
-            Check(c->scene.localTransform[size_t(placeholders[0])][3].x == 11.0f &&
-                      c->scene.localTransform[size_t(placeholders[1])][3].x == -11.0f,
+            Check(c->m_hierarchy.localTransform[size_t(placeholders[0])][3].x == 11.0f &&
+                      c->m_hierarchy.localTransform[size_t(placeholders[1])][3].x == -11.0f,
                   "prefab authored placement isolation");
         }
     }
@@ -1305,12 +1305,12 @@ void TestTourReferences() {
     // excludes hidden nodes at resolve time, so an import-side hide
     // would permanently drop the reference's meshes.
     Check(offApplied == 2, "tourref disabled binds (kept in scene)");
-    const int offPh = findNodeByName(clusterOff->scene, "REF sub");
+    const int offPh = findNodeByName(clusterOff->m_hierarchy, "REF sub");
     Check(offPh >= 0, "tourref disabled keeps placeholder");
-    Check(clusterOff->scene.hidden.size() != clusterOff->scene.hierarchy.size() ||
-              clusterOff->scene.hidden[size_t(offPh)] == 0,
+    Check(clusterOff->m_hierarchy.hidden.size() != clusterOff->m_hierarchy.hierarchy.size() ||
+              clusterOff->m_hierarchy.hidden[size_t(offPh)] == 0,
           "tourref disabled NOT hidden at import (draw list intact)");
-    Check(findNodeByName(clusterOff->scene, "sub:BoxRenamed") >= 0,
+    Check(findNodeByName(clusterOff->m_hierarchy, "sub:BoxRenamed") >= 0,
           "tourref disabled keeps namespaced nodes");
 
     // -enabled round-trips (absent = enabled).
@@ -1389,15 +1389,15 @@ void TestLightVerbs() {
     // Replay: root + one imported node; create under root.
     auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
-    const int root = addNode(cluster->scene, -1, 0);
-    setNodeName(cluster->scene, root, "Root");
-    const size_t beforeNodes = cluster->scene.hierarchy.size();
+    const int root = addNode(cluster->m_hierarchy, -1, 0);
+    setNodeName(cluster->m_hierarchy, root, "Root");
+    const size_t beforeNodes = cluster->m_hierarchy.hierarchy.size();
     Check(smvk::tour::ApplyTourToCluster(*cluster, back, &warns, &err), "light replay ok");
-    Check(cluster->scene.hierarchy.size() == beforeNodes + 1, "light replay appends node");
+    Check(cluster->m_hierarchy.hierarchy.size() == beforeNodes + 1, "light replay appends node");
     const uint32_t newNode = uint32_t(beforeNodes);
-    Check(cluster->scene.hierarchy[newNode].parent == root, "light replay parent");
-    Check(getNodeName(cluster->scene, int(newNode)) == "Key Spot", "light replay name");
-    const LightRow* lit = FindLight(cluster->scene, newNode);
+    Check(cluster->m_hierarchy.hierarchy[newNode].parent == root, "light replay parent");
+    Check(getNodeName(cluster->m_hierarchy, int(newNode)) == "Key Spot", "light replay name");
+    const LightRow* lit = FindLight(cluster->m_hierarchy, newNode);
     Check(lit != nullptr, "light replay link");
     const ::SceneLight* L = cluster->lights.get(cluster->lights.getHandle(lit->light));
     bool params = L && L->type == ::SceneLight::Type::Spot && L->intensity == 2000.0f &&
@@ -1407,10 +1407,10 @@ void TestLightVerbs() {
                   (L->flags & ::SceneLight::kSceneLightFlag_Static) == 0 &&
                   L->color == glm::vec3(1.0f, 0.5f, 0.25f) && L->layerMask == 2147483649u;
     Check(params, "light replay params (-ref intensity + color + layer mask)");
-    Check(cluster->scene.metadata.size() > 0 &&
-              cluster->scene.metadata[0].lightLayerMask == 2147483648u,
+    Check(cluster->m_hierarchy.metadata.size() > 0 &&
+              cluster->m_hierarchy.metadata[0].lightLayerMask == 2147483648u,
           "non-light receiver mask tour roundtrip");
-    Check(cluster->scene.localTransform[newNode][3].x == 1.0f, "light replay position");
+    Check(cluster->m_hierarchy.localTransform[newNode][3].x == 1.0f, "light replay position");
 
     // Out-of-range -ref fails loudly; unknown attr fails at parse.
     smvk::tour::Doc bad;
@@ -1542,27 +1542,27 @@ void TestGiVolumeVerbs() {
     // Replay: root + one imported node; create under root.
     auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
-    const int root = addNode(cluster->scene, -1, 0);
-    setNodeName(cluster->scene, root, "Root");
-    const size_t beforeNodes = cluster->scene.hierarchy.size();
+    const int root = addNode(cluster->m_hierarchy, -1, 0);
+    setNodeName(cluster->m_hierarchy, root, "Root");
+    const size_t beforeNodes = cluster->m_hierarchy.hierarchy.size();
     Check(smvk::tour::ApplyTourToCluster(*cluster, back, &warns, &err), "GI volume replay ok");
-    Check(cluster->scene.hierarchy.size() == beforeNodes + 1, "GI volume replay appends node");
+    Check(cluster->m_hierarchy.hierarchy.size() == beforeNodes + 1, "GI volume replay appends node");
     const uint32_t newNode = uint32_t(beforeNodes);
-    Check(cluster->scene.hierarchy[newNode].parent == root, "GI volume replay parent");
-    Check(getNodeName(cluster->scene, int(newNode)) == "GIVolume_1", "GI volume replay name");
-    const GiVolumeRow* cvit = FindGiVolume(cluster->scene, newNode);
+    Check(cluster->m_hierarchy.hierarchy[newNode].parent == root, "GI volume replay parent");
+    Check(getNodeName(cluster->m_hierarchy, int(newNode)) == "GIVolume_1", "GI volume replay name");
+    const GiVolumeRow* cvit = FindGiVolume(cluster->m_hierarchy, newNode);
     Check(cvit != nullptr, "GI volume replay link");
     Check(cvit != nullptr && cvit->volume.priority == 2u && cvit->volume.spacing == 0.25f &&
               cvit->volume.insideFade == 0.1f && cvit->volume.outsideFade == 0.2f,
           "GI volume replay params (-ref spacing applied)");
-    Check(cluster->scene.localTransform[newNode][3].x == 1.0f &&
-              cluster->scene.localTransform[newNode][3].y == 2.0f,
+    Check(cluster->m_hierarchy.localTransform[newNode][3].x == 1.0f &&
+              cluster->m_hierarchy.localTransform[newNode][3].y == 2.0f,
           "GI volume replay position");
     // Size attr rebuilt the scale channel (10 m box).
     glm::vec3 sk, tt, ss3;
     glm::vec4 pp;
     glm::quat qq;
-    glm::decompose(cluster->scene.localTransform[newNode], ss3, qq, tt, sk, pp);
+    glm::decompose(cluster->m_hierarchy.localTransform[newNode], ss3, qq, tt, sk, pp);
     Check(std::abs(ss3.x - 10.0f) < 1e-4f, "GI volume replay size");
 
     // Unified form lowers to the legacy verb at parse.
@@ -1590,7 +1590,7 @@ void TestGiVolumeVerbs() {
     del.commands.push_back(dc);
     Check(smvk::tour::ApplyTourToCluster(*cluster, del, &warns, &err),
           "GI volume delete replay ok");
-    Check(FindGiVolume(cluster->scene, newNode) == nullptr, "GI volume delete drops def");
+    Check(FindGiVolume(cluster->m_hierarchy, newNode) == nullptr, "GI volume delete drops def");
 
     // Out-of-range -ref fails loudly; unknown attr fails at parse.
     smvk::tour::Doc bad;
@@ -1679,10 +1679,10 @@ void TestGiVolumeVerbs() {
         rd.commands.push_back(rc2);
         auto cluster2 = std::make_unique<smvk::WorldPage>(nullptr);
         cluster2->SetOfflineMode(true);
-        addNode(cluster2->scene, -1, 0);
+        addNode(cluster2->m_hierarchy, -1, 0);
         Check(smvk::tour::ApplyTourToCluster(*cluster2, rd, &warns, &err),
               "GI volume seed replay ok");
-        const GiVolumeRow* seedRow = FindGiVolume(cluster2->scene, 1u);
+        const GiVolumeRow* seedRow = FindGiVolume(cluster2->m_hierarchy, 1u);
         Check(seedRow != nullptr && seedRow->volume.optSpacing == 1.30313f &&
                   seedRow->volume.optPhase[0] == 0.25f && seedRow->volume.optPhase[2] == 0.75f,
               "GI volume seed replay params");
@@ -1705,9 +1705,9 @@ void TestGiVolumeVerbs() {
 void TestCreateParentSentinel() {
     auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
-    const int root = addNode(cluster->scene, -1, 0);
-    const int g0 = addNode(cluster->scene, root, 1);
-    setNodeName(cluster->scene, g0, "Wall");
+    const int root = addNode(cluster->m_hierarchy, -1, 0);
+    const int g0 = addNode(cluster->m_hierarchy, root, 1);
+    setNodeName(cluster->m_hierarchy, g0, "Wall");
 
     // 1. Legacy "-p 4294967295": replays, parented at the cluster ROOT.
     {
@@ -1723,10 +1723,10 @@ void TestCreateParentSentinel() {
         std::string err;
         Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
               "sentinel parent replays (legacy -p 4294967295)");
-        Check(cluster->scene.tables.cubemaps.size() == 1, "sentinel-parent cubemap def created");
-        if (cluster->scene.tables.cubemaps.size() == 1) {
-            const uint32_t created = cluster->scene.tables.cubemaps.begin()->node;
-            Check(cluster->scene.hierarchy[created].parent == root,
+        Check(cluster->m_hierarchy.tables.cubemaps.size() == 1, "sentinel-parent cubemap def created");
+        if (cluster->m_hierarchy.tables.cubemaps.size() == 1) {
+            const uint32_t created = cluster->m_hierarchy.tables.cubemaps.begin()->node;
+            Check(cluster->m_hierarchy.hierarchy[created].parent == root,
                   "sentinel parent lands at the cluster root");
         }
     }
@@ -1823,18 +1823,18 @@ void TestCubemapVerbs() {
     // Replay onto a offline cluster.
     auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
-    const int root = addNode(cluster->scene, -1, 0);
-    setNodeName(cluster->scene, root, "Root");
-    const size_t beforeNodes = cluster->scene.hierarchy.size();
+    const int root = addNode(cluster->m_hierarchy, -1, 0);
+    setNodeName(cluster->m_hierarchy, root, "Root");
+    const size_t beforeNodes = cluster->m_hierarchy.hierarchy.size();
     Check(smvk::tour::ApplyTourToCluster(*cluster, back, &warns, &err), "cube replay ok");
-    Check(cluster->scene.hierarchy.size() == beforeNodes + 1, "cube replay appends node");
+    Check(cluster->m_hierarchy.hierarchy.size() == beforeNodes + 1, "cube replay appends node");
     const uint32_t newNode = uint32_t(beforeNodes);
-    Check(getNodeName(cluster->scene, int(newNode)) == "Cube_1", "cube replay name");
-    const CubemapRow* cmit = FindCubemap(cluster->scene, newNode);
+    Check(getNodeName(cluster->m_hierarchy, int(newNode)) == "Cube_1", "cube replay name");
+    const CubemapRow* cmit = FindCubemap(cluster->m_hierarchy, newNode);
     Check(cmit != nullptr, "cube replay link");
     Check(cmit != nullptr && cmit->cubemap.radius == 2.5f,
           "cube replay params (-ref radius applied)");
-    Check(cluster->scene.localTransform[newNode][3].y == 2.0f, "cube replay position");
+    Check(cluster->m_hierarchy.localTransform[newNode][3].y == 2.0f, "cube replay position");
     std::error_code ec;
     std::filesystem::remove(TempTour(), ec);
 
@@ -1857,7 +1857,7 @@ void TestCubemapVerbs() {
     dc.name = "Cube_1";
     del.commands.push_back(dc);
     Check(smvk::tour::ApplyTourToCluster(*cluster, del, &warns, &err), "cube delete replay ok");
-    Check(FindCubemap(cluster->scene, newNode) == nullptr, "cube delete drops def");
+    Check(FindCubemap(cluster->m_hierarchy, newNode) == nullptr, "cube delete drops def");
 
     // Out-of-range -ref fails loudly; unknown attr fails at parse.
     smvk::tour::Doc bad;
@@ -1952,9 +1952,9 @@ void TestCreateNode() {
     // Cook replay: lowered light creates; system type warns+skips.
     auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
-    addNode(cluster->scene, -1, 0);
+    addNode(cluster->m_hierarchy, -1, 0);
     Check(smvk::tour::ApplyTourToCluster(*cluster, back, &warns, &err), "createnode replay ok");
-    Check(cluster->scene.tables.lights.size() == 1, "createnode replay creates light");
+    Check(cluster->m_hierarchy.tables.lights.size() == 1, "createnode replay creates light");
     Check(!warns.empty(), "createnode system replay reported");
     // Unknown -at fails the file loudly.
     smvk::tour::Doc parseBad;
@@ -2024,37 +2024,37 @@ void TestTerrainVerbs() {
     // mints the editor default (warned, not failed).
     auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
-    const int root = addNode(cluster->scene, -1, 0);
-    setNodeName(cluster->scene, root, "Root");
-    const size_t beforeNodes = cluster->scene.hierarchy.size();
+    const int root = addNode(cluster->m_hierarchy, -1, 0);
+    setNodeName(cluster->m_hierarchy, root, "Root");
+    const size_t beforeNodes = cluster->m_hierarchy.hierarchy.size();
     Check(smvk::tour::ApplyTourToCluster(*cluster, back, &warns, &err), "terrain replay ok");
-    const size_t added = cluster->scene.hierarchy.size() - beforeNodes;
+    const size_t added = cluster->m_hierarchy.hierarchy.size() - beforeNodes;
     Check(added == 1 + 4, "terrain replay group+4 tiles");
     const uint32_t group = uint32_t(beforeNodes);
-    Check(cluster->scene.hierarchy[group].parent == root, "terrain replay group parent");
-    Check(getNodeName(cluster->scene, int(group)) == "Terrain_1", "terrain replay group name");
+    Check(cluster->m_hierarchy.hierarchy[group].parent == root, "terrain replay group parent");
+    Check(getNodeName(cluster->m_hierarchy, int(group)) == "Terrain_1", "terrain replay group name");
     uint32_t tileMeshes = 0;
-    for (const MeshRow& row : cluster->scene.tables.meshes) {
+    for (const MeshRow& row : cluster->m_hierarchy.tables.meshes) {
         const uint32_t n = row.node;
         if (n == group)
             continue; // the group node carries no mesh
-        if (cluster->scene.hierarchy[n].parent == int(group))
+        if (cluster->m_hierarchy.hierarchy[n].parent == int(group))
             ++tileMeshes;
     }
     Check(tileMeshes == 4, "terrain replay 4 tile meshes");
     // Default material minted: group tiles reference a valid pool id.
     bool matOk = true;
-    for (const MeshRow& row : cluster->scene.tables.meshes) {
-        const MaterialRow* matRow = FindMaterial(cluster->scene, row.node);
+    for (const MeshRow& row : cluster->m_hierarchy.tables.meshes) {
+        const MaterialRow* matRow = FindMaterial(cluster->m_hierarchy, row.node);
         if (!matRow || !cluster->materials.get(cluster->materials.getHandle(matRow->material)))
             matOk = false;
     }
     Check(matOk, "terrain replay default material minted");
     // Post-loop mesh upload happened (heights baked through 2 stamps).
-    const uint32_t nodes = uint32_t(cluster->scene.hierarchy.size());
+    const uint32_t nodes = uint32_t(cluster->m_hierarchy.hierarchy.size());
     uint32_t withMesh = 0;
     for (uint32_t n = 0; n < nodes; ++n)
-        if (FindMesh(cluster->scene, n))
+        if (FindMesh(cluster->m_hierarchy, n))
             ++withMesh;
     Check(withMesh == 4, "terrain replay meshes uploaded post-pass");
 
@@ -2101,22 +2101,22 @@ void TestDelete() {
     // every later command addressing it) survives — ids stay stable.
     auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
-    const int root = addNode(cluster->scene, -1, 0);
-    const int g0 = addNode(cluster->scene, root, 1);
-    const int g1 = addNode(cluster->scene, root, 1);
-    setNodeName(cluster->scene, g0, "Wall");
-    setNodeName(cluster->scene, g1, "Floor");
+    const int root = addNode(cluster->m_hierarchy, -1, 0);
+    const int g0 = addNode(cluster->m_hierarchy, root, 1);
+    const int g1 = addNode(cluster->m_hierarchy, root, 1);
+    setNodeName(cluster->m_hierarchy, g0, "Wall");
+    setNodeName(cluster->m_hierarchy, g1, "Floor");
     smvk::MaterialCreateInfo ci{};
     ci.baseColorFactor = glm::vec4(1.0f);
     const smvk::WorldPageMaterialHandle m0 = cluster->CreateMaterial(ci);
-    SetMesh(cluster->scene, uint32_t(g0), 0);
-    SetMaterial(cluster->scene, uint32_t(g0), m0.index());
-    SetMaterial(cluster->scene, uint32_t(g1), m0.index());
+    SetMesh(cluster->m_hierarchy, uint32_t(g0), 0);
+    SetMaterial(cluster->m_hierarchy, uint32_t(g0), m0.index());
+    SetMaterial(cluster->m_hierarchy, uint32_t(g1), m0.index());
     ::SceneLight def{};
     def.type = ::SceneLight::Type::Point;
     def.name = "L";
     const uint32_t lIdx = cluster->lights.create(std::move(def)).index();
-    SetLight(cluster->scene, uint32_t(g0), lIdx);
+    SetLight(cluster->m_hierarchy, uint32_t(g0), lIdx);
 
     smvk::tour::Doc doc2;
     smvk::tour::Command d{};
@@ -2130,12 +2130,12 @@ void TestDelete() {
     r2.text = "Deleted_Wall";
     doc2.commands.push_back(r2);
     Check(smvk::tour::ApplyTourToCluster(*cluster, doc2, &warns, &err), "delete replay ok");
-    Check(FindMesh(cluster->scene, uint32_t(g0)) == nullptr, "delete drops mesh link");
-    Check(FindMaterial(cluster->scene, uint32_t(g0)) == nullptr, "delete drops material link");
-    Check(FindLight(cluster->scene, uint32_t(g0)) == nullptr, "delete drops light link");
-    Check(getNodeName(cluster->scene, g0) == "Deleted_Wall", "delete keeps ids stable");
-    Check(FindMaterial(cluster->scene, uint32_t(g1)) &&
-              FindMaterial(cluster->scene, uint32_t(g1))->material == m0.index(),
+    Check(FindMesh(cluster->m_hierarchy, uint32_t(g0)) == nullptr, "delete drops mesh link");
+    Check(FindMaterial(cluster->m_hierarchy, uint32_t(g0)) == nullptr, "delete drops material link");
+    Check(FindLight(cluster->m_hierarchy, uint32_t(g0)) == nullptr, "delete drops light link");
+    Check(getNodeName(cluster->m_hierarchy, g0) == "Deleted_Wall", "delete keeps ids stable");
+    Check(FindMaterial(cluster->m_hierarchy, uint32_t(g1)) &&
+              FindMaterial(cluster->m_hierarchy, uint32_t(g1))->material == m0.index(),
           "delete leaves siblings alone");
 
     smvk::tour::Doc bad;
@@ -2152,18 +2152,18 @@ void TestDelete() {
 void TestIdentityLayers() {
     auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
-    const int root = addNode(cluster->scene, -1, 0); // named root
-    const int grpA = addNode(cluster->scene, root, 1);
-    const int grpB = addNode(cluster->scene, root, 1);
-    const int meshA = addNode(cluster->scene, grpA, 2);
-    const int meshB = addNode(cluster->scene, grpB, 2);
-    const int solo = addNode(cluster->scene, grpB, 2);
-    setNodeName(cluster->scene, grpA, "grpA");
-    setNodeName(cluster->scene, grpB, "grpB");
-    setNodeName(cluster->scene, meshA, "Mesh");
-    setNodeName(cluster->scene, meshB, "Mesh");
-    setNodeName(cluster->scene, solo, "Solo");
-    TransformHierarchy& scene = cluster->scene;
+    const int root = addNode(cluster->m_hierarchy, -1, 0); // named root
+    const int grpA = addNode(cluster->m_hierarchy, root, 1);
+    const int grpB = addNode(cluster->m_hierarchy, root, 1);
+    const int meshA = addNode(cluster->m_hierarchy, grpA, 2);
+    const int meshB = addNode(cluster->m_hierarchy, grpB, 2);
+    const int solo = addNode(cluster->m_hierarchy, grpB, 2);
+    setNodeName(cluster->m_hierarchy, grpA, "grpA");
+    setNodeName(cluster->m_hierarchy, grpB, "grpB");
+    setNodeName(cluster->m_hierarchy, meshA, "Mesh");
+    setNodeName(cluster->m_hierarchy, meshB, "Mesh");
+    setNodeName(cluster->m_hierarchy, solo, "Solo");
+    TransformHierarchy& scene = cluster->m_hierarchy;
     // MDagPath: full path (unnamed root contributes nothing)...
     Check(smvk::tour::DagFullPath(scene, uint32_t(meshA)) ==
               getNodeName(scene, root) + "/grpA/Mesh",
@@ -2216,7 +2216,7 @@ void TestIdentityLayers() {
     // AND a renamed node (uuids survive renames and hierarchy moves).
     {
         setNodeName(scene, meshA, "RenamedMesh");
-        SetMesh(cluster->scene, uint32_t(meshA), 0);
+        SetMesh(cluster->m_hierarchy, uint32_t(meshA), 0);
         smvk::tour::Doc doc;
         smvk::tour::Command d{};
         d.verb = smvk::tour::Verb::Delete;
@@ -2228,7 +2228,7 @@ void TestIdentityLayers() {
         std::vector<std::string> warns;
         Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
               "uuid delete after rename");
-        Check(FindMesh(cluster->scene, uint32_t(meshA)) == nullptr,
+        Check(FindMesh(cluster->m_hierarchy, uint32_t(meshA)) == nullptr,
               "uuid delete unlinks renamed node");
     }
 }
@@ -2238,21 +2238,21 @@ void TestDeleteAddressing() {
     auto freshCluster = []() {
         auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
-        addNode(cluster->scene, -1, 0); // root (unnamed)
+        addNode(cluster->m_hierarchy, -1, 0); // root (unnamed)
         return cluster;
     };
     auto cluster = freshCluster();
     // root/grpA + root/grpB, each with a "Mesh" child (duplicated name).
-    const int grpA = addNode(cluster->scene, 0, 1);
-    const int grpB = addNode(cluster->scene, 0, 1);
-    const int meshA = addNode(cluster->scene, grpA, 2);
-    const int meshB = addNode(cluster->scene, grpB, 2);
-    setNodeName(cluster->scene, grpA, "grpA");
-    setNodeName(cluster->scene, grpB, "grpB");
-    setNodeName(cluster->scene, meshA, "Mesh");
-    setNodeName(cluster->scene, meshB, "Mesh");
-    SetMesh(cluster->scene, uint32_t(meshA), 0);
-    SetMesh(cluster->scene, uint32_t(meshB), 0);
+    const int grpA = addNode(cluster->m_hierarchy, 0, 1);
+    const int grpB = addNode(cluster->m_hierarchy, 0, 1);
+    const int meshA = addNode(cluster->m_hierarchy, grpA, 2);
+    const int meshB = addNode(cluster->m_hierarchy, grpB, 2);
+    setNodeName(cluster->m_hierarchy, grpA, "grpA");
+    setNodeName(cluster->m_hierarchy, grpB, "grpB");
+    setNodeName(cluster->m_hierarchy, meshA, "Mesh");
+    setNodeName(cluster->m_hierarchy, meshB, "Mesh");
+    SetMesh(cluster->m_hierarchy, uint32_t(meshA), 0);
+    SetMesh(cluster->m_hierarchy, uint32_t(meshB), 0);
     std::vector<std::string> warns;
     std::string err;
 
@@ -2280,8 +2280,8 @@ void TestDeleteAddressing() {
     Check(smvk::tour::ApplyTourToCluster(*cluster, back, &warns, &err), "uuid replay ok");
     // meshA unlinked through its uuid (the STALE numeric id 9999 in the
     // variant below must not matter); meshB untouched.
-    Check(FindMesh(cluster->scene, uint32_t(meshA)) == nullptr, "uuid delete unlinks");
-    Check(FindMesh(cluster->scene, uint32_t(meshB)) != nullptr, "uuid delete spares siblings");
+    Check(FindMesh(cluster->m_hierarchy, uint32_t(meshA)) == nullptr, "uuid delete unlinks");
+    Check(FindMesh(cluster->m_hierarchy, uint32_t(meshB)) != nullptr, "uuid delete spares siblings");
 
     // Stale id + valid uuid: uuid wins even when -n points elsewhere.
     {
@@ -2291,15 +2291,15 @@ void TestDeleteAddressing() {
         d2.node = 9999;
         d2.uuid = "fedcba9876543210fedcba9876543210";
         doc2.commands.push_back(d2);
-        SetNodeUuidRaw(cluster->scene, uint32_t(meshB), d2.uuid);
+        SetNodeUuidRaw(cluster->m_hierarchy, uint32_t(meshB), d2.uuid);
         Check(smvk::tour::ApplyTourToCluster(*cluster, doc2, &warns, &err),
               "uuid wins over stale id");
-        Check(FindMesh(cluster->scene, uint32_t(meshB)) == nullptr, "uuid delete hits by uuid");
+        Check(FindMesh(cluster->m_hierarchy, uint32_t(meshB)) == nullptr, "uuid delete hits by uuid");
     }
     // DAG path disambiguates duplicated basenames: grpA/Mesh.
     {
-        SetMesh(cluster->scene, uint32_t(meshA), 0);
-        SetMesh(cluster->scene, uint32_t(meshB), 0);
+        SetMesh(cluster->m_hierarchy, uint32_t(meshA), 0);
+        SetMesh(cluster->m_hierarchy, uint32_t(meshB), 0);
         smvk::tour::Doc doc3;
         smvk::tour::Command d3{};
         d3.verb = smvk::tour::Verb::Delete;
@@ -2307,16 +2307,16 @@ void TestDeleteAddressing() {
         d3.name = "grpA/Mesh";
         doc3.commands.push_back(d3);
         Check(smvk::tour::ApplyTourToCluster(*cluster, doc3, &warns, &err), "path delete ok");
-        Check(FindMesh(cluster->scene, uint32_t(meshA)) == nullptr, "path delete hits right leaf");
-        Check(FindMesh(cluster->scene, uint32_t(meshB)) != nullptr,
+        Check(FindMesh(cluster->m_hierarchy, uint32_t(meshA)) == nullptr, "path delete hits right leaf");
+        Check(FindMesh(cluster->m_hierarchy, uint32_t(meshB)) != nullptr,
               "path delete spares other leaf");
     }
     // Unique-name delete (no uuid, no useful id): name resolves.
     // (meshB gets a unique name first; per-node delete never touches
     // anything but the target's own links.)
     {
-        setNodeName(cluster->scene, meshB, "Solo");
-        SetMesh(cluster->scene, uint32_t(meshB), 0);
+        setNodeName(cluster->m_hierarchy, meshB, "Solo");
+        SetMesh(cluster->m_hierarchy, uint32_t(meshB), 0);
         smvk::tour::Doc doc4;
         smvk::tour::Command d4{};
         d4.verb = smvk::tour::Verb::Delete;
@@ -2324,12 +2324,12 @@ void TestDeleteAddressing() {
         d4.name = "Solo";
         doc4.commands.push_back(d4);
         Check(smvk::tour::ApplyTourToCluster(*cluster, doc4, &warns, &err), "name delete ok");
-        Check(FindMesh(cluster->scene, uint32_t(meshB)) == nullptr, "name delete unlinks");
+        Check(FindMesh(cluster->m_hierarchy, uint32_t(meshB)) == nullptr, "name delete unlinks");
     }
     // A stale UUID with no name must never fall back to a valid numeric
     // id: after a re-import that slot could belong to another node.
     {
-        SetMesh(cluster->scene, uint32_t(meshB), 0);
+        SetMesh(cluster->m_hierarchy, uint32_t(meshB), 0);
         smvk::tour::Doc doc6;
         smvk::tour::Command d6{};
         d6.verb = smvk::tour::Verb::Delete;
@@ -2338,24 +2338,24 @@ void TestDeleteAddressing() {
         doc6.commands.push_back(d6);
         Check(!smvk::tour::ApplyTourToCluster(*cluster, doc6, &warns, &err),
               "stale uuid-only delete fails strict");
-        Check(FindMesh(cluster->scene, uint32_t(meshB)) != nullptr,
+        Check(FindMesh(cluster->m_hierarchy, uint32_t(meshB)) != nullptr,
               "stale uuid-only delete preserves numeric target");
         std::vector<std::string> refWarns;
         Check(smvk::tour::ApplyTourToCluster(*cluster, doc6, &refWarns, &err, /*strict=*/false),
               "stale uuid-only delete skips in reference");
-        Check(!refWarns.empty() && FindMesh(cluster->scene, uint32_t(meshB)) != nullptr,
+        Check(!refWarns.empty() && FindMesh(cluster->m_hierarchy, uint32_t(meshB)) != nullptr,
               "stale uuid-only delete warns and preserves target");
     }
     // Legacy nameless delete still resolves by id.
     {
-        SetMesh(cluster->scene, uint32_t(meshB), 0);
+        SetMesh(cluster->m_hierarchy, uint32_t(meshB), 0);
         smvk::tour::Doc doc5;
         smvk::tour::Command d5{};
         d5.verb = smvk::tour::Verb::Delete;
         d5.node = uint32_t(meshB);
         doc5.commands.push_back(d5);
         Check(smvk::tour::ApplyTourToCluster(*cluster, doc5, &warns, &err), "legacy delete ok");
-        Check(FindMesh(cluster->scene, uint32_t(meshB)) == nullptr, "legacy delete unlinks");
+        Check(FindMesh(cluster->m_hierarchy, uint32_t(meshB)) == nullptr, "legacy delete unlinks");
     }
     // GenerateUuid: 32 lowercase hex, unique across calls.
     {
@@ -2382,22 +2382,22 @@ void TestLogicalNodeTargets() {
     auto freshCluster = []() {
         auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
-        addNode(cluster->scene, -1, 0); // root (unnamed)
+        addNode(cluster->m_hierarchy, -1, 0); // root (unnamed)
         return cluster;
     };
     auto cluster = freshCluster();
     // root/grpA + root/grpB, each with a "Mesh" child (duplicated name
     // — the ambiguity that forces uuid/path keys).
-    const int grpA = addNode(cluster->scene, 0, 1);
-    const int grpB = addNode(cluster->scene, 0, 1);
-    const int meshA = addNode(cluster->scene, grpA, 2);
-    const int meshB = addNode(cluster->scene, grpB, 2);
-    setNodeName(cluster->scene, grpA, "grpA");
-    setNodeName(cluster->scene, grpB, "grpB");
-    setNodeName(cluster->scene, meshA, "Mesh");
-    setNodeName(cluster->scene, meshB, "Mesh");
-    SetMesh(cluster->scene, uint32_t(meshA), 0);
-    SetMesh(cluster->scene, uint32_t(meshB), 0);
+    const int grpA = addNode(cluster->m_hierarchy, 0, 1);
+    const int grpB = addNode(cluster->m_hierarchy, 0, 1);
+    const int meshA = addNode(cluster->m_hierarchy, grpA, 2);
+    const int meshB = addNode(cluster->m_hierarchy, grpB, 2);
+    setNodeName(cluster->m_hierarchy, grpA, "grpA");
+    setNodeName(cluster->m_hierarchy, grpB, "grpB");
+    setNodeName(cluster->m_hierarchy, meshA, "Mesh");
+    setNodeName(cluster->m_hierarchy, meshB, "Mesh");
+    SetMesh(cluster->m_hierarchy, uint32_t(meshA), 0);
+    SetMesh(cluster->m_hierarchy, uint32_t(meshB), 0);
     std::vector<std::string> warns;
     std::string err;
     const std::string hexA = "0123456789abcdef0123456789abcdef";
@@ -2434,7 +2434,7 @@ void TestLogicalNodeTargets() {
     // UUID KEY + STALE ID: the recorded uuid wins over a -n that no
     // longer names the node (the id-shift survival — the point).
     {
-        SetNodeUuidRaw(cluster->scene, uint32_t(meshA), hexA);
+        SetNodeUuidRaw(cluster->m_hierarchy, uint32_t(meshA), hexA);
         smvk::tour::Doc doc;
         smvk::tour::Command v{};
         v.verb = smvk::tour::Verb::SetVisibility;
@@ -2444,14 +2444,14 @@ void TestLogicalNodeTargets() {
         doc.commands.push_back(v);
         Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
               "logical uuid replay ok");
-        Check(cluster->scene.hidden[size_t(meshA)] != 0 &&
-                  cluster->scene.hidden[size_t(meshB)] == 0,
+        Check(cluster->m_hierarchy.hidden[size_t(meshA)] != 0 &&
+                  cluster->m_hierarchy.hidden[size_t(meshB)] == 0,
               "logical uuid hits the uuid node only");
     }
 
     // UUID-ONLY LINE (no -n at all): resolves through the key.
     {
-        cluster->scene.hidden[size_t(meshA)] = 0;
+        cluster->m_hierarchy.hidden[size_t(meshA)] = 0;
         smvk::tour::Doc doc;
         smvk::tour::Command v{};
         v.verb = smvk::tour::Verb::SetVisibility;
@@ -2460,13 +2460,13 @@ void TestLogicalNodeTargets() {
         v.flag = true;
         doc.commands.push_back(v);
         Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err), "logical uuid-only ok");
-        Check(cluster->scene.hidden[size_t(meshA)] != 0, "logical uuid-only hits");
+        Check(cluster->m_hierarchy.hidden[size_t(meshA)] != 0, "logical uuid-only hits");
     }
 
     // PATH KEY over duplicated basenames: grpA/Mesh picks the right
     // leaf, the sibling stays untouched.
     {
-        cluster->scene.hidden[size_t(meshA)] = 0;
+        cluster->m_hierarchy.hidden[size_t(meshA)] = 0;
         smvk::tour::Doc doc;
         smvk::tour::Command v{};
         v.verb = smvk::tour::Verb::SetTranslate;
@@ -2476,9 +2476,9 @@ void TestLogicalNodeTargets() {
         doc.commands.push_back(v);
         Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
               "logical path replay ok");
-        Check(cluster->scene.localTransform[size_t(meshA)][3] == glm::vec4(7.0f, 0.0f, 0.0f, 1.0f),
+        Check(cluster->m_hierarchy.localTransform[size_t(meshA)][3] == glm::vec4(7.0f, 0.0f, 0.0f, 1.0f),
               "logical path hits");
-        Check(cluster->scene.localTransform[size_t(meshB)][3] == glm::vec4(0.0f, 0.0f, 0.0f, 1.0f),
+        Check(cluster->m_hierarchy.localTransform[size_t(meshB)][3] == glm::vec4(0.0f, 0.0f, 0.0f, 1.0f),
               "logical path spares sibling");
     }
 
@@ -2493,13 +2493,13 @@ void TestLogicalNodeTargets() {
         r.text = "RenamedLeaf";
         doc.commands.push_back(r);
         Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err), "logical rename ok");
-        Check(getNodeName(cluster->scene, meshB) == "RenamedLeaf", "logical rename hits");
-        Check(getNodeName(cluster->scene, meshA) == "Mesh", "logical rename spares sibling");
+        Check(getNodeName(cluster->m_hierarchy, meshB) == "RenamedLeaf", "logical rename hits");
+        Check(getNodeName(cluster->m_hierarchy, meshA) == "Mesh", "logical rename spares sibling");
     }
 
     // UNIQUE-NAME key (no uuid, stale id).
     {
-        setNodeName(cluster->scene, grpA, "Solo");
+        setNodeName(cluster->m_hierarchy, grpA, "Solo");
         smvk::tour::Doc doc;
         smvk::tour::Command s{};
         s.verb = smvk::tour::Verb::SetStatic;
@@ -2509,7 +2509,7 @@ void TestLogicalNodeTargets() {
         doc.commands.push_back(s);
         Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err),
               "logical unique-name ok");
-        Check(cluster->scene.staticRoot[size_t(grpA)] != 0, "logical unique-name hits");
+        Check(cluster->m_hierarchy.staticRoot[size_t(grpA)] != 0, "logical unique-name hits");
     }
 
     // UNRESOLVED key: strict replay FAILS loud (never a silent skip).
@@ -2536,7 +2536,7 @@ void TestLogicalNodeTargets() {
         v.flag = true;
         doc.commands.push_back(v);
         Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err), "legacy numeric ok");
-        Check(cluster->scene.hidden[size_t(meshB)] != 0, "legacy numeric applies by id");
+        Check(cluster->m_hierarchy.hidden[size_t(meshB)] != 0, "legacy numeric applies by id");
     }
 
     // HARD-KEY DISCIPLINE (the Delete contract): a carried key that
@@ -2574,7 +2574,7 @@ void TestLogicalNodeTargets() {
         doc.commands.push_back(good);
         Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &refWarns, &err, /*strict=*/false),
               "logical reference replay ok");
-        Check(cluster->scene.staticRoot[size_t(grpB)] != 0,
+        Check(cluster->m_hierarchy.staticRoot[size_t(grpB)] != 0,
               "logical reference skip spares the rest");
         Check(std::any_of(
                   refWarns.begin(),
@@ -2758,7 +2758,7 @@ void TestAudioSource() {
     {
         auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
-        addNode(cluster->scene, -1, 0);
+        addNode(cluster->m_hierarchy, -1, 0);
         std::vector<std::string> rw;
         std::string rerr;
         // Add a remove + a re-add to the loaded doc before replay.
@@ -2776,8 +2776,8 @@ void TestAudioSource() {
         up.flag = false;
         back.commands.push_back(up);
         Check(smvk::tour::ApplyTourToCluster(*cluster, back, &rw, &rerr), "audio replay ok");
-        Check(cluster->scene.hierarchy.size() == 2, "audio replay node");
-        const AudioSourceRow* it = FindAudioSource(cluster->scene, 1);
+        Check(cluster->m_hierarchy.hierarchy.size() == 2, "audio replay node");
+        const AudioSourceRow* it = FindAudioSource(cluster->m_hierarchy, 1);
         Check(it != nullptr, "audio replay link");
         if (it != nullptr) {
             const SceneAudioSource& def = it->source;
@@ -2794,7 +2794,7 @@ void TestAudioSource() {
             }
         }
         // The emitter pose: translate from the create line.
-        const glm::vec3 t(cluster->scene.localTransform[1][3]);
+        const glm::vec3 t(cluster->m_hierarchy.localTransform[1][3]);
         Check(std::abs(t.y - 20.0f) < 1e-4f, "audio replay position");
         // A second replay of the same doc against the same cluster
         // runs clean too (reference-replay semantics: creates append,
@@ -2891,13 +2891,13 @@ void TestAudioRoom() {
     {
         auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
-        addNode(cluster->scene, -1, 0);
+        addNode(cluster->m_hierarchy, -1, 0);
         std::vector<std::string> rw;
         std::string rerr;
         Check(smvk::tour::ApplyTourToCluster(*cluster, back, &rw, &rerr), "room replay ok");
-        Check(cluster->scene.hierarchy.size() == 2, "room replay node");
+        Check(cluster->m_hierarchy.hierarchy.size() == 2, "room replay node");
         const tour::transformhierarchy::AudioRoomRow* it =
-            tour::transformhierarchy::FindAudioRoom(cluster->scene, 1);
+            tour::transformhierarchy::FindAudioRoom(cluster->m_hierarchy, 1);
         Check(it != nullptr, "room replay link");
         if (it != nullptr) {
             const tour::transformhierarchy::SceneAudioRoom& def = it->room;
@@ -2908,8 +2908,8 @@ void TestAudioRoom() {
         // The room shape: translate(0,2,0) + scale(14,4,12) — the FULL
         // extents ride the scale columns (half = 7,2,6 through
         // spatial_volume.h).
-        const glm::vec3 t(cluster->scene.localTransform[1][3]);
-        const float sx = glm::length(glm::vec3(cluster->scene.localTransform[1][0]));
+        const glm::vec3 t(cluster->m_hierarchy.localTransform[1][3]);
+        const float sx = glm::length(glm::vec3(cluster->m_hierarchy.localTransform[1][0]));
         Check(std::abs(t.y - 2.0f) < 1e-4f && std::abs(sx - 14.0f) < 1e-3f, "room replay shape");
         smvk::tour::Doc second = back;
         Check(smvk::tour::ApplyTourToCluster(*cluster, second, &rw, &rerr),
@@ -2942,16 +2942,16 @@ void TestAudioRoom() {
         {
             auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
             cluster->SetOfflineMode(true);
-            addNode(cluster->scene, -1, 0);
+            addNode(cluster->m_hierarchy, -1, 0);
             std::vector<std::string> rw;
             std::string rerr;
             Check(smvk::tour::ApplyTourToCluster(*cluster, gd, &rw, &rerr),
                   "room attach replay ok");
-            Check(FindGiVolume(cluster->scene, 1) != nullptr &&
-                      tour::transformhierarchy::FindAudioRoom(cluster->scene, 1) != nullptr,
+            Check(FindGiVolume(cluster->m_hierarchy, 1) != nullptr &&
+                      tour::transformhierarchy::FindAudioRoom(cluster->m_hierarchy, 1) != nullptr,
                   "room attach coexists with givolume");
             const tour::transformhierarchy::AudioRoomRow* row =
-                tour::transformhierarchy::FindAudioRoom(cluster->scene, 1);
+                tour::transformhierarchy::FindAudioRoom(cluster->m_hierarchy, 1);
             Check(row && row->room.rt60 == 2.4f, "room attach attr applies");
         }
         // Save + reload round-trips the -owner addressing.
@@ -2973,13 +2973,13 @@ void TestAudioRoom() {
         {
             auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
             cluster->SetOfflineMode(true);
-            addNode(cluster->scene, -1, 0);
+            addNode(cluster->m_hierarchy, -1, 0);
             std::vector<std::string> rw;
             std::string rerr;
             Check(smvk::tour::ApplyTourToCluster(*cluster, gd, &rw, &rerr),
                   "room remove replay ok");
-            Check(FindGiVolume(cluster->scene, 1) != nullptr &&
-                      tour::transformhierarchy::FindAudioRoom(cluster->scene, 1) == nullptr,
+            Check(FindGiVolume(cluster->m_hierarchy, 1) != nullptr &&
+                      tour::transformhierarchy::FindAudioRoom(cluster->m_hierarchy, 1) == nullptr,
                   "room remove leaves the givolume");
         }
     }
@@ -3065,12 +3065,12 @@ void TestCamera() { // Hand-built doc: full-lens create + -ref attrs (fov + posi
     {
         auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
-        addNode(cluster->scene, -1, 0);
+        addNode(cluster->m_hierarchy, -1, 0);
         std::vector<std::string> rw;
         std::string rerr;
         Check(smvk::tour::ApplyTourToCluster(*cluster, back, &rw, &rerr), "camera replay ok");
-        Check(cluster->scene.hierarchy.size() == 2, "camera replay node");
-        const CameraRow* it = FindCamera(cluster->scene, 1);
+        Check(cluster->m_hierarchy.hierarchy.size() == 2, "camera replay node");
+        const CameraRow* it = FindCamera(cluster->m_hierarchy, 1);
         Check(it != nullptr, "camera replay link");
         if (it != nullptr) {
             const smvk::WorldPageCameraHandle h = cluster->cameras.getHandle(it->camera);
@@ -3081,7 +3081,7 @@ void TestCamera() { // Hand-built doc: full-lens create + -ref attrs (fov + posi
                   "camera replay lens+name");
         }
         // Position channel rebuilt the translate (rotation stayed 10/20/30).
-        const glm::vec3 t(cluster->scene.localTransform[1][3]);
+        const glm::vec3 t(cluster->m_hierarchy.localTransform[1][3]);
         Check(std::abs(t.x - 4.0f) < 1e-4f && std::abs(t.y - 5.0f) < 1e-4f &&
                   std::abs(t.z - 6.0f) < 1e-4f,
               "camera replay position");
@@ -3176,12 +3176,12 @@ void TestTextureCacheConsult() {
             return false;
         auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
-        addNode(cluster->scene, -1, 0);
+        addNode(cluster->m_hierarchy, -1, 0);
         SourceSceneImporter importer(*cluster, native, gltfPath);
         importer.setTextureSource(std::make_shared<HostTextureSource>(dir));
         importer.setArtifactCache(&cache);
         importer.import(0);
-        return cluster->scene.tables.meshes.size() == 1 && cluster->textures.numObjects() >= 0;
+        return cluster->m_hierarchy.tables.meshes.size() == 1 && cluster->textures.numObjects() >= 0;
     };
 
     FakeCache cache;
@@ -3300,7 +3300,7 @@ void TestReferenceGuid() {
     {
         auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
-        addNode(cluster->scene, -1, 0);
+        addNode(cluster->m_hierarchy, -1, 0);
         std::vector<int> ph;
         std::vector<std::string> issues;
         const size_t applied = ApplySceneReferences(*cluster,
@@ -3327,7 +3327,7 @@ void TestReferenceGuid() {
     {
         auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
-        addNode(cluster->scene, -1, 0);
+        addNode(cluster->m_hierarchy, -1, 0);
         std::vector<int> ph;
         std::vector<std::string> issues;
         const size_t applied = ApplySceneReferences(*cluster,
@@ -3556,21 +3556,21 @@ struct FuzzRng {
 std::unique_ptr<smvk::WorldPage> FreshFuzzCluster() {
     auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
-    const int root = addNode(cluster->scene, -1, 0);
-    const int g0 = addNode(cluster->scene, root, 1);
-    const int g1 = addNode(cluster->scene, root, 1);
-    setNodeName(cluster->scene, g0, "Wall");
-    setNodeName(cluster->scene, g1, "Floor");
+    const int root = addNode(cluster->m_hierarchy, -1, 0);
+    const int g0 = addNode(cluster->m_hierarchy, root, 1);
+    const int g1 = addNode(cluster->m_hierarchy, root, 1);
+    setNodeName(cluster->m_hierarchy, g0, "Wall");
+    setNodeName(cluster->m_hierarchy, g1, "Floor");
     smvk::MaterialCreateInfo ci{};
     ci.baseColorFactor = glm::vec4(1.0f);
     smvk::WorldPageMaterialHandle m0 = cluster->CreateMaterial(ci);
-    SetMaterial(cluster->scene, uint32_t(g0), m0.index());
-    RebuildStaticCache(cluster->scene);
+    SetMaterial(cluster->m_hierarchy, uint32_t(g0), m0.index());
+    RebuildStaticCache(cluster->m_hierarchy);
     return cluster;
 }
 
 size_t FuzzClusterNodeCount(smvk::WorldPage& c) {
-    return c.scene.hierarchy.size();
+    return c.m_hierarchy.hierarchy.size();
 }
 
 // One-triangle glTF (the .geometry artifact build needs real geometry;
@@ -4186,13 +4186,13 @@ void TestDitherCloseup() {
         Check(smvk::tour::LoadTour(TempTour(), doc, err, &warns), "dither verb parse");
         auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
-        addNode(cluster->scene, -1, 0);
-        const int cGrp = addNode(cluster->scene, 0, 1);
-        const int cMesh = addNode(cluster->scene, cGrp, 2);
+        addNode(cluster->m_hierarchy, -1, 0);
+        const int cGrp = addNode(cluster->m_hierarchy, 0, 1);
+        const int cMesh = addNode(cluster->m_hierarchy, cGrp, 2);
         std::vector<std::string> rw;
         std::string rerr;
         Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &rw, &rerr), "dither verb replay ok");
-        Check(IsDitherCloseupNode(cluster->scene, cMesh), "dither verb replay flag");
+        Check(IsDitherCloseupNode(cluster->m_hierarchy, cMesh), "dither verb replay flag");
         std::error_code ec;
         std::filesystem::remove(TempTour(), ec);
     }
@@ -4437,14 +4437,14 @@ void TestLightmapOptIn() {
         Check(smvk::tour::LoadTour(TempTour(), doc, err, &warns), "lm verb parse");
         auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
-        addNode(cluster->scene, -1, 0);
-        const int cGrp = addNode(cluster->scene, 0, 1);
-        const int cMesh = addNode(cluster->scene, cGrp, 2);
+        addNode(cluster->m_hierarchy, -1, 0);
+        const int cGrp = addNode(cluster->m_hierarchy, 0, 1);
+        const int cMesh = addNode(cluster->m_hierarchy, cGrp, 2);
         (void)cGrp;
         std::vector<std::string> rw;
         std::string rerr;
         Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &rw, &rerr), "lm verb replay ok");
-        Check(IsLightmapNode(cluster->scene, cMesh), "lm verb replay flag");
+        Check(IsLightmapNode(cluster->m_hierarchy, cMesh), "lm verb replay flag");
         std::error_code ec;
         std::filesystem::remove(TempTour(), ec);
     }
@@ -4563,9 +4563,9 @@ void TestPhysicsAuthoring() {
     Check(LoadTour(TempTour(), loaded, err), "physics: tour reload");
     auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
-    addNode(cluster->scene, -1, 0);
+    addNode(cluster->m_hierarchy, -1, 0);
     Check(ApplyTourToCluster(*cluster, loaded, nullptr, &err), "physics: cook replay");
-    const auto* row = tour::transformhierarchy::FindPhysicsBody(cluster->scene, 0);
+    const auto* row = tour::transformhierarchy::FindPhysicsBody(cluster->m_hierarchy, 0);
     Check(row && row->body.motion == 1 && row->body.shape == 2 && row->body.sensor &&
               row->body.mass == 12.5f && row->body.radius == 0.75f,
           "physics: replay body properties");
@@ -4620,7 +4620,7 @@ void TestRequiredNodeNames() {
     Check(!SaveTour(TempTour(), invalid, err), "writer refuses unnamed nodes before writing");
     auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
-    addNode(cluster->scene, -1, 0);
+    addNode(cluster->m_hierarchy, -1, 0);
     Check(!ApplyTourToCluster(*cluster, invalid, nullptr, &err),
           "replay refuses programmatic unnamed nodes");
 }

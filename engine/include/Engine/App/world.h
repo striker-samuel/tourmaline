@@ -23,7 +23,7 @@
 #include <Engine/Rendergraph/terrain_hfield.h>
 #include <Engine/Scene/entity_handle.h> // smvk::AudioSourceHandle (typed)
 #include <Engine/Scene/region_registry.h>
-#include <Engine/Scene/scene.h>
+#include <Engine/Scene/m_hierarchy.h>
 #include <Engine/Scene/world_scene_instances.h>
 #include <Engine/Utils/bvh.h>
 
@@ -150,13 +150,13 @@ struct World {
             // 0 = clear to unbudgeted (a no-op when already 0): keep
             // any pre-reserved storage, drop the cap
             // (ReserveNodeSlots treats 0 as invalid).
-            scene.nodeSlotBudget = 0;
+            m_hierarchy.nodeSlotBudget = 0;
             return;
         }
-        if (!pages.empty() || !scene.hierarchy.empty())
+        if (!pages.empty() || !m_hierarchy.hierarchy.empty())
             tour::transformhierarchy::CrashNodeBudget(
-                "late World budget", scene.hierarchy.size(), slots);
-        scene.ReserveNodeSlots(slots);
+                "late World budget", m_hierarchy.hierarchy.size(), slots);
+        m_hierarchy.ReserveNodeSlots(slots);
     }
 
     // Prespecified baked placement instancers (the authored PointInstancer
@@ -218,7 +218,7 @@ struct World {
     bool SetNodeScale(NodeHandle node, const glm::vec3& scale);
 
     [[nodiscard]] bool IsGameNode(NodeHandle node) const {
-        return gameNodes_.contains(node) && NodeHandleValid(scene, node);
+        return gameNodes_.contains(node) && NodeHandleValid(m_hierarchy, node);
     }
     // Called by AssetManager for the duration of its attachment.
     // AssetManager must outlive its loaded mesh handles.
@@ -245,7 +245,7 @@ struct World {
             return;
         for (const auto& [handle, resource] : gameMeshBindings_)
             if (IsGameNode(handle))
-                (void)tour::transformhierarchy::RemoveMesh(scene, NodeHandleSlot(handle));
+                (void)tour::transformhierarchy::RemoveMesh(m_hierarchy, NodeHandleSlot(handle));
         gameMeshBindings_.clear();
         RefreshRuntimeSceneCaches();
     }
@@ -268,13 +268,13 @@ struct World {
         bool SetLightLayerMask(uint32_t mask) const {
             if (!owner_.IsGameNode(handle_))
                 return false;
-            tour::transformhierarchy::EnsureNodeMetadata(owner_.scene);
-            owner_.scene.metadata[NodeHandleSlot(handle_)].lightLayerMask = mask;
+            tour::transformhierarchy::EnsureNodeMetadata(owner_.m_hierarchy);
+            owner_.m_hierarchy.metadata[NodeHandleSlot(handle_)].lightLayerMask = mask;
             return true;
         }
         bool SetLocalTransform(const glm::mat4& frame) const {
             return owner_.IsGameNode(handle_) &&
-                   tour::transformhierarchy::SetLocalTransform(owner_.scene, handle_, frame);
+                   tour::transformhierarchy::SetLocalTransform(owner_.m_hierarchy, handle_, frame);
         }
         bool SetPosition(const glm::vec3& position) const {
             return owner_.SetNodePosition(handle_, position);
@@ -287,16 +287,16 @@ struct World {
         }
         bool SetPhysicsBody(const tour::transformhierarchy::ScenePhysicsBody& body) const {
             return owner_.IsGameNode(handle_) && tour::transformhierarchy::SetPhysicsBody(
-                                                     owner_.scene, NodeHandleSlot(handle_), body);
+                                                     owner_.m_hierarchy, NodeHandleSlot(handle_), body);
         }
         bool SetAudioRoom(const tour::transformhierarchy::SceneAudioRoom& room) const {
             return owner_.IsGameNode(handle_) && tour::transformhierarchy::SetAudioRoom(
-                                                     owner_.scene, NodeHandleSlot(handle_), room);
+                                                     owner_.m_hierarchy, NodeHandleSlot(handle_), room);
         }
         bool SetTriggerVolume(const tour::transformhierarchy::SceneTriggerVolume& trigger) const {
             return owner_.IsGameNode(handle_) &&
                    tour::transformhierarchy::SetTriggerVolume(
-                       owner_.scene, NodeHandleSlot(handle_), trigger);
+                       owner_.m_hierarchy, NodeHandleSlot(handle_), trigger);
         }
 
       private:
@@ -321,7 +321,7 @@ struct World {
 
     // Merged runtime scene graph. Imported WorldPage scenes are folded into
     // this via ResolveAndFixup_pages().
-    TransformHierarchy scene;
+    TransformHierarchy m_hierarchy;
     // Registered streaming/ownership subtree roots in the authoritative
     // world hierarchy. Registration does not take ownership of assets:
     // cluster-backed resource pools remain the transitional asset layer.
@@ -348,13 +348,13 @@ struct World {
     // Registration of a region root is separate from node lifetime;
     // the caller must retire the subtree independently at unload.
     uint64_t RegisterRegion(NodeHandle root, RegionKind kind = RegionKind::Scene) {
-        return regions.Register(scene, root, kind);
+        return regions.Register(m_hierarchy, root, kind);
     }
     bool UnregisterRegion(uint64_t id) {
         return regions.Unregister(id);
     }
     const SceneRegion* RegionForNode(NodeId node) const {
-        return regions.RegionOf(scene, node);
+        return regions.RegionOf(m_hierarchy, node);
     }
     // Monotonic per-World owner registration identity; never use a
     // recycled WorldPage* address as the permanent GPU scene key.
@@ -1283,12 +1283,12 @@ struct World {
     // resolved default environment stands. The zone's look block:
     // scene.envForNode[zone].
     [[nodiscard]] NodeId zoneAtPosition(const glm::vec3& p) const {
-        return ZoneAtPosition(scene, p);
+        return ZoneAtPosition(m_hierarchy, p);
     }
     [[nodiscard]] NodeId zoneForNode(NodeId node) const {
-        if (node >= scene.globalTransform.size())
+        if (node >= m_hierarchy.globalTransform.size())
             return UINT32_MAX;
-        return ZoneAtPosition(scene, glm::vec3(scene.globalTransform[node][3]));
+        return ZoneAtPosition(m_hierarchy, glm::vec3(m_hierarchy.globalTransform[node][3]));
     }
 
     // ---- Static BVH for CPU frustum culling ---------------------
@@ -1382,10 +1382,10 @@ struct World {
     std::vector<uint8_t> StaticVisibilityMask(const glm::vec4* planes, int planeCount) const;
 
     template <typename Func> void forEachNode(IteratorFlags requiredFlags, Func&& func) {
-        for (uint32_t i = 0; i < scene.hierarchy.size(); ++i) {
+        for (uint32_t i = 0; i < m_hierarchy.hierarchy.size(); ++i) {
             // Epoch 6b: retired slots are holes — the flags vector
             // may still carry a pre-retirement entry for them.
-            if (!IsLiveSlot(scene, i))
+            if (!IsLiveSlot(m_hierarchy, i))
                 continue;
             const IteratorFlags nf =
                 (i < flags.size()) ? flags[i] : static_cast<IteratorFlags>(IteratorFlagBit_None);

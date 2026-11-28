@@ -125,8 +125,8 @@ int main() {
     {
         auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
-        const int root = addNode(cluster->scene, -1, 0);
-        const int n1 = addNode(cluster->scene, root, 0);
+        const int root = addNode(cluster->m_hierarchy, -1, 0);
+        const int n1 = addNode(cluster->m_hierarchy, root, 0);
         (void)n1;
         smvk::tour::Doc doc;
         doc.editorSettings.emplace_back("env.n.0.node", "1");
@@ -141,7 +141,7 @@ int main() {
         std::vector<std::string> warns;
         std::string err;
         Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err), "envvol.replay-ok");
-        const EnvVolumeRow* it = FindEnvVolume(cluster->scene, 1);
+        const EnvVolumeRow* it = FindEnvVolume(cluster->m_hierarchy, 1);
         Check(it != nullptr, "envvol.replay-stored");
         if (it != nullptr) {
             Check(it->volume.infMask == 12u, "envvol.replay-mask");
@@ -150,14 +150,14 @@ int main() {
             Check(it->volume.blendRadius == 4.0f, "envvol.replay-radius");
             Check(it->volume.enabled, "envvol.replay-enabled");
         }
-        Check(FindEnvVolume(cluster->scene, 99) == nullptr, "envvol.replay-dangling-dropped");
+        Check(FindEnvVolume(cluster->m_hierarchy, 99) == nullptr, "envvol.replay-dangling-dropped");
     }
     {
         // Volumes-only doc: no look blocks, no fake authoring.
         auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
-        const int root = addNode(cluster->scene, -1, 0);
-        const int n1 = addNode(cluster->scene, root, 0);
+        const int root = addNode(cluster->m_hierarchy, -1, 0);
+        const int n1 = addNode(cluster->m_hierarchy, root, 0);
         (void)n1;
         smvk::tour::Doc doc;
         doc.editorSettings.emplace_back("envvol.n.0.node", "1");
@@ -166,9 +166,9 @@ int main() {
         std::vector<std::string> warns;
         std::string err;
         Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err), "envvol.volsonly-ok");
-        const EnvVolumeRow* it = FindEnvVolume(cluster->scene, 1);
+        const EnvVolumeRow* it = FindEnvVolume(cluster->m_hierarchy, 1);
         Check(it != nullptr && it->volume.priority == 7.0f, "envvol.volsonly-explicit-priority");
-        Check(!cluster->scene.envAuthored, "envvol.volsonly-no-fake-author");
+        Check(!cluster->m_hierarchy.envAuthored, "envvol.volsonly-no-fake-author");
     }
 
     // Scene master switch: the env.zonesEnabled tour key is RETIRED with
@@ -178,13 +178,13 @@ int main() {
     {
         auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
         cluster->SetOfflineMode(true);
-        addNode(cluster->scene, -1, 0);
+        addNode(cluster->m_hierarchy, -1, 0);
         smvk::tour::Doc doc;
         doc.editorSettings.emplace_back("env.zonesEnabled", "0");
         std::vector<std::string> warns;
         std::string err;
         Check(smvk::tour::ApplyTourToCluster(*cluster, doc, &warns, &err), "envzone.tour-ok");
-        Check(cluster->scene.envZonesEnabled, "envzone.tour-disable-no-blocks");
+        Check(cluster->m_hierarchy.envZonesEnabled, "envzone.tour-disable-no-blocks");
     }
 
     // Analytic zone packer + resolver: exact OBB coverage, rotation,

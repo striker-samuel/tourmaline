@@ -66,11 +66,11 @@ int main() {
     CHECK(a != 0 && error.empty());
     const auto* ai = world.worldSceneInstances.Find(a);
     CHECK(ai && ai->assets.size() == 2);
-    CHECK(world.regions.Find(ai->region, world.scene) != nullptr);
+    CHECK(world.regions.Find(ai->region, world.m_hierarchy) != nullptr);
     const NodeHandle firstRoot = ai->root;
     const NodeHandle firstChild = ai->sourceNodes[size_t(child)];
-    CHECK(NodeHandleValid(world.scene, firstChild));
-    CHECK(world.scene.hierarchy[NodeHandleSlot(firstChild)].parent ==
+    CHECK(NodeHandleValid(world.m_hierarchy, firstChild));
+    CHECK(world.m_hierarchy.hierarchy[NodeHandleSlot(firstChild)].parent ==
           int(NodeHandleSlot(ai->sourceNodes[size_t(sr)])));
 
     glm::dmat4 secondFrame(1.0);
@@ -81,11 +81,11 @@ int main() {
     CHECK(!world.SetActiveMapIdentity(101));
     const auto* bi = world.worldSceneInstances.Find(b);
     const NodeHandle surviving = bi->sourceNodes[size_t(child)];
-    CHECK(NodeHandleValid(world.scene, surviving));
+    CHECK(NodeHandleValid(world.m_hierarchy, surviving));
     CHECK(world.RetireSceneHierarchy(a));
-    CHECK(!NodeHandleValid(world.scene, firstRoot));
-    CHECK(!NodeHandleValid(world.scene, firstChild));
-    CHECK(NodeHandleValid(world.scene, surviving));
+    CHECK(!NodeHandleValid(world.m_hierarchy, firstRoot));
+    CHECK(!NodeHandleValid(world.m_hierarchy, firstChild));
+    CHECK(NodeHandleValid(world.m_hierarchy, surviving));
     CHECK(store.IsHeld(1234) && unloads == 1);
 
     // Refuse unknown/stale instance IDs and incomplete component publication.
@@ -94,10 +94,10 @@ int main() {
     TransformHierarchy drawable;
     int meshNode = addNode(drawable, -1, 0);
     CHECK(SetMesh(drawable, NodeId(meshNode), 0));
-    const size_t before = world.scene.hierarchy.size();
+    const size_t before = world.m_hierarchy.hierarchy.size();
     CHECK(!world.InstantiateSceneHierarchy(drawable, 9010, glm::dmat4(1.0), {}, error));
     CHECK(error.find("binding") != std::string::npos);
-    CHECK(world.scene.hierarchy.size() == before);
+    CHECK(world.m_hierarchy.hierarchy.size() == before);
     {
         // Exercise the generic Scene -> World row remapper without a GPU.
         // World::InstantiateSceneHierarchy additionally verifies that each
@@ -128,19 +128,19 @@ int main() {
         const int root = addNode(cyclic, -1, 0);
         const int nested = addNode(cyclic, root, 1);
         cyclic.hierarchy[root].parent = nested;
-        const size_t countBefore = world.scene.hierarchy.size();
+        const size_t countBefore = world.m_hierarchy.hierarchy.size();
         CHECK(!world.InstantiateSceneHierarchy(cyclic, 9011, glm::dmat4(1.0), {}, error));
         CHECK(error.find("cycle") != std::string::npos);
-        CHECK(world.scene.hierarchy.size() == countBefore);
+        CHECK(world.m_hierarchy.hierarchy.size() == countBefore);
     }
     {
         TransformHierarchy dangling;
         const int root = addNode(dangling, -1, 0);
         dangling.hierarchy[root].parent = 9999;
-        const size_t countBefore = world.scene.hierarchy.size();
+        const size_t countBefore = world.m_hierarchy.hierarchy.size();
         CHECK(!world.InstantiateSceneHierarchy(dangling, 9012, glm::dmat4(1.0), {}, error));
         CHECK(error.find("parent") != std::string::npos);
-        CHECK(world.scene.hierarchy.size() == countBefore);
+        CHECK(world.m_hierarchy.hierarchy.size() == countBefore);
     }
     glm::dmat4 bad(1.0);
     bad[3][0] = std::numeric_limits<double>::infinity();
@@ -158,7 +158,7 @@ int main() {
     // Deleted slot reuse cannot resurrect a stale generation-checked handle.
     const uint64_t c = world.InstantiateSceneHierarchy(source, 9001, glm::dmat4(1.0), {}, error);
     CHECK(c != 0);
-    CHECK(!NodeHandleValid(world.scene, firstChild));
+    CHECK(!NodeHandleValid(world.m_hierarchy, firstChild));
     CHECK(world.RetireSceneHierarchy(c));
 
     // Cooked Map pages can now drive the direct World-owned instance path

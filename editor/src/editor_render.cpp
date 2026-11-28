@@ -511,12 +511,12 @@ EditorApp::EditorEnv& EditorApp::CurrentEnv() {
     if (!m_world)
         return fallback;
     if (m_envCurrent != UINT32_MAX) {
-        auto it = FindEnv(m_world->scene, m_envCurrent);
+        auto it = FindEnv(m_world->m_hierarchy, m_envCurrent);
         if (it)
             return it->environment;
         m_envCurrent = UINT32_MAX;
     }
-    return m_world->scene.defaultEnvironment;
+    return m_world->m_hierarchy.defaultEnvironment;
 }
 
 const EditorApp::EditorEnv& EditorApp::CurrentEnv() const {
@@ -524,11 +524,11 @@ const EditorApp::EditorEnv& EditorApp::CurrentEnv() const {
     if (!m_world)
         return fallback;
     if (m_envCurrent != UINT32_MAX) {
-        auto it = FindEnv(m_world->scene, m_envCurrent);
+        auto it = FindEnv(m_world->m_hierarchy, m_envCurrent);
         if (it)
             return it->environment;
     }
-    return m_world->scene.defaultEnvironment;
+    return m_world->m_hierarchy.defaultEnvironment;
 }
 
 const SceneRenderSettings& EditorApp::RenderLook() const {
@@ -539,8 +539,8 @@ const SceneRenderSettings& EditorApp::RenderLook() const {
     static const SceneRenderSettings fallback{};
     if (!m_world)
         return fallback;
-    return m_world->scene.hasRenderSettings ? m_world->scene.renderSettings
-                                            : m_world->scene.defaultRenderSettings;
+    return m_world->m_hierarchy.hasRenderSettings ? m_world->m_hierarchy.renderSettings
+                                            : m_world->m_hierarchy.defaultRenderSettings;
 }
 
 void EditorApp::UploadMaterials(uint32_t flight) {
@@ -653,7 +653,7 @@ bool EditorApp::BoundCameraPoseFor(int vp, BoundCameraPose& out) const {
     if (!m_world || vp < 0 || vp >= kMaxViewports)
         return false;
     const int bound = m_viewports[vp].boundNode;
-    if (bound < 0 || bound >= int(m_world->scene.hierarchy.size()))
+    if (bound < 0 || bound >= int(m_world->m_hierarchy.hierarchy.size()))
         return false;
     const ::SceneCamera* C = FindNodeCamera(uint32_t(bound));
     const ::SceneLight* L = FindNodeLight(uint32_t(bound));
@@ -661,7 +661,7 @@ bool EditorApp::BoundCameraPoseFor(int vp, BoundCameraPose& out) const {
     // authored cameras. A point light has no single look direction.
     if (!C && (!L || L->type != ::SceneLight::Type::Spot))
         return false;
-    const glm::mat4& G = m_world->scene.globalTransform[uint32_t(bound)];
+    const glm::mat4& G = m_world->m_hierarchy.globalTransform[uint32_t(bound)];
     out.eye = glm::vec3(G[3]);
     out.fwd = glm::vec3(G * glm::vec4(0.0f, 0.0f, -1.0f, 0.0f));
     if (!(glm::length(out.fwd) > 1e-6f))
@@ -1004,7 +1004,7 @@ void EditorApp::DrawWorldNodes(smvk::CommandBuffer& cmd,
     m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
         if (item.material == tour::World::kInvalidIndex)
             return;
-        if (!IsVisibleNode(m_world->scene, int(item.node)))
+        if (!IsVisibleNode(m_world->m_hierarchy, int(item.node)))
             return; // live visibility overrides apply without a Resolve
         if (selectedOnly && !IsSelected(item.node))
             return;
@@ -1030,7 +1030,7 @@ void EditorApp::DrawWorldNodes(smvk::CommandBuffer& cmd,
         // texel instead of reading black).
         if (bakedOnly && mesh->lmChunk == 0xFFFFFFFFu)
             return;
-        const glm::mat4& model = m_world->scene.globalTransform[item.node];
+        const glm::mat4& model = m_world->m_hierarchy.globalTransform[item.node];
         engine::IRenderer::PushConstants objPc{};
         std::memcpy(objPc.model, glm::value_ptr(model), sizeof(objPc.model));
         objPc.materialId = item.material;
@@ -1046,8 +1046,8 @@ void EditorApp::DrawWorldNodes(smvk::CommandBuffer& cmd,
         // forwards it flat at VS location 9 for the lit hooks;
         // pushed per draw like the main host's direct legs).
         objPc.padEnd_[1] = m_world->ResolvedItemUserData(item);
-        objPc.padEnd_[2] = item.node < m_world->scene.metadata.size()
-                               ? m_world->scene.metadata[item.node].lightLayerMask
+        objPc.padEnd_[2] = item.node < m_world->m_hierarchy.metadata.size()
+                               ? m_world->m_hierarchy.metadata[item.node].lightLayerMask
                                : 0xffffffffu;
         cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, padEnd_) +
                               sizeof(objPc.padEnd_[0]),
@@ -1094,7 +1094,7 @@ void EditorApp::DrawFlatUvNodes(smvk::CommandBuffer& cmd,
     // Flat UV view: the PRIMARY SELECTION's subtree meshes, unwrapped by
     // the chosen UV channel with the texture content behind them. No
     // selection = empty panel (classic UV editor: one asset at a time).
-    if (!m_world || m_selected == UINT32_MAX || m_selected >= m_world->scene.hierarchy.size())
+    if (!m_world || m_selected == UINT32_MAX || m_selected >= m_world->m_hierarchy.hierarchy.size())
         return;
     smvk::ShaderProgram& prog = FlatUvProgram(mode);
     if (prog.shaderCount != 2)
@@ -1105,10 +1105,10 @@ void EditorApp::DrawFlatUvNodes(smvk::CommandBuffer& cmd,
     while (!stack.empty()) {
         const uint32_t n = stack.back();
         stack.pop_back();
-        if (n >= m_world->scene.hierarchy.size() || !subtree.insert(n).second)
+        if (n >= m_world->m_hierarchy.hierarchy.size() || !subtree.insert(n).second)
             continue;
-        for (int c = m_world->scene.hierarchy[n].firstChild; c != -1;
-             c = m_world->scene.hierarchy[c].nextSibling)
+        for (int c = m_world->m_hierarchy.hierarchy[n].firstChild; c != -1;
+             c = m_world->m_hierarchy.hierarchy[c].nextSibling)
             stack.push_back(uint32_t(c));
     }
     const smvk::VertexLayoutDesc& fmt =
@@ -1132,7 +1132,7 @@ void EditorApp::DrawFlatUvNodes(smvk::CommandBuffer& cmd,
             return;
         if (!subtree.contains(item.node))
             return;
-        if (!IsVisibleNode(m_world->scene, int(item.node)))
+        if (!IsVisibleNode(m_world->m_hierarchy, int(item.node)))
             return;
         const smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
         if (!mesh)
@@ -1158,7 +1158,7 @@ void EditorApp::BuildFlatUvWires(std::vector<smvk::DebugLineVertex>& outLines,
     if (!m_world)
         return;
     const bool wholeScene = (subtreeRoot == UINT32_MAX);
-    if (!wholeScene && subtreeRoot >= m_world->scene.hierarchy.size())
+    if (!wholeScene && subtreeRoot >= m_world->m_hierarchy.hierarchy.size())
         return;
     std::unordered_set<uint32_t> subtree;
     if (!wholeScene) {
@@ -1166,10 +1166,10 @@ void EditorApp::BuildFlatUvWires(std::vector<smvk::DebugLineVertex>& outLines,
         while (!stack.empty()) {
             const uint32_t n = stack.back();
             stack.pop_back();
-            if (n >= m_world->scene.hierarchy.size() || !subtree.insert(n).second)
+            if (n >= m_world->m_hierarchy.hierarchy.size() || !subtree.insert(n).second)
                 continue;
-            for (int c = m_world->scene.hierarchy[n].firstChild; c != -1;
-                 c = m_world->scene.hierarchy[c].nextSibling)
+            for (int c = m_world->m_hierarchy.hierarchy[n].firstChild; c != -1;
+                 c = m_world->m_hierarchy.hierarchy[c].nextSibling)
                 stack.push_back(uint32_t(c));
         }
     }
@@ -1179,7 +1179,7 @@ void EditorApp::BuildFlatUvWires(std::vector<smvk::DebugLineVertex>& outLines,
     size_t tris = 0;
     // Whole-scene export uses identity (pane nav never affects PNGs).
     const bool applyNav = !wholeScene;
-    for (const MeshRow& row : m_world->scene.tables.meshes) {
+    for (const MeshRow& row : m_world->m_hierarchy.tables.meshes) {
         const uint32_t node = row.node;
         const uint32_t meshIdx = row.mesh;
         if (!wholeScene && !subtree.contains(node))
@@ -1241,7 +1241,7 @@ void EditorApp::BuildFlatUvWires(std::vector<smvk::DebugLineVertex>& outLines,
 		// fill) + the face/vertex highlight (on top, no depth).
 		std::vector<smvk::DebugLineVertex> wires, hl;
 		const bool hasSel = m_world && m_selected != UINT32_MAX &&
-			m_selected < m_world->scene.hierarchy.size();
+			m_selected < m_world->m_hierarchy.hierarchy.size();
 		if (hasSel)
 			BuildFlatUvWires(wires, m_uvWinMode, m_selected, m_uvWinZoom,
 				m_uvWinPan);
@@ -1457,7 +1457,7 @@ void EditorApp::RecordViewportTonemap(smvk::LogicalImageViewHandle swapView,
 void EditorApp::RecordGiProbeLatticePass(int vpIdx) {
     if (m_mode != EditorMode::Lighting || m_giVolumePreviewMode != 4)
         return;
-    if (!m_world || m_world->scene.tables.giVolumes.empty())
+    if (!m_world || m_world->m_hierarchy.tables.giVolumes.empty())
         return;
     // Only the HDR path (the direct-write fallback has no tonemap chain
     // to composite over - same gate as EditorMain's viaHdr).
@@ -1469,8 +1469,8 @@ void EditorApp::RecordGiProbeLatticePass(int vpIdx) {
     uint32_t rowCount = 0;
     {
         std::vector<uint32_t> nodes;
-        nodes.reserve(m_world->scene.tables.giVolumes.size());
-        for (const GiVolumeRow& _row : m_world->scene.tables.giVolumes) {
+        nodes.reserve(m_world->m_hierarchy.tables.giVolumes.size());
+        for (const GiVolumeRow& _row : m_world->m_hierarchy.tables.giVolumes) {
             const NodeId node = _row.node;
             nodes.push_back(node);
         }
@@ -1484,7 +1484,7 @@ void EditorApp::RecordGiProbeLatticePass(int vpIdx) {
             glm::mat3 axes;
             if (!GiVolumeOBB(node, center, axes, half))
                 continue;
-            const ::SceneGiVolume& cvg = FindGiVolume(m_world->scene, node)->volume;
+            const ::SceneGiVolume& cvg = FindGiVolume(m_world->m_hierarchy, node)->volume;
             // The SEEDED layout previews exactly what the bake builds.
             const float spacing =
                 std::max(cvg.optSpacing > 0.0f ? cvg.optSpacing : cvg.spacing, 0.01f);
@@ -1607,12 +1607,12 @@ void EditorApp::RecordInset(smvk::CommandBuffer& cmd,
             self->m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
                 if (item.material == tour::World::kInvalidIndex)
                     return;
-                if (!IsVisibleNode(self->m_world->scene, int(item.node)))
+                if (!IsVisibleNode(self->m_world->m_hierarchy, int(item.node)))
                     return;
                 smvk::StaticMesh* mesh = self->m_world->GetMesh(item.mesh);
                 if (!mesh)
                     return;
-                const glm::mat4& model = self->m_world->scene.globalTransform[item.node];
+                const glm::mat4& model = self->m_world->m_hierarchy.globalTransform[item.node];
                 uint32_t matId = item.material;
                 cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, materialId),
                                   sizeof(matId),
@@ -1711,14 +1711,14 @@ void EditorApp::RecordMainDraw(smvk::CommandBuffer& cmd,
             self->m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
                 if (item.material == tour::World::kInvalidIndex)
                     return;
-                if (!IsVisibleNode(self->m_world->scene, int(item.node)))
+                if (!IsVisibleNode(self->m_world->m_hierarchy, int(item.node)))
                     return;
                 smvk::StaticMesh* mesh = self->m_world->GetMesh(item.mesh);
                 if (!mesh)
                     return;
                 if (bakedOnly && mesh->lmChunk == 0xFFFFFFFFu)
                     return;
-                const glm::mat4& model = self->m_world->scene.globalTransform[item.node];
+                const glm::mat4& model = self->m_world->m_hierarchy.globalTransform[item.node];
                 uint32_t matId = item.material;
                 cmd.PushConstants(offsetof(engine::IRenderer::PushConstants, materialId),
                                   sizeof(matId),
@@ -2111,13 +2111,13 @@ void EditorApp::DrawMeshletNodes(smvk::CommandBuffer& cmd) {
     m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
         if (item.material == tour::World::kInvalidIndex)
             return;
-        if (!IsVisibleNode(m_world->scene, int(item.node)))
+        if (!IsVisibleNode(m_world->m_hierarchy, int(item.node)))
             return;
         const smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
         if (!mesh || (mesh->meshlets && !mesh->meshlets->empty()))
             return; // meshlet leg below
         std::memcpy(
-            dp.model, glm::value_ptr(m_world->scene.globalTransform[item.node]), sizeof(dp.model));
+            dp.model, glm::value_ptr(m_world->m_hierarchy.globalTransform[item.node]), sizeof(dp.model));
         cmd.PushConstants(0, sizeof(dp), &dp, smvk::ShaderStage::All);
         for (const auto& s : mesh->geometry.surfaces)
             cmd.DrawIndexed(s.indexCount, 1, s.firstIndex, s.baseVertex);
@@ -2130,13 +2130,13 @@ void EditorApp::DrawMeshletNodes(smvk::CommandBuffer& cmd) {
     m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
         if (item.material == tour::World::kInvalidIndex)
             return;
-        if (!IsVisibleNode(m_world->scene, int(item.node)))
+        if (!IsVisibleNode(m_world->m_hierarchy, int(item.node)))
             return;
         auto bit = m_meshletRangesByMesh.find(item.mesh);
         if (bit == m_meshletRangesByMesh.end())
             return;
         std::memcpy(
-            dp.model, glm::value_ptr(m_world->scene.globalTransform[item.node]), sizeof(dp.model));
+            dp.model, glm::value_ptr(m_world->m_hierarchy.globalTransform[item.node]), sizeof(dp.model));
         for (uint32_t ri : bit->second) {
             const MeshletRange& r = m_meshletRanges[ri];
             MeshletDebugColor(item.mesh, r.meshlet, r.coneCutoff, m_debugMeshletMode, dp.color);

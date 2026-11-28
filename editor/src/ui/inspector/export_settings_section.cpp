@@ -62,9 +62,9 @@ void EditorApp::DrawExportSettingsSection(uint32_t node) {
     // command persisted as a setExportAttr tour line; Cook.exe/Pak.exe
     // read the replayed scene (CLI flags still win). outPak/contentDir
     // stay session-only in the Cook panel (never scene state).
-    if (!m_world || node >= m_world->scene.hierarchy.size())
+    if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     auto it = FindExport(scene, node);
     if (!it)
         return;
