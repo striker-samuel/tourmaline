@@ -17,6 +17,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <limits>
 #include <memory>
 #include <set>
@@ -28,6 +29,18 @@ namespace tour::gpu_scene {
 
 inline constexpr uint32_t MaxPassedLeafRanges = 65536;
 inline constexpr uint32_t MaxPassedInstanceCandidates = 1048576;
+
+// Opt-in fused compact-count (candidate B): the cull workgroup publishes the
+// per-64-candidate-group visible counts directly, so the separate
+// compact-count kernel is skipped. Default OFF (the count kernel runs) until
+// parity + performance are established. Read once; not toggled per frame.
+inline bool GpuSceneFusedCount() {
+    static const bool fused = [] {
+        const char* e = std::getenv("TOURMALINE_GPU_SCENE_FUSED_COUNT");
+        return e && e[0] == '1' && e[1] == '\0';
+    }();
+    return fused;
+}
 
 // GPU binary-searches ranges[].members.z (candidateBase), then resolves
 // leaves -> members -> instances using *generational* row references.
