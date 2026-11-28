@@ -579,8 +579,17 @@ class CandidateValidator {
             return false;
         const size_t bytes = selected.ranges.size() * sizeof(PassedInstanceRange);
         const size_t outBytes = size_t(selected.candidateCount) * sizeof(InstanceCullVerdict);
+        // Fused compact-count: the cull workgroup publishes per-group counts,
+        // so the count buffer is created here (before the cull dispatch) rather
+        // than in PrepareCompaction.
+        const uint32_t groups = (selected.candidateCount + 63u) / 64u;
         if (!Ensure(ctx, f.ranges, f.rangesSize, bytes, "scene candidate ranges") ||
-            !Ensure(ctx, f.verdicts, f.verdictSize, outBytes, "scene candidate verdicts"))
+            !Ensure(ctx, f.verdicts, f.verdictSize, outBytes, "scene candidate verdicts") ||
+            !Ensure(ctx,
+                    f.counts,
+                    f.countsSize,
+                    size_t(groups) * sizeof(uint32_t),
+                    "scene compact counts"))
             return false;
         if (f.view.empty()) {
             f.view = ctx.CreateBuffer(
@@ -603,6 +612,7 @@ class CandidateValidator {
                                  db.leafMembers.Size(),
                                  db.instances.Size());
         push.counts2 = glm::uvec4(db.leaves.Size(), db.meshes.Size(), 1, 0);
+        push.groupCounts = ctx.GetBufferDeviceAddress(f.counts);
 
         // Production GPU raster must never build a CPU per-candidate oracle.
         // The opt-in validation path retains reference comparison/readback.
