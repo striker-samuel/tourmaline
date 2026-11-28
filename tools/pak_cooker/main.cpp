@@ -246,8 +246,8 @@ struct BakeEnv {
 };
 BakeEnv EnvForBake(const smvk::WorldPage& c, const Args& args) {
     BakeEnv e{};
-    if (c.scene.envAuthored) {
-        const tour::transformhierarchy::SceneEnv& se = c.scene.environment;
+    if (c.m_hierarchy.envAuthored) {
+        const tour::transformhierarchy::SceneEnv& se = c.m_hierarchy.environment;
         e.sunAzimuth = se.sunAzimuth;
         e.sunElevation = se.sunElevation;
         e.sunIntensity = se.sunIntensity;
@@ -280,7 +280,7 @@ bool EnsureWorldSun(smvk::WorldPage& cluster, const BakeEnv& be) {
             if (l->type == SceneLight::Type::Directional)
                 hasDir = true;
     });
-    if (hasDir || cluster.scene.hierarchy.empty())
+    if (hasDir || cluster.m_hierarchy.hierarchy.empty())
         return false;
     // toSun from compass azimuth (0 = +Z) + elevation — the same formula
     // as EnvironmentSettings::SunDirectionToSun (unit by construction).
@@ -307,11 +307,11 @@ bool EnsureWorldSun(smvk::WorldPage& cluster, const BakeEnv& be) {
     m[0] = glm::vec4(x, 0.0f);
     m[1] = glm::vec4(y, 0.0f);
     m[2] = glm::vec4(z, 0.0f);
-    const int node = addNode(cluster.scene, -1, 1);
-    cluster.scene.localTransform[size_t(node)] = m;
-    if (size_t(node) < cluster.scene.globalTransform.size())
-        cluster.scene.globalTransform[size_t(node)] = m; // scene-root child: global == local
-    setNodeName(cluster.scene, node, "WorldSun");
+    const int node = addNode(cluster.m_hierarchy, -1, 1);
+    cluster.m_hierarchy.localTransform[size_t(node)] = m;
+    if (size_t(node) < cluster.m_hierarchy.globalTransform.size())
+        cluster.m_hierarchy.globalTransform[size_t(node)] = m; // scene-root child: global == local
+    setNodeName(cluster.m_hierarchy, node, "WorldSun");
     SceneLight sun{};
     sun.type = SceneLight::Type::Directional;
     sun.color = be.sunColor;
@@ -322,7 +322,7 @@ bool EnsureWorldSun(smvk::WorldPage& cluster, const BakeEnv& be) {
     if (!h.valid())
         return false;
     cluster.RegisterLightUri("sun/world", h);
-    SetLight(cluster.scene, uint32_t(node), h.index());
+    SetLight(cluster.m_hierarchy, uint32_t(node), h.index());
     return true;
 }
 
@@ -1952,9 +1952,9 @@ int Run(const PakArgs& c) {
             // Names are authoring-only and absent from pak blobs. Only omit
             // them for name-independent tours: commands/overrides can use
             // names for verification, renaming or regex addressing.
-            cluster->scene.namesStripped = tour.commands.empty() && tour.overrides.empty();
-            cluster->scene.skipGpuSceneChangeJournal = true;
-            addNode(cluster->scene, -1, 0); // empty scene root
+            cluster->m_hierarchy.namesStripped = tour.commands.empty() && tour.overrides.empty();
+            cluster->m_hierarchy.skipGpuSceneChangeJournal = true;
+            addNode(cluster->m_hierarchy, -1, 0); // empty scene root
             // Partitioned-family part clusters (P1): appended beside the main
             // cluster and serialized as additional scene blobs.
             std::vector<std::unique_ptr<smvk::WorldPage>> partPages;
@@ -2198,9 +2198,9 @@ int Run(const PakArgs& c) {
             auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
             cluster->SetOfflineMode(true);
             // Direct artifact assembly has no .tour name-addressed replay.
-            cluster->scene.namesStripped = true;
-            cluster->scene.skipGpuSceneChangeJournal = true;
-            addNode(cluster->scene, -1, 0); // empty scene root (editor parity)
+            cluster->m_hierarchy.namesStripped = true;
+            cluster->m_hierarchy.skipGpuSceneChangeJournal = true;
+            addNode(cluster->m_hierarchy, -1, 0); // empty scene root (editor parity)
             const std::string baseDir = smvk::vfs::BaseDir(artPath);
             auto texSrc = std::make_shared<VfsTextureSource>(&vfs, baseDir);
             const size_t built = BuildFromMeshAsset(*cluster,
@@ -2236,7 +2236,7 @@ int Run(const PakArgs& c) {
                 tool::out() << "Artifact built: " << built << " nodes, "
                             << cluster->lights.numObjects() << " lights"
                             << " (dir=" << nDir << " point=" << nPoint << " spot=" << nSpot
-                            << ", links=" << cluster->scene.tables.lights.size() << ")\n";
+                            << ", links=" << cluster->m_hierarchy.tables.lights.size() << ")\n";
             }
             tool::out() << "Cooking artifact: '" << inVfs << "'\n";
             sceneNames.push_back("");
@@ -2250,7 +2250,7 @@ int Run(const PakArgs& c) {
     if (!args.tour.empty()) {
         std::unordered_set<std::string> files;
         for (auto& sc : scenePages) {
-            for (const MeshRow& row : sc->scene.tables.meshes) {
+            for (const MeshRow& row : sc->m_hierarchy.tables.meshes) {
                 const auto h = sc->staticMeshes.getHandle(row.mesh);
                 if (!h.valid())
                     continue;
@@ -2305,7 +2305,7 @@ int Run(const PakArgs& c) {
         std::map<std::string, std::vector<smvk::WorldPage*>> byArtifact;
         for (auto& sc : scenePages) {
             std::unordered_set<std::string> files;
-            for (const MeshRow& row : sc->scene.tables.meshes) {
+            for (const MeshRow& row : sc->m_hierarchy.tables.meshes) {
                 const auto h = sc->staticMeshes.getHandle(row.mesh);
                 if (!h.valid())
                     continue;
@@ -2338,7 +2338,7 @@ int Run(const PakArgs& c) {
                 // runtime attaches to the first SKELETON cluster; refs on
                 // the others are inert bookkeeping).
                 for (smvk::WorldPage* c : artClusters) {
-                    auto& refs = c->scene.animClipRefs;
+                    auto& refs = c->m_hierarchy.animClipRefs;
                     if (std::find(refs.begin(), refs.end(), animVfs) == refs.end())
                         refs.push_back(animVfs);
                 }
@@ -2424,17 +2424,17 @@ int Run(const PakArgs& c) {
     size_t staticMarked = 0;
     for (auto& sc : scenePages) {
         smvk::WorldPage& c = *sc;
-        if (c.scene.hierarchy.empty())
+        if (c.m_hierarchy.hierarchy.empty())
             continue;
-        const bool hasAuthoredMarks = c.scene.staticRoot.size() == c.scene.hierarchy.size() &&
-                                      std::any_of(c.scene.staticRoot.begin(),
-                                                  c.scene.staticRoot.end(),
+        const bool hasAuthoredMarks = c.m_hierarchy.staticRoot.size() == c.m_hierarchy.hierarchy.size() &&
+                                      std::any_of(c.m_hierarchy.staticRoot.begin(),
+                                                  c.m_hierarchy.staticRoot.end(),
                                                   [](uint8_t v) { return v != 0; });
         if (hasAuthoredMarks)
             continue; // authored: preserve verbatim
-        if (c.hasSkeleton || !c.scene.animClipRefs.empty())
+        if (c.hasSkeleton || !c.m_hierarchy.animClipRefs.empty())
             continue; // animated content: stays dynamic
-        MarkSubtreeStatic(c.scene, 0);
+        MarkSubtreeStatic(c.m_hierarchy, 0);
         ++staticMarked;
     }
     if (staticMarked)
@@ -2497,7 +2497,7 @@ int Run(const PakArgs& c) {
         auto diagParts = [&](const smvk::WorldPage& c) {
             const smvk::gi::BakeCellGrid diag =
                 smvk::gi::BuildBakeCellGrid(const_cast<smvk::WorldPage&>(c));
-            return "env=" + smvk::gi::BakeEnvHash(c.scene) +
+            return "env=" + smvk::gi::BakeEnvHash(c.m_hierarchy) +
                    " lights=" + smvk::gi::BakeLightsHash(c) + " grid=" + diag.root + " (" +
                    std::to_string(diag.meshCount) + " meshes, " +
                    std::to_string(diag.cells.size()) + " cells)";
@@ -2534,7 +2534,7 @@ int Run(const PakArgs& c) {
         };
 
         if (gateCluster) {
-            const auto& sn = gateCluster->scene;
+            const auto& sn = gateCluster->m_hierarchy;
             // ---- World field (giAsset kind world): RETIRED ------------
             // The runtime stopped loading the .sggi octree (stage 1 of
             // the retirement plan); stage 2 stops
@@ -2758,9 +2758,9 @@ int Run(const PakArgs& c) {
     // conversion). A synthesized WorldSun already carries the env's own
     // values — the seed is a no-op there (float-exact round trip).
     for (auto& sc : scenePages) {
-        if (!sc->scene.envAuthored)
+        if (!sc->m_hierarchy.envAuthored)
             continue; // runtime seeds from the light at load
-        const ::TransformHierarchy& scene = sc->scene;
+        const ::TransformHierarchy& scene = sc->m_hierarchy;
         glm::vec3 toSun(0.0f);
         glm::vec3 sunColor(0.0f);
         float sunLux = 0.0f;
@@ -2807,7 +2807,7 @@ int Run(const PakArgs& c) {
         }
         if (!hasSun)
             continue;
-        tour::transformhierarchy::SceneEnv& e = sc->scene.environment;
+        tour::transformhierarchy::SceneEnv& e = sc->m_hierarchy.environment;
         e.sunElevation = glm::degrees(std::asin(glm::clamp(toSun.y, -1.0f, 1.0f)));
         e.sunAzimuth = glm::degrees(std::atan2(toSun.x, toSun.z));
         if (e.sunAzimuth < 0.0f)
@@ -2944,7 +2944,7 @@ int Run(const PakArgs& c) {
     // and individually seekable 64m candidate pages keyed by a stable
     // scene namespace. Editor/loose sources still use the rebuild path.
     for (size_t i = 0; i < scenePages.size(); ++i) {
-        const auto& scene = scenePages[i]->scene;
+        const auto& scene = scenePages[i]->m_hierarchy;
         if (scene.tables.envs.empty())
             continue; // no authored zone geometry: ordinary base env
         const auto extent = engine::worldpartition::ComputeEnvGridExtent(
@@ -3318,7 +3318,7 @@ int Run(const PakArgs& c) {
     {
         std::vector<std::string> soundPaths;
         for (const auto& sc : scenePages)
-            for (const AudioSourceRow& row : sc->scene.tables.audioSources)
+            for (const AudioSourceRow& row : sc->m_hierarchy.tables.audioSources)
                 for (const AudioSoundRef& s : row.source.sounds)
                     if (!s.assetPath.empty())
                         soundPaths.push_back(s.assetPath);

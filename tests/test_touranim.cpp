@@ -167,12 +167,12 @@ void TestPoseDriver() {
     // sized in lockstep (localTransform + globalTransform + the static/
     // lightmap/visibility caches) - a hand-built scene that forgets one
     // (globalTransform) crashes the first global walk with an OOB write.
-    addNode(c->scene, -1, 0);
-    addNode(c->scene, 0, 1);
-    c->scene.localTransform[1] = glm::translate(glm::mat4(1.0f), glm::vec3(1.0f, 0.0f, 0.0f));
+    addNode(c->m_hierarchy, -1, 0);
+    addNode(c->m_hierarchy, 0, 1);
+    c->m_hierarchy.localTransform[1] = glm::translate(glm::mat4(1.0f), glm::vec3(1.0f, 0.0f, 0.0f));
     std::cerr << "[touranim-tests] pose: nodes made\n";
-    markAsChanged(c->scene, 0);
-    recalculateGlobalTransforms(c->scene);
+    markAsChanged(c->m_hierarchy, 0);
+    recalculateGlobalTransforms(c->m_hierarchy);
     std::cerr << "[touranim-tests] pose: globals ok\n";
     c->skeleton.joints = {0u, 1u};
     c->skeleton.inverseBind.assign(2, glm::mat4(1.0f));
@@ -182,7 +182,7 @@ void TestPoseDriver() {
     // Bind pose without a clip: false + identity palette.
     std::vector<glm::mat4> pal;
     Check(!c->SampleAnimation(1.0f / 60.0f, pal), "anim.pose.noclip");
-    smvk::touranim::BuildSkinPalette(c->scene, c->skeleton, pal);
+    smvk::touranim::BuildSkinPalette(c->m_hierarchy, c->skeleton, pal);
     Check(pal.size() == 2 && Near(pal[1][3].x, 1.0f), "anim.pose.bindpose");
     std::cerr << "[touranim-tests] pose: bind pose ok\n";
     // A Z-rotation clip on the arm: identity -> 90deg about Z over 1s.

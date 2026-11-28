@@ -191,7 +191,7 @@ std::string EditorApp::CreateGivolumeAsset(const std::string& dir, uint32_t node
     uint32_t useNode = node;
     uint32_t priority = 0;
     if (m_world && useNode != UINT32_MAX) {
-        auto it = FindGiVolume(m_world->scene, useNode);
+        auto it = FindGiVolume(m_world->m_hierarchy, useNode);
         if (it)
             priority = it->volume.priority;
     }
@@ -416,12 +416,12 @@ void EditorApp::RecordBakeAssetsFromCook() {
     // ---- GI-volume assets (one typed .givolume per authored node) ----
     // Each GI volume node owns its bake pointer; the cook refreshes the
     // settings snapshot + baked hash (payload e.g. gi/<scene>_<i>.givolume).
-    if (m_world && !m_world->scene.tables.giVolumes.empty()) {
+    if (m_world && !m_world->m_hierarchy.tables.giVolumes.empty()) {
         const fs::path giDir = m_projectRoot.empty() ? fs::path("content") / "gi"
                                                      : fs::path(m_projectRoot) / "content" / "gi";
         std::error_code gec;
         fs::create_directories(giDir, gec);
-        for (const GiVolumeRow& _row : m_world->scene.tables.giVolumes) {
+        for (const GiVolumeRow& _row : m_world->m_hierarchy.tables.giVolumes) {
             const NodeId node = _row.node;
             const auto& def = _row.volume;
             const std::string stem = scene + "_givolume" + std::to_string(node);

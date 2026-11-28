@@ -115,7 +115,7 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
                  ::tour::IteratorFlagBit_StaticVertexFmt) ||
             (item.flags & ::tour::IteratorFlagBit_Masked) != 0)
             continue;
-        if (item.node >= world.scene.globalTransform.size())
+        if (item.node >= world.m_hierarchy.globalTransform.size())
             continue;
         const StaticMesh* mesh = world.GetMesh(item.mesh);
         if (!mesh || mesh->skinned)
@@ -124,7 +124,7 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
         if (!m_wholeScene) {
             const glm::vec3 localCenter = (mesh->geometry.aabbMin + mesh->geometry.aabbMax) * 0.5f;
             const glm::vec3 worldCenter =
-                glm::vec3(world.scene.globalTransform[item.node] * glm::vec4(localCenter, 1.0f));
+                glm::vec3(world.m_hierarchy.globalTransform[item.node] * glm::vec4(localCenter, 1.0f));
             distance2 = glm::dot(worldCenter - cameraWorldPos, worldCenter - cameraWorldPos);
             if (!std::isfinite(distance2))
                 distance2 = std::numeric_limits<float>::max();
@@ -141,7 +141,7 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
         if (instances.size() >= kStaticSdfMaxInstances)
             break;
         const auto& item = *itemPtr;
-        if (item.node >= world.scene.globalTransform.size() ||
+        if (item.node >= world.m_hierarchy.globalTransform.size() ||
             item.mesh >= world.meshLocations.size())
             continue;
         const StaticMesh* mesh = world.GetMesh(item.mesh);
@@ -196,7 +196,7 @@ bool StaticSdfGpuScene::Update(ResourceManager& ctx,
                          [&](const ::tour::asset::SdfMesh& m) { return m.fragment == fragment; });
         if (it == familyIt->second.meshes.end() || it->octree.nodes.empty())
             continue;
-        const glm::mat4& model = world.scene.globalTransform[item.node];
+        const glm::mat4& model = world.m_hierarchy.globalTransform[item.node];
         if (!ValidTransform(model))
             continue;
 

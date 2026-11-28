@@ -66,7 +66,7 @@ bool BakeSpotLightCookie(World& world,
         return false;
     }
 
-    ::TransformHierarchy& scene = world.scene;
+    ::TransformHierarchy& scene = world.m_hierarchy;
     recalculateGlobalTransforms(scene);
 
     // Resolve the light node by stable uuid (node reorder-safe).

@@ -98,7 +98,7 @@ int main(int argc, char** argv) {
 
     auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
-    addNode(cluster->scene, -1, 0);
+    addNode(cluster->m_hierarchy, -1, 0);
     auto readSibling = [&](const std::string& file) -> std::optional<std::vector<uint8_t>> {
         const std::string p = smvk::vfs::Join(smvk::vfs::BaseDir(artPath), file);
         if (vfs.Exists(p))
@@ -113,7 +113,7 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    ::TransformHierarchy& scene = cluster->scene;
+    ::TransformHierarchy& scene = cluster->m_hierarchy;
 
     // Buckets: [match?] x [alphaMode] x [castsShadows].
     struct Row {

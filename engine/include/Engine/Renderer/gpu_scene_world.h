@@ -434,7 +434,7 @@ class WorldSynchronizer {
         SyncStats stats{};
         if (revision_ != world.gpuSceneTopologyRevision) {
             // Persistent source identity mapping: AppArena, not a heap vector.
-            const size_t nodeCount = world.scene.hierarchy.size();
+            const size_t nodeCount = world.m_hierarchy.hierarchy.size();
             if (nodeCount > nodeKeyCapacity_) {
                 nodeKeys_ = static_cast<SourceKey*>(
                     smvk::AppArena().Allocate(nodeCount * sizeof(SourceKey), alignof(SourceKey)));
@@ -456,8 +456,8 @@ class WorldSynchronizer {
                     const uint32_t merged = nodes[local];
                     if (merged == InvalidIndex || merged >= nodeKeyCount_)
                         continue;
-                    const uint32_t gen = local < c->scene.nodeGeneration.size()
-                                             ? (c->scene.nodeGeneration[local] & kNodeGenMask)
+                    const uint32_t gen = local < c->m_hierarchy.nodeGeneration.size()
+                                             ? (c->m_hierarchy.nodeGeneration[local] & kNodeGenMask)
                                              : 0;
                     nodeKeys_[merged] = {owner->second, local, gen};
                 }
@@ -474,7 +474,7 @@ class WorldSynchronizer {
                 if (slot < nodeKeyCount_ && !nodeKeys_[slot].registration)
                     nodeKeys_[slot] = {world.gpuSceneGameNodeRegistration,
                                        slot,
-                                       NodeGenerationOf(world.scene, slot)};
+                                       NodeGenerationOf(world.m_hierarchy, slot)};
             }
             // The source-record list is only consumed by Reconcile below.
             // Allocate it from the current FrameArena; no persistent heap vector.
@@ -498,7 +498,7 @@ class WorldSynchronizer {
             }();
             uint32_t skipStaleIndex = 0, skipNoKey = 0, skipNoCluster = 0, skipNoOwner = 0;
             for (const World::RenderItem& item : world.drawItems) {
-                if (item.node >= nodeKeyCount_ || item.node >= world.scene.globalTransform.size() ||
+                if (item.node >= nodeKeyCount_ || item.node >= world.m_hierarchy.globalTransform.size() ||
                     item.mesh >= world.meshLocations.size()) {
                     if (s_diag)
                         ++skipStaleIndex;
@@ -528,7 +528,7 @@ class WorldSynchronizer {
                 std::construct_at(scratchMeshes + meshCount++,
                                   MeshSourceEntry{record.mesh, item.mesh});
                 record.globalModel =
-                    tour::transformhierarchy::GlobalTransformDouble(world.scene, item.node);
+                    tour::transformhierarchy::GlobalTransformDouble(world.m_hierarchy, item.node);
                 record.material = item.material; // interim World index
                 record.userData = world.ResolvedItemUserData(item);
                 // Closeup fades need a discarding MASK depth pass, even if the
@@ -536,7 +536,7 @@ class WorldSynchronizer {
                 // factor every frame, so no per-camera CPU publication is
                 // required for the fade band.
                 record.flags = static_cast<uint32_t>(item.flags);
-                if (tour::transformhierarchy::IsDitherCloseupNode(world.scene, int(item.node)))
+                if (tour::transformhierarchy::IsDitherCloseupNode(world.m_hierarchy, int(item.node)))
                     record.flags |= kDitherCloseupFlags;
                 // Per-instance pipeline classification, independent of
                 // mesh sharing. Keep legacy admission until both raster
@@ -641,9 +641,9 @@ class WorldSynchronizer {
             revision_ = world.gpuSceneTopologyRevision;
             geometryRevision_ = geometryRevision;
             stats.leafPublicationOk = SyncLeaves(db, meshPublicationChanged);
-            world.scene.gpuSceneGlobalChanges.clear();
-            std::fill(world.scene.gpuSceneGlobalQueued.begin(),
-                      world.scene.gpuSceneGlobalQueued.end(),
+            world.m_hierarchy.gpuSceneGlobalChanges.clear();
+            std::fill(world.m_hierarchy.gpuSceneGlobalQueued.begin(),
+                      world.m_hierarchy.gpuSceneGlobalQueued.end(),
                       uint8_t(0));
             return stats;
         }
@@ -659,20 +659,20 @@ class WorldSynchronizer {
             geometryRevision_ = geometryRevision;
         }
         // Recalc can append the same node multiple times before a frame.
-        auto& dirty = world.scene.gpuSceneGlobalChanges;
+        auto& dirty = world.m_hierarchy.gpuSceneGlobalChanges;
         std::sort(dirty.begin(), dirty.end());
         dirty.erase(std::unique(dirty.begin(), dirty.end()), dirty.end());
         for (NodeId node : dirty) {
-            if (node < nodeKeyCount_ && node < world.scene.globalTransform.size() &&
+            if (node < nodeKeyCount_ && node < world.m_hierarchy.globalTransform.size() &&
                 registry_.UpdateGlobal(
                     nodeKeys_[node],
-                    tour::transformhierarchy::GlobalTransformDouble(world.scene, node),
+                    tour::transformhierarchy::GlobalTransformDouble(world.m_hierarchy, node),
                     db))
                 ++stats.updated;
         }
         for (NodeId node : dirty)
-            if (node < world.scene.gpuSceneGlobalQueued.size())
-                world.scene.gpuSceneGlobalQueued[node] = 0;
+            if (node < world.m_hierarchy.gpuSceneGlobalQueued.size())
+                world.m_hierarchy.gpuSceneGlobalQueued[node] = 0;
         dirty.clear();
         stats.leafPublicationOk = SyncLeaves(db, meshPublicationChanged);
         return stats;

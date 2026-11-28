@@ -805,9 +805,9 @@ void EditorApp::RunGiLayoutOptimizer(uint32_t node) {
         Log("Optimize grid: a cook/bake is running - wait for it.");
         return;
     }
-    if (!m_world || node >= m_world->scene.hierarchy.size())
+    if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
         return;
-    const GiVolumeRow* it = FindGiVolume(m_world->scene, node);
+    const GiVolumeRow* it = FindGiVolume(m_world->m_hierarchy, node);
     if (!it)
         return;
     const ::SceneGiVolume cv = it->volume;
@@ -825,7 +825,7 @@ void EditorApp::RunGiLayoutOptimizer(uint32_t node) {
     // own decode: half extents from the basis lengths, the axes
     // normalized — the same math the cook/GiBaker path applies to the
     // replayed node, so the optimizer scores the shape that will bake).
-    const glm::mat4& g = m_world->scene.globalTransform[node];
+    const glm::mat4& g = m_world->m_hierarchy.globalTransform[node];
     const glm::vec3 c(g[3]);
     glm::vec3 half;
     glm::mat3 axes;
@@ -1020,7 +1020,7 @@ void EditorApp::BakeGI() {
     }
     // GI baking is an editor authoring operation. Its input is the
     // scene's GI volume set, not an ExportSettings toggle or a pak path.
-    if (m_world->scene.tables.giVolumes.empty()) {
+    if (m_world->m_hierarchy.tables.giVolumes.empty()) {
         Log("Bake GI: no GI volumes in the loaded scene.");
         return;
     }

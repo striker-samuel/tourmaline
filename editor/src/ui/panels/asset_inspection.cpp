@@ -197,7 +197,7 @@ void EditorApp::DrawAssetGenericPage() {
                 // prefab locals so switching and scrubbing remain pure.
                 if (!m_prefabAnimationPreview || m_prefabAnimationClusterIndex != previewCluster)
                     m_prefabAnimationRest =
-                        m_prefab.world->pages[previewCluster]->scene.localTransform;
+                        m_prefab.world->pages[previewCluster]->m_hierarchy.localTransform;
                 m_prefabAnimationClusterIndex = previewCluster;
                 m_prefabAnimationClip = clip;
                 m_prefabAnimationSource = path.string();

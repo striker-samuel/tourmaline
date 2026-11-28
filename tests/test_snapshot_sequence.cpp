@@ -43,7 +43,7 @@ int main() {
     // engine RNG plus the scene's generational identity, not pointer data.
     {
         tour::World world;
-        const int node = tour::transformhierarchy::addNode(world.scene, -1, 0);
+        const int node = tour::transformhierarchy::addNode(world.m_hierarchy, -1, 0);
         CHECK(node >= 0);
         auto before = tour::snapshot::WorldState(
             world, service, glm::vec3(1.0f, 2.0f, 3.0f), glm::vec3(0.0f, 0.0f, -1.0f));
@@ -53,7 +53,7 @@ int main() {
         CHECK(before["scene"]["node_free_list"].is_array());
         CHECK(before["scene"]["node_slot_generations"].is_array());
         CHECK(before["asset_references"]["meshes"].is_array());
-        world.scene.localTransform[static_cast<size_t>(node)][3][0] = 7.0f;
+        world.m_hierarchy.localTransform[static_cast<size_t>(node)][3][0] = 7.0f;
         auto after = tour::snapshot::WorldState(
             world, service, glm::vec3(1.0f, 2.0f, 3.0f), glm::vec3(0.0f, 0.0f, -1.0f));
         auto patch = Json::diff(before, after);

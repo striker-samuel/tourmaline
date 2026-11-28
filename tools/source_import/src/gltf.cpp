@@ -2624,10 +2624,10 @@ void SourceSceneImporter::importNodeRecursive(int gltfNodeIndex,
         gltfNodeMap_.resize(sourceScene_.nodes.size(), -1);
 
     // Always create a "group" node that owns name + transform and preserves hierarchy.
-    const int groupNode = addNode(cluster.scene, parentSceneNode, level);
+    const int groupNode = addNode(cluster.m_hierarchy, parentSceneNode, level);
     gltfNodeMap_[size_t(gltfNodeIndex)] = groupNode;
 
-    setNodeName(cluster.scene,
+    setNodeName(cluster.m_hierarchy,
                 groupNode,
                 sourceNode.name.empty() ? "Node" : sourceNode.name,
                 /*dedupe=*/false);
@@ -2638,17 +2638,17 @@ void SourceSceneImporter::importNodeRecursive(int gltfNodeIndex,
     // per-node conjugation put it, while every descendant's transform
     // stays the honest glTF TRS (identity nodes stay identity —
     // the local gizmo + the inspector read true).
-    cluster.scene.localTransform[groupNode] =
+    cluster.m_hierarchy.localTransform[groupNode] =
         (topOfImport ? CoordFixBasis(coordFix_) : glm::mat4(1.0f)) * sourceNode.localTransform;
-    cluster.scene.globalTransform[groupNode] = glm::mat4(1.0f); // resolved later
+    cluster.m_hierarchy.globalTransform[groupNode] = glm::mat4(1.0f); // resolved later
 
     // Static-subtree opt-in: authoring extras or STATIC_ name prefix.
     // Flag is stamped directly; the staticNode cache is rebuilt once at the
     // end of the import flow (see GltfToClusterFromVfs / GltfToCluster).
     {
         const bool wantStatic = sourceNode.staticRoot;
-        if (wantStatic && (size_t)groupNode < cluster.scene.staticRoot.size())
-            cluster.scene.staticRoot[(size_t)groupNode] = 1;
+        if (wantStatic && (size_t)groupNode < cluster.m_hierarchy.staticRoot.size())
+            cluster.m_hierarchy.staticRoot[(size_t)groupNode] = 1;
     }
 
     // Lightmap opt-out: authoring extras or NOLM_ name prefix. Stored on
@@ -2656,10 +2656,10 @@ void SourceSceneImporter::importNodeRecursive(int gltfNodeIndex,
     {
         const bool wantNoLm = sourceNode.noLightmap;
         if (wantNoLm) {
-            if (cluster.scene.noLightmap.size() != cluster.scene.hierarchy.size())
-                cluster.scene.noLightmap.resize(cluster.scene.hierarchy.size(), 0);
-            if ((size_t)groupNode < cluster.scene.noLightmap.size())
-                cluster.scene.noLightmap[(size_t)groupNode] = 1;
+            if (cluster.m_hierarchy.noLightmap.size() != cluster.m_hierarchy.hierarchy.size())
+                cluster.m_hierarchy.noLightmap.resize(cluster.m_hierarchy.hierarchy.size(), 0);
+            if ((size_t)groupNode < cluster.m_hierarchy.noLightmap.size())
+                cluster.m_hierarchy.noLightmap[(size_t)groupNode] = 1;
         }
     }
 
@@ -2669,10 +2669,10 @@ void SourceSceneImporter::importNodeRecursive(int gltfNodeIndex,
     {
         const bool wantDither = sourceNode.ditherCloseup;
         if (wantDither) {
-            if (cluster.scene.ditherCloseup.size() != cluster.scene.hierarchy.size())
-                cluster.scene.ditherCloseup.resize(cluster.scene.hierarchy.size(), 0);
-            if ((size_t)groupNode < cluster.scene.ditherCloseup.size())
-                cluster.scene.ditherCloseup[(size_t)groupNode] = 1;
+            if (cluster.m_hierarchy.ditherCloseup.size() != cluster.m_hierarchy.hierarchy.size())
+                cluster.m_hierarchy.ditherCloseup.resize(cluster.m_hierarchy.hierarchy.size(), 0);
+            if ((size_t)groupNode < cluster.m_hierarchy.ditherCloseup.size())
+                cluster.m_hierarchy.ditherCloseup[(size_t)groupNode] = 1;
         }
     }
 
@@ -2691,7 +2691,7 @@ void SourceSceneImporter::importNodeRecursive(int gltfNodeIndex,
         const smvk::WorldPageLightHandle h =
             getOrCreateLight(gltfNodeLight, sourceNode.staticLight);
         if (h.valid())
-            SetLight(cluster.scene, (uint32_t)groupNode, h.index());
+            SetLight(cluster.m_hierarchy, (uint32_t)groupNode, h.index());
     }
 
     // Unroll primitives into separate meshes (your current approach).
@@ -2703,19 +2703,19 @@ void SourceSceneImporter::importNodeRecursive(int gltfNodeIndex,
         for (int primIndex = 0; primIndex < (int)gltfMesh.primitives.size(); ++primIndex) {
             const smvk::source::Primitive& primitive = gltfMesh.primitives[primIndex];
 
-            const int primNode = addNode(cluster.scene, groupNode, level + 1);
-            setNodeName(cluster.scene,
+            const int primNode = addNode(cluster.m_hierarchy, groupNode, level + 1);
+            setNodeName(cluster.m_hierarchy,
                         primNode,
                         (sourceNode.name.empty() ? "Node" : sourceNode.name) +
                             std::string("Shape") + std::to_string(primIndex),
                         /*dedupe=*/false);
-            cluster.scene.localTransform[primNode] = glm::mat4(1.0f);
-            cluster.scene.globalTransform[primNode] = glm::mat4(1.0f);
+            cluster.m_hierarchy.localTransform[primNode] = glm::mat4(1.0f);
+            cluster.m_hierarchy.globalTransform[primNode] = glm::mat4(1.0f);
             const smvk::WorldPageStaticMeshHandle primMesh =
                 getOrCreateMesh(sourceNode.mesh, primIndex);
-            SetMesh(cluster.scene, primNode, primMesh.index());
-            SetMaterial(cluster.scene, primNode, getOrCreateMaterial(primitive.material).index());
-            markAsChanged(cluster.scene, primNode);
+            SetMesh(cluster.m_hierarchy, primNode, primMesh.index());
+            SetMaterial(cluster.m_hierarchy, primNode, getOrCreateMaterial(primitive.material).index());
+            markAsChanged(cluster.m_hierarchy, primNode);
             // SKIN RECORD (the Northlight data path): node.skin indexes
             // the top-level skins array; the JOINTS_0/WEIGHTS_0 streams +
             // the Skeleton build in the POST pass (BuildSkinData - the
@@ -2825,8 +2825,8 @@ int SourceSceneImporter::BuildSkinData() {
             std::cerr << "[Skin] skeleton root derived from the joint"
                          " hierarchy: node "
                       << sk.root << " ("
-                      << (sk.root < cluster.scene.hierarchy.size()
-                              ? getNodeName(cluster.scene, int(sk.root))
+                      << (sk.root < cluster.m_hierarchy.hierarchy.size()
+                              ? getNodeName(cluster.m_hierarchy, int(sk.root))
                               : std::string("?"))
                       << ") - the skin omits 'skeleton'\n";
         }
@@ -3355,7 +3355,7 @@ size_t BuildFromMeshAsset(
     // root (the placeholder takes its place); nodes 1.. build under the
     // mapped parents (parent 0 -> the placeholder), ids ph+i aligning
     // with the sibling-glTF import (the .tour replay contract).
-    TransformHierarchy& scene = cluster.scene;
+    TransformHierarchy& scene = cluster.m_hierarchy;
     if (asset.nodes.empty())
         return 0;
     std::vector<int> mapped(asset.nodes.size(), -1);
@@ -4004,11 +4004,11 @@ size_t ApplySceneReferences(smvk::WorldPage& cluster,
                     const size_t maxSlots =
                         size_t(::tour::transformhierarchy::kNodeSlotCountMax - 1);
                     if (count <= maxSlots / perRef) {
-                        const size_t wanted = cluster.scene.hierarchy.size() + count * perRef;
+                        const size_t wanted = cluster.m_hierarchy.hierarchy.size() + count * perRef;
                         if (wanted < ::tour::transformhierarchy::kNodeSlotCountMax &&
-                            (!cluster.scene.nodeSlotBudget ||
-                             wanted <= cluster.scene.nodeSlotBudget))
-                            cluster.scene.ReserveNodeCapacity(wanted);
+                            (!cluster.m_hierarchy.nodeSlotBudget ||
+                             wanted <= cluster.m_hierarchy.nodeSlotBudget))
+                            cluster.m_hierarchy.ReserveNodeCapacity(wanted);
                     }
                 }
             }
@@ -4019,8 +4019,8 @@ size_t ApplySceneReferences(smvk::WorldPage& cluster,
             // reference builds its parts into separate clusters, so its
             // placeholder + transform move to each part cluster's root.
             const int parentNode =
-                isRoot ? 0 : ((pRaw < uint64_t(cluster.scene.hierarchy.size())) ? int(pRaw) : 0);
-            const int level = cluster.scene.hierarchy[size_t(parentNode)].level + 1;
+                isRoot ? 0 : ((pRaw < uint64_t(cluster.m_hierarchy.hierarchy.size())) ? int(pRaw) : 0);
+            const int level = cluster.m_hierarchy.hierarchy[size_t(parentNode)].level + 1;
             int ph = 0; // root anchor: the scene root node
             glm::mat4 refTransform(1.0f);
             std::string name =
@@ -4043,10 +4043,10 @@ size_t ApplySceneReferences(smvk::WorldPage& cluster,
                         refTransform = glm::scale(refTransform, r.scale);
                 }
                 if (!partitioned) {
-                    ph = addNode(cluster.scene, parentNode, level);
-                    setNodeName(cluster.scene, ph, "REF " + name, /*dedupe=*/false);
+                    ph = addNode(cluster.m_hierarchy, parentNode, level);
+                    setNodeName(cluster.m_hierarchy, ph, "REF " + name, /*dedupe=*/false);
                     if (r.hasTranslate || r.hasRotate || r.hasScale)
-                        cluster.scene.localTransform[size_t(ph)] = refTransform;
+                        cluster.m_hierarchy.localTransform[size_t(ph)] = refTransform;
                 }
             }
             if (cur.depth == 0 && outPlaceholderNodes)
@@ -4166,9 +4166,9 @@ size_t ApplySceneReferences(smvk::WorldPage& cluster,
                     // cluster). The reference frame anchors the own root.
                     auto ownCluster = std::make_unique<smvk::WorldPage>(nullptr);
                     ownCluster->SetOfflineMode(true);
-                    ownCluster->scene.namesStripped = cluster.scene.namesStripped;
-                    addNode(ownCluster->scene, -1, 0);
-                    ownCluster->scene.localTransform[0] = refTransform;
+                    ownCluster->m_hierarchy.namesStripped = cluster.m_hierarchy.namesStripped;
+                    addNode(ownCluster->m_hierarchy, -1, 0);
+                    ownCluster->m_hierarchy.localTransform[0] = refTransform;
                     const size_t built = BuildFromMeshAsset(*ownCluster,
                                                             streamer,
                                                             meshAsset,
@@ -4184,8 +4184,8 @@ size_t ApplySceneReferences(smvk::WorldPage& cluster,
                     if (built > 0) {
                         builtFromMesh = true;
                         createdReferenceNodes += built;
-                        RebuildStaticCache(ownCluster->scene);
-                        recalculateGlobalTransforms(ownCluster->scene);
+                        RebuildStaticCache(ownCluster->m_hierarchy);
+                        recalculateGlobalTransforms(ownCluster->m_hierarchy);
                         if (outPartPages)
                             outPartPages->push_back(std::move(ownCluster));
                         if (outPartSceneNames)
@@ -4278,11 +4278,11 @@ size_t ApplySceneReferences(smvk::WorldPage& cluster,
                     }
                     auto partCluster = std::make_unique<smvk::WorldPage>(nullptr);
                     partCluster->SetOfflineMode(true);
-                    partCluster->scene.namesStripped = cluster.scene.namesStripped;
-                    addNode(partCluster->scene, -1, 0); // part scene root
+                    partCluster->m_hierarchy.namesStripped = cluster.m_hierarchy.namesStripped;
+                    addNode(partCluster->m_hierarchy, -1, 0); // part scene root
                     // The reference frame (identity for root references)
                     // anchors the part's whole subtree.
-                    partCluster->scene.localTransform[0] = refTransform;
+                    partCluster->m_hierarchy.localTransform[0] = refTransform;
                     const std::string partBaseUri =
                         (relPartDir.empty() ? partFile : relPartDir + "/" + partFile);
                     const size_t built = BuildFromMeshAsset(*partCluster,
@@ -4308,8 +4308,8 @@ size_t ApplySceneReferences(smvk::WorldPage& cluster,
                     anyPartBuilt = true;
                     createdReferenceNodes += built;
                     // Finalize like the main cluster's tail pass.
-                    RebuildStaticCache(partCluster->scene);
-                    recalculateGlobalTransforms(partCluster->scene);
+                    RebuildStaticCache(partCluster->m_hierarchy);
+                    recalculateGlobalTransforms(partCluster->m_hierarchy);
                     if (outPartPages)
                         outPartPages->push_back(std::move(partCluster));
                     if (outPartSceneNames)
@@ -4392,21 +4392,21 @@ size_t ApplySceneReferences(smvk::WorldPage& cluster,
             // 'outer:inner:name'. Runs AFTER the source tour's replay: its
             // verify-names and its own wide overrides matched the
             // un-prefixed names.
-            if (!isRoot && !partitioned && !cluster.scene.namesStripped) {
+            if (!isRoot && !partitioned && !cluster.m_hierarchy.namesStripped) {
                 const std::string ns =
                     cur.nsPrefix + (r.nameSpace.empty() ? name : r.nameSpace) + ":";
                 std::vector<uint32_t> stack;
-                for (int ch = cluster.scene.hierarchy[size_t(ph)].firstChild; ch >= 0;
-                     ch = cluster.scene.hierarchy[size_t(ch)].nextSibling)
+                for (int ch = cluster.m_hierarchy.hierarchy[size_t(ph)].firstChild; ch >= 0;
+                     ch = cluster.m_hierarchy.hierarchy[size_t(ch)].nextSibling)
                     stack.push_back(uint32_t(ch));
                 while (!stack.empty()) {
                     const uint32_t v = stack.back();
                     stack.pop_back();
-                    const std::string nm = getNodeName(cluster.scene, int(v));
+                    const std::string nm = getNodeName(cluster.m_hierarchy, int(v));
                     if (!nm.empty())
-                        setNodeName(cluster.scene, int(v), ns + nm, /*dedupe=*/false);
-                    for (int ch = cluster.scene.hierarchy[v].firstChild; ch >= 0;
-                         ch = cluster.scene.hierarchy[size_t(ch)].nextSibling)
+                        setNodeName(cluster.m_hierarchy, int(v), ns + nm, /*dedupe=*/false);
+                    for (int ch = cluster.m_hierarchy.hierarchy[v].firstChild; ch >= 0;
+                         ch = cluster.m_hierarchy.hierarchy[size_t(ch)].nextSibling)
                         stack.push_back(uint32_t(ch));
                 }
                 // NOTE: the disabled flag NEVER touches the import here —
@@ -4466,9 +4466,9 @@ size_t ApplySceneReferences(smvk::WorldPage& cluster,
                       << meshAssetCache.size() << " distinct geometry artifact(s), "
                       << createdReferenceNodes << " imported nodes, geometry cache "
                       << geometryCacheHits << " hit(s)/" << geometryCacheMisses << " load(s)\n";
-        RebuildStaticCache(cluster.scene);
-        markAsChanged(cluster.scene, 0);
-        recalculateGlobalTransforms(cluster.scene);
+        RebuildStaticCache(cluster.m_hierarchy);
+        markAsChanged(cluster.m_hierarchy, 0);
+        recalculateGlobalTransforms(cluster.m_hierarchy);
         if (cluster.ctx_)
             cluster.ctx_->FlushUploads();
     }

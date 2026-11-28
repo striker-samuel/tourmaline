@@ -189,7 +189,7 @@ glm::vec3 EditorApp::GizmoPivotPoint() {
     // act about the whole selection's bb center; falls back through
     // the primary's bounds to the origin without mesh bounds).
     if (m_gizmoPivot == GizmoPivot::BoundsCenter && m_world && m_selected != UINT32_MAX &&
-        m_selected < m_world->scene.hierarchy.size()) {
+        m_selected < m_world->m_hierarchy.hierarchy.size()) {
         glm::vec3 c;
         if (SelectionPivotCenter(c))
             return c;
@@ -200,7 +200,7 @@ glm::vec3 EditorApp::GizmoPivotPoint() {
                 return pc;
         }
     }
-    return GizmoOrigin(m_world->scene, m_selected);
+    return GizmoOrigin(m_world->m_hierarchy, m_selected);
 }
 
 void EditorApp::ApplyMultiDragTranslate() {
@@ -210,8 +210,8 @@ void EditorApp::ApplyMultiDragTranslate() {
     // approximation the single-node path uses).
     if (m_dragMulti.empty() || !m_world)
         return;
-    const int p = m_world->scene.hierarchy[m_selected].parent;
-    const glm::mat4 pw = (p >= 0) ? m_world->scene.globalTransform[size_t(p)] : glm::mat4(1.0f);
+    const int p = m_world->m_hierarchy.hierarchy[m_selected].parent;
+    const glm::mat4 pw = (p >= 0) ? m_world->m_hierarchy.globalTransform[size_t(p)] : glm::mat4(1.0f);
     const glm::vec3 dW = glm::vec3(pw * glm::vec4(m_dragCurT - m_dragBaseT, 0.0f));
     for (const auto& ms : m_dragMulti) {
         glm::vec3 t = ms.t;
@@ -232,10 +232,10 @@ void EditorApp::ApplyMultiDragRotate() {
     // Convert the primary's parent-local rotation delta into a WORLD
     // delta, then map it to each other node's parent frame. Do not
     // quaternion-cast a scaled matrix: that is not a pure rotation.
-    const int primaryParent = m_world->scene.hierarchy[m_selected].parent;
+    const int primaryParent = m_world->m_hierarchy.hierarchy[m_selected].parent;
     glm::vec3 pt(0.0f), pr(0.0f), ps(1.0f);
     if (primaryParent >= 0)
-        transform::ReadLocalTRS(m_world->scene.globalTransform[size_t(primaryParent)], pt, pr, ps);
+        transform::ReadLocalTRS(m_world->m_hierarchy.globalTransform[size_t(primaryParent)], pt, pr, ps);
     const glm::quat primaryParentQ = gizmo_rotation::Orientation(pr);
     const glm::quat primaryDelta = gizmo_rotation::LocalDelta(m_dragBaseR, m_dragCurR);
     const glm::quat worldDelta = primaryParentQ * primaryDelta * glm::inverse(primaryParentQ);
@@ -361,19 +361,19 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
     // cone), LIGHTING mode only — light nodes carry no mesh to click.
     // Flat-UV wires live in the UV editor window (its own record pass
     // with the window's zoom/pan) — never in viewport gizmo batches.
-    if (lightSetVisible && m_showLightGizmos && !m_world->scene.tables.lights.empty()) {
+    if (lightSetVisible && m_showLightGizmos && !m_world->m_hierarchy.tables.lights.empty()) {
         const glm::vec3 eye = EditorCamEye(ActiveCam());
-        for (const LightRow& _row : m_world->scene.tables.lights) {
+        for (const LightRow& _row : m_world->m_hierarchy.tables.lights) {
             const NodeId node = _row.node;
             const auto& li = _row.light;
-            if (node >= m_world->scene.hierarchy.size() ||
-                node >= m_world->scene.globalTransform.size())
+            if (node >= m_world->m_hierarchy.hierarchy.size() ||
+                node >= m_world->m_hierarchy.globalTransform.size())
                 continue;
             glm::vec3 aimWs(0.0f);
             const ::SceneLight* l = FindNodeLight(node, &aimWs);
             if (!l)
                 continue;
-            const glm::vec3 p = glm::vec3(m_world->scene.globalTransform[node][3]);
+            const glm::vec3 p = glm::vec3(m_world->m_hierarchy.globalTransform[node][3]);
             float s = glm::distance(eye, p) * 0.045f;
             if (!(s > 1e-5f))
                 continue;
@@ -439,9 +439,9 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
     // — it is the click target and the world-position marker for game
     // code anchors (spawn points, trigger zones, patrol markers).
     // LIGHTING mode only — locators carry no mesh to raycast.
-    if (lightSetVisible && m_world && m_world->scene.hierarchy.size() > 0) {
+    if (lightSetVisible && m_world && m_world->m_hierarchy.hierarchy.size() > 0) {
         const glm::vec3 eye = EditorCamEye(ActiveCam());
-        const TransformHierarchy& scene = m_world->scene;
+        const TransformHierarchy& scene = m_world->m_hierarchy;
         for (uint32_t node = 0; node < scene.hierarchy.size(); ++node) {
             if (!IsNodeAlive(scene, node))
                 continue; // retired slot (Epoch 6b): a hole, not a locator
@@ -479,7 +479,7 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
     // preview overlay so authored and baked volumes read the same; the
     // selection draws bright. LIGHTING mode only — GI volume nodes carry
     // no mesh to click.
-    if (lightSetVisible && m_showGiVolumeGizmos && !m_world->scene.tables.giVolumes.empty()) {
+    if (lightSetVisible && m_showGiVolumeGizmos && !m_world->m_hierarchy.tables.giVolumes.empty()) {
         const auto priorityRgb = [](uint32_t priority) {
             // HSV(h, 0.7, 1.0) with h = priority * 0.13 mod 1 (same
             // hue as DrawGiVolumePreviewOverlay's priorityColor).
@@ -511,7 +511,7 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
             }
             return glm::vec3(r + m, g + m, b + m);
         };
-        for (const GiVolumeRow& _row : m_world->scene.tables.giVolumes) {
+        for (const GiVolumeRow& _row : m_world->m_hierarchy.tables.giVolumes) {
             const NodeId node = _row.node;
             const auto& def = _row.volume;
             glm::vec3 corners[8];
@@ -548,16 +548,16 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
     // (orange/cyan/yellow) and the cubemap magenta; the selection
     // draws bright gold like every other volume kind. Disabled rooms
     // draw dim. LIGHTING mode only — room nodes carry no mesh.
-    if (lightSetVisible && m_showAudioRoomGizmos && !m_world->scene.tables.audioRooms.empty()) {
+    if (lightSetVisible && m_showAudioRoomGizmos && !m_world->m_hierarchy.tables.audioRooms.empty()) {
         for (const tour::transformhierarchy::AudioRoomRow& _row :
-             m_world->scene.tables.audioRooms) {
+             m_world->m_hierarchy.tables.audioRooms) {
             const NodeId node = _row.node;
             const auto& def = _row.room;
-            if (node >= m_world->scene.globalTransform.size())
+            if (node >= m_world->m_hierarchy.globalTransform.size())
                 continue;
             const tour::transformhierarchy::SpatialVolumeBox box =
                 tour::transformhierarchy::VolumeBoxFromGlobalTransform(
-                    m_world->scene.globalTransform[node]);
+                    m_world->m_hierarchy.globalTransform[node]);
             if (!box.Valid())
                 continue;
             glm::vec3 corners[8];
@@ -590,7 +590,7 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
     // without an existing GI/Audio gizmo. Shares spatial_volume.h's
     // OBB convention and avoids superimposed duplicate boxes.
     if (lightSetVisible && m_showGiVolumeGizmos) {
-        const TransformHierarchy& scene = m_world->scene;
+        const TransformHierarchy& scene = m_world->m_hierarchy;
         for (uint32_t node = 0; node < scene.hierarchy.size(); ++node) {
             if (m_deletedNodes.contains(node) || node >= scene.globalTransform.size() ||
                 FindGiVolume(scene, node) || tour::transformhierarchy::FindAudioRoom(scene, node))
@@ -626,15 +626,15 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
     // Rendergraph/probeball.h + the View menu) — not a gizmo: the App
     // renders it inside Main with the scene's depth/IBL.
     // LIGHTING mode only, like the rest of the light set.
-    if (lightSetVisible && m_showCubemapGizmos && !m_world->scene.tables.cubemaps.empty()) {
+    if (lightSetVisible && m_showCubemapGizmos && !m_world->m_hierarchy.tables.cubemaps.empty()) {
         const glm::vec3 eye = EditorCamEye(ActiveCam());
-        for (const CubemapRow& _row : m_world->scene.tables.cubemaps) {
+        for (const CubemapRow& _row : m_world->m_hierarchy.tables.cubemaps) {
             const NodeId node = _row.node;
             const auto& def = _row.cubemap;
-            if (node >= m_world->scene.hierarchy.size() ||
-                node >= m_world->scene.globalTransform.size())
+            if (node >= m_world->m_hierarchy.hierarchy.size() ||
+                node >= m_world->m_hierarchy.globalTransform.size())
                 continue;
-            const glm::vec3 p = glm::vec3(m_world->scene.globalTransform[node][3]);
+            const glm::vec3 p = glm::vec3(m_world->m_hierarchy.globalTransform[node][3]);
             float s = glm::distance(eye, p) * 0.035f;
             if (!(s > 1e-5f))
                 continue;
@@ -668,18 +668,18 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
     // hues) and cubemaps (magenta); the selection draws bright. Aspect
     // follows the active viewport (schematic when panels disagree).
     // LIGHTING mode steps these aside (the light set owns the viewport).
-    if (m_showCameraGizmos && !lightingFocus && !m_world->scene.tables.cameras.empty()) {
+    if (m_showCameraGizmos && !lightingFocus && !m_world->m_hierarchy.tables.cameras.empty()) {
         const glm::vec3 eye = EditorCamEye(ActiveCam());
         const ViewportRect& ar = m_viewports[m_activeVp].rect;
         const float aspect = ar.h > 0.0f ? ar.w / ar.h : 16.0f / 9.0f;
-        for (const CameraRow& _row : m_world->scene.tables.cameras) {
+        for (const CameraRow& _row : m_world->m_hierarchy.tables.cameras) {
             const NodeId node = _row.node;
             const auto& ci = _row.camera;
             const ::SceneCamera* C = FindNodeCamera(node);
-            if (!C || node >= m_world->scene.hierarchy.size() ||
-                node >= m_world->scene.globalTransform.size())
+            if (!C || node >= m_world->m_hierarchy.hierarchy.size() ||
+                node >= m_world->m_hierarchy.globalTransform.size())
                 continue;
-            const glm::mat4& G = m_world->scene.globalTransform[node];
+            const glm::mat4& G = m_world->m_hierarchy.globalTransform[node];
             const glm::vec3 p = glm::vec3(G[3]);
             glm::vec3 fwd = glm::vec3(G * glm::vec4(0, 0, -1, 0));
             if (!(glm::length(fwd) > 1e-6f))
@@ -731,7 +731,7 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
         }
     }
     // Build batches: selection box + gizmo axes.
-    if (m_selected == UINT32_MAX || m_selected >= m_world->scene.hierarchy.size()) {
+    if (m_selected == UINT32_MAX || m_selected >= m_world->m_hierarchy.hierarchy.size()) {
         // No selection: markers (if any) still draw below.
     } else {
         {
@@ -742,7 +742,7 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
             // The subtree's mesh corners are min/max-ed IN the node's own
             // frame, then the 8 corners transform back through it (raw
             // locals — no import artifact).
-            const glm::mat4 frame = m_world->scene.globalTransform[m_selected];
+            const glm::mat4 frame = m_world->m_hierarchy.globalTransform[m_selected];
             const glm::mat4 invFrame = glm::inverse(frame);
             bool has = false;
             glm::vec3 mn(FLT_MAX), mx(-FLT_MAX);
@@ -759,10 +759,10 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
             while (!stack.empty()) {
                 const uint32_t n = stack.back();
                 stack.pop_back();
-                if (n >= m_world->scene.hierarchy.size() || !inSubtree.insert(n).second)
+                if (n >= m_world->m_hierarchy.hierarchy.size() || !inSubtree.insert(n).second)
                     continue;
-                for (int c = m_world->scene.hierarchy[n].firstChild; c != -1;
-                     c = m_world->scene.hierarchy[c].nextSibling)
+                for (int c = m_world->m_hierarchy.hierarchy[n].firstChild; c != -1;
+                     c = m_world->m_hierarchy.hierarchy[c].nextSibling)
                     stack.push_back((uint32_t)c);
             }
             for (const auto& item : m_world->drawItems) {
@@ -771,7 +771,7 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
                 smvk::StaticMesh* m = m_world->GetMesh(item.mesh);
                 if (!m)
                     continue;
-                const glm::mat4& model = m_world->scene.globalTransform[item.node];
+                const glm::mat4& model = m_world->m_hierarchy.globalTransform[item.node];
                 for (int k = 0; k < 8; ++k) {
                     const glm::vec3 corner((k & 1) ? m->geometry.aabbMax.x : m->geometry.aabbMin.x,
                                            (k & 2) ? m->geometry.aabbMax.y : m->geometry.aabbMin.y,
@@ -882,7 +882,7 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
             // Configurable gizmo size (m_gizmoScale, default half the original
             // 0.14 factor); tiny floors keep the handles clickable.
             const float s = std::max(dist * m_gizmoScale, 1e-4f);
-            const glm::mat4& global = m_world->scene.globalTransform[m_selected];
+            const glm::mat4& global = m_world->m_hierarchy.globalTransform[m_selected];
             const glm::vec3 axesW[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
             // The LOCAL frame = the node's own world basis. Imported chains keep
             // RAW locals (the coordFix basis rides the chain's TOP node only),
@@ -1070,7 +1070,7 @@ void EditorApp::RecordGizmoPass(smvk::LogicalImageViewHandle swapView,
 }
 
 bool EditorApp::GizmoHandleInput() {
-    if (m_selected == UINT32_MAX || !m_world || m_selected >= m_world->scene.hierarchy.size())
+    if (m_selected == UINT32_MAX || !m_world || m_selected >= m_world->m_hierarchy.hierarchy.size())
         return false;
     // ACTIVE viewport-local mouse + dims + viewProj for the hit tests.
     const ViewportRect& vp = m_viewports[m_activeVp].rect;
@@ -1089,7 +1089,7 @@ bool EditorApp::GizmoHandleInput() {
     // Handle orientation (Q quick menu, World default; scale always
     // local — same rule as the draw path).
     const bool useLocal = (m_gizmoMode == GizmoMode::Scale) || (m_gizmoSpace == GizmoSpace::Local);
-    const glm::mat4& global = m_world->scene.globalTransform[m_selected];
+    const glm::mat4& global = m_world->m_hierarchy.globalTransform[m_selected];
     const glm::vec3 axesW[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
     // The LOCAL frame = the node's own world basis (raw locals — no
     // import artifact to un-apply; draw-path parity).
@@ -1193,7 +1193,7 @@ bool EditorApp::GizmoHandleInput() {
         // The drag writes live values; release pushes ONE undoable command.
         m_gizmoDragging = true;
         m_gizmoAxis = best;
-        m_dragBaseMat = m_world->scene.localTransform[m_selected];
+        m_dragBaseMat = m_world->m_hierarchy.localTransform[m_selected];
         ReadLocalTRS(m_selected, m_dragCurT, m_dragCurR, m_dragCurS);
         m_dragBaseT = m_dragCurT;
         m_dragBaseR = m_dragCurR;
@@ -1211,9 +1211,9 @@ bool EditorApp::GizmoHandleInput() {
         m_dragPivotL = glm::vec3(0.0f);
         m_dragHasPivot = false;
         if (m_gizmoPivot == GizmoPivot::BoundsCenter) {
-            const int parent = m_world->scene.hierarchy[m_selected].parent;
+            const int parent = m_world->m_hierarchy.hierarchy[m_selected].parent;
             const glm::mat4& pw =
-                (parent >= 0) ? m_world->scene.globalTransform[size_t(parent)] : glm::mat4(1.0f);
+                (parent >= 0) ? m_world->m_hierarchy.globalTransform[size_t(parent)] : glm::mat4(1.0f);
             const glm::mat3 rot(pw);
             const float det = glm::determinant(rot);
             if (std::fabs(det) > 1e-12f) {
@@ -1246,15 +1246,15 @@ bool EditorApp::GizmoHandleInput() {
                     "translate/rotate are multi).");
             if (!perAxis) {
                 for (uint32_t n : m_selection) {
-                    if (n == m_selected || n >= m_world->scene.hierarchy.size())
+                    if (n == m_selected || n >= m_world->m_hierarchy.hierarchy.size())
                         continue;
                     GizmoMultiSnap ms{};
                     ms.node = n;
-                    ms.baseMat = m_world->scene.localTransform[size_t(n)];
+                    ms.baseMat = m_world->m_hierarchy.localTransform[size_t(n)];
                     ReadLocalTRS(n, ms.t, ms.r, ms.s);
-                    const int p = m_world->scene.hierarchy[size_t(n)].parent;
+                    const int p = m_world->m_hierarchy.hierarchy[size_t(n)].parent;
                     ms.parentWorld =
-                        (p >= 0) ? m_world->scene.globalTransform[size_t(p)] : glm::mat4(1.0f);
+                        (p >= 0) ? m_world->m_hierarchy.globalTransform[size_t(p)] : glm::mat4(1.0f);
                     const glm::mat3 pr(ms.parentWorld);
                     if (std::fabs(glm::determinant(pr)) > 1e-12f)
                         ms.pivotP = glm::vec3(glm::inverse(ms.parentWorld) * glm::vec4(O, 1.0f));
@@ -1363,11 +1363,11 @@ bool EditorApp::GizmoHandleInput() {
             if (t > 0.0f) {
                 const glm::vec3 cur = origin + ray * t;
                 // World delta -> parent-local delta (rotation part only).
-                const int parent = m_world->scene.hierarchy[m_selected].parent;
+                const int parent = m_world->m_hierarchy.hierarchy[m_selected].parent;
                 auto toLocal = [&](const glm::vec3& w) {
                     if (parent < 0)
                         return w;
-                    const glm::mat3 pw(m_world->scene.globalTransform[parent]);
+                    const glm::mat3 pw(m_world->m_hierarchy.globalTransform[parent]);
                     const float det = glm::determinant(pw);
                     return (std::fabs(det) > 1e-12f) ? glm::inverse(pw) * w : w;
                 };
@@ -1470,9 +1470,9 @@ bool EditorApp::GizmoHandleInput() {
             }
             // Camera/world delta -> parent-local delta: the node's
             // world orientation is qParentWorld * qLocal.
-            const int parent = m_world->scene.hierarchy[m_selected].parent;
+            const int parent = m_world->m_hierarchy.hierarchy[m_selected].parent;
             const glm::mat4& pwM =
-                (parent >= 0) ? m_world->scene.globalTransform[parent] : glm::mat4(1.0f);
+                (parent >= 0) ? m_world->m_hierarchy.globalTransform[parent] : glm::mat4(1.0f);
             glm::vec3 parentT, parentR, parentS;
             transform::ReadLocalTRS(pwM, parentT, parentR, parentS);
             const glm::quat qParentW = gizmo_rotation::Orientation(parentR);
@@ -1589,7 +1589,7 @@ bool EditorApp::GizmoHandleInput() {
 // is untouched when Transpose is off. Each transform gesture records one edit.
 bool EditorApp::TransposeHandleInput() {
     if (!m_transposeEnabled || !m_world || m_selected == UINT32_MAX ||
-        m_selected >= m_world->scene.hierarchy.size())
+        m_selected >= m_world->m_hierarchy.hierarchy.size())
         return false;
     const ViewportRect& vp = m_viewports[m_activeVp].rect;
     if (vp.w < 1.0f || vp.h < 1.0f)
@@ -1632,7 +1632,7 @@ bool EditorApp::TransposeHandleInput() {
         m_transposeMouseStart = mouse;
         m_transposeStartA = m_transposeA;
         m_transposeStartB = m_transposeB;
-        m_transposeBaseMat = m_world->scene.localTransform[m_selected];
+        m_transposeBaseMat = m_world->m_hierarchy.localTransform[m_selected];
         ReadLocalTRS(m_selected, m_transposeBaseT, m_transposeBaseR, m_transposeBaseS);
         return true;
     }
@@ -1640,7 +1640,7 @@ bool EditorApp::TransposeHandleInput() {
         if (m_transposeDrag == 2) {
             glm::vec3 t, r, s;
             ReadLocalTRS(m_selected, t, r, s);
-            const glm::mat4 after = m_world->scene.localTransform[m_selected];
+            const glm::mat4 after = m_world->m_hierarchy.localTransform[m_selected];
             bool changed = false;
             for (int c = 0; c < 4; ++c)
                 for (int row = 0; row < 4; ++row)
@@ -1694,9 +1694,9 @@ bool EditorApp::TransposeHandleInput() {
             m_transposeB = m_transposeStartB + deltaW;
         return true;
     }
-    const int parent = m_world->scene.hierarchy[m_selected].parent;
+    const int parent = m_world->m_hierarchy.hierarchy[m_selected].parent;
     const glm::mat4 parentW =
-        parent >= 0 ? m_world->scene.globalTransform[size_t(parent)] : glm::mat4(1.0f);
+        parent >= 0 ? m_world->m_hierarchy.globalTransform[size_t(parent)] : glm::mat4(1.0f);
     const glm::mat3 p3(parentW);
     if (std::fabs(glm::determinant(p3)) < 1e-12f)
         return true;

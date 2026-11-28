@@ -2205,7 +2205,7 @@ void TestLmChartTransfer() {
 void TestStaticBakeLights() {
     auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
-    ::TransformHierarchy& scene = cluster->scene;
+    ::TransformHierarchy& scene = cluster->m_hierarchy;
     addNode(scene, -1, 0); // root
 
     auto addLightNode = [&](glm::vec3 pos, const SceneLight& def) {
@@ -2302,7 +2302,7 @@ void TestStaticBakeLights() {
     {
         auto cluster2 = std::make_unique<smvk::WorldPage>(nullptr);
         cluster2->SetOfflineMode(true);
-        ::TransformHierarchy& scene2 = cluster2->scene;
+        ::TransformHierarchy& scene2 = cluster2->m_hierarchy;
         addNode(scene2, -1, 0); // root
         glm::mat4 g =
             glm::mat4_cast(glm::quat(0.70710678118f, 0.0f, 0.70710678118f, 0.0f)); // rotY(90)
@@ -3008,7 +3008,7 @@ void TestTraceSceneFromWorld() {
     cluster->SetOfflineMode(true); // retained uploads (the editor keeps
                                    // them ONLINE via SetRetainUploads -
                                    // same CPU mirror either way)
-    ::TransformHierarchy& cs = cluster->scene;
+    ::TransformHierarchy& cs = cluster->m_hierarchy;
     const int root = addNode(cs, -1, 0);
     smvk::MeshData u;
     const float h = 2.0f;
@@ -3419,7 +3419,7 @@ void TestBakeInputHashFolds() {
     // statement executed).
     auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
-    addNode(cluster->scene, -1, 0);
+    addNode(cluster->m_hierarchy, -1, 0);
     SceneGiVolume def{};
     def.spacing = 1.0f;
     smvk::gi::BakeCellGrid grid = smvk::gi::BuildBakeCellGrid(*cluster);
@@ -3493,15 +3493,15 @@ void TestBakeInputHashFolds() {
     // registered uri, so an AUTHORED directional (any other uri - even
     // the same type/slot) still folds.
     auto addLightNode = [&](const SceneLight& def, const char* uri) {
-        const int n = addNode(cluster->scene, 0, 1);
-        cluster->scene.localTransform[size_t(n)] = glm::mat4(1.0f);
-        cluster->scene.globalTransform[size_t(n)] = glm::mat4(1.0f);
+        const int n = addNode(cluster->m_hierarchy, 0, 1);
+        cluster->m_hierarchy.localTransform[size_t(n)] = glm::mat4(1.0f);
+        cluster->m_hierarchy.globalTransform[size_t(n)] = glm::mat4(1.0f);
         const smvk::WorldPageLightHandle h = cluster->CreateLight(def);
         Check(h.valid(), "bakehash light created");
         if (h.valid()) {
             if (uri)
                 cluster->RegisterLightUri(uri, h);
-            SetLight(cluster->scene, NodeId(n), h.index());
+            SetLight(cluster->m_hierarchy, NodeId(n), h.index());
         }
     };
     const std::string lightsBefore = smvk::gi::BakeLightsHash(*cluster);

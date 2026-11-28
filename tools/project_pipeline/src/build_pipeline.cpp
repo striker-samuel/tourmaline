@@ -608,7 +608,7 @@ static bool BakePlanSdfs(const Project& project,
             return false;
         }
         for (const auto& owner : replay->world->pages) {
-            auto& scene = owner->scene;
+            auto& scene = owner->m_hierarchy;
             MarkAllRootsChanged(scene);
             recalculateGlobalTransforms(scene);
             for (const MeshRow& row : scene.tables.meshes) {

@@ -168,7 +168,7 @@ int main(int argc, char** argv) {
 
     auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
-    addNode(cluster->scene, -1, 0); // empty scene root
+    addNode(cluster->m_hierarchy, -1, 0); // empty scene root
     auto readSibling = [&](const std::string& file) -> std::optional<std::vector<uint8_t>> {
         const std::string p = smvk::vfs::Join(smvk::vfs::BaseDir(artPath), file);
         if (vfs.Exists(p))

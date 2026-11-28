@@ -161,7 +161,7 @@ void EditorApp::DrawLightmapPanel() {
 
 void EditorApp::DrawTexturePanel() {
     ImGui::Text("Textures");
-    if (!m_world || m_world->scene.hierarchy.empty()) {
+    if (!m_world || m_world->m_hierarchy.hierarchy.empty()) {
         ImGui::TextDisabled("No scene loaded.");
         return;
     }
@@ -624,7 +624,7 @@ void EditorApp::DrawGiVizWindow() {
     CubemapProbeRowsFromFile(rows);
     ImGui::Text("In level: %zu    in view: %u (cap 64)", rows.size(), m_probeDrawnLast);
     if (m_world) {
-        ImGui::Text("Authored pins: %zu node(s)", m_world->scene.tables.cubemaps.size());
+        ImGui::Text("Authored pins: %zu node(s)", m_world->m_hierarchy.tables.cubemaps.size());
     }
     legendSwatch(IM_COL32(80, 255, 120, 230));
     ImGui::TextUnformatted("camera inside influence (full weight)");
@@ -667,7 +667,7 @@ void EditorApp::DrawCookPanel() {
         const uint32_t esNode = FindExportSettingsNode();
         if (esNode != UINT32_MAX) {
             ImGui::Text("Export settings: node '%s' (#%u)",
-                        getNodeName(m_world->scene, int(esNode)).c_str(),
+                        getNodeName(m_world->m_hierarchy, int(esNode)).c_str(),
                         esNode);
             if (ImGui::Button("Select ExportSettings node")) {
                 SetSelection(esNode);
@@ -687,7 +687,7 @@ void EditorApp::DrawCookPanel() {
     ImGui::Separator();
     ImGui::Text("GI (probes) - baked ON DEMAND, never with the cook");
     ImGui::TextDisabled("%u GI volume node(s) authored in this scene",
-                        m_world ? uint32_t(m_world->scene.tables.giVolumes.size()) : 0u);
+                        m_world ? uint32_t(m_world->m_hierarchy.tables.giVolumes.size()) : 0u);
     ImGui::TextDisabled("Bake GI uses the authored scene volumes; "
                         "no ExportSettings node or prior cook is required.");
     if (!m_giBakedHash.empty()) {
@@ -743,12 +743,12 @@ void EditorApp::DrawCookPanel() {
     // shares the overlay's match, so the readout and the balls agree —
     // black balls with "0/N baked" means no baked cubemap is loaded for
     // these pins (bake + rebind first), not a display bug.
-    if (m_world && !m_world->scene.tables.cubemaps.empty()) {
+    if (m_world && !m_world->m_hierarchy.tables.cubemaps.empty()) {
         size_t bakedCount = 0, totalCount = 0;
         CaptureBakeState(bakedCount, totalCount);
         ImGui::TextDisabled("captures (click to select): %zu/%zu baked", bakedCount, totalCount);
         int shown = 0;
-        for (const CubemapRow& _row : m_world->scene.tables.cubemaps) {
+        for (const CubemapRow& _row : m_world->m_hierarchy.tables.cubemaps) {
             const NodeId node = _row.node;
             const auto& def = _row.cubemap;
             if (shown++ >= 12)
@@ -758,7 +758,7 @@ void EditorApp::DrawCookPanel() {
             std::snprintf(btn,
                           sizeof(btn),
                           "%s (#%u)##cube%u",
-                          getNodeName(m_world->scene, int(node)).c_str(),
+                          getNodeName(m_world->m_hierarchy, int(node)).c_str(),
                           node,
                           node);
             if (ImGui::SmallButton(btn)) {

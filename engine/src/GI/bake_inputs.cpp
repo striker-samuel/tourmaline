@@ -116,7 +116,7 @@ std::string BakeLightsHash(const WorldPage& cluster) {
     // the light's own fields + the node's global transform bits (the
     // position/direction ride the transform) + the cookie uri. Non-static
     // lights are runtime-only — never bake inputs.
-    const ::TransformHierarchy& scene = cluster.scene;
+    const ::TransformHierarchy& scene = cluster.m_hierarchy;
     if (scene.tables.lights.empty())
         return BakeInputHash(std::string("lights-none"));
     std::vector<uint32_t> nodes;
@@ -183,7 +183,7 @@ std::string BakeLightsHash(const WorldPage& cluster) {
 
 BakeCellGrid BuildBakeCellGrid(WorldPage& cluster) {
     BakeCellGrid grid;
-    ::TransformHierarchy& scene = cluster.scene;
+    ::TransformHierarchy& scene = cluster.m_hierarchy;
     recalculateGlobalTransforms(scene);
 
     // Membership mirrors BuildTraceSceneFromCluster's SUPerset (masked
@@ -376,7 +376,7 @@ std::string GiVolumeBakeUnitHash(const BakeCellGrid& grid,
     // The bake algorithm revision (see bake_inputs.h): behavior changes
     // must invalidate every pre-change record.
     hs.feedPod(kBakeAlgorithmRevision);
-    hs.feed(BakeEnvHash(cluster.scene));
+    hs.feed(BakeEnvHash(cluster.m_hierarchy));
     hs.feed(BakeLightsHash(cluster));
     // The volume's FULL transform, by bits: the covered-cell fold below
     // only sees the world AABB, so a rotation that leaves the covered
@@ -429,7 +429,7 @@ std::string CubemapBakeUnitHash(const BakeCellGrid& grid,
     // The bake algorithm revision (see bake_inputs.h): behavior changes
     // must invalidate every pre-change record.
     hs.feedPod(kBakeAlgorithmRevision);
-    hs.feed(BakeEnvHash(cluster.scene));
+    hs.feed(BakeEnvHash(cluster.m_hierarchy));
     hs.feed(BakeLightsHash(cluster));
     hs.feedPod(position);
     hs.feedPod(influenceRadius);

@@ -506,9 +506,9 @@ int main() {
         smvk::World world{};
         auto owned = std::make_unique<smvk::WorldPage>(nullptr);
         owned->SetOfflineMode(true);
-        const int authored = addNode(owned->scene, -1, 0);
+        const int authored = addNode(owned->m_hierarchy, -1, 0);
         const auto mesh = owned->staticMeshes.create(smvk::StaticMesh{});
-        CHECK(SetMesh(owned->scene, uint32_t(authored), mesh.index()));
+        CHECK(SetMesh(owned->m_hierarchy, uint32_t(authored), mesh.index()));
         world.RegisterPage(std::move(owned));
         world.ResolveAndFixup_pages();
         CHECK(!world.meshLocations.empty());
@@ -516,8 +516,8 @@ int main() {
         const NodeHandle first = world.AddNode();
         const NodeHandle second = world.AddNode();
         CHECK(world.IsGameNode(first) && world.IsGameNode(second));
-        CHECK(SetMesh(world.scene, NodeHandleSlot(first), worldMesh));
-        CHECK(SetMesh(world.scene, NodeHandleSlot(second), worldMesh));
+        CHECK(SetMesh(world.m_hierarchy, NodeHandleSlot(first), worldMesh));
+        CHECK(SetMesh(world.m_hierarchy, NodeHandleSlot(second), worldMesh));
         world.RefreshRuntimeSceneCaches();
         RenderDatabase snapshot{};
         WorldSynchronizer sync{};
@@ -528,7 +528,7 @@ int main() {
         const SourceKey authoredKey = sync.SourceForNode(uint32_t(authored));
         CHECK(key1.registration != 0 && key1.registration != authoredKey.registration);
         CHECK(key1.registration == key2.registration && key1.slot != key2.slot);
-        CHECK(key1.generation == NodeGenerationOf(world.scene, NodeHandleSlot(first)));
+        CHECK(key1.generation == NodeGenerationOf(world.m_hierarchy, NodeHandleSlot(first)));
         CHECK(sync.Find(key1) && sync.Find(key2));
         const auto steady = sync.Synchronize(world, snapshot);
         CHECK(!steady.topologyReconciled && steady.created == 0);
@@ -549,7 +549,7 @@ int main() {
         CHECK(!sync.Find(key1) && sync.Find(key2));
         const NodeHandle replacement = world.AddNode();
         CHECK(world.IsGameNode(replacement));
-        CHECK(SetMesh(world.scene, NodeHandleSlot(replacement), worldMesh));
+        CHECK(SetMesh(world.m_hierarchy, NodeHandleSlot(replacement), worldMesh));
         world.RefreshRuntimeSceneCaches();
         const auto respawned = sync.Synchronize(world, snapshot);
         const SourceKey replacementKey = sync.SourceForNode(NodeHandleSlot(replacement));

@@ -80,7 +80,7 @@ FrameStats RunFrame(const World& world, const Config& config, int frame) {
         ++stats.processed;
         if (item.material == World::kInvalidIndex)
             return;
-        const auto& model = world.scene.globalTransform[item.node];
+        const auto& model = world.m_hierarchy.globalTransform[item.node];
         auto tick = Clock::now();
         const glm::vec3 position(model[3]);
         const float distance2 = glm::dot(position, position);
@@ -145,7 +145,7 @@ int main(int argc, char** argv) {
         World world;
         world.drawItems.reserve(cfg.instances);
         world.itemFlags.reserve(cfg.instances);
-        world.scene.globalTransform.reserve(cfg.instances);
+        world.m_hierarchy.globalTransform.reserve(cfg.instances);
         uint32_t state = static_cast<uint32_t>(cfg.seed) | 1u;
         auto random = [&]() {
             state ^= state << 13;
@@ -159,7 +159,7 @@ int main(int argc, char** argv) {
             const float z = float(int(random() % 100000) - 50000) * 0.01f;
             glm::mat4 transform(1.0f);
             transform[3] = glm::vec4(x, y, z, 1.0f);
-            world.scene.globalTransform.push_back(transform);
+            world.m_hierarchy.globalTransform.push_back(transform);
             World::RenderItem item{};
             item.node = static_cast<tour::transformhierarchy::NodeId>(i);
             item.mesh = static_cast<uint32_t>(i % 128);

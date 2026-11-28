@@ -392,8 +392,8 @@ struct BakeEnv {
 };
 BakeEnv EnvForBake(const smvk::WorldPage& c, const Args& args) {
     BakeEnv e{};
-    if (c.scene.envAuthored) {
-        const tour::transformhierarchy::SceneEnv& se = c.scene.environment;
+    if (c.m_hierarchy.envAuthored) {
+        const tour::transformhierarchy::SceneEnv& se = c.m_hierarchy.environment;
         e.sunAzimuth = se.sunAzimuth;
         e.sunElevation = se.sunElevation;
         e.sunIntensity = se.sunIntensity;
@@ -432,7 +432,7 @@ bool EnsureWorldSun(smvk::WorldPage& cluster, const BakeEnv& be) {
             if (l->type == SceneLight::Type::Directional)
                 hasDir = true;
     });
-    if (hasDir || cluster.scene.hierarchy.empty())
+    if (hasDir || cluster.m_hierarchy.hierarchy.empty())
         return false;
     // toSun from compass azimuth (0 = +Z) + elevation — the same formula
     // as EnvironmentSettings::SunDirectionToSun (unit by construction).
@@ -459,11 +459,11 @@ bool EnsureWorldSun(smvk::WorldPage& cluster, const BakeEnv& be) {
     m[0] = glm::vec4(x, 0.0f);
     m[1] = glm::vec4(y, 0.0f);
     m[2] = glm::vec4(z, 0.0f);
-    const int node = addNode(cluster.scene, -1, 1);
-    cluster.scene.localTransform[size_t(node)] = m;
-    if (size_t(node) < cluster.scene.globalTransform.size())
-        cluster.scene.globalTransform[size_t(node)] = m; // scene-root child: global == local
-    setNodeName(cluster.scene, node, "WorldSun");
+    const int node = addNode(cluster.m_hierarchy, -1, 1);
+    cluster.m_hierarchy.localTransform[size_t(node)] = m;
+    if (size_t(node) < cluster.m_hierarchy.globalTransform.size())
+        cluster.m_hierarchy.globalTransform[size_t(node)] = m; // scene-root child: global == local
+    setNodeName(cluster.m_hierarchy, node, "WorldSun");
     SceneLight sun{};
     sun.type = SceneLight::Type::Directional;
     sun.color = be.sunColor;
@@ -474,7 +474,7 @@ bool EnsureWorldSun(smvk::WorldPage& cluster, const BakeEnv& be) {
     if (!h.valid())
         return false;
     cluster.RegisterLightUri("sun/world", h);
-    SetLight(cluster.scene, uint32_t(node), h.index());
+    SetLight(cluster.m_hierarchy, uint32_t(node), h.index());
     return true;
 }
 
@@ -619,7 +619,7 @@ bool BakeAuthoredGiVolumes(std::vector<std::unique_ptr<smvk::WorldPage>>& sceneP
                            std::vector<std::pair<std::string, std::vector<uint8_t>>>& out) {
     using namespace smvk::gi;
     for (auto& sc : scenePages) {
-        if (!sc || sc->scene.tables.giVolumes.empty())
+        if (!sc || sc->m_hierarchy.tables.giVolumes.empty())
             continue;
         // Trace scene per cluster: bake inputs mirror the lightmap/
         // cubemap stages (texture-averaged albedo, cooked-punctual aim
@@ -669,23 +669,23 @@ bool BakeAuthoredGiVolumes(std::vector<std::unique_ptr<smvk::WorldPage>>& sceneP
         // Deterministic node order (the table's row storage order
         // is not).
         std::vector<uint32_t> nodes;
-        nodes.reserve(sc->scene.tables.giVolumes.size());
-        for (const GiVolumeRow& row : sc->scene.tables.giVolumes)
+        nodes.reserve(sc->m_hierarchy.tables.giVolumes.size());
+        for (const GiVolumeRow& row : sc->m_hierarchy.tables.giVolumes)
             nodes.push_back(row.node);
         std::sort(nodes.begin(), nodes.end());
         for (uint32_t node : nodes) {
-            if (node >= sc->scene.globalTransform.size())
+            if (node >= sc->m_hierarchy.globalTransform.size())
                 continue;
             // The binding target (the row's payload, a reference not
             // a copy — the binding update below lands on the scene).
-            GiVolumeRow* cvRow = FindGiVolume(sc->scene, node);
+            GiVolumeRow* cvRow = FindGiVolume(sc->m_hierarchy, node);
             if (!cvRow)
                 continue;
             SceneGiVolume& cv = cvRow->volume;
             // World box decode (GiBaker parity): translation = center,
             // basis lengths = full extents, normalized basis = the box
             // axes (an OBB — six planes, GiVolumeBoxPlanesRotated).
-            const glm::mat4& g = sc->scene.globalTransform[node];
+            const glm::mat4& g = sc->m_hierarchy.globalTransform[node];
             const glm::vec3 c(g[3]);
             glm::vec3 half;
             glm::mat3 axes;
@@ -694,7 +694,7 @@ bool BakeAuthoredGiVolumes(std::vector<std::unique_ptr<smvk::WorldPage>>& sceneP
                 half[i] = 0.5f * len;
                 axes[i] = (len > 1e-6f) ? glm::vec3(g[i]) / len : glm::vec3(0.0f);
             }
-            std::string name = getNodeName(sc->scene, int(node));
+            std::string name = getNodeName(sc->m_hierarchy, int(node));
             if (name.empty())
                 name = "givolume" + std::to_string(node);
             name = SanitizeVfsToken(name);
@@ -2206,7 +2206,7 @@ bool NodeChainMatchesKeywords(const TransformHierarchy& scene,
 // a failed clone keeps the shared mapping (bake skips it as before).
 uint32_t DeinstanceSharedMeshes(smvk::WorldPage& cluster) {
     std::map<uint32_t, std::vector<uint32_t>> refs;
-    for (const MeshRow& row : cluster.scene.tables.meshes)
+    for (const MeshRow& row : cluster.m_hierarchy.tables.meshes)
         refs[row.mesh].push_back(row.node);
     uint32_t clones = 0;
     for (auto& [meshIdx, nodes] : refs) {
@@ -2227,7 +2227,7 @@ uint32_t DeinstanceSharedMeshes(smvk::WorldPage& cluster) {
             const smvk::WorldPageStaticMeshHandle ch = cluster.UploadMesh(*origUp);
             if (!ch.valid())
                 continue;
-            SetMesh(cluster.scene, node, ch.index());
+            SetMesh(cluster.m_hierarchy, node, ch.index());
             if (!origUri.empty()) {
                 const std::string cloneUri = origUri + "/inst" + std::to_string(node);
                 cluster.RegisterMeshUri(smvk::StringViewT(cloneUri), ch);
@@ -2793,7 +2793,7 @@ bool BakePreconvolvedCubemaps(smvk::WorldPage& cluster,
         // Diagnostic: the alphaMode histogram over the NODE-REFERENCED
         // cluster materials (what the trace soup can intern at all).
         uint32_t nOpaque = 0, nMask = 0, nBlend = 0, nNodes = 0;
-        for (const MaterialRow& row : cluster.scene.tables.materials) {
+        for (const MaterialRow& row : cluster.m_hierarchy.tables.materials) {
             const smvk::WorldPageMaterialHandle mh = cluster.materials.getHandle(row.material);
             if (!mh.valid())
                 continue;
@@ -3161,7 +3161,7 @@ bool BakePreconvolvedCubemaps(smvk::WorldPage& cluster,
     // .cubemanifest suffix 13.)
     std::string base;
     {
-        const std::string& rec = cluster.scene.giCapturesSource;
+        const std::string& rec = cluster.m_hierarchy.giCapturesSource;
         if (rec.size() > 25 && rec.compare(0, 12, "gi/cubemaps/") == 0 &&
             rec.compare(rec.size() - 13, 13, ".cubemanifest") == 0)
             base = rec.substr(12, rec.size() - 25);
@@ -3210,18 +3210,18 @@ bool BakePreconvolvedCubemaps(smvk::WorldPage& cluster,
     // = the node's world transform, influence = the node-local radius
     // (fade = radius/2, the CLI pin rule). Appended after the CLI
     // --cubemap-extra-pos pins, same manifest semantics.
-    for (const CubemapRow& row : cluster.scene.tables.cubemaps) {
+    for (const CubemapRow& row : cluster.m_hierarchy.tables.cubemaps) {
         const NodeId node = row.node;
         const SceneCubemap& def = row.cubemap;
-        if (node >= cluster.scene.globalTransform.size())
+        if (node >= cluster.m_hierarchy.globalTransform.size())
             continue;
-        const glm::vec3 p(cluster.scene.globalTransform[node][3]);
+        const glm::vec3 p(cluster.m_hierarchy.globalTransform[node][3]);
         if (!positions.empty() && radii.size() != positions.size())
             radii.resize(positions.size(), glm::vec2(10.0f, 5.0f));
         positions.push_back(p);
         radii.emplace_back(def.radius, def.radius * 0.5f);
         pinned.push_back(1);
-        tool::err() << "  [CUBE] authored pinned probe ('" << getNodeName(cluster.scene, int(node))
+        tool::err() << "  [CUBE] authored pinned probe ('" << getNodeName(cluster.m_hierarchy, int(node))
                     << "' @" << p.x << "," << p.y << "," << p.z << ") r=" << def.radius << "\n"
                     << std::flush;
     }
@@ -3289,7 +3289,7 @@ bool BakePreconvolvedCubemaps(smvk::WorldPage& cluster,
     std::vector<smvk::CubemapManifestEntry> oldRows;
     CaptureReachFile oldReach;
     {
-        const std::string rec = cluster.scene.giCapturesSource;
+        const std::string rec = cluster.m_hierarchy.giCapturesSource;
         if (!rec.empty()) {
             const std::vector<uint8_t> manifestBytes = ReadLooseBakeFile(args.contentDir, rec);
             if (!manifestBytes.empty()) {
@@ -3341,7 +3341,7 @@ bool BakePreconvolvedCubemaps(smvk::WorldPage& cluster,
     // the GiBaker/pak prints — a pak-gate capture refusal with identical
     // grids/rows/cfg/cells diffs to the diverging ENV/LIGHTS fold from
     // the log alone (the unit hash folds them per row).
-    tool::err() << "  [CUBE] bake-input gate: env=" << smvk::gi::BakeEnvHash(cluster.scene)
+    tool::err() << "  [CUBE] bake-input gate: env=" << smvk::gi::BakeEnvHash(cluster.m_hierarchy)
                 << " lights=" << smvk::gi::BakeLightsHash(cluster) << "\n"
                 << std::flush;
 
@@ -3839,13 +3839,13 @@ bool BakePreconvolvedCubemaps(smvk::WorldPage& cluster,
         // set-level fold of the row hashes (the pak gate's fast path;
         // the per-row hashes ride the manifest itself). The caller
         // stamps the tour's giAsset record from this scene state.
-        cluster.scene.giCapturesSource = manifestVfs;
-        cluster.scene.giCapturesGuid.clear();
+        cluster.m_hierarchy.giCapturesSource = manifestVfs;
+        cluster.m_hierarchy.giCapturesGuid.clear();
         {
             std::string folded;
             for (const std::string& h : keptHashes)
                 folded += h;
-            cluster.scene.giCapturesHash = BakeInputHash(folded);
+            cluster.m_hierarchy.giCapturesHash = BakeInputHash(folded);
         }
         tool::err() << "  [CUBE] manifest " << manifestVfs << "  probes=" << rows.size()
                     << " pinned=" << size_t(std::count(pinned.begin(), pinned.end(), 1))
@@ -3936,7 +3936,7 @@ bool WriteCookedArtifactsBack(const Args& args,
     for (auto& sc : scenePages) {
         smvk::WorldPage& c = *sc;
         std::unordered_set<uint32_t> seen;
-        for (const MeshRow& row : c.scene.tables.meshes) {
+        for (const MeshRow& row : c.m_hierarchy.tables.meshes) {
             if (!seen.insert(row.mesh).second)
                 continue; // still-shared: one set per upload
             const smvk::WorldPageStaticMeshHandle h = c.staticMeshes.getHandle(row.mesh);
@@ -4584,7 +4584,7 @@ int Run(const CookArgs& c) {
         {
             auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
             cluster->SetOfflineMode(true);
-            addNode(cluster->scene, -1, 0); // empty scene root
+            addNode(cluster->m_hierarchy, -1, 0); // empty scene root
             // Partitioned-family part clusters (P1): appended beside the main
             // cluster; write-back stamps a .cooked marker per part artifact.
             std::vector<std::unique_ptr<smvk::WorldPage>> partPages;
@@ -4908,7 +4908,7 @@ int Run(const CookArgs& c) {
             // are minted cook ids.
             auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
             cluster->SetOfflineMode(true);
-            addNode(cluster->scene, -1, 0); // empty scene root (editor parity)
+            addNode(cluster->m_hierarchy, -1, 0); // empty scene root (editor parity)
             const std::string baseDir = smvk::vfs::BaseDir(artPath);
             auto texSrc = std::make_shared<VfsTextureSource>(&vfs, baseDir);
             const size_t built = BuildFromMeshAsset(*cluster,
@@ -4944,7 +4944,7 @@ int Run(const CookArgs& c) {
                 tool::out() << "Artifact built: " << built << " nodes, "
                             << cluster->lights.numObjects() << " lights"
                             << " (dir=" << nDir << " point=" << nPoint << " spot=" << nSpot
-                            << ", links=" << cluster->scene.tables.lights.size() << ")\n";
+                            << ", links=" << cluster->m_hierarchy.tables.lights.size() << ")\n";
             }
             // Baked placement (the authored PointInstancer cloud): read the
             // <stem>.baked_placement sidecar, resolve each render prototype's
@@ -5026,7 +5026,7 @@ int Run(const CookArgs& c) {
         noMeshlets.enabled = false;
         smvk::CookLodSiblingsOptions siblingsOpts;
         for (auto& owner : scenePages) {
-            auto& scene = owner->scene;
+            auto& scene = owner->m_hierarchy;
             MarkAllRootsChanged(scene);
             recalculateGlobalTransforms(scene);
             std::unordered_set<uint32_t> eligibleMeshes;
@@ -5091,15 +5091,15 @@ int Run(const CookArgs& c) {
                         const auto base = c.FindMeshByUri(uri);
                         if (base && c.staticMeshes.get(*base)) {
                             const auto* upload = c.GetRetainedUpload(*base);
-                            for (const MeshRow& row : c.scene.tables.meshes) {
+                            for (const MeshRow& row : c.m_hierarchy.tables.meshes) {
                                 if (row.mesh != base->index() ||
-                                    row.node >= c.scene.globalTransform.size() || !upload)
+                                    row.node >= c.m_hierarchy.globalTransform.size() || !upload)
                                     continue;
                                 if (smvk::EligibleForSpatialDerivatives(
                                         upload->aabbMin,
                                         upload->aabbMax,
                                         upload->indices.size(),
-                                        c.scene.globalTransform[row.node],
+                                        c.m_hierarchy.globalTransform[row.node],
                                         !upload->skin.empty())) {
                                     ++chainable;
                                     break;
@@ -5177,9 +5177,9 @@ int Run(const CookArgs& c) {
     // conversion). A synthesized WorldSun already carries the env's own
     // values — the seed is a no-op there (float-exact round trip).
     for (auto& sc : scenePages) {
-        if (!sc->scene.envAuthored)
+        if (!sc->m_hierarchy.envAuthored)
             continue; // runtime seeds from the light at load
-        const ::TransformHierarchy& scene = sc->scene;
+        const ::TransformHierarchy& scene = sc->m_hierarchy;
         glm::vec3 toSun(0.0f);
         glm::vec3 sunColor(0.0f);
         float sunLux = 0.0f;
@@ -5226,7 +5226,7 @@ int Run(const CookArgs& c) {
         }
         if (!hasSun)
             continue;
-        tour::transformhierarchy::SceneEnv& e = sc->scene.environment;
+        tour::transformhierarchy::SceneEnv& e = sc->m_hierarchy.environment;
         e.sunElevation = glm::degrees(std::asin(glm::clamp(toSun.y, -1.0f, 1.0f)));
         e.sunAzimuth = glm::degrees(std::atan2(toSun.x, toSun.z));
         if (e.sunAzimuth < 0.0f)
@@ -5260,7 +5260,7 @@ int Run(const CookArgs& c) {
         for (const auto& sc : scenePages) {
             if (!sc)
                 continue;
-            for (const GiVolumeRow& row : sc->scene.tables.giVolumes)
+            for (const GiVolumeRow& row : sc->m_hierarchy.tables.giVolumes)
                 if (!row.volume.bakeSource.empty()) {
                     anyBoundVolume = true;
                     break;
@@ -5287,7 +5287,7 @@ int Run(const CookArgs& c) {
                 std::string serr;
                 std::vector<std::string> superseded;
                 if (!smvk::tour::StampGiAssets(tour,
-                                               scenePages.front()->scene,
+                                               scenePages.front()->m_hierarchy,
                                                createdGiVolumes,
                                                &serr,
                                                &superseded,
@@ -5517,8 +5517,8 @@ int Run(const CookArgs& c) {
         // world-space request.
         auto lmWorldScale = [&](uint32_t node) {
             float s = 1.0f;
-            if (node < cluster->scene.globalTransform.size()) {
-                const glm::mat4& g = cluster->scene.globalTransform[node];
+            if (node < cluster->m_hierarchy.globalTransform.size()) {
+                const glm::mat4& g = cluster->m_hierarchy.globalTransform[node];
                 s = std::max({glm::length(glm::vec3(g[0])),
                               glm::length(glm::vec3(g[1])),
                               glm::length(glm::vec3(g[2]))});
@@ -5528,7 +5528,7 @@ int Run(const CookArgs& c) {
         // Charts read node-local positions while the trace scene is
         // world-space: make sure the global transforms are current
         // before either use.
-        ::recalculateGlobalTransforms(cluster->scene);
+        ::recalculateGlobalTransforms(cluster->m_hierarchy);
         // Meters-per-texel request -> world texels/m base for the xatlas
         // options (density floor 2 texels/m = mpt ceiling 0.5). The
         // convergence search below still speaks texels/m; the engine
@@ -5545,17 +5545,17 @@ int Run(const CookArgs& c) {
         std::vector<LmWork> work;
         uint32_t skipBlend = 0, skipInstanced = 0, skipNoMat = 0, skipDecal = 0, skipExcluded = 0,
                  skipSmall = 0, skipNoLm = 0, skipHidden = 0;
-        for (const MeshRow& row : cluster->scene.tables.meshes) {
+        for (const MeshRow& row : cluster->m_hierarchy.tables.meshes) {
             const NodeId node = row.node;
             const uint32_t meshIdx = row.mesh;
             // Visibility overrides: hidden subtrees are not rendered, so
             // they take no lightmap charts (they still occlude/cast in
             // the trace scene like noLM exclusions).
-            if (!IsVisibleNode(cluster->scene, int(node))) {
+            if (!IsVisibleNode(cluster->m_hierarchy, int(node))) {
                 ++skipHidden;
                 continue;
             }
-            const MaterialRow* matRow = FindMaterial(cluster->scene, node);
+            const MaterialRow* matRow = FindMaterial(cluster->m_hierarchy, node);
             if (!matRow) {
                 ++skipNoMat;
                 continue;
@@ -5580,7 +5580,7 @@ int Run(const CookArgs& c) {
             // 1:1, but degenerate clones keep the shared mapping — one
             // lightmap position per instance is still unsupported, skip.
             uint32_t refs = 0;
-            for (const MeshRow& r2 : cluster->scene.tables.meshes)
+            for (const MeshRow& r2 : cluster->m_hierarchy.tables.meshes)
                 if (r2.mesh == meshIdx)
                     ++refs;
             if (refs != 1) {
@@ -5592,7 +5592,7 @@ int Run(const CookArgs& c) {
             // keep their analytic/probe lighting and stay in the trace
             // scene (still occlude/cast).
             if (!args.lmExcludeKeywords.empty() &&
-                NodeChainMatchesKeywords(cluster->scene, node, args.lmExcludeKeywords)) {
+                NodeChainMatchesKeywords(cluster->m_hierarchy, node, args.lmExcludeKeywords)) {
                 ++skipExcluded;
                 continue;
             }
@@ -5602,14 +5602,14 @@ int Run(const CookArgs& c) {
             // prefix). Only opted-in meshes chart; everything else keeps
             // its analytic/probe lighting and stays in the trace scene
             // (still occludes/casts).
-            if (!IsLightmapNode(cluster->scene, int(node))) {
+            if (!IsLightmapNode(cluster->m_hierarchy, int(node))) {
                 ++skipNoLm;
                 continue;
             }
             // Legacy opt-out (TransformHierarchy::noLightmap, subtree-scoped): force
             // skip even when opted in above. Same treatment: trace/cast,
             // probe-lit.
-            if (IsNoLightmapNode(cluster->scene, int(node))) {
+            if (IsNoLightmapNode(cluster->m_hierarchy, int(node))) {
                 ++skipNoLm;
                 continue;
             }
@@ -5696,7 +5696,7 @@ int Run(const CookArgs& c) {
                     const smvk::MeshData* up = cluster->GetRetainedUpload(w.handle);
                     if (!up || up->vertices.empty() || up->indices.empty())
                         continue;
-                    const glm::mat4& g = cluster->scene.globalTransform[w.node];
+                    const glm::mat4& g = cluster->m_hierarchy.globalTransform[w.node];
                     const uint32_t base = uint32_t(soupPos.size() / 3);
                     for (const smvk::MeshVertex& v : up->vertices) {
                         const glm::vec3 wp = glm::vec3(g * glm::vec4(v.pos, 1.0f));
@@ -5903,7 +5903,7 @@ int Run(const CookArgs& c) {
                                                 realUp->indices.empty())
                                                 continue;
                                             const glm::mat4& g =
-                                                cluster->scene.globalTransform[w.node];
+                                                cluster->m_hierarchy.globalTransform[w.node];
                                             const glm::mat3 g3(g);
                                             smvk::MeshData worldTgt;
                                             worldTgt.vertices = realUp->vertices;
@@ -6351,7 +6351,7 @@ int Run(const CookArgs& c) {
                 chartTexels.reserve(atlas.chunks.size());
                 batches.reserve(atlas.chunks.size());
                 for (const LmWork& w : work) {
-                    const glm::mat4& g = cluster->scene.globalTransform[w.node];
+                    const glm::mat4& g = cluster->m_hierarchy.globalTransform[w.node];
                     const glm::mat3 g3(g);
                     for (uint32_t ci = 0; ci < w.chart.charts.size(); ++ci) {
                         const auto& ch = w.chart.charts[ci];
@@ -6714,7 +6714,7 @@ int Run(const CookArgs& c) {
                         const smvk::MeshData* up = cluster->GetRetainedUpload(work[i].handle);
                         if (!up || up->indices.size() < 3)
                             continue;
-                        const glm::mat4& g = cluster->scene.globalTransform[work[i].node];
+                        const glm::mat4& g = cluster->m_hierarchy.globalTransform[work[i].node];
                         const size_t triCount = up->indices.size() / 3;
                         for (size_t t = 0; t < triCount && t < cr.triChart.size(); ++t) {
                             const uint32_t lc = cr.triChart[t];
@@ -6979,11 +6979,11 @@ int Run(const CookArgs& c) {
     // separate process replaying the tour) sees exactly this set. Runs
     // before the quick-bakes early exit so capture refreshes stamp too.
     // (The editor's live doc follows via its own snapshot read-back.)
-    if (haveTour && !cluster->scene.giCapturesSource.empty()) {
+    if (haveTour && !cluster->m_hierarchy.giCapturesSource.empty()) {
         std::string serr;
         std::vector<std::string> superseded;
         if (!smvk::tour::StampGiAssets(
-                tour, cluster->scene, createdGiVolumes, &serr, &superseded, &createdTransforms)) {
+                tour, cluster->m_hierarchy, createdGiVolumes, &serr, &superseded, &createdTransforms)) {
             tool::err() << "Tour giAsset stamp failed: " << serr << std::endl;
             return 1;
         }
@@ -7004,7 +7004,7 @@ int Run(const CookArgs& c) {
                 ++deleted;
         }
         tool::out() << "Tour stamped: " << tour.giAssets.size()
-                    << " giAsset binding(s) (captures: " << cluster->scene.giCapturesSource << ")"
+                    << " giAsset binding(s) (captures: " << cluster->m_hierarchy.giCapturesSource << ")"
                     << (superseded.empty()
                             ? std::string()
                             : " (deleted " + std::to_string(deleted) + "/" +
@@ -7075,8 +7075,8 @@ int Run(const CookArgs& c) {
         for (auto& sc : scenePages) {
             smvk::WorldPage& c = *sc;
             std::unordered_set<uint32_t> seen;
-            seen.reserve(c.scene.tables.meshes.size() * 2);
-            for (const MeshRow& row : c.scene.tables.meshes) {
+            seen.reserve(c.m_hierarchy.tables.meshes.size() * 2);
+            for (const MeshRow& row : c.m_hierarchy.tables.meshes) {
                 const uint32_t meshIdx = row.mesh;
                 if (!seen.insert(meshIdx).second)
                     continue; // still-shared mesh: one meshlet set per upload

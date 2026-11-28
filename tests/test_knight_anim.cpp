@@ -98,20 +98,20 @@ int main() {
     // then the reference bind"): node 0 exists BEFORE BuildFromMeshAsset
     // grafts the artifact under it (ph = 0 = the scene root). Without it
     // every runtime id shifts down one against the .anim's -joint ids.
-    addNode(c->scene, -1, 0);
+    addNode(c->m_hierarchy, -1, 0);
     smvk::assets::AssetManifest manifest{};
     const size_t built = BuildFromMeshAsset(
         *c, nullptr, asset, manifest, "knight", 0, nullptr, false, nullptr, [](const std::string&) {
             return std::optional<std::vector<uint8_t>>{};
         });
     Check(built == asset.nodes.size() - 1, "knight.build.nodecount");
-    std::cout << "[knight] built " << built << " runtime nodes (" << c->scene.hierarchy.size()
+    std::cout << "[knight] built " << built << " runtime nodes (" << c->m_hierarchy.hierarchy.size()
               << " with the scene root); skeleton " << (c->hasSkeleton ? "yes" : "no")
               << ", root runtime-node " << c->skeleton.root << "\n";
     // Units sanity: the Body blob's bind AABB + the root local's scale
     // (the glTF is centimeter-authored; the heap must read METERS).
     {
-        const TransformHierarchy& sc = c->scene;
+        const TransformHierarchy& sc = c->m_hierarchy;
         const auto& g = asset.geometry[0];
         std::cout << "[knight] Body blob aabb min=(" << g.aabbMin.x << "," << g.aabbMin.y << ","
                   << g.aabbMin.z << ") max=(" << g.aabbMax.x << "," << g.aabbMax.y << ","
@@ -124,7 +124,7 @@ int main() {
                   << L[3].z << ")\n";
     }
 
-    const TransformHierarchy& scene = c->scene;
+    const TransformHierarchy& scene = c->m_hierarchy;
 
     // ---- 2) The id contract: .anim -joint ids vs findNodeByName -------
     // The .anim records (from the export run): pelvis 8, spine_01 9,

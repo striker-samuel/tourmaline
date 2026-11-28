@@ -1233,7 +1233,7 @@ bool SerializeClusters(const std::vector<const WorldPage*>& clusters,
 
         // --- Scene ---------------------------------------------------------------
         {
-            const TransformHierarchy& scene = cluster.scene;
+            const TransformHierarchy& scene = cluster.m_hierarchy;
             const auto exportView = tour::transformhierarchy::BuildStaticExportHierarchy(scene);
             std::vector<uint8_t> blob;
             // NodeLinks (20 B) + local matrix (64 B) are mandatory for every
@@ -1719,7 +1719,7 @@ bool SerializeClusters(const std::vector<const WorldPage*>& clusters,
             // pak-level "#schemas" registry blob below.
             {
                 std::vector<const SchemaAssocRow*> assocRows;
-                for (const SchemaAssocRow& r : cluster.scene.tables.schemaAssocs) {
+                for (const SchemaAssocRow& r : cluster.m_hierarchy.tables.schemaAssocs) {
                     if (r.node >= slotToDense.size() || slotToDense[r.node] == UINT32_MAX)
                         return fail("scene schema-assoc row references"
                                     " retired node slot " +
@@ -1753,9 +1753,9 @@ bool SerializeClusters(const std::vector<const WorldPage*>& clusters,
             // at the trailing-bytes check (the sanctioned break).
             {
                 std::vector<const tour::transformhierarchy::AudioRoomRow*> roomRows;
-                roomRows.reserve(cluster.scene.tables.audioRooms.size());
+                roomRows.reserve(cluster.m_hierarchy.tables.audioRooms.size());
                 for (const tour::transformhierarchy::AudioRoomRow& row :
-                     cluster.scene.tables.audioRooms) {
+                     cluster.m_hierarchy.tables.audioRooms) {
                     if (row.node >= slotToDense.size() || slotToDense[row.node] == UINT32_MAX)
                         return fail("scene audio-room row references"
                                     " retired node slot " +
@@ -1787,7 +1787,7 @@ bool SerializeClusters(const std::vector<const WorldPage*>& clusters,
             // v21 TRIGGERS: dense node, enabled/once flags, string tag.
             {
                 std::vector<const tour::transformhierarchy::TriggerVolumeRow*> rows;
-                for (const auto& row : cluster.scene.tables.triggerVolumes) {
+                for (const auto& row : cluster.m_hierarchy.tables.triggerVolumes) {
                     if (row.node >= slotToDense.size() || slotToDense[row.node] == UINT32_MAX)
                         return fail("scene trigger row references retired node");
                     rows.push_back(&row);
@@ -1805,7 +1805,7 @@ bool SerializeClusters(const std::vector<const WorldPage*>& clusters,
             // Physics body authoring rows, sorted by cooked dense node ID.
             {
                 std::vector<const tour::transformhierarchy::PhysicsBodyRow*> rows;
-                for (const auto& row : cluster.scene.tables.physicsBodies) {
+                for (const auto& row : cluster.m_hierarchy.tables.physicsBodies) {
                     if (row.node >= slotToDense.size() || slotToDense[row.node] == UINT32_MAX)
                         return fail("scene physics body references retired node");
                     rows.push_back(&row);
@@ -2941,7 +2941,7 @@ std::unique_ptr<WorldPage> DeserializeCluster(
 
     auto cluster = std::make_unique<WorldPage>(&ctx);
     if (sceneNodeBudget)
-        cluster->scene.ReserveNodeSlots(sceneNodeBudget);
+        cluster->m_hierarchy.ReserveNodeSlots(sceneNodeBudget);
 
     // --- Textures first (materials resolve URIs against them) ---------------
     // Two lists: digest entries (Texture blobs carrying a tail digest —
@@ -3876,7 +3876,7 @@ std::unique_ptr<WorldPage> DeserializeCluster(
         const bool wantNodeNames = tour::asset::SceneNodeNamesWanted();
         CookedStaticBvhOut cookedBvh;
         if (!ParseSceneBlob(reader.Payload(*sceneEntries[sceneIndex]),
-                            cluster->scene,
+                            cluster->m_hierarchy,
                             sceneName,
                             &maps,
                             perr,
@@ -3908,14 +3908,14 @@ std::unique_ptr<WorldPage> DeserializeCluster(
                              "[GeometryStreaming] scene referenced %zu deferred "
                              "sibling(s) - promoted at link time\n",
                              healedCount);
-                cluster->scene.ResetForResolve();
+                cluster->m_hierarchy.ResetForResolve();
                 cluster->skeleton = {};
                 cluster->hasSkeleton = false;
                 sceneName.clear();
                 perr.clear();
                 cookedBvh = CookedStaticBvhOut{}; // the failed parse wrote nothing; be explicit
                 healed = ParseSceneBlob(reader.Payload(*sceneEntries[sceneIndex]),
-                                        cluster->scene,
+                                        cluster->m_hierarchy,
                                         sceneName,
                                         &maps,
                                         perr,

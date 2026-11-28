@@ -489,7 +489,7 @@ int main(int argc, char** argv) {
             (void)externalTexture;
             (void)loadErr;
             auto c = std::make_unique<smvk::WorldPage>(nullptr);
-            const int node = addNode(c->scene, -1, 0);
+            const int node = addNode(c->m_hierarchy, -1, 0);
             (void)node; // one root node: the fold witness
             smvk::WorldPage* raw = c.get();
             world.RegisterPage(std::move(c));

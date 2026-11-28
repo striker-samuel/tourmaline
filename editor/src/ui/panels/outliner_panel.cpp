@@ -224,7 +224,7 @@ void EditorApp::DrawNonDagSection() {
 }
 
 void EditorApp::DrawSceneOutliner() {
-    if (!m_world || m_world->scene.hierarchy.empty()) {
+    if (!m_world || m_world->m_hierarchy.hierarchy.empty()) {
         return;
     }
     ImGui::SetNextItemWidth(-1.0f);
@@ -234,9 +234,9 @@ void EditorApp::DrawSceneOutliner() {
     if (m_worldSelected)
         selName = "World";
     else if (m_selected != UINT32_MAX)
-        selName = getNodeName(m_world->scene, int(m_selected));
+        selName = getNodeName(m_world->m_hierarchy, int(m_selected));
     ImGui::TextDisabled("nodes: %zu%s  selected: %s",
-                        m_world->scene.hierarchy.size(),
+                        m_world->m_hierarchy.hierarchy.size(),
                         m_deletedNodes.empty()
                             ? ""
                             : (" (" + std::to_string(m_deletedNodes.size()) + " deleted)").c_str(),
@@ -261,12 +261,12 @@ void EditorApp::DrawSceneOutliner() {
     if (m_showNonDag && !filtering)
         DrawNonDagSection();
     if (filtering) {
-        for (uint32_t n = 0; n < uint32_t(m_world->scene.hierarchy.size()); ++n) {
+        for (uint32_t n = 0; n < uint32_t(m_world->m_hierarchy.hierarchy.size()); ++n) {
             if (m_deletedNodes.contains(n))
                 continue; // deleted (Maya delete): out of the live scene
             if (InDisabledRefSubtree(n))
                 continue; // disabled reference tree: not shown, not read
-            const std::string name = getNodeName(m_world->scene, int(n));
+            const std::string name = getNodeName(m_world->m_hierarchy, int(n));
             if (name.find(m_filterBuf) == std::string::npos)
                 continue;
             m_outlinerOrder.push_back(n); // visible-row order (shift-range)
@@ -279,16 +279,16 @@ void EditorApp::DrawSceneOutliner() {
                           n,
                           name.empty() ? "(unnamed)" : name.c_str(),
                           FindNodeLight(n) ? " [light]" : "",
-                          (FindCubemap(m_world->scene, n) != nullptr) ? " [cube]" : "",
-                          (FindCamera(m_world->scene, n) != nullptr) ? " [camera]" : "",
-                          (FindExport(m_world->scene, n) != nullptr) ? " [export]" : "",
+                          (FindCubemap(m_world->m_hierarchy, n) != nullptr) ? " [cube]" : "",
+                          (FindCamera(m_world->m_hierarchy, n) != nullptr) ? " [camera]" : "",
+                          (FindExport(m_world->m_hierarchy, n) != nullptr) ? " [export]" : "",
                           IsEnvNode(n) ? " [env]" : "",
-                          (IsLocatorNode(m_world->scene, n) && !IsRefPlaceholder(n)) ? " [locator]"
+                          (IsLocatorNode(m_world->m_hierarchy, n) && !IsRefPlaceholder(n)) ? " [locator]"
                                                                                      : "",
                           IsRefPlaceholder(n) ? " [ref]" : "",
-                          !IsVisibleNode(m_world->scene, int(n)) ? " [hidden]" : "");
-            const bool meshNode = FindMesh(m_world->scene, n) != nullptr;
-            const bool giNode = FindGiVolume(m_world->scene, n) != nullptr;
+                          !IsVisibleNode(m_world->m_hierarchy, int(n)) ? " [hidden]" : "");
+            const bool meshNode = FindMesh(m_world->m_hierarchy, n) != nullptr;
+            const bool giNode = FindGiVolume(m_world->m_hierarchy, n) != nullptr;
             const IconType rowIcon =
                 giNode ? IconType::GI : (meshNode ? IconType::Model : IconType::File);
             if (ImGui::Selectable((std::string(label) + "###outliner_node").c_str(), sel)) {
@@ -322,9 +322,9 @@ void EditorApp::DrawSceneOutliner() {
         std::unordered_set<uint32_t> expand;
         if (m_revealNode != UINT32_MAX) {
             uint32_t n = m_revealNode;
-            while (n < uint32_t(m_world->scene.hierarchy.size())) {
+            while (n < uint32_t(m_world->m_hierarchy.hierarchy.size())) {
                 expand.insert(n);
-                const int p = m_world->scene.hierarchy[n].parent;
+                const int p = m_world->m_hierarchy.hierarchy[n].parent;
                 if (p < 0)
                     break;
                 n = uint32_t(p);
@@ -333,8 +333,8 @@ void EditorApp::DrawSceneOutliner() {
         // FLAT WORLD: top level = every live ROOT (parent == -1), not
         // the children of a synthetic node 0 (removed with the synthetic
         // world root). Slot order keeps the tree stable across resolves.
-        for (uint32_t n = 0; n < uint32_t(m_world->scene.hierarchy.size()); ++n) {
-            if (m_world->scene.hierarchy[n].parent != -1)
+        for (uint32_t n = 0; n < uint32_t(m_world->m_hierarchy.hierarchy.size()); ++n) {
+            if (m_world->m_hierarchy.hierarchy[n].parent != -1)
                 continue;
             if (m_deletedNodes.contains(n))
                 continue; // deleted (Maya delete): out of the live scene
@@ -351,7 +351,7 @@ void EditorApp::DrawOutlinerNode(uint32_t node, const std::unordered_set<uint32_
     if (m_deletedNodes.contains(node))
         return;                      // deleted (Maya delete): out of the live scene
     m_outlinerOrder.push_back(node); // visible-row order (shift-range)
-    const TransformHierarchy& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->m_hierarchy;
     const std::string name = getNodeName(scene, int(node));
     const bool hasMesh = FindMesh(scene, node) != nullptr;
     const bool sel = IsSelected(node);
@@ -420,7 +420,7 @@ void EditorApp::DrawOutlinerNode(uint32_t node, const std::unordered_set<uint32_
             c.verb = EditVerb::Parent;
             c.node = src;
             c.node2 = node;
-            c.beforeParent = uint32_t(m_world->scene.hierarchy[src].parent);
+            c.beforeParent = uint32_t(m_world->m_hierarchy.hierarchy[src].parent);
             Do(c);
             Log("Reparented node " + std::to_string(src) + " under " + std::to_string(node));
         }
@@ -459,13 +459,13 @@ void EditorApp::DrawOutlinerNode(uint32_t node, const std::unordered_set<uint32_
 // Whether `node` sits inside (or is the root of) a DISABLED reference
 // subtree: the placeholder row stays, the tree does not.
 bool EditorApp::InDisabledRefSubtree(uint32_t node) const {
-    if (m_disabledRefRoots.empty() || !m_world || node >= m_world->scene.hierarchy.size())
+    if (m_disabledRefRoots.empty() || !m_world || node >= m_world->m_hierarchy.hierarchy.size())
         return false;
     // Walk ancestors (the placeholder itself counts as inside).
-    for (uint32_t n = node; n < m_world->scene.hierarchy.size();) {
+    for (uint32_t n = node; n < m_world->m_hierarchy.hierarchy.size();) {
         if (m_disabledRefRoots.contains(n))
             return true;
-        const int p = m_world->scene.hierarchy[n].parent;
+        const int p = m_world->m_hierarchy.hierarchy[n].parent;
         if (p < 0)
             return false;
         n = uint32_t(p);
@@ -476,20 +476,20 @@ bool EditorApp::InDisabledRefSubtree(uint32_t node) const {
 // Subtree size for the disabled-reference hint (child count below the
 // placeholder, excluding other deleted nodes).
 size_t EditorApp::RefSubtreeSizeForOutliner(uint32_t root) const {
-    if (!m_world || root >= m_world->scene.hierarchy.size())
+    if (!m_world || root >= m_world->m_hierarchy.hierarchy.size())
         return 0;
     size_t n = 0;
     std::vector<uint32_t> stack;
-    for (int c = m_world->scene.hierarchy[root].firstChild; c >= 0;
-         c = m_world->scene.hierarchy[size_t(c)].nextSibling)
+    for (int c = m_world->m_hierarchy.hierarchy[root].firstChild; c >= 0;
+         c = m_world->m_hierarchy.hierarchy[size_t(c)].nextSibling)
         stack.push_back(uint32_t(c));
     while (!stack.empty()) {
         const uint32_t v = stack.back();
         stack.pop_back();
         if (!m_deletedNodes.contains(v))
             ++n;
-        for (int c = m_world->scene.hierarchy[v].firstChild; c >= 0;
-             c = m_world->scene.hierarchy[size_t(c)].nextSibling)
+        for (int c = m_world->m_hierarchy.hierarchy[v].firstChild; c >= 0;
+             c = m_world->m_hierarchy.hierarchy[size_t(c)].nextSibling)
             stack.push_back(uint32_t(c));
     }
     return n;

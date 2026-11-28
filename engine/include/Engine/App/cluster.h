@@ -20,7 +20,7 @@
 #include <Engine/Memory/uri_map.h>
 #include <Engine/Renderer/geometry_upload.h>
 #include <Engine/Renderer/mesh.h>
-#include <Engine/Scene/scene.h>
+#include <Engine/Scene/m_hierarchy.h>
 #include <Engine/Utils/bvh.h>
 #include <Engine/smvk.h>
 
@@ -85,7 +85,7 @@ struct WorldPage {
     WorldPage& operator=(const WorldPage&) = delete;
 
     smvk::ResourceManager* ctx_ = nullptr;
-    TransformHierarchy scene;
+    TransformHierarchy m_hierarchy;
     World* world = nullptr;
     WorldPage* sibling = nullptr;
     // linked list for import chain if multiple clusters belong to one input file.

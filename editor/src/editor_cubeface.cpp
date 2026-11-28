@@ -260,7 +260,7 @@ void EditorApp::DrawCubeFaceStrip() {
     // own poll so faces appear while the cook runs.
     PollCubeFaces();
     if (m_cubeFaces.empty()) {
-        size_t pins = m_world ? m_world->scene.tables.cubemaps.size() : 0;
+        size_t pins = m_world ? m_world->m_hierarchy.tables.cubemaps.size() : 0;
         ImGui::TextDisabled(
             "capture faces: none baked yet (%zu pin%s)", pins, pins == 1 ? "" : "s");
         return;

@@ -31,7 +31,7 @@ std::unique_ptr<BuiltWorld> BuildWorldFromDoc(const smvk::tour::Doc& doc,
     auto world = std::make_unique<smvk::World>();
     auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
-    addNode(cluster->scene, -1, 0); // empty scene root
+    addNode(cluster->m_hierarchy, -1, 0); // empty scene root
     size_t refsApplied = 0;
     std::vector<std::unique_ptr<smvk::WorldPage>> partPages;
     std::vector<std::string> partNames;

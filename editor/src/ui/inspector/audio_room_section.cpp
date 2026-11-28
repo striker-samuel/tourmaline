@@ -59,7 +59,7 @@ void EditorApp::DrawAudioRoomSection(uint32_t node) {
     const attr::ScopedID componentId("audio_room");
     if (!m_world)
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     if (node >= scene.hierarchy.size())
         return;
     const tour::transformhierarchy::AudioRoomRow* row =

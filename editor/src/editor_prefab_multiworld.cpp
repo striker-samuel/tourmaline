@@ -114,7 +114,7 @@ void EditorApp::ProcessFullPrefabNavigation() {
         if (!parentCameras.empty())
             m_editorCams = parentCameras;
         const auto restored = editor::world_session::RestoreSelection(
-            parentSelected, parentSelection, m_world ? m_world->scene.hierarchy.size() : 0);
+            parentSelected, parentSelection, m_world ? m_world->m_hierarchy.hierarchy.size() : 0);
         m_selected = restored.primary;
         m_selection = restored.nodes;
         std::error_code ec;
@@ -181,7 +181,7 @@ void EditorApp::ProcessFullPrefabNavigation() {
         m_tourDirty = previousDirty;
         m_editorCams = previousCameras;
         const auto restored = editor::world_session::RestoreSelection(
-            previousSelected, previousSelection, m_world ? m_world->scene.hierarchy.size() : 0);
+            previousSelected, previousSelection, m_world ? m_world->m_hierarchy.hierarchy.size() : 0);
         m_selected = restored.primary;
         m_selection = restored.nodes;
         fs::remove(tmp, ec);
@@ -226,7 +226,7 @@ bool EditorApp::LoadPrefabWorld(const std::string& path) {
     auto newWorld = tour::mem::MakeProcess<tour::World>();
     tour::WorldPage& cluster = newWorld->LoadPage(*m_context);
     cluster.SetRetainUploads(true);
-    addNode(cluster.scene, -1, 0);
+    addNode(cluster.m_hierarchy, -1, 0);
     std::vector<std::string> issues;
     smvk::MeshOptConfig opt{};
     smvk::MeshletConfig meshlets{};
@@ -258,7 +258,7 @@ bool EditorApp::LoadPrefabWorld(const std::string& path) {
     }
     m_context->FlushUploads();
     newWorld->ResolveAndFixup_pages();
-    if (newWorld->scene.hierarchy.size() < 2) {
+    if (newWorld->m_hierarchy.hierarchy.size() < 2) {
         m_prefab.error = "Prefab has no drawable or editable scene nodes.";
         return false;
     }
@@ -272,7 +272,7 @@ bool EditorApp::LoadPrefabWorld(const std::string& path) {
     m_prefab.document = doc;
     m_prefab.saved = doc;
     m_prefab.world = std::move(newWorld);
-    m_prefab.savedLocals = m_prefab.world->scene.localTransform;
+    m_prefab.savedLocals = m_prefab.world->m_hierarchy.localTransform;
     m_prefab.selected = UINT32_MAX;
     m_prefab.parentWitness = nullptr;
     m_prefab.parentOriginal.clear();
@@ -305,7 +305,7 @@ void EditorApp::RestorePrefabPreview() {
         m_prefab.parentWitness = nullptr;
         return;
     }
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     bool changed = false;
     std::vector<uint32_t> nodes;
     nodes.reserve(m_prefab.parentOriginal.size());
@@ -372,8 +372,8 @@ bool EditorApp::ParentHasTransformOverride(uint32_t node) const {
 void EditorApp::SyncPrefabPreview() {
     if (!m_prefab.world || !m_world)
         return;
-    TransformHierarchy& parent = m_world->scene;
-    const TransformHierarchy& source = m_prefab.world->scene;
+    TransformHierarchy& parent = m_world->m_hierarchy;
+    const TransformHierarchy& source = m_prefab.world->m_hierarchy;
     if (m_prefab.parentWitness != m_world.get()) {
         m_prefab.parentWitness = m_world.get();
         m_prefab.parentOriginal.clear();
@@ -475,32 +475,32 @@ void EditorApp::CapturePrefabUndo() {
         return;
     if (m_prefab.undo.size() >= 96)
         m_prefab.undo.erase(m_prefab.undo.begin());
-    m_prefab.undo.push_back({m_prefab.document, m_prefab.world->scene.localTransform});
+    m_prefab.undo.push_back({m_prefab.document, m_prefab.world->m_hierarchy.localTransform});
     m_prefab.redo.clear();
 }
 void EditorApp::PrefabUndo() {
     if (!m_prefab.world || m_prefab.undo.empty())
         return;
-    m_prefab.redo.push_back({m_prefab.document, m_prefab.world->scene.localTransform});
+    m_prefab.redo.push_back({m_prefab.document, m_prefab.world->m_hierarchy.localTransform});
     auto previous = std::move(m_prefab.undo.back());
     m_prefab.undo.pop_back();
     m_prefab.document = std::move(previous.doc);
-    m_prefab.world->scene.localTransform = std::move(previous.locals);
-    MarkAllRootsChanged(m_prefab.world->scene);
-    recalculateGlobalTransforms(m_prefab.world->scene);
+    m_prefab.world->m_hierarchy.localTransform = std::move(previous.locals);
+    MarkAllRootsChanged(m_prefab.world->m_hierarchy);
+    recalculateGlobalTransforms(m_prefab.world->m_hierarchy);
     m_prefab.dirty = true;
     SyncPrefabPreview();
 }
 void EditorApp::PrefabRedo() {
     if (!m_prefab.world || m_prefab.redo.empty())
         return;
-    m_prefab.undo.push_back({m_prefab.document, m_prefab.world->scene.localTransform});
+    m_prefab.undo.push_back({m_prefab.document, m_prefab.world->m_hierarchy.localTransform});
     auto next = std::move(m_prefab.redo.back());
     m_prefab.redo.pop_back();
     m_prefab.document = std::move(next.doc);
-    m_prefab.world->scene.localTransform = std::move(next.locals);
-    MarkAllRootsChanged(m_prefab.world->scene);
-    recalculateGlobalTransforms(m_prefab.world->scene);
+    m_prefab.world->m_hierarchy.localTransform = std::move(next.locals);
+    MarkAllRootsChanged(m_prefab.world->m_hierarchy);
+    recalculateGlobalTransforms(m_prefab.world->m_hierarchy);
     m_prefab.dirty = true;
     SyncPrefabPreview();
 }
@@ -508,9 +508,9 @@ void EditorApp::RevertPrefab() {
     if (!m_prefab.world)
         return;
     m_prefab.document = m_prefab.saved;
-    m_prefab.world->scene.localTransform = m_prefab.savedLocals;
-    MarkAllRootsChanged(m_prefab.world->scene);
-    recalculateGlobalTransforms(m_prefab.world->scene);
+    m_prefab.world->m_hierarchy.localTransform = m_prefab.savedLocals;
+    MarkAllRootsChanged(m_prefab.world->m_hierarchy);
+    recalculateGlobalTransforms(m_prefab.world->m_hierarchy);
     m_prefab.undo.clear();
     m_prefab.redo.clear();
     m_prefab.dragNode = UINT32_MAX;
@@ -533,7 +533,7 @@ bool EditorApp::SavePrefab() {
     };
     std::vector<MintedUuid> minted;
     if (m_prefab.world->pages.size() == 1 && m_prefab.world->pageMergedNodes.size() == 1) {
-        const TransformHierarchy& scene = m_prefab.world->scene;
+        const TransformHierarchy& scene = m_prefab.world->m_hierarchy;
         const auto& mapping = m_prefab.world->pageMergedNodes[0];
         const auto missing = prefab_sync::LegacyIdentityCandidates(mapping, [&](uint32_t n) {
             return n != 0 && IsLiveSlot(scene, n) && GetNodeUuid(scene, n).empty();
@@ -579,8 +579,8 @@ bool EditorApp::SavePrefab() {
     // The file replace succeeded: only now publish the newly authored
     // identities into both copies of this session's Scene metadata.
     if (!minted.empty()) {
-        TransformHierarchy& merged = m_prefab.world->scene;
-        TransformHierarchy& local = m_prefab.world->pages[0]->scene;
+        TransformHierarchy& merged = m_prefab.world->m_hierarchy;
+        TransformHierarchy& local = m_prefab.world->pages[0]->m_hierarchy;
         for (const auto& id : minted) {
             SetNodeUuidRaw(merged, id.mergedNode, id.uuid);
             SetNodeUuidRaw(local, id.clusterNode, id.uuid);
@@ -588,7 +588,7 @@ bool EditorApp::SavePrefab() {
     }
     m_prefab.document = std::move(candidate);
     m_prefab.saved = m_prefab.document;
-    m_prefab.savedLocals = m_prefab.world->scene.localTransform;
+    m_prefab.savedLocals = m_prefab.world->m_hierarchy.localTransform;
     // A successful source save means that preview poses are now the
     // durable source state. Future Revert must restore THIS version.
     prefab_sync::Commit(m_prefab.parentOriginal, m_prefab.parentApplied);
@@ -602,7 +602,7 @@ bool EditorApp::PrefabSetTRS(uint32_t node,
                              const glm::vec3& scale) {
     if (!m_prefab.world || !Finite(translation) || !Finite(rotation) || !Finite(scale))
         return false;
-    TransformHierarchy& source = m_prefab.world->scene;
+    TransformHierarchy& source = m_prefab.world->m_hierarchy;
     if (node == 0 || node >= source.localTransform.size() || !IsLiveSlot(source, node))
         return false;
     source.localTransform[node] = LocalMatrixFromTRS(translation, rotation, scale);
@@ -678,8 +678,8 @@ void EditorApp::UpdatePrefabBoundary(float dt) {
         }
         // Resample from the original pose, never from the previous
         // frame's pose: untracked channels must remain at bind pose.
-        if (cluster.scene.localTransform.size() == m_prefabAnimationRest.size()) {
-            cluster.scene.localTransform = m_prefabAnimationRest;
+        if (cluster.m_hierarchy.localTransform.size() == m_prefabAnimationRest.size()) {
+            cluster.m_hierarchy.localTransform = m_prefabAnimationRest;
             cluster.SetAnimClip(m_prefabAnimationClip);
             std::vector<glm::mat4> palette;
             cluster.SampleAnimation(m_prefabAnimationTime, palette);
@@ -858,9 +858,9 @@ void EditorApp::DrawPrefabWindow() {
             if (ImGui::Button("Stop preview##anim")) {
                 if (m_prefabAnimationClusterIndex < m_prefab.world->pages.size()) {
                     auto& cluster = *m_prefab.world->pages.front();
-                    if (cluster.scene.localTransform.size() == m_prefabAnimationRest.size()) {
-                        cluster.scene.localTransform = m_prefabAnimationRest;
-                        recalculateGlobalTransforms(cluster.scene);
+                    if (cluster.m_hierarchy.localTransform.size() == m_prefabAnimationRest.size()) {
+                        cluster.m_hierarchy.localTransform = m_prefabAnimationRest;
+                        recalculateGlobalTransforms(cluster.m_hierarchy);
                     }
                     cluster.SetAnimClip(tour::asset::Clip{});
                 }
@@ -913,7 +913,7 @@ void EditorApp::DrawPrefabWindow() {
         ImGui::SameLine();
         ImGui::BeginChild("##prefabInspector", ImVec2(-1, panelH), true);
         ImGui::TextDisabled("Prefab nodes (not parent instances)");
-        const TransformHierarchy& source = m_prefab.world->scene;
+        const TransformHierarchy& source = m_prefab.world->m_hierarchy;
         static char filter[128] = {};
         ImGui::SetNextItemWidth(-1);
         ImGui::InputTextWithHint(

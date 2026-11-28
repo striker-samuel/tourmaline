@@ -450,10 +450,10 @@ std::unique_ptr<smvk::World> WorldWithOneCluster(bool staticsSerialized, bool sk
     auto world = std::make_unique<smvk::World>();
     auto cluster = std::make_unique<smvk::WorldPage>(nullptr);
     cluster->SetOfflineMode(true);
-    addNode(cluster->scene, -1, 0);
-    addNode(cluster->scene, 0, 1);
-    cluster->scene.staticRoot.assign(cluster->scene.hierarchy.size(), 0);
-    cluster->scene.staticRootsSerialized = staticsSerialized;
+    addNode(cluster->m_hierarchy, -1, 0);
+    addNode(cluster->m_hierarchy, 0, 1);
+    cluster->m_hierarchy.staticRoot.assign(cluster->m_hierarchy.hierarchy.size(), 0);
+    cluster->m_hierarchy.staticRootsSerialized = staticsSerialized;
     cluster->cookedStaticBvhPresent = staticsSerialized; // cooked paks carry both sections
     cluster->hasSkeleton = skeleton;
     world->RegisterPage(std::move(cluster));
@@ -461,7 +461,7 @@ std::unique_ptr<smvk::World> WorldWithOneCluster(bool staticsSerialized, bool sk
 }
 
 bool AllNodesDynamic(const smvk::World& world) {
-    const ::TransformHierarchy& s = world.pages.front()->scene;
+    const ::TransformHierarchy& s = world.pages.front()->m_hierarchy;
     return s.staticRoot.size() == s.hierarchy.size() &&
            std::all_of(s.staticRoot.begin(), s.staticRoot.end(), [](uint8_t v) { return v == 0; });
 }
@@ -570,7 +570,7 @@ void TestStaticFlagApplication() {
     // the marks are the cooked data).
     {
         auto world = WorldWithOneCluster(true, false);
-        ::TransformHierarchy& s = world->pages.front()->scene;
+        ::TransformHierarchy& s = world->pages.front()->m_hierarchy;
         MarkSubtreeStatic(s, 0);
         app::ApplyCookedStaticFlags(*world, "marked.pak");
         Check(s.staticRoot[0] == 1, "pakhost.staticflags.cooked-marks-preserved");
@@ -582,7 +582,7 @@ void TestStaticFlagApplication() {
         auto world = WorldWithOneCluster(false, false);
         world->legacyStaticFallback = true;
         app::ApplyCookedStaticFlags(*world, "legacy.pak");
-        Check(!AllNodesDynamic(*world) && world->pages.front()->scene.staticRoot[0] == 1,
+        Check(!AllNodesDynamic(*world) && world->pages.front()->m_hierarchy.staticRoot[0] == 1,
               "pakhost.staticflags.legacy-fallback-freezes");
     }
     // Skinned legacy cluster: NEVER frozen (the animation driver owns
@@ -1106,8 +1106,8 @@ void TestProjectScenes() {
         def.intensity = 100.0f;
         def.name = "test_light";
         auto handle = c->CreateLight(def);
-        const int node = addNode(c->scene, -1, 0);
-        SetLight(c->scene, uint32_t(node), handle.index());
+        const int node = addNode(c->m_hierarchy, -1, 0);
+        SetLight(c->m_hierarchy, uint32_t(node), handle.index());
         smvk::WorldPage* raw = c.get();
         world.RegisterPage(std::move(c));
         return raw;
@@ -1122,10 +1122,10 @@ void TestProjectScenes() {
     // An imported/additive scene node is also a World node. The runtime
     // TRS API must not depend on World::AddNode game-node registration.
     {
-        const NodeHandle imported = MakeNodeHandle(world.scene, NodeId(0));
+        const NodeHandle imported = MakeNodeHandle(world.m_hierarchy, NodeId(0));
         const glm::vec3 moved(7.f, 8.f, 9.f);
         Check(imported != kNodeInvalidHandle && world[imported].SetPosition(moved) &&
-                  glm::distance(glm::vec3(world.scene.localTransform[0][3]), moved) < 1e-4f,
+                  glm::distance(glm::vec3(world.m_hierarchy.localTransform[0][3]), moved) < 1e-4f,
               "pscenes.imported-world-node-set-position");
     }
     // Two instances of the SAME scene (two churches): distinct handles,
@@ -1165,24 +1165,24 @@ void TestProjectScenes() {
               "prefab.two-occurrences");
         const auto* ca = scenes.SceneCluster(prefabA);
         const auto* cb = scenes.SceneCluster(prefabB);
-        Check(ca && cb && ca != cb && ca->scene.localTransform[0][3].x == 10.0f &&
-                  cb->scene.localTransform[0][3].x == -7.0f,
+        Check(ca && cb && ca != cb && ca->m_hierarchy.localTransform[0][3].x == 10.0f &&
+                  cb->m_hierarchy.localTransform[0][3].x == -7.0f,
               "prefab.placement-isolated");
         glm::mat4 moved(1.0f);
         moved[3] = glm::vec4(22.0f, 0.0f, 0.0f, 1.0f);
         Check(scenes.SetPrefabTransform(prefabA, world, moved, err) &&
                   scenes.SetPrefabTransform(prefabA, world, moved, err) &&
-                  scenes.SceneCluster(prefabA)->scene.localTransform[0][3].x == 22.0f &&
-                  scenes.SceneCluster(prefabB)->scene.localTransform[0][3].x == -7.0f,
+                  scenes.SceneCluster(prefabA)->m_hierarchy.localTransform[0][3].x == 22.0f &&
+                  scenes.SceneCluster(prefabB)->m_hierarchy.localTransform[0][3].x == -7.0f,
               "prefab.absolute-move-no-drift");
         Check(scenes.PrefabTransform(prefabA).has_value() &&
                   (*scenes.PrefabTransform(prefabA))[3].x == 22.0f,
               "prefab.query-transform");
         glm::mat4 invalid(1.0f);
         invalid[0][0] = std::numeric_limits<float>::infinity();
-        const auto previous = scenes.SceneCluster(prefabA)->scene.localTransform[0];
+        const auto previous = scenes.SceneCluster(prefabA)->m_hierarchy.localTransform[0];
         Check(!scenes.SetPrefabTransform(prefabA, world, invalid, err) &&
-                  scenes.SceneCluster(prefabA)->scene.localTransform[0][3].x == previous[3].x,
+                  scenes.SceneCluster(prefabA)->m_hierarchy.localTransform[0][3].x == previous[3].x,
               "prefab.nonfinite-rejected");
         Check(!scenes.SetPrefabTransform(h1, world, moved, err), "prefab.normal-scene-refused");
         Check(scenes.RemoveScene(prefabA, world, err) &&
@@ -1359,8 +1359,8 @@ std::unique_ptr<smvk::WorldPage> MeshFamilyCluster(const std::string& uri) {
     m.geometry.surfaces.push_back(smvk::Surface{0, 3, 0});
     const auto h = c->staticMeshes.create(std::move(m));
     c->RegisterMeshUri(uri, h);
-    const int node = addNode(c->scene, -1, 0);
-    SetMesh(c->scene, uint32_t(node), h.index());
+    const int node = addNode(c->m_hierarchy, -1, 0);
+    SetMesh(c->m_hierarchy, uint32_t(node), h.index());
     return c;
 }
 
@@ -1636,7 +1636,7 @@ void TestAssetManager() {
               "am.world-loadmesh-catalog-key");
         const NodeHandle gameNode = world.AddNode();
         const NodeId gameSlot = NodeHandleSlot(gameNode);
-        Check(world.IsGameNode(gameNode) && !FindMesh(world.scene, gameSlot),
+        Check(world.IsGameNode(gameNode) && !FindMesh(world.m_hierarchy, gameSlot),
               "am.world-addnode-empty");
         const glm::vec3 testPosition(3.f, 4.f, 5.f);
         const glm::quat testRotation = glm::angleAxis(glm::radians(90.f), glm::vec3(0.f, 1.f, 0.f));
@@ -1644,29 +1644,29 @@ void TestAssetManager() {
         Check(world[gameNode].SetPosition(testPosition) &&
                   world[gameNode].SetRotation(testRotation) &&
                   world[gameNode].SetScale(testScale) &&
-                  glm::distance(glm::vec3(world.scene.localTransform[gameSlot][3]), testPosition) <
+                  glm::distance(glm::vec3(world.m_hierarchy.localTransform[gameSlot][3]), testPosition) <
                       1e-4f,
               "am.world-node-local-trs-setters");
         Check(!world[gameNode].SetScale(glm::vec3(std::numeric_limits<float>::infinity())) &&
-                  glm::distance(glm::vec3(world.scene.localTransform[gameSlot][3]), testPosition) <
+                  glm::distance(glm::vec3(world.m_hierarchy.localTransform[gameSlot][3]), testPosition) <
                       1e-4f,
               "am.world-node-rejects-nonfinite-scale");
-        Check(world[gameNode].SetMesh(tree) && FindMesh(world.scene, gameSlot) &&
-                  FindMesh(world.scene, gameSlot)->mesh == assets.MeshWorldIndex(tree),
+        Check(world[gameNode].SetMesh(tree) && FindMesh(world.m_hierarchy, gameSlot) &&
+                  FindMesh(world.m_hierarchy, gameSlot)->mesh == assets.MeshWorldIndex(tree),
               "am.world-setmesh-loaded-handle");
         Check(!world[gameNode].SetMesh(app::MeshHandle{}) &&
-                  FindMesh(world.scene, gameSlot) != nullptr,
+                  FindMesh(world.m_hierarchy, gameSlot) != nullptr,
               "am.world-invalid-handle-preserves-existing-mesh");
         Check(world[gameNode].SetPhysicsBody({}) && world[gameNode].SetAudioRoom({}) &&
                   world[gameNode].SetTriggerVolume({}),
               "am.world-node-inline-default-components");
         uint32_t gameMeshRows = 0;
-        for (const MeshRow& row : world.scene.tables.meshes)
+        for (const MeshRow& row : world.m_hierarchy.tables.meshes)
             if (row.node == gameSlot)
                 ++gameMeshRows;
         Check(gameMeshRows == 1, "am.world-one-mesh-per-transform");
         Check(!assets.UnloadMesh(tree), "am.world-mesh-handle-cannot-unload-while-attached");
-        Check(world[gameNode].RemoveMesh() && FindMesh(world.scene, gameSlot) == nullptr,
+        Check(world[gameNode].RemoveMesh() && FindMesh(world.m_hierarchy, gameSlot) == nullptr,
               "am.world-remove-mesh-keeps-node");
         Check(world.RemoveNode(gameNode) && !world.IsGameNode(gameNode),
               "am.world-remove-node-invalidates-handle");
@@ -1903,8 +1903,8 @@ void TestWorldRetention() {
         def.intensity = 100.0f;
         def.name = "test_light";
         const auto h = c->CreateLight(def);
-        const int node = addNode(c->scene, -1, 0);
-        SetLight(c->scene, uint32_t(node), h.index());
+        const int node = addNode(c->m_hierarchy, -1, 0);
+        SetLight(c->m_hierarchy, uint32_t(node), h.index());
         return c;
     };
     smvk::WorldPage* a = nullptr;

@@ -108,7 +108,7 @@ void EditorApp::DrawComponentTable() {
         ImGui::End();
         return;
     }
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     // A scene-relative component type determines the column schema,
     // just like choosing point/primitive/detail attributes in Houdini.
     static int kind = 0;

@@ -55,8 +55,8 @@ smvk::WorldPageLightHandle AddLight(smvk::WorldPage& cl, const char* name, float
     def.intensity = intensity;
     def.name = name;
     auto handle = cl.CreateLight(def);
-    const int node = addNode(cl.scene, -1, 0);
-    SetLight(cl.scene, uint32_t(node), handle.index());
+    const int node = addNode(cl.m_hierarchy, -1, 0);
+    SetLight(cl.m_hierarchy, uint32_t(node), handle.index());
     return handle;
 }
 
@@ -105,7 +105,7 @@ void TestUnloadAndDynamicCluster() {
     // The merged scene no longer links any node to a light of the unloaded
     // cluster: every light-table row resolves into the surviving table.
     bool linksOk = true;
-    for (const LightRow& row : w.scene.tables.lights)
+    for (const LightRow& row : w.m_hierarchy.tables.lights)
         linksOk = linksOk && row.light < w.lightLocations.size();
     Check(linksOk, "unload.links.remap");
 
@@ -149,10 +149,10 @@ void TestAudioSourceEntities() {
     // The durable row (dynamic cluster's own scene) + the merged
     // mirror both carry the payload.
     smvk::WorldPage& dyn = w.EnsureDynamicPage(nullptr);
-    Check(dyn.scene.tables.audioSources.size() == 1 && w.scene.tables.audioSources.size() == 1,
+    Check(dyn.m_hierarchy.tables.audioSources.size() == 1 && w.m_hierarchy.tables.audioSources.size() == 1,
           "audio.spawn-rows");
     const uint32_t mergedNode = w.AudioSourceNode(h);
-    Check(mergedNode != UINT32_MAX && w.scene.tables.audioSources[0].source.volume == 0.8f,
+    Check(mergedNode != UINT32_MAX && w.m_hierarchy.tables.audioSources[0].source.volume == 0.8f,
           "audio.spawn-mirror-payload");
 
     // A second spawn reuses nothing yet; destroying both then spawning
@@ -164,16 +164,16 @@ void TestAudioSourceEntities() {
     // its merged node REMAPS (ids moved).
     w.ResolveAndFixup_pages();
     Check(w.IsAudioSourceAlive(h) && w.IsAudioSourceAlive(h2), "audio.resolve-handles-stay");
-    Check(w.scene.tables.audioSources.size() == 2, "audio.resolve-folds-rows");
+    Check(w.m_hierarchy.tables.audioSources.size() == 2, "audio.resolve-folds-rows");
     {
         const uint32_t remapped = w.AudioSourceNode(h);
         Check(remapped != UINT32_MAX, "audio.resolve-node-remaps");
-        const AudioSourceRow* row = FindAudioSource(w.scene, remapped);
+        const AudioSourceRow* row = FindAudioSource(w.m_hierarchy, remapped);
         Check(row && row->source.playOnLoad && row->source.sounds.size() == 1 &&
                   row->source.sounds[0].soundId == 0x4000,
               "audio.resolve-row-payload");
         // The world POSE survived the fold (the frame's translate).
-        const glm::vec3 t(w.scene.globalTransform[remapped][3]);
+        const glm::vec3 t(w.m_hierarchy.globalTransform[remapped][3]);
         Check(std::abs(t.x - 3.0f) < 1e-4f && std::abs(t.y - 4.0f) < 1e-4f &&
                   std::abs(t.z - 5.0f) < 1e-4f,
               "audio.resolve-pose");
@@ -186,7 +186,7 @@ void TestAudioSourceEntities() {
     Check(!w.IsAudioSourceAlive(h) && !w.DestroyAudioSource(h), // stale destroy refuses
           "audio.destroy-stale-invalid");
     Check(w.IsAudioSourceAlive(h2), "audio.destroy-sibling-lives");
-    Check(w.scene.tables.audioSources.size() == 1, "audio.destroy-rows-drop");
+    Check(w.m_hierarchy.tables.audioSources.size() == 1, "audio.destroy-rows-drop");
     // The freed slot re-spawns with the bumped generation.
     smvk::AudioSourceHandle h3 = w.SpawnAudioSource(glm::mat4(1.0f), UINT32_MAX, def);
     Check(h3.Index() == h.Index() && h3.Generation() == hGen + 1,
@@ -215,26 +215,26 @@ void TestMeshEntitiesAndAnimators() {
     auto a = std::make_unique<smvk::WorldPage>(nullptr);
     a->SetOfflineMode(true);
     WorldPage* ap = a.get();
-    addNode(a->scene, -1, 0);                       // 0: root
-    const int jointChild = addNode(a->scene, 0, 1); // 1
-    const int meshNode = addNode(a->scene, 0, 1);   // 2
+    addNode(a->m_hierarchy, -1, 0);                       // 0: root
+    const int jointChild = addNode(a->m_hierarchy, 0, 1); // 1
+    const int meshNode = addNode(a->m_hierarchy, 0, 1);   // 2
     a->skeleton.joints = {0u, uint32_t(jointChild)};
     a->skeleton.inverseBind = {glm::mat4(1.0f), glm::mat4(1.0f)};
     a->skeleton.root = 0;
     a->hasSkeleton = true;
     const auto mh = a->staticMeshes.create(StaticMesh{});
-    SetMesh(a->scene, NodeId(meshNode), mh.index());
+    SetMesh(a->m_hierarchy, NodeId(meshNode), mh.index());
     Material matDef{};
     matDef.rebuildPipeline();
     const auto math = a->materials.create(std::move(matDef));
-    SetMaterial(a->scene, NodeId(meshNode), math.index());
+    SetMaterial(a->m_hierarchy, NodeId(meshNode), math.index());
     w.RegisterPage(std::move(a));
     w.ResolveAndFixup_pages();
 
     // The source node (the merged-scene node carrying the mesh).
     uint32_t sourceNode = UINT32_MAX;
     uint32_t sourceMeshIdx = UINT32_MAX;
-    for (const MeshRow& row : w.scene.tables.meshes) {
+    for (const MeshRow& row : w.m_hierarchy.tables.meshes) {
         if (row.mesh < w.meshLocations.size() && w.meshLocations[row.mesh].cluster == ap) {
             sourceNode = row.node;
             sourceMeshIdx = row.mesh;
@@ -250,10 +250,10 @@ void TestMeshEntitiesAndAnimators() {
     MeshEntityHandle h = w.SpawnMeshFromNode(sourceNode, spawnFrame, UINT32_MAX);
     Check(bool(h) && w.IsMeshEntityAlive(h), "meshent.spawn-alive");
     const uint32_t entNode = w.MeshEntityNode(h);
-    Check(entNode != UINT32_MAX && FindMesh(w.scene, entNode) != nullptr &&
-              FindMesh(w.scene, entNode)->mesh == sourceMeshIdx,
+    Check(entNode != UINT32_MAX && FindMesh(w.m_hierarchy, entNode) != nullptr &&
+              FindMesh(w.m_hierarchy, entNode)->mesh == sourceMeshIdx,
           "meshent.spawn-mirror-row");
-    Check(FindMaterial(w.scene, entNode) != nullptr, "meshent.spawn-material-row");
+    Check(FindMaterial(w.m_hierarchy, entNode) != nullptr, "meshent.spawn-material-row");
     Check(w.MeshEntityMeshIndex(h) == sourceMeshIdx, "meshent.mesh-index-resolves");
 
     // Resolve: the mirror dies, the binding RE-ESTABLISHES on the
@@ -262,8 +262,8 @@ void TestMeshEntitiesAndAnimators() {
     Check(w.IsMeshEntityAlive(h), "meshent.resolve-handle-stays");
     {
         const uint32_t remapped = w.MeshEntityNode(h);
-        Check(remapped != UINT32_MAX && FindMesh(w.scene, remapped) != nullptr &&
-                  FindMesh(w.scene, remapped)->mesh == w.MeshEntityMeshIndex(h),
+        Check(remapped != UINT32_MAX && FindMesh(w.m_hierarchy, remapped) != nullptr &&
+                  FindMesh(w.m_hierarchy, remapped)->mesh == w.MeshEntityMeshIndex(h),
               "meshent.resolve-remirror");
     }
 
@@ -276,17 +276,17 @@ void TestMeshEntitiesAndAnimators() {
         const MeshEntityHandle rh = w.SpawnMesh(sourceMeshIdx, rowFrame, UINT32_MAX);
         Check(bool(rh) && w.IsMeshEntityAlive(rh), "meshent.rowspawn-alive");
         const uint32_t rnode = w.MeshEntityNode(rh);
-        Check(rnode != UINT32_MAX && FindMesh(w.scene, rnode) != nullptr &&
-                  FindMesh(w.scene, rnode)->mesh == sourceMeshIdx &&
-                  FindMaterial(w.scene, rnode) == nullptr,
+        Check(rnode != UINT32_MAX && FindMesh(w.m_hierarchy, rnode) != nullptr &&
+                  FindMesh(w.m_hierarchy, rnode)->mesh == sourceMeshIdx &&
+                  FindMaterial(w.m_hierarchy, rnode) == nullptr,
               "meshent.rowspawn-mirror-materialless");
         // The optional material binding: the same world material row
         // the source node carries.
-        const uint32_t worldMat = FindMaterial(w.scene, sourceNode)->material;
+        const uint32_t worldMat = FindMaterial(w.m_hierarchy, sourceNode)->material;
         const MeshEntityHandle rm = w.SpawnMesh(sourceMeshIdx, rowFrame, UINT32_MAX, worldMat);
         Check(bool(rm), "meshent.rowspawn-material-bind");
         const uint32_t mnode = w.MeshEntityNode(rm);
-        Check(mnode != UINT32_MAX && FindMaterial(w.scene, mnode) != nullptr,
+        Check(mnode != UINT32_MAX && FindMaterial(w.m_hierarchy, mnode) != nullptr,
               "meshent.rowspawn-material-row");
         // A bad row refuses (empty handle, never a garbage instance).
         Check(!w.SpawnMesh(UINT32_MAX, rowFrame, UINT32_MAX), "meshent.rowspawn-bad-row-refused");
@@ -313,24 +313,24 @@ void TestMeshEntitiesAndAnimators() {
     // TARGET cluster's scene (the first animator claims it).
     w.Update(0.5f);
     {
-        const glm::vec3 t(ap->scene.localTransform[jointChild][3]);
+        const glm::vec3 t(ap->m_hierarchy.localTransform[jointChild][3]);
         Check(std::abs(t.y - 1.0f) < 1e-4f, "anim.flush-sample");
         Check(ap->poseExternallyDriven, "anim.cluster-claimed");
         // The untracked joint keeps the REST pose.
-        const glm::vec3 t0(ap->scene.localTransform[0][3]);
+        const glm::vec3 t0(ap->m_hierarchy.localTransform[0][3]);
         Check(std::abs(t0.y) < 1e-5f, "anim.rest-untracked");
     }
     // Pause freezes; resume continues.
     anim.Pause();
     w.Update(0.25f);
     {
-        const glm::vec3 t(ap->scene.localTransform[jointChild][3]);
+        const glm::vec3 t(ap->m_hierarchy.localTransform[jointChild][3]);
         Check(std::abs(t.y - 1.0f) < 1e-4f, "anim.pause-freezes");
     }
     anim.Resume();
     w.Update(0.25f);
     {
-        const glm::vec3 t(ap->scene.localTransform[jointChild][3]);
+        const glm::vec3 t(ap->m_hierarchy.localTransform[jointChild][3]);
         Check(std::abs(t.y - 1.5f) < 1e-4f, "anim.resume-continues");
     }
     // Speed 2 + 0.25s: the cursor moves 0.75 -> 1.25 -> the LOOP wraps
@@ -338,7 +338,7 @@ void TestMeshEntitiesAndAnimators() {
     anim.SetSpeed(2.0f);
     w.Update(0.25f);
     {
-        const glm::vec3 t(ap->scene.localTransform[jointChild][3]);
+        const glm::vec3 t(ap->m_hierarchy.localTransform[jointChild][3]);
         Check(std::abs(t.y - 0.5f) < 1e-4f, "anim.speed-loop-wrap");
     }
     Check(std::abs(anim.Speed() - 2.0f) < 1e-5f, "anim.speed-reads");
@@ -361,7 +361,7 @@ void TestMeshEntitiesAndAnimators() {
     anim.CrossFade(sink, 1.0f);
     w.Update(0.5f);
     {
-        const glm::vec3 t(ap->scene.localTransform[jointChild][3]);
+        const glm::vec3 t(ap->m_hierarchy.localTransform[jointChild][3]);
         Check(std::abs(t.y - 0.25f) < 1e-3f, "anim.crossfade-blend");
     }
 
@@ -372,7 +372,7 @@ void TestMeshEntitiesAndAnimators() {
     Check(!w.IsMeshEntityAlive(h) && !w.DestroyMesh(h), "meshent.destroy-stale-invalid");
     Check(!w.IsAnimatorAlive(animHandle), "anim.dies-with-mesh");
     Check(!ap->poseExternallyDriven, "anim.claim-cleared");
-    Check(FindMesh(w.scene, w.MeshEntityNode(h)) == nullptr, "meshent.rows-dropped");
+    Check(FindMesh(w.m_hierarchy, w.MeshEntityNode(h)) == nullptr, "meshent.rows-dropped");
     // The stale facade no-ops (never crashes).
     anim.Pause();
     anim.SetSpeed(4.0f);
@@ -382,13 +382,13 @@ void TestMeshEntitiesAndAnimators() {
         World w2;
         auto s = std::make_unique<smvk::WorldPage>(nullptr);
         s->SetOfflineMode(true);
-        addNode(s->scene, -1, 0);
+        addNode(s->m_hierarchy, -1, 0);
         const auto smh = s->staticMeshes.create(StaticMesh{});
-        SetMesh(s->scene, 0, smh.index());
+        SetMesh(s->m_hierarchy, 0, smh.index());
         w2.RegisterPage(std::move(s));
         w2.ResolveAndFixup_pages();
         uint32_t src = UINT32_MAX;
-        for (const MeshRow& row : w2.scene.tables.meshes)
+        for (const MeshRow& row : w2.m_hierarchy.tables.meshes)
             src = row.node;
         MeshEntityHandle sh = w2.SpawnMeshFromNode(src, glm::mat4(1.0f), UINT32_MAX);
         Check(bool(sh), "anim.static-spawn");
@@ -404,36 +404,36 @@ void TestSingleClusterBulkResolve() {
     World w;
     auto c = std::make_unique<WorldPage>(nullptr);
     c->SetOfflineMode(true);
-    const int root = addNode(c->scene, -1, 0);
-    const int child = addNode(c->scene, root, 1);
-    const int retired = addNode(c->scene, root, 1);
+    const int root = addNode(c->m_hierarchy, -1, 0);
+    const int child = addNode(c->m_hierarchy, root, 1);
+    const int retired = addNode(c->m_hierarchy, root, 1);
     const auto light = c->CreateLight(SceneLight{});
-    SetLight(c->scene, NodeId(child), light.index());
-    UnlinkNodeFromParent(c->scene, retired);
-    RetireNodeSlot(c->scene, NodeId(retired));
-    const size_t sourceSlots = c->scene.hierarchy.size();
+    SetLight(c->m_hierarchy, NodeId(child), light.index());
+    UnlinkNodeFromParent(c->m_hierarchy, retired);
+    RetireNodeSlot(c->m_hierarchy, NodeId(retired));
+    const size_t sourceSlots = c->m_hierarchy.hierarchy.size();
     WorldPage* ptr = c.get();
     w.RegisterPage(std::move(c));
     w.ResolveAndFixup_pages();
     // FLAT WORLD: no synthetic root — the merged scene is the source
     // scene verbatim (same slot count, parents untouched).
-    Check(w.scene.hierarchy.size() == sourceSlots, "single.bulk.slot-count");
+    Check(w.m_hierarchy.hierarchy.size() == sourceSlots, "single.bulk.slot-count");
     Check(w.pageMergedNodes.size() == 1 && w.pageMergedNodes[0].size() == sourceSlots &&
               w.pageMergedNodes[0][NodeId(root)] == NodeId(root) &&
               w.pageMergedNodes[0][NodeId(child)] == NodeId(child) &&
               w.pageMergedNodes[0][NodeId(retired)] == UINT32_MAX,
           "single.bulk.identity-and-holes");
-    Check(w.scene.hierarchy[NodeId(root)].parent == -1 &&
-              w.scene.hierarchy[NodeId(child)].parent == root,
+    Check(w.m_hierarchy.hierarchy[NodeId(root)].parent == -1 &&
+              w.m_hierarchy.hierarchy[NodeId(child)].parent == root,
           "single.bulk.parents-preserved");
     Check(w.lightLocations.size() == 1 && w.lightLocations[0].cluster == ptr &&
-              FindLight(w.scene, NodeId(child)) != nullptr,
+              FindLight(w.m_hierarchy, NodeId(child)) != nullptr,
           "single.bulk.light-remap");
-    Check(ptr->scene.hierarchy.size() == sourceSlots &&
-              ptr->scene.hierarchy[NodeId(root)].parent == -1,
+    Check(ptr->m_hierarchy.hierarchy.size() == sourceSlots &&
+              ptr->m_hierarchy.hierarchy[NodeId(root)].parent == -1,
           "single.bulk.source-intact");
     w.ResolveAndFixup_pages();
-    Check(w.scene.hierarchy.size() == sourceSlots && w.lightLocations.size() == 1,
+    Check(w.m_hierarchy.hierarchy.size() == sourceSlots && w.lightLocations.size() == 1,
           "single.bulk.repeat-resolve");
 }
 
@@ -455,13 +455,13 @@ void TestSceneNodeBudget() {
     w.ConfigureSceneNodeBudget(3); // 3 cluster nodes, no synthetic root slot
     auto c = std::make_unique<WorldPage>(nullptr);
     for (int i = 0; i < 3; ++i)
-        addNode(c->scene, -1, 0, false);
+        addNode(c->m_hierarchy, -1, 0, false);
     w.RegisterPage(std::move(c));
     w.ResolveAndFixup_pages();
-    Check(w.scene.hierarchy.size() == 3, "budget.world-exact-capacity");
-    const auto* mergedStorage = w.scene.hierarchy.data();
+    Check(w.m_hierarchy.hierarchy.size() == 3, "budget.world-exact-capacity");
+    const auto* mergedStorage = w.m_hierarchy.hierarchy.data();
     w.ResolveAndFixup_pages();
-    Check(w.scene.hierarchy.size() == 3 && w.scene.hierarchy.data() == mergedStorage,
+    Check(w.m_hierarchy.hierarchy.size() == 3 && w.m_hierarchy.hierarchy.data() == mergedStorage,
           "budget.resolve-reuses-node-storage");
 
 #if defined(__unix__) || defined(__APPLE__)
@@ -498,21 +498,21 @@ void TestMaterialInstances() {
     auto a = std::make_unique<smvk::WorldPage>(nullptr);
     a->SetOfflineMode(true);
     smvk::WorldPage* ap = a.get();
-    const int meshNode = addNode(a->scene, -1, 0);
+    const int meshNode = addNode(a->m_hierarchy, -1, 0);
     const auto mh = a->staticMeshes.create(StaticMesh{});
-    SetMesh(a->scene, NodeId(meshNode), mh.index());
+    SetMesh(a->m_hierarchy, NodeId(meshNode), mh.index());
     Material matDef{};
     matDef.rebuildPipeline();
     const auto math = a->materials.create(std::move(matDef));
-    SetMaterial(a->scene, NodeId(meshNode), math.index());
+    SetMaterial(a->m_hierarchy, NodeId(meshNode), math.index());
     w.RegisterPage(std::move(a));
     w.ResolveAndFixup_pages();
 
     uint32_t sourceNode = UINT32_MAX;
     uint32_t materialIdx = UINT32_MAX;
-    for (const MeshRow& row : w.scene.tables.meshes) {
+    for (const MeshRow& row : w.m_hierarchy.tables.meshes) {
         sourceNode = row.node;
-        const MaterialRow* mr = FindMaterial(w.scene, row.node);
+        const MaterialRow* mr = FindMaterial(w.m_hierarchy, row.node);
         if (mr)
             materialIdx = mr->material;
     }
@@ -633,15 +633,15 @@ void TestMaterialShaderFamily() {
     // with a LOD marker) so FarShadingAt has a farthest level to read.
     auto a = std::make_unique<smvk::WorldPage>(nullptr);
     a->SetOfflineMode(true);
-    const int meshNode = addNode(a->scene, -1, 0);
+    const int meshNode = addNode(a->m_hierarchy, -1, 0);
     const auto mh = a->staticMeshes.create(StaticMesh{});
     a->RegisterMeshUri("assets://rock", mh);
-    SetMesh(a->scene, NodeId(meshNode), mh.index());
+    SetMesh(a->m_hierarchy, NodeId(meshNode), mh.index());
     Material matDef{};
     matDef.shaderLod.allowFarVertexLit = true;
     matDef.rebuildPipeline();
     const auto math = a->materials.create(std::move(matDef));
-    SetMaterial(a->scene, NodeId(meshNode), math.index());
+    SetMaterial(a->m_hierarchy, NodeId(meshNode), math.index());
     const auto mh1 = a->staticMeshes.create(StaticMesh{});
     a->RegisterMeshUri("assets://rock/lod1", mh1);
     LodInfo lod1{};
@@ -653,8 +653,8 @@ void TestMaterialShaderFamily() {
     w.ResolveAndFixup_pages();
 
     uint32_t materialIdx = UINT32_MAX;
-    for (const MeshRow& row : w.scene.tables.meshes) {
-        const MaterialRow* mr = FindMaterial(w.scene, row.node);
+    for (const MeshRow& row : w.m_hierarchy.tables.meshes) {
+        const MaterialRow* mr = FindMaterial(w.m_hierarchy, row.node);
         if (mr)
             materialIdx = mr->material;
     }
@@ -708,8 +708,8 @@ void TestDecalEntities() {
         def.seed = 11u;
         def.name = "cooked_splat";
         const auto h = a->CreateDecal(std::move(def));
-        const int node = addNode(a->scene, -1, 0);
-        SetDecal(a->scene, uint32_t(node), h.index());
+        const int node = addNode(a->m_hierarchy, -1, 0);
+        SetDecal(a->m_hierarchy, uint32_t(node), h.index());
     }
     w.RegisterPage(std::move(a));
     w.ResolveAndFixup_pages();
@@ -730,17 +730,17 @@ void TestDecalEntities() {
     const NodeId node = w.CreateDecalAt(frame, std::move(rt));
     Check(node != UINT32_MAX, "decal.create.node");
     Check(w.decalLocations.size() == 2, "decal.create.count");
-    const DecalRow* drow = FindDecal(w.scene, node);
+    const DecalRow* drow = FindDecal(w.m_hierarchy, node);
     Check(drow != nullptr, "decal.create.link");
     Check(drow != nullptr && w.decalLocations[drow->decal].cluster != nullptr &&
               w.decalLocations[drow->decal].cluster->isDynamic,
           "decal.create.dynamic");
     // The frame IS the node transform (CreateDecalAt contract).
-    Check(w.scene.localTransform[node] == frame, "decal.create.frame");
+    Check(w.m_hierarchy.localTransform[node] == frame, "decal.create.frame");
 
     // Shape round-trip from the node transform: center from the
     // translation, half extents from the column lengths.
-    const glm::mat4& g = w.scene.globalTransform[node];
+    const glm::mat4& g = w.m_hierarchy.globalTransform[node];
     Check(glm::length(glm::vec3(g[3]) - glm::vec3(1.0f, 0.5f, 2.0f)) < 1e-5f, "decal.frame.center");
     Check(std::abs(glm::length(glm::vec3(g[0])) - 0.5f) < 1e-5f &&
               std::abs(glm::length(glm::vec3(g[1])) - 0.5f) < 1e-5f &&
@@ -755,13 +755,13 @@ void TestDecalEntities() {
     Check(w.decalLocations.size() == 1, "decal.unload.count");
     Check(w.decalLocations[0].cluster->isDynamic, "decal.unload.survivor");
     bool foldedLink = false;
-    for (const DecalRow& row : w.scene.tables.decals)
+    for (const DecalRow& row : w.m_hierarchy.tables.decals)
         foldedLink = foldedLink || row.decal < w.decalLocations.size();
     Check(foldedLink, "decal.unload.folded.link");
     // The folded node carries the same placement frame (cluster-scene
     // original, not the merged-scene mirror).
-    for (const DecalRow& row : w.scene.tables.decals) {
-        const glm::mat4& fg = w.scene.globalTransform[row.node];
+    for (const DecalRow& row : w.m_hierarchy.tables.decals) {
+        const glm::mat4& fg = w.m_hierarchy.globalTransform[row.node];
         Check(glm::length(glm::vec3(fg[3]) - glm::vec3(1.0f, 0.5f, 2.0f)) < 1e-5f,
               "decal.unload.folded.frame");
         break;
@@ -908,12 +908,12 @@ void TestEnvZones() {
     {
         smvk::World w;
         auto c = std::make_unique<smvk::WorldPage>(nullptr);
-        c->scene = scene;
+        c->m_hierarchy = scene;
         w.RegisterPage(std::move(c));
         w.ResolveAndFixup_pages();
-        Check(w.scene.tables.envs.size() == 4, "zone.world.merged");
+        Check(w.m_hierarchy.tables.envs.size() == 4, "zone.world.merged");
         const NodeId worldB = w.zoneAtPosition(glm::vec3(2.5f, 0.5f, 0.5f));
-        Check(worldB != UINT32_MAX && FindEnv(w.scene, worldB) != nullptr, "zone.world.resolve");
+        Check(worldB != UINT32_MAX && FindEnv(w.m_hierarchy, worldB) != nullptr, "zone.world.resolve");
     }
 }
 
@@ -921,10 +921,10 @@ void TestActiveEnvironmentFirstWins() {
     // WorldPage carrying env blocks: root + numbered env nodes, one
     // elevation per block (exact floats — resolve copies verbatim).
     auto addEnvBlock = [](smvk::WorldPage& cl, int parent, float sunEl) {
-        const int n = addNode(cl.scene, parent, 0);
+        const int n = addNode(cl.m_hierarchy, parent, 0);
         tour::transformhierarchy::SceneEnv e{};
         e.sunElevation = sunEl;
-        SetEnv(cl.scene, uint32_t(n), e);
+        SetEnv(cl.m_hierarchy, uint32_t(n), e);
         return n;
     };
     // First scene loaded wins: A selects el 20, B selects el 30.
@@ -933,58 +933,58 @@ void TestActiveEnvironmentFirstWins() {
     {
         smvk::World w;
         auto a = std::make_unique<smvk::WorldPage>(nullptr);
-        const int aRoot = addNode(a->scene, -1, 0);
+        const int aRoot = addNode(a->m_hierarchy, -1, 0);
         addEnvBlock(*a, aRoot, 10.0f);
         const int aSel = addEnvBlock(*a, aRoot, 20.0f);
-        a->scene.activeEnvironment = uint32_t(aSel);
-        a->scene.environment.sunElevation = 99.0f;
-        a->scene.envAuthored = true;
+        a->m_hierarchy.activeEnvironment = uint32_t(aSel);
+        a->m_hierarchy.environment.sunElevation = 99.0f;
+        a->m_hierarchy.envAuthored = true;
         w.RegisterPage(std::move(a));
         auto b = std::make_unique<smvk::WorldPage>(nullptr);
-        const int bRoot = addNode(b->scene, -1, 0);
+        const int bRoot = addNode(b->m_hierarchy, -1, 0);
         const int bSel = addEnvBlock(*b, bRoot, 30.0f);
-        b->scene.activeEnvironment = uint32_t(bSel);
-        b->scene.envAuthored = true;
+        b->m_hierarchy.activeEnvironment = uint32_t(bSel);
+        b->m_hierarchy.envAuthored = true;
         w.RegisterPage(std::move(b));
         w.ResolveAndFixup_pages();
-        Check(w.scene.activeEnvironment != UINT32_MAX, "actenv.kept");
-        const EnvRow* it = FindEnv(w.scene, w.scene.activeEnvironment);
+        Check(w.m_hierarchy.activeEnvironment != UINT32_MAX, "actenv.kept");
+        const EnvRow* it = FindEnv(w.m_hierarchy, w.m_hierarchy.activeEnvironment);
         Check(it != nullptr, "actenv.in-table");
         Check(it != nullptr && it->environment.sunElevation == 20.0f, "actenv.first-wins");
-        Check(w.scene.environment.sunElevation == 20.0f, "actenv.resolved-over-stale");
-        Check(w.scene.envAuthored, "actenv.authored");
+        Check(w.m_hierarchy.environment.sunElevation == 20.0f, "actenv.resolved-over-stale");
+        Check(w.m_hierarchy.envAuthored, "actenv.authored");
     }
     // An unselected first scene defers: A selects nothing, B's pick wins.
     {
         smvk::World w;
         auto a = std::make_unique<smvk::WorldPage>(nullptr);
-        const int aRoot = addNode(a->scene, -1, 0);
+        const int aRoot = addNode(a->m_hierarchy, -1, 0);
         addEnvBlock(*a, aRoot, 10.0f);
-        a->scene.activeEnvironment = UINT32_MAX;
+        a->m_hierarchy.activeEnvironment = UINT32_MAX;
         w.RegisterPage(std::move(a));
         auto b = std::make_unique<smvk::WorldPage>(nullptr);
-        const int bRoot = addNode(b->scene, -1, 0);
+        const int bRoot = addNode(b->m_hierarchy, -1, 0);
         const int bSel = addEnvBlock(*b, bRoot, 30.0f);
-        b->scene.activeEnvironment = uint32_t(bSel);
+        b->m_hierarchy.activeEnvironment = uint32_t(bSel);
         w.RegisterPage(std::move(b));
         w.ResolveAndFixup_pages();
-        Check(w.scene.activeEnvironment != UINT32_MAX, "actenv.defer-kept");
-        Check(w.scene.environment.sunElevation == 30.0f, "actenv.defer-resolved");
+        Check(w.m_hierarchy.activeEnvironment != UINT32_MAX, "actenv.defer-kept");
+        Check(w.m_hierarchy.environment.sunElevation == 30.0f, "actenv.defer-resolved");
     }
     // Dangling selection (valid node, no block) clears to none and the
     // look falls back to the default block.
     {
         smvk::World w;
         auto a = std::make_unique<smvk::WorldPage>(nullptr);
-        const int aRoot = addNode(a->scene, -1, 0);
+        const int aRoot = addNode(a->m_hierarchy, -1, 0);
         addEnvBlock(*a, aRoot, 10.0f);
-        const int aDangle = addNode(a->scene, aRoot, 0);
-        a->scene.activeEnvironment = uint32_t(aDangle);
-        a->scene.envAuthored = true;
+        const int aDangle = addNode(a->m_hierarchy, aRoot, 0);
+        a->m_hierarchy.activeEnvironment = uint32_t(aDangle);
+        a->m_hierarchy.envAuthored = true;
         w.RegisterPage(std::move(a));
         w.ResolveAndFixup_pages();
-        Check(w.scene.activeEnvironment == UINT32_MAX, "actenv.dangling-cleared");
-        Check(w.scene.environment.sunElevation == 55.0f, "actenv.dangling-fallback");
+        Check(w.m_hierarchy.activeEnvironment == UINT32_MAX, "actenv.dangling-cleared");
+        Check(w.m_hierarchy.environment.sunElevation == 55.0f, "actenv.dangling-fallback");
     }
 }
 
@@ -999,24 +999,24 @@ void TestResolveCarriesInlineTables() {
     c2->SetOfflineMode(true);
     // OVERLAPPING local ids: node 1 in both clusters.
     for (smvk::WorldPage* c : {c1.get(), c2.get()}) {
-        addNode(c->scene, -1, 0);
-        addNode(c->scene, 0, 1);
+        addNode(c->m_hierarchy, -1, 0);
+        addNode(c->m_hierarchy, 0, 1);
     }
     ::SceneGiVolume gv{};
     gv.priority = 7;
-    SetGiVolume(c1->scene, 1, gv);
+    SetGiVolume(c1->m_hierarchy, 1, gv);
     ::SceneCubemap cb{};
     cb.radius = 9.5f;
-    SetCubemap(c2->scene, 1, cb);
+    SetCubemap(c2->m_hierarchy, 1, cb);
     ::SceneExportSettings es{};
     es.lodError = 0.25f;
-    SetExport(c2->scene, 1, es);
-    SetNodeUuidRaw(c1->scene, 1, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
-    setNodeName(c1->scene, 1, "GIV_a");
+    SetExport(c2->m_hierarchy, 1, es);
+    SetNodeUuidRaw(c1->m_hierarchy, 1, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+    setNodeName(c1->m_hierarchy, 1, "GIV_a");
     w.RegisterPage(std::move(c1));
     w.RegisterPage(std::move(c2));
     w.ResolveAndFixup_pages();
-    const ::TransformHierarchy& s = w.scene;
+    const ::TransformHierarchy& s = w.m_hierarchy;
     size_t gi = 0, cbm = 0, ex = 0;
     for (const GiVolumeRow& r : s.tables.giVolumes) {
         ++gi;
@@ -1061,9 +1061,9 @@ void TestResolveCarriesInlineTables() {
         Check(getNodeName(s, int(g1->node)) == "GIV_a", "resolve.name-at-row-node");
     }
     // Rebuild the derived index from scratch: identical answers.
-    RebuildNodeRows(w.scene);
+    RebuildNodeRows(w.m_hierarchy);
     if (g1)
-        Check(FindGiVolume(w.scene, g1->node) != nullptr, "resolve.rebuild-stale-free");
+        Check(FindGiVolume(w.m_hierarchy, g1->node) != nullptr, "resolve.rebuild-stale-free");
 }
 
 // PROJECT-DEFINED SCHEMA ASSOCIATIONS (Engine/Scene/node_schema.h):
@@ -1081,19 +1081,19 @@ void TestSchemaAssocFold() {
     // OVERLAPPING local ids: node 1 in both clusters, each carrying a
     // schema association with DISTINCT cooked bytes.
     for (smvk::WorldPage* c : {c1.get(), c2.get()}) {
-        addNode(c->scene, -1, 0);
-        addNode(c->scene, 0, 1);
+        addNode(c->m_hierarchy, -1, 0);
+        addNode(c->m_hierarchy, 0, 1);
     }
     const std::vector<uint8_t> valsA = {0x11, 0x22, 0x33, 0x44};
     const std::vector<uint8_t> valsB = {0xAA, 0xBB};
-    Check(SetSchemaAssoc(c1->scene, 1, 3001, valsA), "schemafold.set-a");
-    Check(SetSchemaAssoc(c2->scene, 1, 3002, valsB), "schemafold.set-b");
-    setNodeName(c1->scene, 1, "SpawnerA");
-    setNodeName(c2->scene, 1, "SpawnerB");
+    Check(SetSchemaAssoc(c1->m_hierarchy, 1, 3001, valsA), "schemafold.set-a");
+    Check(SetSchemaAssoc(c2->m_hierarchy, 1, 3002, valsB), "schemafold.set-b");
+    setNodeName(c1->m_hierarchy, 1, "SpawnerA");
+    setNodeName(c2->m_hierarchy, 1, "SpawnerB");
     w.RegisterPage(std::move(c1));
     w.RegisterPage(std::move(c2));
     w.ResolveAndFixup_pages();
-    const ::TransformHierarchy& s = w.scene;
+    const ::TransformHierarchy& s = w.m_hierarchy;
     Check(s.tables.schemaAssocs.size() == 2, "schemafold.both-carried");
     const SchemaAssocRow* a = nullptr;
     const SchemaAssocRow* b = nullptr;
@@ -1117,7 +1117,7 @@ void TestSchemaAssocFold() {
               "schemafold.identity-at-row-node");
         Check(s.globalTransform.size() > a->node, "schemafold.transform-readable");
         // The derived index resolves both.
-        Check(FindSchemaAssoc(w.scene, a->node) == a && FindSchemaAssoc(w.scene, b->node) == b,
+        Check(FindSchemaAssoc(w.m_hierarchy, a->node) == a && FindSchemaAssoc(w.m_hierarchy, b->node) == b,
               "schemafold.find-resolves");
     }
     // Unload ONE cluster: only its rows fold away — the other
@@ -1125,8 +1125,8 @@ void TestSchemaAssocFold() {
     // contract).
     if (w.pages.size() == 2) {
         w.UnloadCluster(*w.pages[0]);
-        Check(w.scene.tables.schemaAssocs.size() == 1 &&
-                  w.scene.tables.schemaAssocs[0].schemaId == 3002,
+        Check(w.m_hierarchy.tables.schemaAssocs.size() == 1 &&
+                  w.m_hierarchy.tables.schemaAssocs[0].schemaId == 3002,
               "schemafold.remove-one-keeps-other");
     }
 }
@@ -1139,7 +1139,7 @@ void TestResolveHoledCluster() {
     smvk::World w;
     auto c = std::make_unique<smvk::WorldPage>(nullptr);
     c->SetOfflineMode(true);
-    ::TransformHierarchy& cs = c->scene;
+    ::TransformHierarchy& cs = c->m_hierarchy;
     const int root = addNode(cs, -1, 0);
     const int a = addNode(cs, root, 1);
     const int b = addNode(cs, root, 1);
@@ -1150,7 +1150,7 @@ void TestResolveHoledCluster() {
     cs.defaultCameraNode = uint32_t(b);
     w.RegisterPage(std::move(c));
     w.ResolveAndFixup_pages();
-    const ::TransformHierarchy& s = w.scene;
+    const ::TransformHierarchy& s = w.m_hierarchy;
     // The single-content-cluster identity copy (#228): source slots stay
     // 1:1 - the world scene carries the cluster's slots INCLUDING the
     // retired hole (kept retired, never recycled). FLAT WORLD: no
@@ -1181,18 +1181,18 @@ void TestGameOwnedNodes() {
     const glm::mat4 frame = glm::translate(glm::mat4(1.0f), glm::vec3(4.0f, 5.0f, 6.0f));
     const NodeHandle node = w.AddNode(frame);
     Check(w.IsGameNode(node), "game-node: added independently of asset");
-    Check(w.scene.localTransform[NodeHandleSlot(node)][3].x == 4.0f,
+    Check(w.m_hierarchy.localTransform[NodeHandleSlot(node)][3].x == 4.0f,
           "game-node: single local transform");
     Check(w[node].SetPhysicsBody({}) && w[node].SetAudioRoom({}) && w[node].SetTriggerVolume({}),
           "game-node: typed default brace components");
     const NodeId slot = NodeHandleSlot(node);
-    Check(tour::transformhierarchy::FindPhysicsBody(w.scene, slot) &&
-              tour::transformhierarchy::FindAudioRoom(w.scene, slot) &&
-              tour::transformhierarchy::FindTriggerVolume(w.scene, slot),
+    Check(tour::transformhierarchy::FindPhysicsBody(w.m_hierarchy, slot) &&
+              tour::transformhierarchy::FindAudioRoom(w.m_hierarchy, slot) &&
+              tour::transformhierarchy::FindTriggerVolume(w.m_hierarchy, slot),
           "game-node: inline associations share the same node");
-    Check(!FindMesh(w.scene, slot), "game-node: no mesh required to create node");
+    Check(!FindMesh(w.m_hierarchy, slot), "game-node: no mesh required to create node");
     const auto update = glm::translate(glm::mat4(1.0f), glm::vec3(3.0f, 2.0f, 1.0f));
-    Check(w[node].SetLocalTransform(update) && w.scene.localTransform[slot][3].x == 3.0f,
+    Check(w[node].SetLocalTransform(update) && w.m_hierarchy.localTransform[slot][3].x == 3.0f,
           "game-node: transform updated without node replacement");
     Check(w.RemoveNode(node), "game-node: remove");
     Check(!w.IsGameNode(node) && !w.RemoveNode(node) && !w[node].SetPhysicsBody({}),
@@ -1214,18 +1214,18 @@ void TestGameOwnedNodes() {
     // the child under it with a parent-RELATIVE frame; a stale parent
     // handle is a refusal; the default stays root-level.
     const NodeHandle parentNode = w.AddNode(glm::translate(glm::mat4(1.0f), glm::vec3(1, 0, 0)));
-    Check(w.IsGameNode(parentNode) && w.scene.hierarchy[NodeHandleSlot(parentNode)].parent == -1,
+    Check(w.IsGameNode(parentNode) && w.m_hierarchy.hierarchy[NodeHandleSlot(parentNode)].parent == -1,
           "game-node: default spawn stays root-level");
     const glm::mat4 rel = glm::translate(glm::mat4(1.0f), glm::vec3(0, 2, 0));
     const NodeHandle childNode = w.AddNode(rel, parentNode);
-    Check(w.IsGameNode(childNode) && w.scene.hierarchy[NodeHandleSlot(childNode)].parent ==
+    Check(w.IsGameNode(childNode) && w.m_hierarchy.hierarchy[NodeHandleSlot(childNode)].parent ==
                                          int(NodeHandleSlot(parentNode)),
           "game-node: explicit parent links");
-    recalculateGlobalTransforms(w.scene);
-    const glm::vec3 childPos = glm::vec3(w.scene.globalTransform[NodeHandleSlot(childNode)][3]);
+    recalculateGlobalTransforms(w.m_hierarchy);
+    const glm::vec3 childPos = glm::vec3(w.m_hierarchy.globalTransform[NodeHandleSlot(childNode)][3]);
     Check(childPos.x == 1.0f && childPos.y == 2.0f && childPos.z == 0.0f,
           "game-node: parent-relative frame composes");
-    Check(w.scene.hierarchy[NodeHandleSlot(parentNode)].firstChild ==
+    Check(w.m_hierarchy.hierarchy[NodeHandleSlot(parentNode)].firstChild ==
               int(NodeHandleSlot(childNode)),
           "game-node: parent child-chain maintained");
     // Stale parent: remove it, then attempt a parented spawn through the
@@ -1269,18 +1269,18 @@ void TestFlatWorldResolve() {
         World w;
         auto c = std::make_unique<WorldPage>(nullptr);
         c->SetOfflineMode(true);
-        const int r = addNode(c->scene, -1, 0);
-        const int m1 = addNode(c->scene, r, 1);
-        const int m2 = addNode(c->scene, r, 1);
-        MarkSubtreeStatic(c->scene, r);
+        const int r = addNode(c->m_hierarchy, -1, 0);
+        const int m1 = addNode(c->m_hierarchy, r, 1);
+        const int m2 = addNode(c->m_hierarchy, r, 1);
+        MarkSubtreeStatic(c->m_hierarchy, r);
         w.RegisterPage(std::move(c));
         w.ResolveAndFixup_pages();
-        Check(w.scene.hierarchy.size() == 3, "flatworld.single.no-synthetic-root");
-        Check(w.scene.hierarchy[size_t(r)].parent == -1, "flatworld.single.root-parent-kept");
-        Check(w.scene.hierarchy[size_t(m1)].parent == r &&
-                  w.scene.hierarchy[size_t(m2)].parent == r,
+        Check(w.m_hierarchy.hierarchy.size() == 3, "flatworld.single.no-synthetic-root");
+        Check(w.m_hierarchy.hierarchy[size_t(r)].parent == -1, "flatworld.single.root-parent-kept");
+        Check(w.m_hierarchy.hierarchy[size_t(m1)].parent == r &&
+                  w.m_hierarchy.hierarchy[size_t(m2)].parent == r,
               "flatworld.single.children-kept");
-        Check(w.scene.hierarchy[size_t(r)].level == 0 && w.scene.hierarchy[size_t(m1)].level == 1,
+        Check(w.m_hierarchy.hierarchy[size_t(r)].level == 0 && w.m_hierarchy.hierarchy[size_t(m1)].level == 1,
               "flatworld.single.levels-verbatim");
         Check(w.RegionForNode(NodeId(r)) != nullptr && w.RegionForNode(NodeId(m1)) != nullptr &&
                   NodeHandleSlot(w.RegionForNode(NodeId(m1))->root) == uint32_t(r),
@@ -1293,20 +1293,20 @@ void TestFlatWorldResolve() {
         World w;
         auto a = std::make_unique<WorldPage>(nullptr);
         a->SetOfflineMode(true);
-        const int ar = addNode(a->scene, -1, 0);
-        const int ac = addNode(a->scene, ar, 1);
+        const int ar = addNode(a->m_hierarchy, -1, 0);
+        const int ac = addNode(a->m_hierarchy, ar, 1);
         auto b = std::make_unique<WorldPage>(nullptr);
         b->SetOfflineMode(true);
-        const int br = addNode(b->scene, -1, 0);
-        const int bc = addNode(b->scene, br, 1);
+        const int br = addNode(b->m_hierarchy, -1, 0);
+        const int bc = addNode(b->m_hierarchy, br, 1);
         WorldPage* bp = b.get();
         w.RegisterPage(std::move(a));
         w.RegisterPage(std::move(b));
         w.ResolveAndFixup_pages();
-        Check(w.scene.hierarchy.size() == 4, "flatworld.two.node-count");
-        Check(w.scene.hierarchy[0].parent == -1 && w.scene.hierarchy[2].parent == -1,
+        Check(w.m_hierarchy.hierarchy.size() == 4, "flatworld.two.node-count");
+        Check(w.m_hierarchy.hierarchy[0].parent == -1 && w.m_hierarchy.hierarchy[2].parent == -1,
               "flatworld.two.roots-independent");
-        Check(w.scene.hierarchy[1].parent == 0 && w.scene.hierarchy[3].parent == 2,
+        Check(w.m_hierarchy.hierarchy[1].parent == 0 && w.m_hierarchy.hierarchy[3].parent == 2,
               "flatworld.two.children-kept");
         Check(w.RegionForNode(NodeId(0)) != nullptr && w.RegionForNode(NodeId(2)) != nullptr &&
                   w.RegionForNode(NodeId(0))->id != w.RegionForNode(NodeId(2))->id,
@@ -1315,8 +1315,8 @@ void TestFlatWorldResolve() {
         // fast path re-engages with ONE content cluster).
         w.UnloadCluster(*bp);
         w.ResolveAndFixup_pages();
-        Check(w.scene.hierarchy.size() == 2 && w.scene.hierarchy[0].parent == -1 &&
-                  w.scene.hierarchy[1].parent == 0,
+        Check(w.m_hierarchy.hierarchy.size() == 2 && w.m_hierarchy.hierarchy[0].parent == -1 &&
+                  w.m_hierarchy.hierarchy[1].parent == 0,
               "flatworld.two.unload-only-owned");
     }
 
@@ -1326,25 +1326,25 @@ void TestFlatWorldResolve() {
         World w;
         auto c = std::make_unique<WorldPage>(nullptr);
         c->SetOfflineMode(true);
-        const int r1 = addNode(c->scene, -1, 0);
-        const int r1c = addNode(c->scene, r1, 1);
-        const int r2 = addNode(c->scene, -1, 0); // second authored root
-        const int r2c = addNode(c->scene, r2, 1);
+        const int r1 = addNode(c->m_hierarchy, -1, 0);
+        const int r1c = addNode(c->m_hierarchy, r1, 1);
+        const int r2 = addNode(c->m_hierarchy, -1, 0); // second authored root
+        const int r2c = addNode(c->m_hierarchy, r2, 1);
         w.RegisterPage(std::move(c));
         w.ResolveAndFixup_pages();
-        Check(w.scene.hierarchy.size() == 4, "flatworld.multiroot.node-count");
-        Check(w.scene.hierarchy[size_t(r1)].parent == -1 &&
-                  w.scene.hierarchy[size_t(r2)].parent == -1,
+        Check(w.m_hierarchy.hierarchy.size() == 4, "flatworld.multiroot.node-count");
+        Check(w.m_hierarchy.hierarchy[size_t(r1)].parent == -1 &&
+                  w.m_hierarchy.hierarchy[size_t(r2)].parent == -1,
               "flatworld.multiroot.roots-independent");
-        Check(w.scene.hierarchy[size_t(r2c)].parent == r2,
+        Check(w.m_hierarchy.hierarchy[size_t(r2c)].parent == r2,
               "flatworld.multiroot.second-subtree-kept");
         Check(w.RegionForNode(NodeId(r2)) != nullptr &&
                   NodeHandleSlot(w.RegionForNode(NodeId(r2c))->root) == uint32_t(r2),
               "flatworld.multiroot.every-root-registers");
         // Full traversal reaches every live node from the roots.
         size_t reached = 0;
-        for (size_t n = 0; n < w.scene.hierarchy.size(); ++n)
-            if (w.scene.hierarchy[n].parent == -1)
+        for (size_t n = 0; n < w.m_hierarchy.hierarchy.size(); ++n)
+            if (w.m_hierarchy.hierarchy[n].parent == -1)
                 ++reached;
         Check(reached == 2, "flatworld.multiroot.traverse-all-roots");
     }
@@ -1355,24 +1355,24 @@ void TestFlatWorldResolve() {
         World w;
         auto c = std::make_unique<WorldPage>(nullptr);
         c->SetOfflineMode(true);
-        const int r = addNode(c->scene, -1, 0);
-        const int m = addNode(c->scene, r, 1);
+        const int r = addNode(c->m_hierarchy, -1, 0);
+        const int m = addNode(c->m_hierarchy, r, 1);
         w.RegisterPage(std::move(c));
         w.ResolveAndFixup_pages();
-        std::vector<int> parentsBefore(w.scene.hierarchy.size());
-        for (size_t n = 0; n < w.scene.hierarchy.size(); ++n)
-            parentsBefore[n] = w.scene.hierarchy[n].parent;
+        std::vector<int> parentsBefore(w.m_hierarchy.hierarchy.size());
+        for (size_t n = 0; n < w.m_hierarchy.hierarchy.size(); ++n)
+            parentsBefore[n] = w.m_hierarchy.hierarchy[n].parent;
         const glm::mat4 frame = glm::translate(glm::mat4(1.0f), glm::vec3(1.0f, 2.0f, 3.0f));
         const NodeId decalNode = w.CreateDecalAt(frame, SceneDecal{});
-        Check(decalNode != UINT32_MAX && w.scene.hierarchy[size_t(decalNode)].parent == -1,
+        Check(decalNode != UINT32_MAX && w.m_hierarchy.hierarchy[size_t(decalNode)].parent == -1,
               "flatworld.spawn-root-level");
         for (size_t n = 0; n < parentsBefore.size(); ++n)
             if (int(n) != int(decalNode))
-                Check(w.scene.hierarchy[n].parent == parentsBefore[n],
+                Check(w.m_hierarchy.hierarchy[n].parent == parentsBefore[n],
                       "flatworld.spawn-no-reparent");
         // The durable-side resolve keeps the spawn root-level too.
         w.ResolveAndFixup_pages();
-        Check(w.scene.hierarchy[size_t(decalNode)].parent == -1,
+        Check(w.m_hierarchy.hierarchy[size_t(decalNode)].parent == -1,
               "flatworld.spawn-resolve-stays-root");
     }
 }
@@ -1392,22 +1392,22 @@ void TestStaticBvhAdoptionGuard() {
     auto mkBaked = [](WorldPage*& out) {
         auto c = std::make_unique<WorldPage>(nullptr);
         c->SetOfflineMode(true);
-        const int r = addNode(c->scene, -1, 0);
+        const int r = addNode(c->m_hierarchy, -1, 0);
         std::vector<uint32_t> meshNodes;
         for (int i = 0; i < 6; ++i) {
-            const int n = addNode(c->scene, r, 1);
+            const int n = addNode(c->m_hierarchy, r, 1);
             const auto mh = c->staticMeshes.create(StaticMesh{});
-            SetMesh(c->scene, NodeId(n), mh.index());
+            SetMesh(c->m_hierarchy, NodeId(n), mh.index());
             meshNodes.push_back(uint32_t(n));
         }
-        MarkSubtreeStatic(c->scene, r);
-        recalculateGlobalTransforms(c->scene);
+        MarkSubtreeStatic(c->m_hierarchy, r);
+        recalculateGlobalTransforms(c->m_hierarchy);
         // Forge the cooked section by hand (the serializer lane has its
         // own round-trip tests; this pins the WORLD-side guard).
         std::vector<::tour::Partition> prims;
         std::vector<::tour::StaticCullRow> rows;
         for (uint32_t n : meshNodes) {
-            const MeshRow* row = FindMesh(c->scene, NodeId(n));
+            const MeshRow* row = FindMesh(c->m_hierarchy, NodeId(n));
             const StaticMesh* mesh =
                 row ? c->staticMeshes.get(c->staticMeshes.getHandle(row->mesh)) : nullptr;
             if (!row || !mesh)
@@ -1416,7 +1416,7 @@ void TestStaticBvhAdoptionGuard() {
                 ::tour::StaticCullRow{n, mesh->geometry.aabbMin, mesh->geometry.aabbMax});
             const ::tour::Aabb local{mesh->geometry.aabbMin, mesh->geometry.aabbMax};
             ::tour::Aabb world = ::tour::Aabb::empty();
-            const glm::mat4& model = c->scene.globalTransform[n];
+            const glm::mat4& model = c->m_hierarchy.globalTransform[n];
             const glm::vec3 corners[8] = {
                 {local.mn.x, local.mn.y, local.mn.z},
                 {local.mn.x, local.mn.y, local.mx.z},
@@ -1442,16 +1442,16 @@ void TestStaticBvhAdoptionGuard() {
         for (uint32_t slot = 0; slot < N; ++slot)
             tree.primToNode[slot] = prims[tree.primIndices[slot]].node;
         std::vector<int32_t> parents;
-        for (const NodeLinks& h : c->scene.hierarchy)
+        for (const NodeLinks& h : c->m_hierarchy.hierarchy)
             parents.push_back(h.parent);
         c->cookedStaticBvh = tree;
         c->cookedStaticBvhStateHash =
             ::tour::StaticCullStateHash(parents.data(),
-                                        c->scene.localTransform.data(),
-                                        uint32_t(c->scene.hierarchy.size()),
+                                        c->m_hierarchy.localTransform.data(),
+                                        uint32_t(c->m_hierarchy.hierarchy.size()),
                                         rows.data(),
                                         uint32_t(rows.size()));
-        c->cookedStaticBvhNodeCount = uint32_t(c->scene.hierarchy.size());
+        c->cookedStaticBvhNodeCount = uint32_t(c->m_hierarchy.hierarchy.size());
         out = c.get();
         return c;
     };
@@ -1485,7 +1485,7 @@ void TestStaticBvhAdoptionGuard() {
         auto c = mkBaked(cp);
         glm::mat4 moved(1.0f);
         moved[3] = glm::vec4(2.0f, 0.0f, 0.0f, 1.0f);
-        cp->scene.localTransform[2] = moved; // a static mesh node's local
+        cp->m_hierarchy.localTransform[2] = moved; // a static mesh node's local
         w.RegisterPage(std::move(c));
         w.ResolveAndFixup_pages();
         Check(w.HasStaticBvh() && w.EnsureStaticBvh().nodes.size() <= 8,
@@ -1501,7 +1501,7 @@ void TestStaticBvhAdoptionGuard() {
         // The structural edit the fold must catch (no public scene
         // reparent mutator — the editor owns that lane; the field write
         // is the minimal honest probe of the hierarchy fold).
-        cp->scene.hierarchy[3].parent = 1;
+        cp->m_hierarchy.hierarchy[3].parent = 1;
         w.RegisterPage(std::move(c));
         w.ResolveAndFixup_pages();
         Check(w.HasStaticBvh() && w.EnsureStaticBvh().nodes.size() <= 8,
@@ -1518,7 +1518,7 @@ void TestStaticBvhAdoptionGuard() {
         other.geometry.aabbMin = {-4.0f, -4.0f, -4.0f};
         other.geometry.aabbMax = {4.0f, 4.0f, 4.0f};
         const auto mh = cp->staticMeshes.create(std::move(other));
-        SetMesh(cp->scene, NodeId(2), mh.index());
+        SetMesh(cp->m_hierarchy, NodeId(2), mh.index());
         w.RegisterPage(std::move(c));
         w.ResolveAndFixup_pages();
         Check(w.HasStaticBvh() && w.EnsureStaticBvh().nodes.size() <= 8,
@@ -1537,14 +1537,14 @@ void TestIncrementalMergeUnmerge() {
         p->SetOfflineMode(true);
         out = p.get();
         for (int n = 0; n < nodes; ++n) {
-            const int root = addNode(p->scene, -1, 0);
+            const int root = addNode(p->m_hierarchy, -1, 0);
             const auto mh = p->staticMeshes.create(StaticMesh{});
-            SetMesh(p->scene, NodeId(root), mh.index());
+            SetMesh(p->m_hierarchy, NodeId(root), mh.index());
             Material matDef{};
             matDef.rebuildPipeline();
             const auto math = p->materials.create(std::move(matDef));
-            SetMaterial(p->scene, NodeId(root), math.index());
-            MarkSubtreeStatic(p->scene, root);
+            SetMaterial(p->m_hierarchy, NodeId(root), math.index());
+            MarkSubtreeStatic(p->m_hierarchy, root);
         }
         return p;
     };
@@ -1553,8 +1553,8 @@ void TestIncrementalMergeUnmerge() {
     WorldPage* aPtr = nullptr;
     w.RegisterPage(makePage(aPtr, 1));
     w.ResolveAndFixup_pages();
-    const size_t aNodes = w.scene.hierarchy.size();
-    const size_t aMeshRows = w.scene.tables.meshes.size();
+    const size_t aNodes = w.m_hierarchy.hierarchy.size();
+    const size_t aMeshRows = w.m_hierarchy.tables.meshes.size();
     Check(aNodes >= 1 && aMeshRows == 1 && w.meshLocations.size() == 1 &&
               w.materialLocations.size() == 1,
           "incr.entry-resolved");
@@ -1565,8 +1565,8 @@ void TestIncrementalMergeUnmerge() {
     w.RegisterPage(makePage(bPtr, 1));
     w.MergePage(*bPtr, 1, false);
     w.RebuildDerivedCaches();
-    Check(w.scene.hierarchy.size() > aNodes, "incr.merge-appended-nodes");
-    Check(w.scene.tables.meshes.size() == aMeshRows + 1, "incr.merge-appended-mesh-row");
+    Check(w.m_hierarchy.hierarchy.size() > aNodes, "incr.merge-appended-nodes");
+    Check(w.m_hierarchy.tables.meshes.size() == aMeshRows + 1, "incr.merge-appended-mesh-row");
     Check(w.meshLocations.size() == 2 && w.materialLocations.size() == 2,
           "incr.merge-location-tables");
     Check(w.pageMergedNodes.size() == 2, "incr.merge-node-map-grown");
@@ -1589,7 +1589,7 @@ void TestIncrementalMergeUnmerge() {
     w.UnmergePage(*bPtr);
     w.RebuildDerivedCaches();
     Check(w.pages.size() == 1 && w.pageMergedNodes.size() == 1, "incr.unmerge-erased");
-    Check(w.scene.tables.meshes.size() == aMeshRows, "incr.unmerge-dropped-rows");
+    Check(w.m_hierarchy.tables.meshes.size() == aMeshRows, "incr.unmerge-dropped-rows");
     Check(w.drawItems.size() == 1, "incr.unmerge-draw-list");
     // B's location entries are dead (null cluster), NOT compacted — A's
     // surviving world indices stay put.
@@ -1612,12 +1612,12 @@ void TestIncrementalMergeUnmerge() {
     w.RegisterPage(makePage(cPtr, 1));
     w.MergePage(*cPtr, 1, false);
     w.RebuildDerivedCaches();
-    Check(w.scene.tables.meshes.size() == aMeshRows + 1, "incr.remerge-appended-mesh-row");
+    Check(w.m_hierarchy.tables.meshes.size() == aMeshRows + 1, "incr.remerge-appended-mesh-row");
     Check(w.meshLocations.size() == 3 && w.materialLocations.size() == 3,
           "incr.remerge-location-tables");
     // A's node still resolves its own (surviving) mesh index 0.
     const MeshRow* aRow = nullptr;
-    for (const MeshRow& row : w.scene.tables.meshes)
+    for (const MeshRow& row : w.m_hierarchy.tables.meshes)
         if (row.mesh == 0)
             aRow = &row;
     Check(aRow != nullptr && w.meshLocations[aRow->mesh].cluster == aPtr,

@@ -19,17 +19,17 @@
 namespace editor {
 
 void EditorApp::RenameNode(uint32_t node, const std::string& name) {
-    if (!m_world || node >= m_world->scene.hierarchy.size())
+    if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
         return;
-    const uint32_t id = uint32_t(m_world->scene.nodeNames.size());
-    m_world->scene.nodeNames.push_back(name);
-    SetNodeNameIndex(m_world->scene, node, id);
+    const uint32_t id = uint32_t(m_world->m_hierarchy.nodeNames.size());
+    m_world->m_hierarchy.nodeNames.push_back(name);
+    SetNodeNameIndex(m_world->m_hierarchy, node, id);
 }
 
 void EditorApp::ReparentNode(uint32_t node, uint32_t newParent) {
     if (!m_world)
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     if (node >= scene.hierarchy.size() || newParent >= scene.hierarchy.size())
         return;
     // Authoring can reparent freely within the same ownership region.
@@ -47,11 +47,11 @@ void EditorApp::ReparentNode(uint32_t node, uint32_t newParent) {
 
 // Mirrors World::ResolveAndFixup_pages flag rules for one node.
 void EditorApp::RefreshNodeDrawState(uint32_t node) {
-    if (!m_world || node >= m_world->scene.hierarchy.size())
+    if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
         return;
     if (m_deletedNodes.contains(node))
         return; // deleted: links stay dropped (no wide-override resurrect)
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     if (!FindMesh(scene, node))
         return;
     smvk::IteratorFlags f = smvk::IteratorFlags(smvk::IteratorFlagBit_Renderable |
@@ -122,9 +122,9 @@ void EditorApp::RefreshMaterialNodes(uint32_t mat) {
 const ::SceneLight* EditorApp::FindNodeLight(uint32_t node, glm::vec3* outAimWs) const {
     if (outAimWs)
         *outAimWs = glm::vec3(0.0f);
-    if (!m_world || node >= m_world->scene.hierarchy.size())
+    if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
         return nullptr;
-    const TransformHierarchy& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->m_hierarchy;
     auto lit = FindLight(scene, node);
     if (!lit || lit->light >= m_world->lightLocations.size())
         return nullptr;
@@ -148,9 +148,9 @@ const ::SceneLight* EditorApp::FindNodeLight(uint32_t node, glm::vec3* outAimWs)
 // Definition for a camera node (null when the node has none).
 // Resolves through world cameraLocations -> cluster cameras pool.
 const ::SceneCamera* EditorApp::FindNodeCamera(uint32_t node) const {
-    if (!m_world || node >= m_world->scene.hierarchy.size())
+    if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
         return nullptr;
-    const TransformHierarchy& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->m_hierarchy;
     auto cit = FindCamera(scene, node);
     if (!cit || cit->camera >= m_world->cameraLocations.size())
         return nullptr;
@@ -165,11 +165,11 @@ uint32_t EditorApp::FindCameraNode() const {
     if (!m_world)
         return UINT32_MAX;
     uint32_t best = UINT32_MAX;
-    for (const CameraRow& _row : m_world->scene.tables.cameras) {
+    for (const CameraRow& _row : m_world->m_hierarchy.tables.cameras) {
         const NodeId node = _row.node;
         const auto& ci = _row.camera;
         (void)ci;
-        if (node < m_world->scene.hierarchy.size() && (best == UINT32_MAX || node < best))
+        if (node < m_world->m_hierarchy.hierarchy.size() && (best == UINT32_MAX || node < best))
             best = node;
     }
     return best;
@@ -187,7 +187,7 @@ void EditorApp::RebuildCookedLights() {
     m_cookedStaticSkipped = 0;
     if (!m_world)
         return;
-    const TransformHierarchy& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->m_hierarchy;
     if (scene.tables.lights.empty()) {
         Log("Cooked lights: none (viewport sun default).");
         return;
@@ -213,7 +213,7 @@ void EditorApp::RebuildCookedLights() {
             const glm::vec3 toSun = -aimWs;
             m_cookedSunName = l->name.empty() ? ("node " + std::to_string(node)) : l->name;
             tour::transformhierarchy::SceneEnv& env =
-                m_world->scene.defaultEnvironment; // seed the scene default
+                m_world->m_hierarchy.defaultEnvironment; // seed the scene default
             env.sunAzimuth = glm::degrees(std::atan2(toSun.x, toSun.z));
             if (env.sunAzimuth < 0.0f)
                 env.sunAzimuth += 360.0f;

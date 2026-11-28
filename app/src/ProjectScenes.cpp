@@ -299,7 +299,7 @@ bool ProjectScenes::SetPrefabTransform(SceneHandle prefab,
         err = "prefab transform must contain only finite values";
         return false;
     }
-    auto& scene = instance->cluster->scene;
+    auto& scene = instance->cluster->m_hierarchy;
     const uint32_t root = instance->prefabRoot;
     if (!tour::transformhierarchy::IsLiveSlot(scene, root) || root >= scene.localTransform.size()) {
         err = "the prefab instance root is no longer live";
@@ -447,7 +447,7 @@ SceneHandle ProjectScenes::LoadInternal(tour::World& world,
         // World::ResolveAndFixup_pages() folds the FIRST live cluster
         // node as its independent world child. Pre-multiplying THAT
         // node (and only that node) preserves every authored child frame.
-        tour::transformhierarchy::TransformHierarchy& source = cluster->scene;
+        tour::transformhierarchy::TransformHierarchy& source = cluster->m_hierarchy;
         uint32_t root = UINT32_MAX;
         for (uint32_t n = 0; n < source.hierarchy.size(); ++n)
             if (tour::transformhierarchy::IsLiveSlot(source, n)) {

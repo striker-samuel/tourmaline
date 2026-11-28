@@ -2691,7 +2691,7 @@ bool WorldRenderer::onAttach() {
     // registered (World::LoadBakedPlacement) — one runtime per cloud, no
     // per-app placement wiring.
     LoadBakedPlacementsFromWorld();
-    std::cerr << "[Scene] world resolved: nodes=" << m_world->scene.hierarchy.size()
+    std::cerr << "[Scene] world resolved: nodes=" << m_world->m_hierarchy.hierarchy.size()
               << " meshes=" << m_world->meshLocations.size()
               << " materials=" << m_world->materialLocations.size() << std::endl;
 
@@ -2804,7 +2804,7 @@ bool WorldRenderer::onAttach() {
                 // ORTHO lens keeps the App's perspective defaults
                 // (the FPS camera has no ortho path - the pose still
                 // applies).
-                const ::TransformHierarchy* fs = &m_world->scene;
+                const ::TransformHierarchy* fs = &m_world->m_hierarchy;
                 const ::SceneCamera* defCam = nullptr;
                 if (fs->defaultCameraNode < fs->hierarchy.size()) {
                     // The camera table row on the default-camera
@@ -6099,7 +6099,7 @@ FrameUniforms WorldRenderer::UpdateFrameUniforms(uint32_t currentFrame,
                             return;
                         glm::vec3 sphereCenter;
                         float sphereRadius = 0.0f;
-                        smvk::MeshBoundsToWorld(m_world->scene.globalTransform[item.node],
+                        smvk::MeshBoundsToWorld(m_world->m_hierarchy.globalTransform[item.node],
                                                 meshDesc->geometry.aabbMin,
                                                 meshDesc->geometry.aabbMax,
                                                 sphereCenter,
@@ -6495,7 +6495,7 @@ smvk::GpuDirectionalLightDescription WorldRenderer::UpdateLights(
                     return;
                 glm::vec3 sphereCenter;
                 float sphereRadius = 0.0f;
-                smvk::MeshBoundsToWorld(m_world->scene.globalTransform[item.node],
+                smvk::MeshBoundsToWorld(m_world->m_hierarchy.globalTransform[item.node],
                                         meshDesc->geometry.aabbMin,
                                         meshDesc->geometry.aabbMax,
                                         sphereCenter,
@@ -6945,7 +6945,7 @@ void WorldRenderer::UpdateTextureStreaming(const FrameUniforms& frameData,
                     static_cast<const smvk::World&>(*m_world).GetMaterial(item.material);
                 if (!mat)
                     return;
-                const glm::mat4& model = m_world->scene.globalTransform[item.node];
+                const glm::mat4& model = m_world->m_hierarchy.globalTransform[item.node];
                 const float dist = glm::distance(eye, glm::vec3(model[3]));
                 note(mat->values.textures.x, dist);
                 note(mat->values.textures.y, dist);
@@ -8022,15 +8022,15 @@ void WorldRenderer::ResolveSceneLights() {
     // fog), else the scattering intensity; the vol* knobs load with
     // it. The runtime degrade (volumetric -> analytic when the pass
     // cannot run) lives at the frame-env build.
-    if (m_world->scene.envAuthored) {
-        const tour::transformhierarchy::SceneEnv& se = m_world->scene.environment;
+    if (m_world->m_hierarchy.envAuthored) {
+        const tour::transformhierarchy::SceneEnv& se = m_world->m_hierarchy.environment;
         PushVolumetricEnv(se);
         // Postfx look seed (bloom/tonemap/exposure/AO/SSR/motion
         // blur/DOF/AA/cubemap - the App panels' settings): from the
         // RENDER SETTINGS (the split look - TransformHierarchy::renderSettings;
         // the env contributes only its viewport exposure fold).
         // Once per scene load/rebind, panels/keys live on.
-        PushPostfxEnv(m_world->scene.renderSettings, se);
+        PushPostfxEnv(m_world->m_hierarchy.renderSettings, se);
         // Headless overrides win over the scene seed (AGENTS.md:
         // "scene settings lose") - without this a headless pin dies
         // here on any scene whose env disagrees (the seed writes the
@@ -8088,7 +8088,7 @@ void WorldRenderer::ResolveSceneLights() {
 // (bind time only); the values are never retained in m_sceneLights.
 void WorldRenderer::RefreshSceneLights(bool log, bool seedEnvSun) {
     m_sceneLights.clear();
-    const ::TransformHierarchy& scene = m_world->scene;
+    const ::TransformHierarchy& scene = m_world->m_hierarchy;
     const auto& lightLocs = m_world->lightLocations;
     if (lightLocs.empty() || scene.tables.lights.empty()) {
         if (log)
@@ -8266,15 +8266,15 @@ void WorldRenderer::RefreshSceneLights(bool log, bool seedEnvSun) {
     // time only (seedEnvSun): the edit path must not stomp user
     // retouches. Runs only when the scene carries no authored look
     // (old content without env blocks); a tour/cooked env always wins.
-    if (seedEnvSun && sunTaken && m_world && !m_world->scene.envAuthored) {
+    if (seedEnvSun && sunTaken && m_world && !m_world->m_hierarchy.envAuthored) {
         const glm::vec3 t = glm::normalize(electedSunDir);
-        tour::transformhierarchy::SceneEnv& sceneEnv = m_world->scene.defaultEnvironment;
+        tour::transformhierarchy::SceneEnv& sceneEnv = m_world->m_hierarchy.defaultEnvironment;
         sceneEnv.sunElevation = glm::degrees(std::asin(std::clamp(t.y, -1.0f, 1.0f)));
         sceneEnv.sunAzimuth = glm::degrees(std::atan2(t.x, t.z));
         sceneEnv.sunColor = electedSunColor;
         sceneEnv.sunIntensity = electedSunIntensity;
-        m_world->scene.environment = sceneEnv;
-        m_world->scene.envAuthored = true;
+        m_world->m_hierarchy.environment = sceneEnv;
+        m_world->m_hierarchy.envAuthored = true;
         std::cerr << "[Scene] resolved sun: az=" << sceneEnv.sunAzimuth
                   << " el=" << sceneEnv.sunElevation << " I=" << sceneEnv.sunIntensity << "\n";
     }
@@ -8884,7 +8884,7 @@ uint32_t WorldRenderer::UpdateDecals(uint32_t currentFrame) {
     // All per-frame scratch lives in the frame arena. Views into this
     // memory must not escape the update (ResetFrameArena at frame start).
     auto& scratch = smvk::FrameArena();
-    const size_t rowCount = m_world->scene.tables.decals.size();
+    const size_t rowCount = m_world->m_hierarchy.tables.decals.size();
     if (rowCount == 0)
         return 0;
 
@@ -8893,7 +8893,7 @@ uint32_t WorldRenderer::UpdateDecals(uint32_t currentFrame) {
     auto* decalRows =
         static_cast<DecalRow*>(scratch.Allocate(sizeof(DecalRow) * rowCount, alignof(DecalRow)));
     std::uninitialized_copy(
-        m_world->scene.tables.decals.begin(), m_world->scene.tables.decals.end(), decalRows);
+        m_world->m_hierarchy.tables.decals.begin(), m_world->m_hierarchy.tables.decals.end(), decalRows);
     std::sort(decalRows, decalRows + rowCount, [](const DecalRow& a, const DecalRow& b) {
         return a.node < b.node;
     });
@@ -8950,7 +8950,7 @@ uint32_t WorldRenderer::UpdateDecals(uint32_t currentFrame) {
         const uint32_t worldIdx = row.decal;
         if (gpuCount >= FP_MAX_DECALS)
             break;
-        if (node >= m_world->scene.globalTransform.size() ||
+        if (node >= m_world->m_hierarchy.globalTransform.size() ||
             worldIdx >= m_world->decalLocations.size())
             continue;
         const auto& loc = m_world->decalLocations[worldIdx];
@@ -8964,7 +8964,7 @@ uint32_t WorldRenderer::UpdateDecals(uint32_t currentFrame) {
         // center; rotation columns = the projection frame (local -Z
         // INTO the surface, +Y texture V up); scale = half extents
         // (x, y in-plane, z depth reach) - see SceneDecal.
-        const glm::mat4& g = m_world->scene.globalTransform[node];
+        const glm::mat4& g = m_world->m_hierarchy.globalTransform[node];
         const glm::vec3 center = glm::vec3(g[3]);
         const glm::vec3 colX(g[0]), colY(g[1]), colZ(g[2]);
         const float halfX = glm::length(colX);
@@ -10165,7 +10165,7 @@ void WorldRenderer::RecordMotion(smvk::CommandBuffer& cmd,
                 cull = mat->pipeline.raster.cullMode;
             ensureMotionSolidPipeline(cull);
         }
-        auto& model = self->m_world->scene.globalTransform[item.node];
+        auto& model = self->m_world->m_hierarchy.globalTransform[item.node];
         smvk::StaticMesh* meshDesc = self->LodMeshForNode(item.node, item.mesh);
         if (!meshDesc)
             return;
@@ -10195,7 +10195,7 @@ void WorldRenderer::RecordMotion(smvk::CommandBuffer& cmd,
         // model[0..2].w = worldHigh x/y/z, model[3].xyz = worldLow.
         {
             const glm::dmat4 globalModel =
-                tour::transformhierarchy::GlobalTransformDouble(self->m_world->scene, item.node);
+                tour::transformhierarchy::GlobalTransformDouble(self->m_world->m_hierarchy, item.node);
             const auto worldPos = tour::math::SplitDoubleFloat(glm::dvec3(globalModel[3]));
             const glm::vec3 bx(globalModel[0]), by(globalModel[1]), bz(globalModel[2]);
             objectPC.model[0] = bx.x;
@@ -10217,7 +10217,7 @@ void WorldRenderer::RecordMotion(smvk::CommandBuffer& cmd,
         }
         const bool prevValid =
             !self->m_cameraCutThisFrame &&
-            self->m_prevGlobalTransforms.size() == self->m_world->scene.globalTransform.size();
+            self->m_prevGlobalTransforms.size() == self->m_world->m_hierarchy.globalTransform.size();
         const glm::mat4 prevModel = prevValid ? self->m_prevGlobalTransforms[item.node] : model;
         smvk::PackPushPrevModel(glm::value_ptr(prevModel), objectPC.prevModel);
         objectPC.materialId = item.material;
@@ -10262,7 +10262,7 @@ void WorldRenderer::RecordMotion(smvk::CommandBuffer& cmd,
                     if (item.material == smvk::World::kInvalidIndex)
                         return;
                     {
-                        const glm::mat4& model = self->m_world->scene.globalTransform[item.node];
+                        const glm::mat4& model = self->m_world->m_hierarchy.globalTransform[item.node];
                         const uint32_t lodIdx = self->LodIndexForNode(item.node, item.mesh);
                         smvk::StaticMesh* baseDesc = self->m_world->GetMesh(item.mesh);
                         smvk::StaticMesh* selDesc = self->m_world->GetLodMesh(item.mesh, lodIdx);
@@ -10353,7 +10353,7 @@ void WorldRenderer::RecordPlanarCapture(smvk::CommandBuffer& cmd,
             }
             if (!mesh || mesh->skinned)
                 return;
-            const auto& model = self->m_world->scene.globalTransform[item.node];
+            const auto& model = self->m_world->m_hierarchy.globalTransform[item.node];
             glm::vec3 center{};
             float radius = 0;
             smvk::MeshBoundsToWorld(
@@ -10365,7 +10365,7 @@ void WorldRenderer::RecordPlanarCapture(smvk::CommandBuffer& cmd,
                 static_cast<const smvk::World&>(*self->m_world).GetMaterial(item.material);
             if (!mat)
                 return;
-            if (DitherCloseupStateFor(self->m_world->scene, int(item.node), f.eye) ==
+            if (DitherCloseupStateFor(self->m_world->m_hierarchy, int(item.node), f.eye) ==
                 DitherCloseupState::Hidden)
                 return;
             smvk::RasterSettings raster = mat->pipeline.raster;
@@ -10385,8 +10385,8 @@ void WorldRenderer::RecordPlanarCapture(smvk::CommandBuffer& cmd,
             auto pc = f.pc;
             std::copy_n(glm::value_ptr(model), 16, pc.model);
             pc.materialId = item.material;
-            pc.padEnd_[2] = item.node < self->m_world->scene.metadata.size()
-                                ? self->m_world->scene.metadata[item.node].lightLayerMask
+            pc.padEnd_[2] = item.node < self->m_world->m_hierarchy.metadata.size()
+                                ? self->m_world->m_hierarchy.metadata[item.node].lightLayerMask
                                 : 0xffffffffu;
             cmd.PushConstants(0, sizeof(pc), &pc, smvk::ShaderStage::All);
             for (const auto& surface : mesh->geometry.surfaces) {
@@ -10446,7 +10446,7 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
         return prog;
     };
     auto drawNode = [&](NodeId node, uint32_t meshId, uint32_t materialId, uint32_t userData = 0) {
-        auto& model = self->m_world->scene.globalTransform[node];
+        auto& model = self->m_world->m_hierarchy.globalTransform[node];
         smvk::StaticMesh* meshDesc = self->LodMeshForNode(node, meshId);
         if (!meshDesc)
             return;
@@ -10462,13 +10462,13 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
         pc.materialId = materialId;
         pc.padEnd_[0] =
             (DitherCloseupStateFor(
-                 self->m_world->scene, int(node), self->m_cameraPositioner.cameraPosition_) ==
+                 self->m_world->m_hierarchy, int(node), self->m_cameraPositioner.cameraPosition_) ==
              DitherCloseupState::Fade)
                 ? 1u
                 : 0u;
         pc.padEnd_[1] = userData;
-        pc.padEnd_[2] = node < self->m_world->scene.metadata.size()
-                            ? self->m_world->scene.metadata[node].lightLayerMask
+        pc.padEnd_[2] = node < self->m_world->m_hierarchy.metadata.size()
+                            ? self->m_world->m_hierarchy.metadata[node].lightLayerMask
                             : 0xffffffffu;
         cmd.PushConstants(offsetof(IRenderer::PushConstants, padEnd_),
                           sizeof(pc.padEnd_[0]) * 3,
@@ -10939,7 +10939,7 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
                 if (item.material == smvk::World::kInvalidIndex)
                     return;
                 const uint32_t worldMesh = item.mesh;
-                const glm::mat4& model = self->m_world->scene.globalTransform[item.node];
+                const glm::mat4& model = self->m_world->m_hierarchy.globalTransform[item.node];
                 std::copy_n(glm::value_ptr(model), 16, dp.model);
                 pushMeshDebugSkinTail(worldMesh, item.node);
                 const smvk::gfx::State& stHeat = self->m_gfxRenderer.State();
@@ -11009,7 +11009,7 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
                     return;
                 if (item.material == smvk::World::kInvalidIndex)
                     return;
-                const glm::mat4& model = self->m_world->scene.globalTransform[item.node];
+                const glm::mat4& model = self->m_world->m_hierarchy.globalTransform[item.node];
                 std::copy_n(glm::value_ptr(model), 16, lp2.model);
                 pushMeshDebugSkinTail(item.mesh, item.node);
                 uint32_t lod = 0;
@@ -11047,7 +11047,7 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
                                                self->m_gpuSceneSync.SourceForNode(item.node)))
                     return;
                 if (smvk::StaticMesh* cullBase = self->m_world->GetMesh(item.mesh)) {
-                    const glm::mat4& cullModel = self->m_world->scene.globalTransform[item.node];
+                    const glm::mat4& cullModel = self->m_world->m_hierarchy.globalTransform[item.node];
                     glm::vec3 c{0.0f};
                     float r = 0.0f;
                     smvk::MeshBoundsToWorld(
@@ -11063,7 +11063,7 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
                     if (!visible)
                         return;
                 }
-                if (DitherCloseupStateFor(self->m_world->scene,
+                if (DitherCloseupStateFor(self->m_world->m_hierarchy,
                                           int(item.node),
                                           self->m_cameraPositioner.cameraPosition_) ==
                     DitherCloseupState::Hidden)
@@ -11168,7 +11168,7 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
                     cmd.BindStaticVertexFmt();
                     boundMaterial = d.materialId;
                 }
-                const glm::mat4& model = self->m_world->scene.globalTransform[d.node];
+                const glm::mat4& model = self->m_world->m_hierarchy.globalTransform[d.node];
                 std::copy_n(glm::value_ptr(model), 16, transLp.model);
                 static const float kLodVertexLitTrans[3] = {1.0f, 1.0f, 1.0f};
                 const bool vlitLevelTrans =
@@ -11224,7 +11224,7 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
                     boundMaterial = d.materialId;
                     boundProgram = &self->m_resources.vertexLitProgram;
                 }
-                auto& model = self->m_world->scene.globalTransform[d.node];
+                auto& model = self->m_world->m_hierarchy.globalTransform[d.node];
                 smvk::StaticMesh* meshDesc = self->LodMeshForNode(d.node, d.meshId);
                 if (!meshDesc)
                     continue;
@@ -11268,7 +11268,7 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
                     boundMaterial = d.materialId;
                     boundProgram = &farSpecTrans->main;
                 }
-                auto& model = self->m_world->scene.globalTransform[d.node];
+                auto& model = self->m_world->m_hierarchy.globalTransform[d.node];
                 smvk::StaticMesh* meshDesc = self->LodMeshForNode(d.node, d.meshId);
                 if (!meshDesc)
                     continue;
@@ -11944,7 +11944,7 @@ void WorldRenderer::RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
         // the shadow with the lit view's fade (the per-draw flag rides
         // PushConstants::padEnd_[0] -> shadow.vert forwards it flat).
         const DitherCloseupState ditherState = DitherCloseupStateFor(
-            m_world->scene, int(item.node), m_cameraPositioner.cameraPosition_);
+            m_world->m_hierarchy, int(item.node), m_cameraPositioner.cameraPosition_);
         if (ditherState == DitherCloseupState::Hidden)
             return;
         const bool ditherFade = ditherState == DitherCloseupState::Fade;
@@ -11959,7 +11959,7 @@ void WorldRenderer::RecordShadowCastersDirect(smvk::CommandBuffer& cmd,
                 cull = mat->pipeline.raster.cullMode;
             ensureShadowMaskedPipeline(cull);
         }
-        auto& model = m_world->scene.globalTransform[item.node];
+        auto& model = m_world->m_hierarchy.globalTransform[item.node];
         smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh);
         if (!meshDesc)
             return;
@@ -12108,7 +12108,7 @@ void WorldRenderer::RecordVolumetricShadowCasters(smvk::CommandBuffer& cmd,
         [&](const smvk::World::RenderItem& item) {
             if (item.material == smvk::World::kInvalidIndex)
                 return;
-            auto& model = m_world->scene.globalTransform[item.node];
+            auto& model = m_world->m_hierarchy.globalTransform[item.node];
             smvk::StaticMesh* meshDesc = LodMeshForNode(item.node, item.mesh);
             if (!meshDesc)
                 return;
@@ -13078,7 +13078,7 @@ tour::mem::FrameVector<WorldRenderer::TransparentDrawItem> WorldRenderer::Collec
             if (m_gpuSceneRasterOwnership.AlphaModeOf(m_gpuSceneSync.SourceForNode(item.node)) ==
                 tour::gpu_scene::RasterAlphaMode::Blend)
                 return;
-            const glm::mat4& model = m_world->scene.globalTransform[item.node];
+            const glm::mat4& model = m_world->m_hierarchy.globalTransform[item.node];
             // Frustum cull: transparent never enters the gfx filter, so
             // test the conservative LOD union here (keep when either
             // the base or the selected sibling intersects, matching
@@ -13132,9 +13132,9 @@ tour::mem::FrameVector<WorldRenderer::TransparentDrawItem> WorldRenderer::
         return draws;
     for (uint32_t s = 0; s < m_gpuSceneTransparentSourceCount; ++s) {
         const GpuSceneTransparentSource& src = m_gpuSceneTransparentSources[s];
-        if (src.node >= m_world->scene.globalTransform.size())
+        if (src.node >= m_world->m_hierarchy.globalTransform.size())
             continue;
-        const glm::mat4& model = m_world->scene.globalTransform[src.node];
+        const glm::mat4& model = m_world->m_hierarchy.globalTransform[src.node];
         // Frustum cull: conservative LOD-union test, matching the legacy
         // CollectTransparentDraws path (transparent never enters the GPU
         // work selector, so cull the LOD union here).
@@ -13345,7 +13345,7 @@ void WorldRenderer::UpdateEnvTiles(uint32_t currentFrame) {
         m_envTilesPublished = false;
         return;
     }
-    const ::TransformHierarchy& scene = m_world->scene;
+    const ::TransformHierarchy& scene = m_world->m_hierarchy;
 
     // ---- The dirty fingerprint: everything Build() reads. ----
     uint64_t hash = 2166136261u;
@@ -14394,7 +14394,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // parameter below - never member state). A worldless frame falls
     // back to engine defaults (Initialize refuses those anyway).
     smvk::EnvironmentSettings frameEnv =
-        m_world ? MapSceneEnv(m_world->scene.environment, m_debugView == ViewMode::Unlit)
+        m_world ? MapSceneEnv(m_world->m_hierarchy.environment, m_debugView == ViewMode::Unlit)
                 : smvk::EnvironmentSettings{};
     // TOURMALINE_SKY_COLOR diagnostic: a flat linear-RGB sky override so a
     // render-path test can paint the dome a solid color and see whether the
@@ -14428,7 +14428,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // and so does ZONE-authored fog (the env-tile records carry
     // ABSOLUTE volumetricDensity; the base record holds the scene
     // env's own).
-    if (m_world && m_world->scene.environment.fogQuality == 2) {
+    if (m_world && m_world->m_hierarchy.environment.fogQuality == 2) {
         const bool volRuns = m_passes.volumetric && m_volumetricEnabled &&
                              m_viewportResources.volumetric.Valid() &&
                              (m_volumetricDensity > 0.0f || m_worldFields.GpuBinding().Valid() ||
@@ -14518,7 +14518,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         return; // texture not resident; raster fallback
                     maskedTexture = it->second;
                 }
-                const glm::mat4& model = m_world->scene.globalTransform[item.node];
+                const glm::mat4& model = m_world->m_hierarchy.globalTransform[item.node];
                 // Impostor RT-proxy swap (sparse, gated): a far shadow caster
                 // with a baked proxy uses its tiny triangle soup instead of
                 // the full surface list, keeping BLAS traversal flat. Masked
@@ -15179,11 +15179,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     tour::gpu_scene::RasterIndexedInstanceReady(m_gpuSceneDatabase, instance) &&
                     item.material != smvk::World::kInvalidIndex && materialRasterEligible &&
                     (!m_gfxRenderer.MaterialProjectFamily(item.material) || projectLitReady) &&
-                    item.node < m_world->scene.globalTransform.size() &&
+                    item.node < m_world->m_hierarchy.globalTransform.size() &&
                     // Closeup dither is inherited from ancestors and
                     // changes with camera distance; never GPU-own it
                     // without the matching masked/depth shader variants.
-                    !IsDitherCloseupNode(m_world->scene, int(item.node)) && mesh &&
+                    !IsDitherCloseupNode(m_world->m_hierarchy, int(item.node)) && mesh &&
                     // Packed vertex lightmaps use a different shader path;
                     // leave those objects with the legacy filtered/direct
                     // raster until the GPU-scene lit variant is implemented.
@@ -15321,9 +15321,9 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         else if (m_gfxRenderer.MaterialProjectFamily(item.material) &&
                                  !projectLitReady)
                             fail = GpuSceneAdmissionFailure::ProjectLitNotReady;
-                        else if (item.node >= m_world->scene.globalTransform.size())
+                        else if (item.node >= m_world->m_hierarchy.globalTransform.size())
                             fail = GpuSceneAdmissionFailure::NodeInvalid;
-                        else if (IsDitherCloseupNode(m_world->scene, int(item.node)))
+                        else if (IsDitherCloseupNode(m_world->m_hierarchy, int(item.node)))
                             fail = GpuSceneAdmissionFailure::DitherCloseup;
                         else if (!mesh)
                             fail = GpuSceneAdmissionFailure::MissingMesh;
@@ -17944,12 +17944,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     // advanced) - build the palette straight off
                     // it, never double advance the cluster's own
                     // clip.
-                    smvk::touranim::BuildSkinPalette(c->scene, c->skeleton, palette);
+                    smvk::touranim::BuildSkinPalette(c->m_hierarchy, c->skeleton, palette);
                 } else if (!c->SampleAnimation(m_deltaTime, palette)) {
                     // No clip attached: the bind-pose palette (the loaded
                     // globals ARE the bind pose) - the deformed heap
                     // exists, the fetch swap works, nothing moves.
-                    smvk::touranim::BuildSkinPalette(c->scene, c->skeleton, palette);
+                    smvk::touranim::BuildSkinPalette(c->m_hierarchy, c->skeleton, palette);
                 }
             }
             smvk::skinning::SkinPush push{};
@@ -20207,16 +20207,16 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     // image instead of being occluded by the editor's unrelated depth.
     uint32_t selectionLineVerts = 0;
     if (m_selectedNode != UINT32_MAX && m_world &&
-        m_selectedNode < m_world->scene.hierarchy.size() &&
-        m_selectedNode < m_world->scene.globalTransform.size() &&
+        m_selectedNode < m_world->m_hierarchy.hierarchy.size() &&
+        m_selectedNode < m_world->m_hierarchy.globalTransform.size() &&
         m_gfxRenderer.LineProgram().shaderCount == 2) {
-        const glm::mat4 selectedFrame = m_world->scene.globalTransform[m_selectedNode];
+        const glm::mat4 selectedFrame = m_world->m_hierarchy.globalTransform[m_selectedNode];
         const float det = glm::determinant(selectedFrame);
         if (std::isfinite(det) && std::abs(det) > 1e-9f) {
             const glm::mat4 invFrame = glm::inverse(selectedFrame);
             // Frame-local node membership and DFS stack: no hash buckets or
             // heap growth while drawing the editor selection outline.
-            const size_t nodeCount = m_world->scene.hierarchy.size();
+            const size_t nodeCount = m_world->m_hierarchy.hierarchy.size();
             auto& scratch = smvk::FrameArena();
             auto* subtree = static_cast<uint8_t*>(scratch.Allocate(nodeCount, alignof(uint8_t)));
             std::memset(subtree, 0, nodeCount);
@@ -20227,11 +20227,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             subtree[m_selectedNode] = 1;
             while (pendingCount) {
                 const uint32_t node = pending[--pendingCount];
-                for (int child = m_world->scene.hierarchy[node].firstChild; child != -1;) {
+                for (int child = m_world->m_hierarchy.hierarchy[node].firstChild; child != -1;) {
                     const auto index = static_cast<size_t>(child);
                     if (index >= nodeCount)
                         break;
-                    const int next = m_world->scene.hierarchy[index].nextSibling;
+                    const int next = m_world->m_hierarchy.hierarchy[index].nextSibling;
                     if (!subtree[index]) {
                         subtree[index] = 1;
                         pending[pendingCount++] = static_cast<uint32_t>(index);
@@ -20243,12 +20243,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             bool hasMesh = false;
             for (const auto& item : m_world->drawItems) {
                 if (item.node >= nodeCount || !subtree[item.node] ||
-                    item.node >= m_world->scene.globalTransform.size())
+                    item.node >= m_world->m_hierarchy.globalTransform.size())
                     continue;
                 const smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
                 if (!mesh)
                     continue;
-                const glm::mat4& model = m_world->scene.globalTransform[item.node];
+                const glm::mat4& model = m_world->m_hierarchy.globalTransform[item.node];
                 for (int k = 0; k < 8; ++k) {
                     const glm::vec3 corner(
                         (k & 1) ? mesh->geometry.aabbMax.x : mesh->geometry.aabbMin.x,
@@ -21925,7 +21925,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // the fog look - the retired panel slider's lesson): the
             // composite's fog-in-front modulation consumes it.
             const float authoredFogDensity =
-                m_world ? m_world->scene.defaultEnvironment.volumetricDensity : 0.015f;
+                m_world ? m_world->m_hierarchy.defaultEnvironment.volumetricDensity : 0.015f;
             // The debug-view selector (TOURMALINE_GODRAYS_DEBUG,
             // env-only - the FOG_GI_DEBUG discipline): 1 the raw
             // mask, 2 the unfiltered radial rays, 3 the filtered
@@ -22034,11 +22034,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // gridMin/dims math) - location/density inspection BEFORE
             // any bake exists. Rebuilt EVERY armed frame: the editor
             // moves/edits volumes live, and the upload is tiny.
-            if (m_world && !m_world->scene.tables.giVolumes.empty()) {
+            if (m_world && !m_world->m_hierarchy.tables.giVolumes.empty()) {
                 tour::mem::FrameVector<uint32_t> nodes{
                     tour::mem::LinearAllocatorSTL<uint32_t>{&tour::mem::FrameAllocator()}};
-                nodes.reserve(m_world->scene.tables.giVolumes.size());
-                for (const GiVolumeRow& row : m_world->scene.tables.giVolumes)
+                nodes.reserve(m_world->m_hierarchy.tables.giVolumes.size());
+                for (const GiVolumeRow& row : m_world->m_hierarchy.tables.giVolumes)
                     nodes.push_back(row.node);
                 std::sort(nodes.begin(), nodes.end());
                 tour::mem::FrameVector<smvk::giprobe::GiProbeInstance> rows{
@@ -22046,12 +22046,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         &tour::mem::FrameAllocator()}};
                 for (size_t ni = 0; ni < nodes.size() && ni < 8; ++ni) {
                     const uint32_t node = nodes[ni];
-                    if (node >= m_world->scene.globalTransform.size())
+                    if (node >= m_world->m_hierarchy.globalTransform.size())
                         continue;
                     // World OBB decode (GiBaker/cook parity):
                     // translation = center, basis lengths = full
                     // extents, normalized basis = the box axes.
-                    const glm::mat4& g = m_world->scene.globalTransform[node];
+                    const glm::mat4& g = m_world->m_hierarchy.globalTransform[node];
                     const glm::vec3 c(g[3]);
                     glm::vec3 half;
                     glm::mat3 axes;
@@ -22062,7 +22062,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     }
                     // The volume's authored def (the giVolume
                     // table row on this node).
-                    const GiVolumeRow* cvRow = FindGiVolume(m_world->scene, node);
+                    const GiVolumeRow* cvRow = FindGiVolume(m_world->m_hierarchy, node);
                     if (!cvRow)
                         continue;
                     const ::SceneGiVolume& cvg = cvRow->volume;
@@ -23452,7 +23452,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
     m_prevUnjitteredViewProj = m_unjitteredViewProj;
     m_prevViewProjValid = true;
     m_prevJitterUV = m_currJitterUV;
-    m_prevGlobalTransforms.Assign(m_world->scene.globalTransform);
+    m_prevGlobalTransforms.Assign(m_world->m_hierarchy.globalTransform);
     // Batched GPU-scene motion history: snapshot the persistent instance
     // transforms (double-precision translation + basis + generation) and
     // the camera-relative view for the next frame's motion VS. The

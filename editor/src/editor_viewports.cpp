@@ -208,9 +208,9 @@ void EditorApp::ClearSubSelection() {
 }
 
 void EditorApp::SelectPrevNode() {
-    if (!m_world || m_world->scene.hierarchy.empty())
+    if (!m_world || m_world->m_hierarchy.hierarchy.empty())
         return;
-    const uint32_t n = uint32_t(m_world->scene.hierarchy.size());
+    const uint32_t n = uint32_t(m_world->m_hierarchy.hierarchy.size());
     uint32_t cur = (m_selected == UINT32_MAX || m_selected >= n) ? 0 : m_selected;
     cur = (cur == 0) ? n - 1 : cur - 1;
     SetSelection(cur);
@@ -218,9 +218,9 @@ void EditorApp::SelectPrevNode() {
 }
 
 void EditorApp::SelectNextNode() {
-    if (!m_world || m_world->scene.hierarchy.empty())
+    if (!m_world || m_world->m_hierarchy.hierarchy.empty())
         return;
-    const uint32_t n = uint32_t(m_world->scene.hierarchy.size());
+    const uint32_t n = uint32_t(m_world->m_hierarchy.hierarchy.size());
     uint32_t cur = (m_selected == UINT32_MAX || m_selected >= n) ? 0 : m_selected;
     cur = (cur + 1 >= n) ? 0 : cur + 1;
     SetSelection(cur);
@@ -359,7 +359,7 @@ void EditorApp::SelectRange(uint32_t node) {
     m_worldSelected = false;
     ClearNonDagSelection();
     ClearSubSelection();
-    if (node < m_world->scene.hierarchy.size()) {
+    if (node < m_world->m_hierarchy.hierarchy.size()) {
         const auto it = std::find(m_outlinerOrder.begin(), m_outlinerOrder.end(), node);
         const auto anchor = std::find(m_outlinerOrder.begin(), m_outlinerOrder.end(), m_selected);
         if (it != m_outlinerOrder.end() && anchor != m_outlinerOrder.end() &&
@@ -401,7 +401,7 @@ void EditorApp::SelectWorldNode() {
 uint32_t EditorApp::FindSunNode() const {
     if (!m_world)
         return UINT32_MAX;
-    for (const LightRow& _row : m_world->scene.tables.lights) {
+    for (const LightRow& _row : m_world->m_hierarchy.tables.lights) {
         const NodeId node = _row.node;
         const auto& li = _row.light;
         (void)li;
@@ -426,12 +426,12 @@ void EditorApp::FinishBoxSelect() {
     const smvk::IteratorFlags req = smvk::IteratorFlags(smvk::IteratorFlagBit_Renderable |
                                                         smvk::IteratorFlagBit_StaticVertexFmt);
     m_world->forEachRenderItem(req, [&](const tour::World::RenderItem& item) {
-        if (!IsVisibleNode(m_world->scene, int(item.node)))
+        if (!IsVisibleNode(m_world->m_hierarchy, int(item.node)))
             return;
         const smvk::StaticMesh* mesh = m_world->GetMesh(item.mesh);
         if (!mesh)
             return;
-        const glm::mat4& model = m_world->scene.globalTransform[item.node];
+        const glm::mat4& model = m_world->m_hierarchy.globalTransform[item.node];
         float sx0 = FLT_MAX, sy0 = FLT_MAX, sx1 = -FLT_MAX, sy1 = -FLT_MAX;
         for (int k = 0; k < 8; ++k) {
             const glm::vec3 corner((k & 1) ? mesh->geometry.aabbMax.x : mesh->geometry.aabbMin.x,
@@ -815,7 +815,7 @@ void EditorApp::DrawGiVolumePreviewOverlay() {
         return;
     const bool showBaked = m_giVolumePreviewMode != 0 && !m_giVolumePreviews.empty();
     const bool showAuthored =
-        m_showGiVolumeGizmos && m_world && !m_world->scene.tables.giVolumes.empty();
+        m_showGiVolumeGizmos && m_world && !m_world->m_hierarchy.tables.giVolumes.empty();
     if (!showBaked && !showAuthored)
         return;
     ImDrawList* dl = ImGui::GetForegroundDrawList();
@@ -947,7 +947,7 @@ void EditorApp::DrawGiVolumePreviewOverlay() {
             // Authored boxes already draw as 3D gizmo wires; the
             // overlay contributes the name/priority tag at the box
             // center (same priority hue both places).
-            const TransformHierarchy& scene = m_world->scene;
+            const TransformHierarchy& scene = m_world->m_hierarchy;
             for (const GiVolumeRow& _row : scene.tables.giVolumes) {
                 const NodeId node = _row.node;
                 const auto& def = _row.volume;
@@ -991,7 +991,7 @@ void EditorApp::UpdateOctreePreview() {
     // scenes still frame their volumes).
     glm::vec3 mn(FLT_MAX), mx(-FLT_MAX);
     bool any = false;
-    const TransformHierarchy& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->m_hierarchy;
     if (scene.globalTransform.size() == scene.hierarchy.size()) {
         for (size_t n = 0; n < scene.globalTransform.size(); ++n) {
             const glm::vec3 p(scene.globalTransform[n][3]);
@@ -1182,19 +1182,19 @@ void EditorApp::CaptureBakeState(size_t& bakedOut, size_t& totalOut) {
     totalOut = 0;
     if (!m_world)
         return;
-    totalOut = m_world->scene.tables.cubemaps.size();
+    totalOut = m_world->m_hierarchy.tables.cubemaps.size();
     if (totalOut == 0)
         return;
     std::vector<CubemapProbeRow> rows;
     if (!CubemapProbeRowsFromFile(rows))
         return;
-    for (const CubemapRow& _row : m_world->scene.tables.cubemaps) {
+    for (const CubemapRow& _row : m_world->m_hierarchy.tables.cubemaps) {
         const NodeId node = _row.node;
         const auto& def = _row.cubemap;
         (void)def;
-        if (node >= m_world->scene.globalTransform.size())
+        if (node >= m_world->m_hierarchy.globalTransform.size())
             continue;
-        const glm::vec3 p(m_world->scene.globalTransform[node][3]);
+        const glm::vec3 p(m_world->m_hierarchy.globalTransform[node][3]);
         for (const auto& r : rows) {
             if (glm::distance(p, r.center) < kCaptureBakeMatchM) {
                 ++bakedOut;
@@ -1290,7 +1290,7 @@ void EditorApp::DrawCaptureBallOverlay() {
     // unbaked, probes draw nothing).
     std::vector<CubemapProbeRow> rows;
     CubemapProbeRowsFromFile(rows);
-    const bool showPins = m_showCubemapGizmos && !m_world->scene.tables.cubemaps.empty();
+    const bool showPins = m_showCubemapGizmos && !m_world->m_hierarchy.tables.cubemaps.empty();
     if (!m_showProbeOverlay && !showPins)
         return;
     const auto pinBaked = [&](const glm::vec3& p) {
@@ -1300,7 +1300,7 @@ void EditorApp::DrawCaptureBallOverlay() {
         return false;
     };
     ImDrawList* dl = ImGui::GetForegroundDrawList();
-    const TransformHierarchy& scene = m_world->scene;
+    const TransformHierarchy& scene = m_world->m_hierarchy;
     const float maxDist = std::max(m_probeOverlayMaxDist, 1.0f);
     const float maxDist2 = maxDist * maxDist;
     // In-view witness (the viz window's legend): the busiest viewport's

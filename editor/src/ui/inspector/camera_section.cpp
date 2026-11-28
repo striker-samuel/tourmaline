@@ -61,9 +61,9 @@ void EditorApp::DrawCamSection(uint32_t node) {
     // the pose is the node's transform (gizmo), forward = node -Z in
     // world. Undoable SetCamAttr edits persisted as setCamAttr tour
     // verbs so cooks replay them.
-    if (!m_world || node >= m_world->scene.hierarchy.size())
+    if (!m_world || node >= m_world->m_hierarchy.hierarchy.size())
         return;
-    TransformHierarchy& scene = m_world->scene;
+    TransformHierarchy& scene = m_world->m_hierarchy;
     if (!(FindCamera(scene, node) != nullptr))
         return;
     ImGui::Separator();
