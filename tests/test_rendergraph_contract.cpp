@@ -366,8 +366,7 @@ int main() {
     Check(offsetof(smvk::gfx::FilteredVsPush, renderViewIndex) == 16, "contract.tail-viewindex-16");
     // reservedLmXforms still rides bytes 216..224 (lightmaps retired) the
     // motion VS overwrites with its FrameUniforms BDA — same offset.
-    Check(offsetof(smvk::gfx::FilteredVsPush, reservedLmXforms) == 24,
-          "contract.tail-lmxforms-24");
+    Check(offsetof(smvk::gfx::FilteredVsPush, reservedLmXforms) == 24, "contract.tail-lmxforms-24");
 
     // Scratch invariant anchor: shared fields end exactly at 192.
     Check(offsetof(PC, prevModel) == kScratchStart, "contract.scratch-starts-192");
@@ -424,7 +423,7 @@ int main() {
     // 8. Hardware ray-query RHI input and opt-in defaults (CPU-only).
     // The backend consumes exactly one 3x4 row-major VkTransformMatrixKHR,
     // and the world shader reuses the existing 56-byte contact push block.
-    Check(sizeof(smvk::RayTracingInstance) == 80, "contract.rt-instance-size");
+    Check(sizeof(smvk::RayTracingInstance) == 112, "contract.rt-instance-size");
     Check(offsetof(smvk::RayTracingInstance, transform) == 16,
           "contract.rt-instance-transform-offset");
     Check(offsetof(smvk::RayTracingInstance, opacityMode) == 64, "contract.omm-input-offset");

@@ -19814,7 +19814,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             // (Re)load the trace module when the backend changes (the SDF and
             // RT variants are separate compiled pipelines).
             m_ssProbesModule = {};
-            m_ssProbesProgram = {};
+            m_ssProbesProgram = smvk::ShaderProgram();
             m_ssProbesModule = m_context->CreateShaderModule(
                 smvk::shaders::Read(m_ssProbesRtBackend ? "content/shaders/ssprobes_rt.cs.hlsl.spv"
                                                         : "content/shaders/ssprobes.cs.hlsl.spv"),
