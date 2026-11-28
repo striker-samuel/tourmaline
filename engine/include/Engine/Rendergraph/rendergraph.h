@@ -165,6 +165,12 @@ struct CommandBuffer final {
     // sequence is guaranteed safe (over-synchronization only).
     void EmitGlobalMemoryBarrier();
 
+    // Intra-pass compute producer -> compute consumer (including BDA).
+    // When consumesIndirect is true, also publish generated dispatch args
+    // to DRAW_INDIRECT. External graphics/transfer consumers still require
+    // their own graph edges; this is not a replacement for those barriers.
+    void EmitComputeMemoryBarrier(bool consumesIndirect = false);
+
     void BindStaticVertexFmt();
 
     // Binds an arbitrary RHI buffer as vertex binding N (pos-only debug
