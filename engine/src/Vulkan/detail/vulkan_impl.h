@@ -953,6 +953,9 @@ struct VulkanResourceManager final /*: public IResourceManager*/ {
     [[nodiscard]] uint64_t RayTracingMaterialAddress() const {
         return rtMaterial_.address;
     }
+    [[nodiscard]] uint64_t RayTracingInstanceAddress() const {
+        return rtInstance_.address;
+    }
     void ClearRayTracingWorld();
     Holder<DescriptorPoolHandle> CreateDescriptorPool(std::vector<VkDescriptorPoolSize> poolSizes,
                                                       const char* debugName = "DescriptorPool");
@@ -1203,6 +1206,11 @@ struct VulkanResourceManager final /*: public IResourceManager*/ {
         VkDeviceAddress address = 0;
     };
     RtMaterialBuffer rtMaterial_{};
+    // Per-TLAS-instance transform + geometry offsets for RT hit-normal
+    // reconstruction (ssprobes RT backend). Indexed by the TLAS instance
+    // custom index, 64 bytes/instance (3x4 row-major transform + uint4
+    // firstIndex/baseVertex/vertexCount/pad).
+    RtMaterialBuffer rtInstance_{};
     bool rtWorldReady_ = false;
 
     // Resources – one local shard per thread, no pool locks (see pool.h).

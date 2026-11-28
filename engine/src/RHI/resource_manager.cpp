@@ -560,6 +560,9 @@ bool ResourceManager::BuildRayTracingWorld(std::span<const RayTracingInstance> i
 uint64_t ResourceManager::RayTracingMaterialAddress() const {
     return impl_->vulkan.RayTracingMaterialAddress();
 }
+uint64_t ResourceManager::RayTracingInstanceAddress() const {
+    return impl_->vulkan.RayTracingInstanceAddress();
+}
 bool ResourceManager::RayTracingWorldReady() const {
     return impl_->vulkan.RayTracingWorldReady();
 }

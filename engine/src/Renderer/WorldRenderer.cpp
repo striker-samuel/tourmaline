@@ -846,6 +846,9 @@ namespace {
 struct SsProbesPush {
     uint64_t frameUniforms = 0, sceneAddress = 0; // SDF backend scene
     uint64_t rayMaterials = 0;                    // RT backend material buffer
+    uint64_t rtInstanceData = 0;                  // RT backend instance transform+geometry
+    uint64_t rtVertexPos = 0;                     // static vertex-position monoblock BDA
+    uint64_t rtIndices = 0;                       // static index monoblock BDA
     uint32_t depthTextureIndex = 0;
     uint32_t prevImageIndex = 0;    // history[writeSlot ^ 1] (sampled read)
     uint32_t outImageIndex = 0;     // history[writeSlot] (storage write)
@@ -19902,6 +19905,15 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             push.frameUniforms = frameUniformsAddress;
             push.sceneAddress = m_ssProbesRtBackend ? 0 : sdfSceneAddr;
             push.rayMaterials = m_ssProbesRtBackend ? m_context->RayTracingMaterialAddress() : 0;
+            push.rtInstanceData = m_ssProbesRtBackend ? m_context->RayTracingInstanceAddress() : 0;
+            push.rtVertexPos = m_ssProbesRtBackend
+                                   ? m_context->GetBufferDeviceAddress(
+                                         smvk::staticVertexFmtHeap.m_staticVertexPosBuffer)
+                                   : 0;
+            push.rtIndices = m_ssProbesRtBackend
+                                 ? m_context->GetBufferDeviceAddress(
+                                       smvk::staticVertexFmtHeap.m_staticIndexBuffer)
+                                 : 0;
             push.depthTextureIndex = depthIndex;
             push.prevImageIndex = m_ssProbesImageIndex[prev];
             push.outImageIndex = m_ssProbesImageIndex[cur];

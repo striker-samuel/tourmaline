@@ -349,6 +349,11 @@ class ResourceManager {
     // Per-TLAS-instance compact material (albedo/emissive/metallic) BDA,
     // indexed by the TLAS instance custom index. 0 when not built.
     uint64_t RayTracingMaterialAddress() const;
+    // Per-TLAS-instance transform (3x4 row-major) + geometry offsets
+    // (firstIndex/baseVertex/vertexCount) BDA for RT hit-normal
+    // reconstruction. Indexed by the TLAS instance custom index. 0 when not
+    // built.
+    uint64_t RayTracingInstanceAddress() const;
     void ClearRayTracingWorld();
     void FlushUploads();
     // Shard-local flush: submits ONLY the calling thread's upload-streamer

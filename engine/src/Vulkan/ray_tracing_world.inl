@@ -43,6 +43,9 @@ void smvk::VulkanResourceManager::ClearRayTracingWorld() {
     if (rtMaterial_.buffer != VK_NULL_HANDLE)
         vmaDestroyBuffer(m_allocator, rtMaterial_.buffer, rtMaterial_.allocation);
     rtMaterial_ = {};
+    if (rtInstance_.buffer != VK_NULL_HANDLE)
+        vmaDestroyBuffer(m_allocator, rtInstance_.buffer, rtInstance_.allocation);
+    rtInstance_ = {};
     rtWorldReady_ = false;
 }
 
@@ -182,6 +185,32 @@ bool smvk::VulkanResourceManager::BuildRayTracingWorld(
             rtMaterial_.buffer = matBuf.buffer;
             rtMaterial_.allocation = matBuf.allocation;
             rtMaterial_.address = matBuf.address;
+        }
+    }
+    // Per-instance transform + geometry offsets for RT hit-normal
+    // reconstruction (ssprobes RT backend). Indexed by the TLAS instance
+    // custom index (0..accepted.size()-1), same order as the material buffer.
+    {
+        if (rtInstance_.buffer != VK_NULL_HANDLE)
+            vmaDestroyBuffer(m_allocator, rtInstance_.buffer, rtInstance_.allocation);
+        rtInstance_ = {};
+        TempBuffer instBuf{};
+        if (alloc(accepted.size() * 64ull, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true,
+                  instBuf)) {
+            float* dst = static_cast<float*>(instBuf.mapped);
+            for (size_t i = 0; i < accepted.size(); ++i) {
+                for (uint32_t c = 0; c < 12; ++c)
+                    dst[i * 16 + c] = accepted[i].transform[c];
+                uint32_t* geom = reinterpret_cast<uint32_t*>(dst + i * 16 + 12);
+                geom[0] = accepted[i].firstIndex;
+                geom[1] = uint32_t(accepted[i].baseVertex);
+                geom[2] = accepted[i].vertexCount;
+                geom[3] = 0u;
+            }
+            vmaFlushAllocation(m_allocator, instBuf.allocation, 0, VK_WHOLE_SIZE);
+            rtInstance_.buffer = instBuf.buffer;
+            rtInstance_.allocation = instBuf.allocation;
+            rtInstance_.address = instBuf.address;
         }
     }
     auto getGeometry = [&](const RayTracingInstance& inst) {

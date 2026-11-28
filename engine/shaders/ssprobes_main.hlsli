@@ -18,6 +18,9 @@ struct SsProbesPush {
     GPU_PTR_READ(FrameUniforms) frameUniforms;
     GPU_PTR_READ(StaticSdfSceneHeader) scene;     // SDF backend scene (0 for RT)
     GPU_PTR_READ(RayMaterialBuffer) rayMaterials; // RT backend material buffer (0 for SDF)
+    GPU_PTR_READ(RtInstanceBuffer) rtInstances;   // RT backend instance transform+geometry
+    GPU_PTR_READ(StaticVertexPosWords) rtVertexPos; // static vertex-position monoblock
+    GPU_PTR_READ(StaticIndexWords) rtIndices;     // static index monoblock
     uint depthTextureIndex;
     uint prevImageIndex;     // history[writeSlot ^ 1] (sampled read)
     uint outImageIndex;      // history[writeSlot] (storage write)
@@ -191,7 +194,9 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
                                 normal * localDir.z;
 
 #ifdef SSPROBES_RT
-        const SsProbeHit hit = SsProbeTrace(sp.rayMaterials, worldPos + normal * bias, worldDir, 3.0f);
+        const SsProbeHit hit = SsProbeTrace(sp.rayMaterials, sp.rtInstances, sp.rtVertexPos,
+                                            sp.rtIndices, worldPos + normal * bias, worldDir,
+                                            3.0f);
 #else
         const SsProbeHit hit = SsProbeTrace(scene, worldPos + normal * bias, worldDir, 3.0f);
 #endif
@@ -200,10 +205,23 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
         if (!hit.valid) {
             L = DdgiSkyRadiance(frame, worldDir);
         } else {
-            // Material hit lighting: albedo * (emissive + (1-metallic) * sky).
+            // Material hit lighting (the DDGI trace convention): the analytic
+            // sky is carried by the MISS rays, so a hit contributes only the
+            // surface's own emission and the reflected SUN (directional, NdotL
+            // Lambertian). The old (1-metallic)*skyIrradiance term was wrong:
+            // it added an unshadowed sky bounce on EVERY hit, double-counting
+            // the sky the miss rays already integrate and leaving the sun out
+            // entirely (the "no direct light in the probe" bug).
             const float3 baseColor = max(hit.baseColor, 0.0f);
-            const float3 skyAmbient = DdgiSkyIrradiance(hit.normal, frame);
-            L = baseColor * (hit.emissive + (1.0f - hit.metallic) * skyAmbient);
+            const float3 diffuse = baseColor * (1.0f - saturate(hit.metallic));
+            L = baseColor * hit.emissive;
+            const float3 sunDir = frame.env.sunDirection.xyz;
+            const float sunLen2 = dot(sunDir, sunDir);
+            if (sunLen2 > 1e-8f && frame.env.sunColor.w > 0.0f) {
+                const float ndl = saturate(dot(hit.normal, sunDir * rsqrt(sunLen2)));
+                L += diffuse * frame.env.sunColor.rgb *
+                     (frame.env.sunColor.w * ndl / 3.14159265358979f);
+            }
         }
         acc += L; // cosine absorbed into the cosine-weighted sampling density
     }
