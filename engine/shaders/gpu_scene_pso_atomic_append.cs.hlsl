@@ -14,11 +14,12 @@
 //     path is fully deterministic. firstInstance still = original work index.
 //   - contention: only the class `next` counters are contended, once per wave.
 //
-// NOT wired into the renderer: the host must (1) reset each class `next` to
-// its bin offset with an explicit dependency before this pass, (2) read the
-// final `next - binOffset` per class as the draw count for
-// vkCmdDrawIndexedIndirectCount, and (3) define a no-dropped-draws fallback
-// for any overflow (clamping counts is NOT valid — see the PSO prefix doc).
+// NOT wired into the renderer: the host must (1) reset each class `next` to 0
+// with an explicit dependency before this pass (the running 0-based count IS
+// the per-class draw count read by the device), (2) read the final `next`
+// per class as the countBuffer for vkCmdDrawIndexedIndirectCount, and (3)
+// define a no-dropped-draws fallback for any overflow (clamping counts is NOT
+// valid — see the PSO prefix doc).
 #include "gpu_platform.hlsli"
 
 #define PSO_MAX_WORK 1048576u
@@ -42,8 +43,9 @@ struct RasterIndirectCmd {
     uint firstInstance;
 };
 struct IndirectRows { RasterIndirectCmd rows[PSO_MAX_WORK]; };
-// Per-class append state: `next` is the running slot cursor (initialized to
-// the class bin offset by the host), `overflow` is a sticky OR of error bits.
+// Per-class append state: `next` is the running 0-based count (reset to 0 by
+// the host; its final value is the per-class draw count), `overflow` is a
+// sticky OR of error bits.
 struct ClassState { uint next; uint overflow; uint pad0; uint pad1; };
 struct ClassStates { ClassState classes[PSO_CLASSES]; };
 
@@ -107,12 +109,13 @@ void mainCS(uint3 gid : SV_GroupID, uint3 lane : SV_GroupThreadID) {
         if (!selected)
             continue;
 
-        const uint slot = base + rankInWave; // `next` was seeded with binOffsets[c]
+        const uint slot = pc.binOffsets[c] + base + rankInWave; // base is 0-based
         const uint capacity = pc.binCapacities[c];
         // Guards are diagnostic only — the host MUST handle overflow without
         // dropping any scene draw before this path is enabled.
-        if (base > pc.commandCapacity || capacity > pc.commandCapacity - base ||
-            rankInWave >= capacity - base || slot >= PSO_MAX_WORK) {
+        if (pc.binOffsets[c] > pc.commandCapacity ||
+            capacity > pc.commandCapacity - pc.binOffsets[c] ||
+            base + rankInWave >= capacity || slot >= PSO_MAX_WORK) {
             InterlockedOr(pc.classStates.Get().classes[c].overflow, 1u);
             continue;
         }
