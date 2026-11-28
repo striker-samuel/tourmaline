@@ -1120,3 +1120,10 @@ Conventions:
   compiler crashes on the BDA-heavy engine shaders — the render loop
   needs a real GPU. Do not "fix" lavapipe crashes as port bugs without
   a GPU-verified repro.
+
+## Past CI and test failures
+
+Before pushing build, shader or test changes, or investigating a red workflow,
+read [docs/pass_ci_errors.md](docs/pass_ci_errors.md) for recurring failures,
+root causes, preventive checks and historical fixes. Keep test contracts aligned
+with intentional implementation changes; do not bypass failing gates.
