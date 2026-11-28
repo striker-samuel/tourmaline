@@ -380,7 +380,7 @@ class TaskMeshRuntime {
                       in.geometryCount,
                       in.clusterCount};
         next.scanBlock = {counts, offsets, sums, in.workCapacity, blocks};
-        next.scanGroups = {sums, bases, blocks, 0u};
+        next.scanGroups = {sums, bases, 0u, blocks, 0xFFFFFFFFu};
         next.scanAdd = {offsets, sums, bases, in.workCapacity, blocks};
         next.scatter = {in.work,
                         offsets,
@@ -419,8 +419,14 @@ class TaskMeshRuntime {
         }();
         next.graphics = {
             params, 0u, groupCapacity, 0u, taskGridX, 0u, s_vertexOptFlags, 0u, 0u, 0u};
-        next.graphics.prefix = {in.work, in.instances, in.clusters, in.positions,
-                                in.shading, in.meshletVertices, in.meshletTriangles, in.rasterView};
+        next.graphics.prefix = {in.work,
+                                in.instances,
+                                in.clusters,
+                                in.positions,
+                                in.shading,
+                                in.meshletVertices,
+                                in.meshletTriangles,
+                                in.rasterView};
         next.workCapacity = in.workCapacity;
         next.taskGroupCapacity = groupCapacity;
         next.scanBlocks = blocks;

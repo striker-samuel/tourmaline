@@ -201,14 +201,16 @@ struct WorkPrefixPush {
 struct WorkScatterPush {
     uint64_t choices = 0, offsets = 0, submeshes = 0, output = 0;
     alignas(16) glm::uvec4 limits{0u};
+    uint64_t bases = 0; // fused prefix-add: exclusive group base (local offset + base)
 };
 static_assert(sizeof(WorkSelectPush) == 144);
 static_assert(offsetof(WorkSelectPush, demand) == 64);
 static_assert(offsetof(WorkSelectPush, limits) == 80);
 static_assert(offsetof(WorkSelectPush, lodEyeBudget) == 112);
 static_assert(sizeof(WorkPrefixPush) == 24);
-static_assert(sizeof(WorkScatterPush) == 48);
+static_assert(sizeof(WorkScatterPush) == 64);
 static_assert(offsetof(WorkScatterPush, limits) == 32);
+static_assert(offsetof(WorkScatterPush, bases) == 48);
 
 // Three-stage production work scan: 256 candidates per workgroup; group
 // offsets are a much smaller bounded scan, never per-instance serial work.
@@ -217,15 +219,15 @@ struct ParallelWorkBlockPush {
     uint32_t candidateCount = 0, groupCount = 0;
 };
 struct ParallelWorkGroupPush {
-    uint64_t sums = 0, bases = 0;
-    uint32_t groupCount = 0, reserved = 0;
+    uint64_t sums = 0, bases = 0, offsets = 0;
+    uint32_t groupCount = 0, candidateCount = 0;
 };
 struct ParallelWorkAddPush {
     uint64_t offsets = 0, sums = 0, bases = 0;
     uint32_t candidateCount = 0, groupCount = 0;
 };
 static_assert(sizeof(ParallelWorkBlockPush) == 32);
-static_assert(sizeof(ParallelWorkGroupPush) == 24);
+static_assert(sizeof(ParallelWorkGroupPush) == 32);
 static_assert(sizeof(ParallelWorkAddPush) == 32);
 
 // GPU work expansion reference with optional projected-error selection.
@@ -807,7 +809,10 @@ class CandidateValidator {
         scatter.offsets = offsets;
         scatter.submeshes = addresses.submeshes;
         scatter.output = output;
-        scatter.limits = glm::uvec4(candidateCount, db.submeshes.Size(), uint32_t(maxWork), 0u);
+        scatter.limits = glm::uvec4(candidateCount,
+                                    db.submeshes.Size(),
+                                    uint32_t(maxWork),
+                                    GpuSceneFusedWorkAdd() ? 1u : 0u);
         f.workCandidates = candidateCount;
         f.workPrepared = true;
         return true;
@@ -817,7 +822,8 @@ class CandidateValidator {
                                                  uint32_t flight,
                                                  ParallelWorkBlockPush& block,
                                                  ParallelWorkGroupPush& groups,
-                                                 ParallelWorkAddPush& add) {
+                                                 ParallelWorkAddPush& add,
+                                                 WorkScatterPush& scatter) {
         if (flight >= Flights)
             return false;
         auto& f = flight_[flight];
@@ -843,8 +849,15 @@ class CandidateValidator {
         if (!counts || !offsets || !sums || !bases)
             return false;
         block = {counts, offsets, sums, f.workCandidates, blockCount};
-        groups = {sums, bases, blockCount, 0};
+        // The groups scan publishes the terminal total only in the fused path;
+        // the non-fused prefix-add kernel writes it (0xFFFFFFFF skips it).
+        groups = {sums,
+                  bases,
+                  offsets,
+                  blockCount,
+                  GpuSceneFusedWorkAdd() ? f.workCandidates : 0xFFFFFFFFu};
         add = {offsets, sums, bases, f.workCandidates, blockCount};
+        scatter.bases = bases;
         return true;
     }
 
@@ -1113,7 +1126,7 @@ class CandidateValidator {
         plan.count.geometryCount = geometryCount;
         plan.count.aliasCount = aliasCount;
         plan.scanBlock = {counts, offsets, sums, extent, scanBlocks};
-        plan.scanGroups = {sums, bases, scanBlocks, 0u};
+        plan.scanGroups = {sums, bases, 0u, scanBlocks, 0xFFFFFFFFu};
         plan.scanAdd = {offsets, sums, bases, extent, scanBlocks};
         plan.scatter = {};
         plan.scatter.work = work;
