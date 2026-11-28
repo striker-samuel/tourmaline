@@ -2649,6 +2649,13 @@ class WorldRenderer : public IRenderer {
     tour::gpu_scene::TaskMeshRuntime m_gpuSceneTaskMeshRuntime{};
     std::array<smvk::Holder<smvk::ShaderModuleHandle>, 3> m_gpuSceneTaskComputeModules{};
     std::array<smvk::ShaderProgram, 3> m_gpuSceneTaskComputePrograms{};
+    // Candidate E (atomic append) kernels for the task/mesh group producer:
+    // the counter clear + the single wave-aggregated append replacing the
+    // count -> scan -> scatter chain.
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneTaskAppendModule{};
+    smvk::ShaderProgram m_gpuSceneTaskAppendProgram{};
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneTaskClearModule{};
+    smvk::ShaderProgram m_gpuSceneTaskClearProgram{};
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneTaskAsModule{};
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneTaskMsModule{};
     smvk::ShaderProgram m_gpuSceneTaskMainProgram{};

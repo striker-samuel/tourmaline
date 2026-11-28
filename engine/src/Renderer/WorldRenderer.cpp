@@ -9485,7 +9485,10 @@ struct GpuSceneCullChainFrame {
     smvk::ShaderProgram* meshletAppendProgram = nullptr; // candidate E
     smvk::ShaderProgram* meshletClearProgram = nullptr;  // candidate E
     smvk::ShaderProgram* taskPrograms = nullptr;         // [3]
+    smvk::ShaderProgram* taskAppendProgram = nullptr;    // candidate E
+    smvk::ShaderProgram* taskClearProgram = nullptr;     // candidate E
     bool taskReady = false;
+    bool taskAtomicAppend = false;
     tour::gpu_scene::TaskMeshDispatchPlan taskPlan{};
     tour::gpu_scene::InstanceCullGpuPush gpuPush{};
     tour::gpu_scene::CompactCountPush countPush{};
@@ -9583,30 +9586,46 @@ void RecordGpuSceneCullChain(smvk::CommandBuffer& cmd,
     cmd.Dispatch(f.groups, 1, 1);
     if (f.taskReady) {
         GpuSceneComputeDependency(cmd);
-        cmd.BindComputePipeline(f.taskPrograms[0]);
-        cmd.PushConstants(
-            0, sizeof(f.taskPlan.count), &f.taskPlan.count, smvk::ShaderStage::Compute);
-        cmd.Dispatch((f.taskPlan.workCapacity + 255u) / 256u, 1, 1);
-        GpuSceneComputeDependency(cmd);
-        cmd.BindComputePipeline(f.workScanPrograms[0]);
-        cmd.PushConstants(
-            0, sizeof(f.taskPlan.scanBlock), &f.taskPlan.scanBlock, smvk::ShaderStage::Compute);
-        cmd.Dispatch((f.taskPlan.workCapacity + 255u) / 256u, 1, 1);
-        GpuSceneComputeDependency(cmd);
-        cmd.BindComputePipeline(f.workScanPrograms[1]);
-        cmd.PushConstants(
-            0, sizeof(f.taskPlan.scanGroups), &f.taskPlan.scanGroups, smvk::ShaderStage::Compute);
-        cmd.Dispatch(1, 1, 1);
-        GpuSceneComputeDependency(cmd);
-        cmd.BindComputePipeline(f.workScanPrograms[2]);
-        cmd.PushConstants(
-            0, sizeof(f.taskPlan.scanAdd), &f.taskPlan.scanAdd, smvk::ShaderStage::Compute);
-        cmd.Dispatch((f.taskPlan.workCapacity + 255u) / 256u, 1, 1);
-        GpuSceneComputeDependency(cmd);
-        cmd.BindComputePipeline(f.taskPrograms[1]);
-        cmd.PushConstants(
-            0, sizeof(f.taskPlan.scatter), &f.taskPlan.scatter, smvk::ShaderStage::Compute);
-        cmd.Dispatch((f.taskPlan.taskGroupCapacity + 127u) / 128u, 1, 1);
+        if (f.taskAtomicAppend) {
+            // Candidate E: reset the counter, then one wave-aggregated append
+            // replaces the count -> scan -> scatter chain.
+            cmd.BindComputePipeline(*f.taskClearProgram);
+            cmd.PushConstants(
+                0, sizeof(f.taskPlan.clear), &f.taskPlan.clear, smvk::ShaderStage::Compute);
+            cmd.Dispatch(1, 1, 1);
+            GpuSceneComputeDependency(cmd);
+            cmd.BindComputePipeline(*f.taskAppendProgram);
+            cmd.PushConstants(
+                0, sizeof(f.taskPlan.append), &f.taskPlan.append, smvk::ShaderStage::Compute);
+            cmd.Dispatch((f.taskPlan.workCapacity + 255u) / 256u, 1, 1);
+        } else {
+            cmd.BindComputePipeline(f.taskPrograms[0]);
+            cmd.PushConstants(
+                0, sizeof(f.taskPlan.count), &f.taskPlan.count, smvk::ShaderStage::Compute);
+            cmd.Dispatch((f.taskPlan.workCapacity + 255u) / 256u, 1, 1);
+            GpuSceneComputeDependency(cmd);
+            cmd.BindComputePipeline(f.workScanPrograms[0]);
+            cmd.PushConstants(
+                0, sizeof(f.taskPlan.scanBlock), &f.taskPlan.scanBlock, smvk::ShaderStage::Compute);
+            cmd.Dispatch((f.taskPlan.workCapacity + 255u) / 256u, 1, 1);
+            GpuSceneComputeDependency(cmd);
+            cmd.BindComputePipeline(f.workScanPrograms[1]);
+            cmd.PushConstants(0,
+                              sizeof(f.taskPlan.scanGroups),
+                              &f.taskPlan.scanGroups,
+                              smvk::ShaderStage::Compute);
+            cmd.Dispatch(1, 1, 1);
+            GpuSceneComputeDependency(cmd);
+            cmd.BindComputePipeline(f.workScanPrograms[2]);
+            cmd.PushConstants(
+                0, sizeof(f.taskPlan.scanAdd), &f.taskPlan.scanAdd, smvk::ShaderStage::Compute);
+            cmd.Dispatch((f.taskPlan.workCapacity + 255u) / 256u, 1, 1);
+            GpuSceneComputeDependency(cmd);
+            cmd.BindComputePipeline(f.taskPrograms[1]);
+            cmd.PushConstants(
+                0, sizeof(f.taskPlan.scatter), &f.taskPlan.scatter, smvk::ShaderStage::Compute);
+            cmd.Dispatch((f.taskPlan.taskGroupCapacity + 127u) / 128u, 1, 1);
+        }
         GpuSceneComputeDependency(cmd);
         cmd.BindComputePipeline(f.taskPrograms[2]);
         cmd.PushConstants(
@@ -14823,6 +14842,39 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 }
             }
         }
+        // Candidate E: the atomic-append + counter-clear kernels. Optional,
+        // like the count/scatter kernels: a missing module keeps the prefix.
+        const auto loadTaskAppendKernel = [this](smvk::Holder<smvk::ShaderModuleHandle>& module,
+                                                 smvk::ShaderProgram& program,
+                                                 const char* path) {
+            if (program.shaderCount == 1)
+                return;
+            try {
+                if (module.empty())
+                    module = m_context->CreateShaderModule(smvk::shaders::Read(path),
+                                                           "GpuSceneTaskAppend");
+                if (!module.empty()) {
+                    smvk::Shader cs{.module = module,
+                                    .entryPoint = "mainCS",
+                                    .stage = smvk::ShaderStage::Compute};
+                    program = {.shaders = {cs}, .shaderCount = 1};
+                }
+            } catch (...) {
+                static bool logged = false;
+                if (!logged) {
+                    std::fprintf(stderr,
+                                 "[GpuSceneTaskMesh] atomic-append kernel unavailable; "
+                                 "prefix path retained\n");
+                    logged = true;
+                }
+            }
+        };
+        loadTaskAppendKernel(m_gpuSceneTaskAppendModule,
+                             m_gpuSceneTaskAppendProgram,
+                             "content/shaders/gpu_scene_task_group_append.cs.hlsl.spv");
+        loadTaskAppendKernel(m_gpuSceneTaskClearModule,
+                             m_gpuSceneTaskClearProgram,
+                             "content/shaders/gpu_scene_task_group_clear.cs.hlsl.spv");
         // Optional GPU Scene meshlet visibility hash clear kernel.
         // The legacy non-temporal task draw remains valid if unavailable.
         if (m_gpuSceneTaskTemporalClearProgram.shaderCount != 1) {
@@ -16140,6 +16192,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 tour::gpu_scene::TaskMeshTemporalFrame temporalTaskPlan{};
                 bool temporalTaskPrepared = false;
                 bool taskReady = false;
+                bool taskAtomicAppend = false;
                 // Named cutover gates so a fallback can NAME its reason (the
                 // "why indexed raster?" answer) instead of silently skipping
                 // the meshlet path. Evaluated unconditionally (all pure reads;
@@ -16170,9 +16223,16 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     std::all_of(m_gpuSceneTaskComputePrograms.begin(),
                                 m_gpuSceneTaskComputePrograms.end(),
                                 [](const smvk::ShaderProgram& p) { return p.shaderCount == 1; });
+                // Candidate E: wave-aggregated atomic append. Only active when
+                // both its kernels loaded; a missing kernel keeps the prefix.
+                const bool taskAtomicAppendRequested = tour::gpu_scene::GpuSceneAtomicAppend();
+                taskAtomicAppend = taskAtomicAppendRequested &&
+                                   m_gpuSceneTaskAppendProgram.shaderCount == 1 &&
+                                   m_gpuSceneTaskClearProgram.shaderCount == 1;
                 if (g_taskMeshOn && g_rasterMode && g_workReady && g_geoIds && g_noProjectLit &&
                     g_rangesResident && g_meshShader && g_main && g_gi && g_depth &&
-                    (g_noMasked || g_maskedTwins) && g_gbuffer && g_compute) {
+                    (g_noMasked || g_maskedTwins) && g_gbuffer && g_compute &&
+                    (!taskAtomicAppendRequested || taskAtomicAppend)) {
                     const auto& gfx = m_gfxRenderer.State();
                     // The task/mesh index bound mirrors the 2048 MiB static index
                     // monoblock (2^29 uint32 words; raised from 512 MiB). The old
@@ -16721,10 +16781,11 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                         s_taskActiveReported = true;
                         std::fprintf(stderr,
                                      "[GpuSceneTaskMesh] active: workCapacity=%u groupCapacity=%u "
-                                     "blocks=%u\n",
+                                     "blocks=%u append=%d\n",
                                      taskPlan.workCapacity,
                                      taskPlan.taskGroupCapacity,
-                                     taskPlan.scanBlocks);
+                                     taskPlan.scanBlocks,
+                                     taskAtomicAppend ? 1 : 0);
                     }
                 } else if (g_taskMeshOn) {
                     // The task/mesh path is the CANONICAL geometry path and is
@@ -17124,7 +17185,10 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     chainFrame.meshletAppendProgram = &m_gpuSceneMeshletAppendProgram;
                     chainFrame.meshletClearProgram = &m_gpuSceneMeshletClearProgram;
                     chainFrame.taskPrograms = m_gpuSceneTaskComputePrograms.data();
+                    chainFrame.taskAppendProgram = &m_gpuSceneTaskAppendProgram;
+                    chainFrame.taskClearProgram = &m_gpuSceneTaskClearProgram;
                     chainFrame.taskReady = taskReady;
+                    chainFrame.taskAtomicAppend = taskAtomicAppend;
                     chainFrame.taskPlan = taskPlan;
                     chainFrame.gpuPush = gpuPush;
                     chainFrame.countPush = countPush;

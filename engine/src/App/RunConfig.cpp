@@ -991,6 +991,17 @@ void RunConfig::WarnUnknown() {
         "TOURMALINE_KD_NOSEED",
         "TOURMALINE_KD_NOSKIN",
         "TOURMALINE_SKINBOUNDS_DUMP",
+        // GPU-scene barrier/HZB optimization candidates (A/B/C/D/E switches)
+        // plus the task/mesh + meshlet-compact A/B levers and the mesh-stage
+        // vertex A/B pin - one-shot static latches read directly at their
+        // sites, documented diagnostic knobs rather than RunConfig state.
+        "TOURMALINE_GPU_SCENE_SCOPED_BARRIERS",
+        "TOURMALINE_GPU_SCENE_FUSED_COUNT",
+        "TOURMALINE_GPU_SCENE_FUSED_WORK_ADD",
+        "TOURMALINE_GPU_SCENE_ATOMIC_APPEND",
+        "TOURMALINE_GPU_SCENE_TASK_MESH",
+        "TOURMALINE_GPU_SCENE_MESHLETS",
+        "TOURMALINE_FAST_VERTEX",
         // Stale doc-only (AGENTS.md): warn to guide migration, not error.
         "TOURMALINE_TRANSPARENCY",
     };
