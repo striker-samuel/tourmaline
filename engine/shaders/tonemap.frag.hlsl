@@ -40,7 +40,7 @@ struct TonemapPush
     float4 srcUvWindow;
     // Clipping debug views (debugView 2..4): display-encoded SDR luma
     // thresholds (C++ mirror: tonemap.h TonemapPush - layout-identical
-    // appended tail, 88 bytes total).
+    // appended tail).
     float shadowClipThreshold;
     float highlightClipThreshold;
     float displayRedGain;
@@ -50,6 +50,8 @@ struct TonemapPush
     uint displayTestPattern;
     uint pointSamplerIndex;   // nearest/clamp sampler for the motion texture (debugView 1)
     float2 motionTexelSize;   // motion image size in texels (UV -> pixels scale)
+    uint lensFlareTextureIndex; // immutable optical LUT, 0xffffffff = disabled
+    float lensFlareIntensity;
 };
 
 GPU_PUSH(TonemapPush, tp);
@@ -246,6 +248,56 @@ float3 SampleLut(float3 c)
     return lerp(a, b, fracB);
 }
 
+// Lens flares reuse the existing thresholded, blurred HDR bloom image. Each
+// affine reflection maps a highlight to a different point along the optical
+// axis; the radial halo is aspect-correct. All taps stay inside this layer's
+// source window, and fade out before crossing the viewport edge (no wrapping).
+float3 FlareBrightTap(Texture2D bright, SamplerState smp, float2 localUv)
+{
+    float2 edge = min(localUv, 1.0f - localUv);
+    float fade = smoothstep(0.0f, 0.06f, min(edge.x, edge.y));
+    float2 sourceUv = lerp(tp.srcUvWindow.xy, tp.srcUvWindow.zw, saturate(localUv));
+    return SanitizeHdr(bright.SampleLevel(smp, sourceUv, 0).rgb) * fade;
+}
+
+// The original CC0 RGBA8 atlas stores a chromatic gradient in row zero
+// and an annular aperture falloff in row one. Sample texel centers in Y,
+// and keep X within the center of the end texels (16x2 texture).
+float3 FlareProfile(Texture2D profile, SamplerState smp, float t, float row)
+{
+    return profile.SampleLevel(smp, float2((saturate(t) * 15.0f + 0.5f) / 16.0f, row), 0).rgb;
+}
+
+float3 LensFlare(float2 localUv, float aspect)
+{
+    Texture2D bright = textures[NonUniformResourceIndex(tp.bloomTextureIndex)];
+    Texture2D profile = textures[NonUniformResourceIndex(tp.lensFlareTextureIndex)];
+    SamplerState smp = samplers[NonUniformResourceIndex(tp.samplerIndex)];
+    float2 centered = localUv - 0.5f;
+    float2 aspectScale = float2(aspect, 1.0f);
+    float radius = length(centered * aspectScale);
+    float3 flare = float3(0, 0, 0);
+    const float scales[3] = { 1.65f, 0.85f, 0.45f };
+    const float weights[3] = { 0.55f, 0.32f, 0.13f };
+    [unroll]
+    for (uint i = 0; i < 3; ++i)
+    {
+        float2 ghostUv = 0.5f - centered * scales[i];
+        float t = saturate(length(ghostUv - 0.5f) * 1.41421356f);
+        float3 tint = FlareProfile(profile, smp, frac(t * 0.5f + float(i) / 3.0f), 0.25f);
+        flare += FlareBrightTap(bright, smp, ghostUv) * tint * weights[i];
+    }
+
+    // Offset the mirrored sample radially to form a halo around a bright
+    // source. The safe denominator keeps the exact optical center finite.
+    float2 axis = centered / max(radius, 1e-5f);
+    float2 haloUv = 0.5f - centered + axis * 0.28f;
+    float3 haloTint = FlareProfile(profile, smp, radius / 0.7f, 0.75f);
+    flare += FlareBrightTap(bright, smp, haloUv) * haloTint *
+             (0.35f * smoothstep(0.0f, 0.06f, radius));
+    return SanitizeHdr(flare);
+}
+
 PSOut mainPS(PSIn IN)
 {
     PSOut OUT;
@@ -309,6 +361,18 @@ PSOut mainPS(PSIn IN)
     {
         float3 bloom = textures[NonUniformResourceIndex(tp.bloomTextureIndex)].Sample(samplers[NonUniformResourceIndex(smpIdx)], uv).rgb;
         hdr += bloom * tp.bloomIntensity;
+    }
+
+    // Optical artifacts belong in linear HDR, not on the graded SDR/UI.
+    // The same bloom input/barrier is reused; no extra render target or pass.
+    if (tp.debugView == 0u && tp.displayTestPattern == 0u &&
+        tp.bloomTextureIndex < 100000u && tp.lensFlareTextureIndex < 100000u &&
+        tp.lensFlareIntensity > 0.0f)
+    {
+        // Fullscreen-triangle UV derivatives describe THIS render area, not
+        // the potentially larger source image (split/stacked viewport safe).
+        float aspect = abs(ddy(IN.uv.y)) / max(abs(ddx(IN.uv.x)), 1e-6f);
+        hdr = SanitizeHdr(hdr + LensFlare(IN.uv, aspect) * tp.lensFlareIntensity);
     }
 
     float3 mapped = Tonemap(hdr * exposure, mode);
