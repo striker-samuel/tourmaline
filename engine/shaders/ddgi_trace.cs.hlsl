@@ -80,11 +80,26 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
 
             // One-bounce material hit lighting: emissive + diffuse sky
             // reflection. No per-hit normal in this shader, so the up-facing
-            // sky is a constant proxy for the incoming sky irradiance.
-            // (E_indirect feedback + direct sun are the P2 follow-on.)
+            // sky is a constant proxy for the incoming sky irradiance — but it
+            // must be OCCLUDED by the geometry between the hit and the sky,
+            // otherwise an enclosed room reads sky-bright. Cast a shadow ray
+            // toward the sky; an occluded hit keeps only its emissive term.
+            // (Full E_indirect multi-bounce + direct sun remain the P2
+            // follow-on, matching ddgi_trace_sdf.cs.hlsl.)
+            const float3 hitPoint = origin + direction * result.distance;
+            RayDesc skyRay;
+            skyRay.Origin = hitPoint - direction * 0.05f; // air side of the front face
+            skyRay.Direction = float3(0.0f, 1.0f, 0.0f);
+            skyRay.TMin = 0.0f;
+            skyRay.TMax = sp.maxDistance;
+            RayQuery<RAY_FLAG_NONE> sq;
+            sq.TraceRayInline(rayScene, RAY_FLAG_NONE, 0xff, skyRay);
+            while (sq.Proceed()) {}
+            const float skyVis =
+                (sq.CommittedStatus() == COMMITTED_TRIANGLE_HIT) ? 0.0f : 1.0f;
             const float3 skyAmbient = DdgiSkyRadiance(frame, float3(0.0f, 1.0f, 0.0f));
             result.radiance =
-                baseColor * (emissive + (1.0f - metallic) * skyAmbient);
+                baseColor * (emissive + (1.0f - metallic) * skyAmbient * skyVis);
         }
     } else {
         result.radiance = DdgiSkyRadiance(frame, direction);
