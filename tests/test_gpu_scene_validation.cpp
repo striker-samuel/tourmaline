@@ -204,7 +204,7 @@ void CheckSubmeshWorkExpansion() {
     CHECK(offsetof(WorkSelectPush, limits) == 80);
     CHECK(offsetof(WorkSelectPush, lodEyeBudget) == 112);
     CHECK(sizeof(WorkPrefixPush) == 24);
-    CHECK(sizeof(WorkScatterPush) == 48);
+    CHECK(sizeof(WorkScatterPush) == 64);
 
     RenderDatabase db{};
     // LOD0 has two registered submeshes; LOD1 is a fallback.
