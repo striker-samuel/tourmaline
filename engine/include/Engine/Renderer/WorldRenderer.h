@@ -4012,7 +4012,8 @@ class WorldRenderer : public IRenderer {
     void RecordGpuCascade(smvk::CommandBuffer& cmd,
                           const IRenderer::PushConstants& scenePC,
                           const GpuCascadeSubmission& sub,
-                          const smvk::MSAASettings& msaa);
+                          const smvk::MSAASettings& msaa,
+                          uint32_t batchIndex = 0, uint32_t batchCount = 1);
     static void HintGpuCascade(smvk::RenderPass& pass, const GpuCascadeSubmission& sub);
     struct ShadowCascadeFrame {
         IRenderer::PushConstants cascadePC{};
@@ -4020,6 +4021,8 @@ class WorldRenderer : public IRenderer {
         bool tsBegin = false;
         bool tsEnd = false;
         bool evsm = false;
+        uint32_t batchIndex = 0;
+        uint32_t batchCount = 1;
         GpuCascadeSubmission gpuCascade{};
     };
     static void RecordShadowCascade(smvk::CommandBuffer&,

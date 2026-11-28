@@ -433,6 +433,11 @@ set_target_properties(CascadeShadowBiasTests PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 add_test(NAME cascade_shadow_bias_tests COMMAND CascadeShadowBiasTests)
 
+# CSM indirect work batch scheduling (no device or assets).
+add_executable(ShadowWorkBatchTests test_shadow_work_batches.cpp)
+target_include_directories(ShadowWorkBatchTests PRIVATE ${CMAKE_SOURCE_DIR}/engine/include)
+add_test(NAME shadow_work_batch_tests COMMAND ShadowWorkBatchTests)
+
 add_executable(DeferredShadowTests test_deferredshadow.cpp)
 
 target_link_libraries(DeferredShadowTests
