@@ -708,7 +708,8 @@ struct CascadedShadowAtlas {
     // casters).
     RenderPass& AddCascadePass(RenderGraph& rg,
                                uint32_t cascadeIndex,
-                               const char* name = nullptr) const {
+                               const char* name = nullptr,
+                               bool clearTile = true) const {
         assert(Valid());
         assert(cascadeIndex < cascadeCount);
         int32_t offX = 0, offY = 0;
@@ -717,7 +718,7 @@ struct CascadedShadowAtlas {
         pass.SetOffset(offX, offY)
             .SetExtent(tileExtent)
             .SetDepth(logicalView,
-                      AttachmentLoadOp::Clear,
+                      clearTile ? AttachmentLoadOp::Clear : AttachmentLoadOp::Load,
                       AttachmentStoreOp::Store,
                       ClearDepthStencil(1.0f, 0));
         return pass;

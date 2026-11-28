@@ -43,6 +43,7 @@
 #include <Engine/Renderer/spirv_reflection.h>  // PackPushPrevModel (prevModel blob)
 #include <Engine/Rendergraph/bloom.h>
 #include <Engine/Rendergraph/cascadedshadowmap.h>
+#include <Engine/Rendergraph/shadow_work_batches.h>
 #include <Engine/Rendergraph/depth.h>
 #include <Engine/Rendergraph/environment.h>
 #include <Engine/Rendergraph/evsm.h>
@@ -9923,7 +9924,8 @@ void WorldRenderer::RecordFogShadow(smvk::CommandBuffer& cmd,
 void WorldRenderer::RecordGpuCascade(smvk::CommandBuffer& cmd,
                                      const IRenderer::PushConstants& scenePC,
                                      const GpuCascadeSubmission& sub,
-                                     const smvk::MSAASettings& msaa) {
+                                     const smvk::MSAASettings& msaa,
+                                     uint32_t batchIndex, uint32_t batchCount) {
     if (!sub.ready)
         return;
     const smvk::DepthSettings depth{
@@ -9944,12 +9946,16 @@ void WorldRenderer::RecordGpuCascade(smvk::CommandBuffer& cmd,
     const uint32_t stride = sub.capacity / tour::gpu_scene::kRasterPipelineClassCount;
     const auto drawBin = [&](uint32_t bin) {
         constexpr uint32_t kChunk = 65535u;
-        for (uint32_t first = 0; first < stride; first += kChunk)
+        const auto range = tour::shadow_work::Slice(stride, batchIndex, batchCount);
+        for (uint32_t first = range.begin; first < range.end;) {
+            const uint32_t count = std::min(kChunk, range.end - first);
             cmd.DrawIndexedIndirect(sub.commands,
-                                    uint64_t(bin * stride + first) *
+                                    (uint64_t(bin) * stride + first) *
                                         sizeof(tour::gpu_scene::RasterIndirectCommand),
-                                    std::min(kChunk, stride - first),
+                                    count,
                                     sizeof(tour::gpu_scene::RasterIndirectCommand));
+            first += count;
+        }
     };
     bind(m_gpuSceneShadowDepthProgram, smvk::CullMode::Front);
     drawBin(0);
@@ -9985,14 +9991,18 @@ void WorldRenderer::RecordShadowCascade(smvk::CommandBuffer& cmd,
     const smvk::MSAASettings msaa = f.evsm ? smvk::MSAASettings::Count2() : smvk::MSAASettings{};
     if (f.tsBegin)
         cmd.WriteStageTimestamp(stage, /*begin=*/true);
-    self->RecordGpuCascade(cmd, f.cascadePC, f.gpuCascade, msaa);
-    self->RecordShadowCastersDirect(cmd,
-                                    self->m_viewportResources.directionalShadows.program,
-                                    f.cascadePC,
-                                    f.casterViewIndex,
-                                    /*skipFiltered=*/false,
-                                    msaa,
-                                    f.gpuCascade.ready);
+    self->RecordGpuCascade(cmd, f.cascadePC, f.gpuCascade, msaa,
+                           f.batchIndex, f.batchCount);
+    // Keep direct/non-GPUScene ownership exactly once per cascade, after all
+    // GPUScene work, as in the baseline path.
+    if (f.batchIndex + 1u == f.batchCount)
+        self->RecordShadowCastersDirect(cmd,
+                                        self->m_viewportResources.directionalShadows.program,
+                                        f.cascadePC,
+                                        f.casterViewIndex,
+                                        /*skipFiltered=*/false,
+                                        msaa,
+                                        f.gpuCascade.ready);
     if (f.tsEnd)
         cmd.WriteStageTimestamp(stage, /*begin=*/false);
 }
@@ -17991,7 +18001,30 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
 
         const char* cascadeNames[4] = {
             "ShadowCascade0", "ShadowCascade1", "ShadowCascade2", "ShadowCascade3"};
-        for (uint32_t ci = 0; ci < NUM_CASCADES; ++ci) {
+        // Experimental raster-only control. Work buffers are still built
+        // once per cascade; no change to visibility, LOD or caster ownership.
+        static const bool interleaveRequested = tour::shadow_work::Enabled(
+            std::getenv("TOURMALINE_SHADOW_INTERLEAVE"));
+        const bool allGpuReady = std::all_of(
+            gpuCascades.begin(), gpuCascades.begin() + NUM_CASCADES,
+            [](const auto& sub) {
+                return sub.ready &&
+                    sub.capacity >= tour::gpu_scene::kRasterPipelineClassCount *
+                                        tour::shadow_work::kExperimentalBatches;
+            });
+        const uint32_t batchCount =
+            tour::shadow_work::BatchCount(interleaveRequested, evsmDirOn, allGpuReady);
+        if (interleaveRequested && m_frameCounter % 60 == 0)
+            std::fprintf(stderr, "[ShadowInterleave] batches=%u (EVSM=%d gpuReady=%d)\n",
+                         batchCount, int(evsmDirOn), int(allGpuReady));
+        static constexpr const char* batchNames[3][4] = {
+            {"ShadowCascade0", "ShadowCascade1", "ShadowCascade2", "ShadowCascade3"},
+            {"ShadowCascade0Batch1", "ShadowCascade1Batch1", "ShadowCascade2Batch1", "ShadowCascade3Batch1"},
+            {"ShadowCascade0Batch2", "ShadowCascade1Batch2", "ShadowCascade2Batch2", "ShadowCascade3Batch2"}};
+        static_assert(tour::shadow_work::kExperimentalBatches == 3 && NUM_CASCADES == 4);
+        for (uint32_t passIndex = 0; passIndex < NUM_CASCADES * batchCount; ++passIndex) {
+            const auto step = tour::shadow_work::Step(passIndex, NUM_CASCADES, batchCount);
+            const uint32_t ci = step.cascade;
             SMVK_PROFILE_SCOPE_COLOR("ShadowCascade", Optick::Color::OrangeRed);
             SMVK_PROFILE_TAG("cascadeIndex", ci);
             IRenderer::PushConstants cascadePC = pc;
@@ -18030,13 +18063,16 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 continue;
             }
             auto& shadowPass = m_viewportResources.directionalShadows.AddCascadePass(
-                *m_rendergraph, ci, cascadeNames[ci]);
+                *m_rendergraph, ci,
+                batchCount == 1 ? cascadeNames[ci] : batchNames[step.batch][ci],
+                step.first);
             // GPU stage timer (kGpuStagePcfRaster): begin at the first
             // cascade, end at the LAST raster shadow pass (the last spot
             // tile or point cube face below when they run, else this
             // cascade).
-            const bool pcfTsBegin = (ci == 0);
-            const bool pcfTsEnd = (ci == NUM_CASCADES - 1) && !spotPassesOn && !pointPassesOn;
+            const bool pcfTsBegin = (passIndex == 0);
+            const bool pcfTsEnd = (passIndex + 1u == NUM_CASCADES * batchCount) &&
+                                  !spotPassesOn && !pointPassesOn;
             const auto gpuCascade = gpuCascades[ci];
             WorldRenderer::HintGpuCascade(shadowPass, gpuCascade);
             ShadowCascadeFrame& shadowFrame =
@@ -18046,6 +18082,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
             shadowFrame.tsBegin = pcfTsBegin;
             shadowFrame.tsEnd = pcfTsEnd;
             shadowFrame.evsm = false;
+            shadowFrame.batchIndex = step.batch;
+            shadowFrame.batchCount = batchCount;
             shadowFrame.gpuCascade = gpuCascade;
             shadowPass.SetRecordFn(&WorldRenderer::RecordShadowCascade, this);
             (void)shadowPass;
