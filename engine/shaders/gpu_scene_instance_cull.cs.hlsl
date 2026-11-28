@@ -237,13 +237,11 @@ bool SweptShadowOccluded(float3 center, float radius, float3 camFwd,
     return true;
 }
 
-// Computes the cull verdict for one candidate and reports whether it is a
-// visible, generation-valid instance (exactly what the retired compact-count
-// kernel counted: v.x != 0xffffffff && v.y != 0 && v.z != 0). Early returns
-// are safe here — they only set visible=false and return the sentinel; the
-// caller still reaches its workgroup reduction.
-uint4 GpuSceneComputeVerdict(uint candidate, out bool visible) {
-    visible = false;
+// Computes the cull verdict for one candidate. Early returns are safe here —
+// they only return the sentinel; the caller still reaches its workgroup
+// reduction. The caller counts a candidate exactly as the retired
+// compact-count kernel did: v.x != 0xffffffff && v.y != 0 && v.z != 0.
+uint4 GpuSceneComputeVerdict(uint candidate) {
     uint4 value = uint4(0xFFFFFFFFu, 0u, 0u, 0u);
     if (candidate >= pcS.counts.y || candidate >= GPU_SCENE_MAX_CANDIDATES)
         return value;
@@ -357,7 +355,6 @@ uint4 GpuSceneComputeVerdict(uint candidate, out bool visible) {
     const bool vis = !shadowCulled &&
         (bypass || (pcS.counts2.z & 1u) == 0u ||
          GpuSceneSphereVisible(instance.value, pcS.view.Get()));
-    visible = vis;
     value = uint4(instanceId, instanceGen, vis ? 1u : 0u,
                   bypass ? 1u : 0u);
     return value;
@@ -371,8 +368,7 @@ void mainCS(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID,
     const uint candidate = tid.x;
 
     // Always initialize in-range slots; no previous-frame verdict can leak.
-    bool visible = false;
-    const uint4 value = GpuSceneComputeVerdict(candidate, visible);
+    const uint4 value = GpuSceneComputeVerdict(candidate);
     if (candidate < pcS.counts.y && candidate < GPU_SCENE_MAX_CANDIDATES) {
         GpuSceneCullVerdict result;
         result.value = value;
@@ -381,9 +377,10 @@ void mainCS(uint3 tid : SV_DispatchThreadID, uint3 gid : SV_GroupID,
 
     // Fuse the compact-count stage: reduce the per-thread visible flags and
     // publish the per-group count so the caller can skip the count kernel.
-    // The count buffer is created by the CPU alongside the verdicts, so the
-    // groupCounts pointer is always valid when this shader is dispatched.
-    gsVotes[gtid.x] = visible ? 1u : 0u;
+    // Count exactly what the retired kernel counted, including the y != 0
+    // generation gate and the partial final group / zero-candidate cases.
+    gsVotes[gtid.x] =
+        (value.x != 0xFFFFFFFFu && value.y != 0u && value.z != 0u) ? 1u : 0u;
     GroupMemoryBarrierWithGroupSync();
     [unroll] for (uint s = 32u; s > 0u; s >>= 1u) {
         if (gtid.x < s)

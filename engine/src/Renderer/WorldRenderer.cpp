@@ -9533,9 +9533,14 @@ void RecordGpuSceneCullChain(smvk::CommandBuffer& cmd,
     cmd.Dispatch(f.groups, 1, 1);
     if (!f.compactReady)
         return;
-    // The cull workgroup already published the per-group counts (fused
-    // compact-count), so the separate count kernel is skipped.
     GpuSceneComputeDependency(cmd);
+    if (!tour::gpu_scene::GpuSceneFusedCount()) {
+        // Non-fused: the separate compact-count kernel still runs.
+        cmd.BindComputePipeline(f.compactPrograms[0]);
+        cmd.PushConstants(0, sizeof(f.countPush), &f.countPush, smvk::ShaderStage::Compute);
+        cmd.Dispatch(f.groups, 1, 1);
+        GpuSceneComputeDependency(cmd);
+    }
     cmd.BindComputePipeline(f.compactPrograms[1]);
     cmd.PushConstants(0, sizeof(f.prefixPush), &f.prefixPush, smvk::ShaderStage::Compute);
     cmd.Dispatch(1, 1, 1);
@@ -9694,9 +9699,14 @@ void RecordGpuSceneCascadeBuild(smvk::CommandBuffer& cmd,
     cmd.BindComputePipeline(*f.cullProgram);
     cmd.PushConstants(0, sizeof(f.cull), &f.cull, smvk::ShaderStage::Compute);
     cmd.Dispatch(groups, 1, 1);
-    // The cull workgroup already published the per-group counts (fused
-    // compact-count), so the separate count kernel is skipped.
     GpuSceneComputeDependency(cmd);
+    if (!tour::gpu_scene::GpuSceneFusedCount()) {
+        // Non-fused: the separate compact-count kernel still runs.
+        cmd.BindComputePipeline(f.compactPrograms[0]);
+        cmd.PushConstants(0, sizeof(f.count), &f.count, smvk::ShaderStage::Compute);
+        cmd.Dispatch(groups, 1, 1);
+        GpuSceneComputeDependency(cmd);
+    }
     cmd.BindComputePipeline(f.compactPrograms[1]);
     cmd.PushConstants(0, sizeof(f.prefix), &f.prefix, smvk::ShaderStage::Compute);
     cmd.Dispatch(1, 1, 1);
