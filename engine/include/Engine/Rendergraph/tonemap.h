@@ -9,7 +9,7 @@
 // Sampling is bindless (textures[] indexed by push), barriers come from
 // SetColor (write) + SetInputImages (read).
 //
-// Composite: hdr += bloom * intensity (pre-tonemap), then Tonemap(hdr * exposure)
+// Composite: HDR bloom + optional lens flare (pre-tonemap), then Tonemap(hdr * exposure)
 // then optional artistic LUT (TPP-style 32^3 strip, linear) then straight
 // linear LDR into the sRGB swapchain (the hardware encodes on store).
 // gammaEncode=1 is the exception: the pass then writes sRGB-encoded
@@ -27,6 +27,7 @@
 #include <Engine/RHI/resource_manager.h>
 #include <Engine/Renderer/vertex_layouts.h>
 #include <Engine/Rendergraph/ShaderSwap.h>
+#include <Engine/Rendergraph/lens_flare_tex.h>
 #include <Engine/Rendergraph/renderer.h>
 #include <Engine/Rendergraph/rendergraph.h>
 #include <Engine/platform.h>
@@ -39,7 +40,7 @@
 
 namespace smvk {
 
-// Must match tonemap.frag.hlsl TonemapPush (108 bytes).
+// Must match tonemap.frag.hlsl TonemapPush (128 bytes).
 struct TonemapPush {
     uint32_t hdrTextureIndex = UINT32_MAX;
     uint32_t samplerIndex = 0;
@@ -95,8 +96,10 @@ struct TonemapPush {
     uint32_t pointSamplerIndex = 0;
     float motionTexelSizeX = 0.0f;
     float motionTexelSizeY = 0.0f;
+    uint32_t lensFlareTextureIndex = UINT32_MAX; // immutable optical lookup atlas
+    float lensFlareIntensity = 0.0f;
 };
-static_assert(sizeof(TonemapPush) == 120);
+static_assert(sizeof(TonemapPush) == 128);
 
 inline constexpr uint32_t kTonemapReinhard = 0;
 inline constexpr uint32_t kTonemapACES = 1;
@@ -116,6 +119,8 @@ struct TonemapDesc {
     float displayBrightness = 1.0f;
     bool displayTestPattern = false;
     const char* name = "Tonemap";
+    // Screen-space optical ghosts/halo from the bloom bright pass. Zero disables.
+    float lensFlareIntensity = 0.15f;
 };
 
 // Default SPVs (fullscreen-triangle VS + tonemap PS).
@@ -129,6 +134,34 @@ struct Tonemapper {
     Holder<ShaderModuleHandle> fragModule;
     ShaderProgram program{};
     TonemapDesc desc{};
+    Holder<TextureHandle> lensFlareTexture;
+    uint32_t lensFlareTextureIndex = UINT32_MAX;
+
+    // Like the immutable SMAA LUTs, upload once during shader setup, before
+    // the normal staged upload flush. Failure is non-fatal: no flare sampling.
+    void EnsureLensFlareTexture(ResourceManager& ctx) {
+        if (!lensFlareTexture.empty())
+            return;
+        try {
+            ImageCreateInfo ci{};
+            ci.mipLevels = 1;
+            ci.arrayLayers = 1;
+            ci.usage = ImageUsage::Sampled | ImageUsage::TransferDst;
+            ci.format = Format::RGBA8_UNorm; // linear optical coefficients
+            ci.extent = {lensflare::kWidth, lensflare::kHeight, 1};
+            ci.name = "lensFlareOpticalLut";
+            auto texture = ctx.CreateTexture(ci, lensflare::kTexels);
+            if (texture.empty())
+                return;
+            const uint32_t index = ctx.GetTextureBindlessIndex(texture);
+            if (index == UINT32_MAX)
+                return;
+            lensFlareTexture = std::move(texture);
+            lensFlareTextureIndex = index;
+        } catch (...) {
+            // Optional effect: keep the existing tonemapper usable.
+        }
+    }
 
     struct Frame {
         ShaderProgram* program = nullptr;
@@ -172,6 +205,7 @@ struct Tonemapper {
         Shader vs{.module = vsModule, .entryPoint = "mainVS", .stage = ShaderStage::Vertex};
         Shader ps{.module = fragModule, .entryPoint = "mainPS", .stage = ShaderStage::Fragment};
         program = {.shaders = {vs, ps}, .shaderCount = 2};
+        EnsureLensFlareTexture(ctx);
         return true;
     }
 
@@ -179,6 +213,8 @@ struct Tonemapper {
         program = ShaderProgram();
         vsModule = {};
         fragModule = {};
+        lensFlareTextureIndex = UINT32_MAX;
+        lensFlareTexture = {};
     }
 
     // HOT-RELOAD consumer leg (Rendergraph/ShaderSwap.h): fresh-first
@@ -293,6 +329,10 @@ struct Tonemapper {
         push.tonemapMode = overrideDesc.tonemapMode;
         push.bloomTextureIndex = bloomOn ? bloomBindlessIndex : UINT32_MAX;
         push.bloomIntensity = bloomOn ? bloomIntensity : 0.0f;
+        const bool flareOn = bloomOn && lensFlareTextureIndex != UINT32_MAX &&
+                             overrideDesc.lensFlareIntensity > 0.0f;
+        push.lensFlareTextureIndex = flareOn ? lensFlareTextureIndex : UINT32_MAX;
+        push.lensFlareIntensity = flareOn ? overrideDesc.lensFlareIntensity : 0.0f;
         // Mode 1 without a valid motion texture falls back to the scene
         // (the old any-mode safety, narrowed to the mode that needs it);
         // the clipping views (2..4) pass through unconditionally.
