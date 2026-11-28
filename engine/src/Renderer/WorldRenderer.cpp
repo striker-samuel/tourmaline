@@ -9482,7 +9482,9 @@ struct GpuSceneCullChainFrame {
     smvk::ShaderProgram* indirectPrograms = nullptr; // [2]
     smvk::ShaderProgram* meshletPrograms = nullptr;  // [4]
     smvk::ShaderProgram* psoScanProgram = nullptr;
-    smvk::ShaderProgram* taskPrograms = nullptr; // [3]
+    smvk::ShaderProgram* meshletAppendProgram = nullptr; // candidate E
+    smvk::ShaderProgram* meshletClearProgram = nullptr;  // candidate E
+    smvk::ShaderProgram* taskPrograms = nullptr;         // [3]
     bool taskReady = false;
     tour::gpu_scene::TaskMeshDispatchPlan taskPlan{};
     tour::gpu_scene::InstanceCullGpuPush gpuPush{};
@@ -9505,6 +9507,7 @@ struct GpuSceneCullChainFrame {
     bool parallelScanReady = false;
     bool rasterReady = false;
     bool meshletCompactReady = false;
+    bool meshletAtomicAppend = false;
     bool indirectReady = false;
     tour::gpu_scene::CandidateValidator::MeshletCompactPlan meshletPlan{};
 };
@@ -9640,22 +9643,44 @@ void RecordGpuSceneCullChain(smvk::CommandBuffer& cmd,
             0, sizeof(f.meshletPlan.scatter), &f.meshletPlan.scatter, smvk::ShaderStage::Compute);
         cmd.Dispatch((f.meshletPlan.candidateCapacity + 127u) / 128u, 1, 1);
         GpuSceneComputeDependency(cmd);
-        cmd.BindComputePipeline(f.meshletPrograms[2]);
-        cmd.PushConstants(
-            0, sizeof(f.meshletPlan.psoCount), &f.meshletPlan.psoCount, smvk::ShaderStage::Compute);
-        cmd.Dispatch(f.meshletPlan.psoBlocks, 1, 1);
-        GpuSceneComputeDependency(cmd);
-        cmd.BindComputePipeline(*f.psoScanProgram);
-        cmd.PushConstants(
-            0, sizeof(f.meshletPlan.psoScan), &f.meshletPlan.psoScan, smvk::ShaderStage::Compute);
-        cmd.Dispatch(1, 1, 1);
-        GpuSceneComputeDependency(cmd);
-        cmd.BindComputePipeline(f.meshletPrograms[3]);
-        cmd.PushConstants(0,
-                          sizeof(f.meshletPlan.psoScatter),
-                          &f.meshletPlan.psoScatter,
-                          smvk::ShaderStage::Compute);
-        cmd.Dispatch(f.meshletPlan.psoBlocks, 1, 1);
+        if (f.meshletAtomicAppend) {
+            // Candidate E: reset the per-class counters, then one
+            // wave-aggregated append replaces PSO count -> scan -> scatter.
+            cmd.BindComputePipeline(*f.meshletClearProgram);
+            cmd.PushConstants(0,
+                              sizeof(f.meshletPlan.psoClear),
+                              &f.meshletPlan.psoClear,
+                              smvk::ShaderStage::Compute);
+            cmd.Dispatch(1, 1, 1);
+            GpuSceneComputeDependency(cmd);
+            cmd.BindComputePipeline(*f.meshletAppendProgram);
+            cmd.PushConstants(0,
+                              sizeof(f.meshletPlan.psoAppend),
+                              &f.meshletPlan.psoAppend,
+                              smvk::ShaderStage::Compute);
+            cmd.Dispatch(f.meshletPlan.psoBlocks, 1, 1);
+        } else {
+            cmd.BindComputePipeline(f.meshletPrograms[2]);
+            cmd.PushConstants(0,
+                              sizeof(f.meshletPlan.psoCount),
+                              &f.meshletPlan.psoCount,
+                              smvk::ShaderStage::Compute);
+            cmd.Dispatch(f.meshletPlan.psoBlocks, 1, 1);
+            GpuSceneComputeDependency(cmd);
+            cmd.BindComputePipeline(*f.psoScanProgram);
+            cmd.PushConstants(0,
+                              sizeof(f.meshletPlan.psoScan),
+                              &f.meshletPlan.psoScan,
+                              smvk::ShaderStage::Compute);
+            cmd.Dispatch(1, 1, 1);
+            GpuSceneComputeDependency(cmd);
+            cmd.BindComputePipeline(f.meshletPrograms[3]);
+            cmd.PushConstants(0,
+                              sizeof(f.meshletPlan.psoScatter),
+                              &f.meshletPlan.psoScatter,
+                              smvk::ShaderStage::Compute);
+            cmd.Dispatch(f.meshletPlan.psoBlocks, 1, 1);
+        }
     }
     if (f.rasterReady && !f.meshletCompactReady) {
         GpuSceneComputeDependency(cmd);
@@ -15924,6 +15949,39 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 }
             }
         }
+        // Candidate E: the atomic-append + counter-clear kernels. Optional,
+        // like the prefix kernels: a missing module keeps the prefix path.
+        const auto loadMeshletKernel = [this](smvk::Holder<smvk::ShaderModuleHandle>& module,
+                                              smvk::ShaderProgram& program,
+                                              const char* path) {
+            if (program.shaderCount == 1)
+                return;
+            try {
+                if (module.empty())
+                    module = m_context->CreateShaderModule(smvk::shaders::Read(path),
+                                                           "gpuSceneMeshletAppendCS");
+                if (!module.empty()) {
+                    smvk::Shader cs{.module = module,
+                                    .entryPoint = "mainCS",
+                                    .stage = smvk::ShaderStage::Compute};
+                    program = {.shaders = {cs}, .shaderCount = 1};
+                }
+            } catch (...) {
+                static bool logged = false;
+                if (!logged) {
+                    std::fprintf(stderr,
+                                 "[GpuSceneMeshlet] atomic-append kernel unavailable; "
+                                 "prefix path retained\n");
+                    logged = true;
+                }
+            }
+        };
+        loadMeshletKernel(m_gpuSceneMeshletAppendModule,
+                          m_gpuSceneMeshletAppendProgram,
+                          "content/shaders/gpu_scene_meshlet_pso_append.cs.hlsl.spv");
+        loadMeshletKernel(m_gpuSceneMeshletClearModule,
+                          m_gpuSceneMeshletClearProgram,
+                          "content/shaders/gpu_scene_meshlet_pso_clear.cs.hlsl.spv");
         // GPU-scene temporal seed and Hi-Z: optional until their complete
         // compute + rendergraph chain is ready. Missing modules fail open
         // to the existing unculled GPU-scene depth/Main path.
@@ -16728,6 +16786,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                 m_gpuSceneMeshletCompactActive = false;
                 tour::gpu_scene::CandidateValidator::MeshletCompactPlan meshletPlan{};
                 bool meshletCompactReady = false;
+                // Candidate E: wave-aggregated atomic append. Only active when
+                // both its kernels loaded; a missing kernel keeps the prefix.
+                const bool atomicAppendRequested = tour::gpu_scene::GpuSceneAtomicAppend();
+                const bool atomicAppendReady = m_gpuSceneMeshletAppendProgram.shaderCount == 1 &&
+                                               m_gpuSceneMeshletClearProgram.shaderCount == 1;
+                const bool meshletAtomicAppend = atomicAppendRequested && atomicAppendReady;
                 if (!taskReady && s_gpuSceneMeshlets && gpuSceneRasterMode && workReady &&
                     rasterReady && m_gpuSceneTaskGeometryIdsCompatible &&
                     m_gfxRenderer.State().indexedRangesResident &&
@@ -16735,7 +16799,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     m_gpuSceneMeshletPrograms[1].shaderCount == 1 &&
                     m_gpuSceneMeshletPrograms[2].shaderCount == 1 &&
                     m_gpuSceneMeshletPrograms[3].shaderCount == 1 &&
-                    m_gpuScenePsoScanProgram.shaderCount == 1) {
+                    m_gpuScenePsoScanProgram.shaderCount == 1 &&
+                    (!atomicAppendRequested || atomicAppendReady)) {
                     const auto& gfxTables = m_gfxRenderer.State();
                     uint32_t worstMeshlets = 0;
                     for (const auto& mesh : gfxTables.meshes)
@@ -16942,13 +17007,14 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                                     std::fprintf(
                                         stderr,
                                         "[GpuSceneMeshlet] compact engaged: workCapacity=%u "
-                                        "candidateCapacity=%u bins=%u+%u+%u+%u\n",
+                                        "candidateCapacity=%u bins=%u+%u+%u+%u append=%d\n",
                                         meshletPlan.workCapacity,
                                         meshletPlan.candidateCapacity,
                                         meshletPlan.binCapacities[0],
                                         meshletPlan.binCapacities[1],
                                         meshletPlan.binCapacities[2],
-                                        meshletPlan.binCapacities[3]);
+                                        meshletPlan.binCapacities[3],
+                                        meshletAtomicAppend ? 1 : 0);
                                 // DIAGNOSTIC (remove before merge): steady-state
                                 // ground truth of the GPU compaction products
                                 // (the readback lands one flight late; the
@@ -17055,6 +17121,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     chainFrame.indirectPrograms = m_gpuSceneIndirectPrograms.data();
                     chainFrame.meshletPrograms = m_gpuSceneMeshletPrograms.data();
                     chainFrame.psoScanProgram = &m_gpuScenePsoScanProgram;
+                    chainFrame.meshletAppendProgram = &m_gpuSceneMeshletAppendProgram;
+                    chainFrame.meshletClearProgram = &m_gpuSceneMeshletClearProgram;
                     chainFrame.taskPrograms = m_gpuSceneTaskComputePrograms.data();
                     chainFrame.taskReady = taskReady;
                     chainFrame.taskPlan = taskPlan;
@@ -17078,6 +17146,7 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                     chainFrame.parallelScanReady = parallelScanReady;
                     chainFrame.rasterReady = rasterReady;
                     chainFrame.meshletCompactReady = meshletCompactReady;
+                    chainFrame.meshletAtomicAppend = meshletAtomicAppend;
                     chainFrame.indirectReady = indirectReady;
                     chainFrame.meshletPlan = meshletPlan;
                     pass.SetRecordFn(&RecordGpuSceneCullChain);

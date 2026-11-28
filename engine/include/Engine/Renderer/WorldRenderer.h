@@ -2626,6 +2626,12 @@ class WorldRenderer : public IRenderer {
     std::array<smvk::ShaderProgram, 4> m_gpuSceneMeshletPrograms{};
     smvk::Holder<smvk::ShaderModuleHandle> m_gpuScenePsoScanModule{};
     smvk::ShaderProgram m_gpuScenePsoScanProgram{};
+    // Candidate E (atomic append) kernels: the counter clear + the single
+    // wave-aggregated append that replaces the PSO count/scan/scatter.
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneMeshletAppendModule{};
+    smvk::ShaderProgram m_gpuSceneMeshletAppendProgram{};
+    smvk::Holder<smvk::ShaderModuleHandle> m_gpuSceneMeshletClearModule{};
+    smvk::ShaderProgram m_gpuSceneMeshletClearProgram{};
     // P1 flat GPU multi-view leaf visibility (classify -> compact -> fused).
     // Validation-only until the safe-overflow policy and downstream
     // fused-verdict consumption are wired; the CPU coarse selector stays
