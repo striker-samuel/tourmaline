@@ -162,6 +162,10 @@ struct TracePush {
     int32_t deltaX = 0, deltaY = 0, deltaZ = 0;
     uint32_t reset = 0;
     uint32_t pad_ = 0;
+    // Static vertex-position + triangle-index monoblock BDAs for the hardware
+    // RT hit-normal fetch (the same buffers the BLAS references). Unused by
+    // the SDF backend (zero there).
+    uint64_t positions = 0, indices = 0;
 };
 // Fixed choice per volume/dispatch, not a per-ray switch.
 enum class TraceBackend : uint8_t { HardwareRT, StaticSdf };
@@ -170,8 +174,8 @@ struct SdfTracePush {
     TracePush trace{};
     uint64_t sceneAddress = 0;
 };
-static_assert(sizeof(TracePush) == 120 && offsetof(TracePush, oldOriginX) == 88);
-static_assert(sizeof(SdfTracePush) == 128 && offsetof(SdfTracePush, sceneAddress) == 120);
+static_assert(sizeof(TracePush) == 136 && offsetof(TracePush, oldOriginX) == 88);
+static_assert(sizeof(SdfTracePush) == 144 && offsetof(SdfTracePush, sceneAddress) == 136);
 
 struct BlendPush {
     uint64_t scratch = 0, oldIrr = 0, oldDistance = 0, newIrr = 0, newDistance = 0;
@@ -196,7 +200,7 @@ struct RelocatePush {
     uint32_t pad = 0;
 };
 static_assert(sizeof(RelocatePush) == 48 && offsetof(RelocatePush, maxDistance) == 40);
-static_assert(sizeof(TracePush) == 120 && offsetof(TracePush, maxDistance) == 48);
+static_assert(sizeof(TracePush) == 136 && offsetof(TracePush, maxDistance) == 48);
 static_assert(sizeof(BlendPush) == 96 && offsetof(BlendPush, deltaX) == 60 &&
               offsetof(BlendPush, relocation) == 88);
 

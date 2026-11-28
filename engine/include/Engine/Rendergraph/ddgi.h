@@ -91,7 +91,8 @@ struct Volume {
                 smvk::shaders::Read("content/shaders/ddgi_blend.cs.hlsl.spv"), "ddgiBlend");
             if (backend == TraceBackend::HardwareRT)
                 relocateModule = ctx.CreateShaderModule(
-                    smvk::shaders::Read("content/shaders/ddgi_relocate.cs.hlsl.spv"), "ddgiRelocate");
+                    smvk::shaders::Read("content/shaders/ddgi_relocate.cs.hlsl.spv"),
+                    "ddgiRelocate");
             if (!traceModule.empty() && !blendModule.empty() &&
                 (backend != TraceBackend::HardwareRT || !relocateModule.empty()) &&
                 scratch.Create(ctx, rg, sizes.scratch, "ddgi ray scratch") &&
@@ -188,6 +189,8 @@ struct Volume {
                    uint32_t updateIndex,
                    bool reset,
                    uint64_t rayMaterials = 0,
+                   uint64_t positions = 0,
+                   uint64_t indices = 0,
                    const SdfTraceInput* sdf = nullptr) const {
         if (!ready || !frameAddress || writeSlot > 1)
             return false;
@@ -265,7 +268,9 @@ struct Volume {
                                  delta[1],
                                  delta[2],
                                  uint32_t(reset),
-                                 0u};
+                                 0u,
+                                 positions,
+                                 indices};
             if (backend == TraceBackend::StaticSdf) {
                 BufferSyncRequest req{};
                 req.barrierMasks.accessMask = AccessFlags::ShaderRead;

@@ -169,14 +169,21 @@ bool smvk::VulkanResourceManager::BuildRayTracingWorld(
             vmaDestroyBuffer(m_allocator, rtMaterial_.buffer, rtMaterial_.allocation);
         rtMaterial_ = {};
         TempBuffer matBuf{};
-        if (alloc(accepted.size() * 32ull, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true,
+        if (alloc(accepted.size() * 48ull, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true,
                   matBuf)) {
             auto* dst = static_cast<float*>(matBuf.mapped);
             for (size_t i = 0; i < accepted.size(); ++i) {
                 for (uint32_t c = 0; c < 4; ++c)
-                    dst[i * 8 + c] = accepted[i].albedoEmissive[c];
+                    dst[i * 12 + c] = accepted[i].albedoEmissive[c];
                 for (uint32_t c = 0; c < 4; ++c)
-                    dst[i * 8 + 4 + c] = accepted[i].pbr[c];
+                    dst[i * 12 + 4 + c] = accepted[i].pbr[c];
+                // Geometry mapping for the DDGI hit-normal fetch: the absolute
+                // index/vertex offsets of this instance's triangles in the
+                // shared static monoblocks (the same offsets the BLAS uses).
+                dst[i * 12 + 8] = std::bit_cast<float>(accepted[i].firstIndex);
+                dst[i * 12 + 9] = std::bit_cast<float>(uint32_t(accepted[i].baseVertex));
+                dst[i * 12 + 10] = 0.0f;
+                dst[i * 12 + 11] = 0.0f;
             }
             vmaFlushAllocation(m_allocator, matBuf.allocation, 0, VK_WHOLE_SIZE);
             rtMaterial_.buffer = matBuf.buffer;

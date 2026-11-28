@@ -8892,8 +8892,9 @@ uint32_t WorldRenderer::UpdateDecals(uint32_t currentFrame) {
     // copy, preserving the deterministic FP_MAX_DECALS selection.
     auto* decalRows =
         static_cast<DecalRow*>(scratch.Allocate(sizeof(DecalRow) * rowCount, alignof(DecalRow)));
-    std::uninitialized_copy(
-        m_world->m_hierarchy.tables.decals.begin(), m_world->m_hierarchy.tables.decals.end(), decalRows);
+    std::uninitialized_copy(m_world->m_hierarchy.tables.decals.begin(),
+                            m_world->m_hierarchy.tables.decals.end(),
+                            decalRows);
     std::sort(decalRows, decalRows + rowCount, [](const DecalRow& a, const DecalRow& b) {
         return a.node < b.node;
     });
@@ -10194,8 +10195,8 @@ void WorldRenderer::RecordMotion(smvk::CommandBuffer& cmd,
         // depth under the GreaterEqual test. model[0..2].xyz = basis X/Y/Z,
         // model[0..2].w = worldHigh x/y/z, model[3].xyz = worldLow.
         {
-            const glm::dmat4 globalModel =
-                tour::transformhierarchy::GlobalTransformDouble(self->m_world->m_hierarchy, item.node);
+            const glm::dmat4 globalModel = tour::transformhierarchy::GlobalTransformDouble(
+                self->m_world->m_hierarchy, item.node);
             const auto worldPos = tour::math::SplitDoubleFloat(glm::dvec3(globalModel[3]));
             const glm::vec3 bx(globalModel[0]), by(globalModel[1]), bz(globalModel[2]);
             objectPC.model[0] = bx.x;
@@ -10216,8 +10217,8 @@ void WorldRenderer::RecordMotion(smvk::CommandBuffer& cmd,
             objectPC.model[15] = 0.0f;
         }
         const bool prevValid =
-            !self->m_cameraCutThisFrame &&
-            self->m_prevGlobalTransforms.size() == self->m_world->m_hierarchy.globalTransform.size();
+            !self->m_cameraCutThisFrame && self->m_prevGlobalTransforms.size() ==
+                                               self->m_world->m_hierarchy.globalTransform.size();
         const glm::mat4 prevModel = prevValid ? self->m_prevGlobalTransforms[item.node] : model;
         smvk::PackPushPrevModel(glm::value_ptr(prevModel), objectPC.prevModel);
         objectPC.materialId = item.material;
@@ -10262,7 +10263,8 @@ void WorldRenderer::RecordMotion(smvk::CommandBuffer& cmd,
                     if (item.material == smvk::World::kInvalidIndex)
                         return;
                     {
-                        const glm::mat4& model = self->m_world->m_hierarchy.globalTransform[item.node];
+                        const glm::mat4& model =
+                            self->m_world->m_hierarchy.globalTransform[item.node];
                         const uint32_t lodIdx = self->LodIndexForNode(item.node, item.mesh);
                         smvk::StaticMesh* baseDesc = self->m_world->GetMesh(item.mesh);
                         smvk::StaticMesh* selDesc = self->m_world->GetLodMesh(item.mesh, lodIdx);
@@ -11047,7 +11049,8 @@ void WorldRenderer::RecordMain(smvk::CommandBuffer& cmd,
                                                self->m_gpuSceneSync.SourceForNode(item.node)))
                     return;
                 if (smvk::StaticMesh* cullBase = self->m_world->GetMesh(item.mesh)) {
-                    const glm::mat4& cullModel = self->m_world->m_hierarchy.globalTransform[item.node];
+                    const glm::mat4& cullModel =
+                        self->m_world->m_hierarchy.globalTransform[item.node];
                     glm::vec3 c{0.0f};
                     float r = 0.0f;
                     smvk::MeshBoundsToWorld(
@@ -19749,6 +19752,12 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
         // volume (m_ddgiReset clears history on the first frame; a spacing
         // change resets only that cascade via vol.resetPending).
         const uint64_t rayMaterials = m_context->RayTracingMaterialAddress();
+        // Static position/index monoblocks for the hardware-RT hit-normal
+        // fetch (the same buffers the DDGI trace's TLAS references).
+        const uint64_t positions =
+            m_context->GetBufferDeviceAddress(smvk::staticVertexFmtHeap.m_staticVertexPosBuffer);
+        const uint64_t indices =
+            m_context->GetBufferDeviceAddress(smvk::staticVertexFmtHeap.m_staticIndexBuffer);
         for (auto& vol : m_ddgiVolumes) {
             const bool volReset = m_ddgiReset || vol.resetPending;
             // Relocation + trace are TLAS-based (no SDF): the StaticSdf backend
@@ -19760,6 +19769,8 @@ void WorldRenderer::RenderFrame(smvk::Framebuffer& fb) {
                           m_ddgiUpdateIndex,
                           volReset,
                           rayMaterials,
+                          positions,
+                          indices,
                           nullptr);
             vol.resetPending = false;
         }

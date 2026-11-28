@@ -20,6 +20,8 @@ struct DdgiSdfTracePush {
     int deltaX, deltaY, deltaZ; // scroll delta (probe units) for the carry test
     uint reset; // 1 = trace everything (first frame / spacing change)
     uint pad;
+    GPU_PTR_READ(GpuPositions) positions; // unused (SDF carries geometry)
+    GPU_PTR_READ(GpuIndices) indices;     // unused
     GPU_PTR_READ(StaticSdfSceneHeader) scene;
 };
 GPU_PUSH(DdgiSdfTracePush, sp);

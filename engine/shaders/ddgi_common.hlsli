@@ -25,8 +25,16 @@ struct DdgiRelocationBuffer { float4 values[1]; };
 struct RayMaterial {
     float4 albedoEmissive; // rgb = flat baseColor, w = emissive scalar
     float4 pbr;            // x = metallic, y = roughness
+    uint firstIndex;       // absolute index-buffer offset (hit-normal fetch)
+    uint baseVertex;       // absolute vertex offset (hit-normal fetch)
 };
 struct RayMaterialBuffer { RayMaterial items[1]; };
+// Shared static vertex positions (R32G32B32, 12 bytes/vertex) and indices
+// (uint32, 4 bytes/index) for the hardware-RT hit-normal fetch. These are the
+// same monoblocks the BLAS geometry references, so firstIndex/baseVertex map
+// a committed triangle straight to its three vertices.
+struct GpuPositions { float3 values[1]; };
+struct GpuIndices { uint values[1]; };
 // One probe volume's lookup descriptor (mirror of smvk::ddgi::VolumeDesc,
 // 64 bytes). Carries both history-slot BDAs; the lit shader picks the
 // published slot via DdgiParams::slot.

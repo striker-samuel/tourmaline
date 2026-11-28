@@ -23,6 +23,8 @@ struct DdgiTracePush {
     int deltaX, deltaY, deltaZ; // scroll delta (probe units) for the carry test
     uint reset; // 1 = trace everything (first frame / spacing change)
     uint pad;
+    GPU_PTR_READ(GpuPositions) positions; // static vertex positions (hit normal)
+    GPU_PTR_READ(GpuIndices) indices;     // static triangle indices (hit normal)
 };
 GPU_PUSH(DdgiTracePush, sp);
 
@@ -77,29 +79,64 @@ void mainCS(uint3 tid : SV_DispatchThreadID) {
             const float3 baseColor = max(mat.albedoEmissive.rgb, 0.0f);
             const float emissive = max(mat.albedoEmissive.w, 0.0f);
             const float metallic = saturate(mat.pbr.x);
+            const float3 diffuse = baseColor * (1.0f - metallic);
 
-            // One-bounce material hit lighting: emissive + diffuse sky
-            // reflection. No per-hit normal in this shader, so the up-facing
-            // sky is a constant proxy for the incoming sky irradiance — but it
-            // must be OCCLUDED by the geometry between the hit and the sky,
-            // otherwise an enclosed room reads sky-bright. Cast a shadow ray
-            // toward the sky; an occluded hit keeps only its emissive term.
-            // (Full E_indirect multi-bounce + direct sun remain the P2
-            // follow-on, matching ddgi_trace_sdf.cs.hlsl.)
             const float3 hitPoint = origin + direction * result.distance;
-            RayDesc skyRay;
-            skyRay.Origin = hitPoint - direction * 0.05f; // air side of the front face
-            skyRay.Direction = float3(0.0f, 1.0f, 0.0f);
-            skyRay.TMin = 0.0f;
-            skyRay.TMax = sp.maxDistance;
-            RayQuery<RAY_FLAG_NONE> sq;
-            sq.TraceRayInline(rayScene, RAY_FLAG_NONE, 0xff, skyRay);
-            while (sq.Proceed()) {}
-            const float skyVis =
-                (sq.CommittedStatus() == COMMITTED_TRIANGLE_HIT) ? 0.0f : 1.0f;
-            const float3 skyAmbient = DdgiSkyRadiance(frame, float3(0.0f, 1.0f, 0.0f));
-            result.radiance =
-                baseColor * (emissive + (1.0f - metallic) * skyAmbient * skyVis);
+
+            // Hit normal from the triangle's three vertices (flat shading),
+            // fetched through the same static position/index monoblocks the
+            // BLAS references (firstIndex/baseVertex map the committed
+            // primitive straight to its vertices).
+            const uint primIndex = q.CommittedPrimitiveIndex();
+            const uint i0 = sp.indices.Get().values[mat.firstIndex + primIndex * 3u + 0u];
+            const uint i1 = sp.indices.Get().values[mat.firstIndex + primIndex * 3u + 1u];
+            const uint i2 = sp.indices.Get().values[mat.firstIndex + primIndex * 3u + 2u];
+            const float3 p0 = sp.positions.Get().values[mat.baseVertex + i0];
+            const float3 p1 = sp.positions.Get().values[mat.baseVertex + i1];
+            const float3 p2 = sp.positions.Get().values[mat.baseVertex + i2];
+            float3 normal = cross(p1 - p0, p2 - p0);
+            const float normalLen2 = dot(normal, normal);
+            normal = normalLen2 > 1e-8f ? normal * rsqrt(normalLen2) : -direction;
+            if (dot(normal, direction) > 0.0f)
+                normal = -normal; // face the air side (toward the ray origin)
+
+            // Hit lighting matches the SDF tracer (ddgi_trace_sdf.cs.hlsl):
+            // emissive + multi-bounce E_indirect feedback + shadow-tested
+            // direct sun. No constant sky term — interior surfaces stay dark
+            // because the previous frame's field there is dark.
+            result.radiance = baseColor * emissive;
+
+            float3 eIndirect = 0.0f;
+            if (sp.reset == 0u) {
+                eIndirect = DdgiSampleEIndirect(sp.oldIrr, sp.oldDistance,
+                                                float3(sp.oldOriginX, sp.oldOriginY, sp.oldOriginZ),
+                                                sp.spacing,
+                                                uint3(sp.dimX, sp.dimY, sp.dimZ),
+                                                hitPoint, normal);
+            }
+            result.radiance += diffuse * (eIndirect / DDGI_PI);
+
+            float3 sunDir = frame.env.sunDirection.xyz;
+            const float sunLen2 = dot(sunDir, sunDir);
+            if (sunLen2 > 1e-8f && frame.env.sunColor.w > 0.0f) {
+                sunDir *= rsqrt(sunLen2);
+                const float ndl = saturate(dot(normal, sunDir));
+                if (ndl > 0.0f) {
+                    RayDesc sunRay;
+                    sunRay.Origin = hitPoint + normal * 0.05f;
+                    sunRay.Direction = sunDir;
+                    sunRay.TMin = 0.0f;
+                    sunRay.TMax = sp.maxDistance;
+                    RayQuery<RAY_FLAG_NONE> sunQ;
+                    sunQ.TraceRayInline(rayScene, RAY_FLAG_NONE, 0xff, sunRay);
+                    while (sunQ.Proceed()) {}
+                    const bool occluded =
+                        (sunQ.CommittedStatus() == COMMITTED_TRIANGLE_HIT);
+                    if (!occluded)
+                        result.radiance += diffuse * frame.env.sunColor.rgb *
+                            (frame.env.sunColor.w * ndl / DDGI_PI);
+                }
+            }
         }
     } else {
         result.radiance = DdgiSkyRadiance(frame, direction);
