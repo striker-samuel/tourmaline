@@ -3131,12 +3131,6 @@ class WorldRenderer : public IRenderer {
     // explanation blocks the old Debug tab carried (the legends live
     // where the view is, not four tabs away). NoInputs: pure annotation.
     void DrawDebugViewHint();
-    // PANIC legend (always visible, red, top): lists the conditions that
-    // would degrade or fail the render — an engaged fallback path, legacy
-    // direct instances, or a near-full/oversubscribed static heap. Empty
-    // (nothing wrong) = not drawn. Never behind a toggle: the moment a
-    // path degrades it must be readable without opening a panel.
-    void DrawPanicOverlay();
 
     // (The per-frame CONTROL block — Update()/HandleShortcuts(): keybind
     // polling, feature toggles, decal autosplat, camera-drive gating,

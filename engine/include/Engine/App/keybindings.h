@@ -37,7 +37,7 @@ constexpr int VRAM_VIEWER_TOGGLE = TOUR_KEY_M;
 
 // ---- Feature toggles ----
 constexpr int MOTION_BLUR_TOGGLE = TOUR_KEY_M;
-constexpr int AO_CYCLE = TOUR_KEY_O; // None -> Ssao -> Sao
+constexpr int AO_CYCLE = TOUR_KEY_O; // None -> Ssao -> Sao -> Cortao
 constexpr int BLOOM_TOGGLE = TOUR_KEY_B;
 constexpr int AUTO_EXPOSURE_TOGGLE = TOUR_KEY_X;
 constexpr int MOTION_DEBUG_TOGGLE = TOUR_KEY_V;

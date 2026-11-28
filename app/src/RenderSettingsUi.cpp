@@ -348,11 +348,11 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                 ImGui::SeparatorText("Lighting");
                 {
                     // Screen-space ambient occlusion / SSGI chain.
-                    static const char* const kAoNames[3] = {"No AO", "SSAO", "SAO"};
+                    static const char* const kAoNames[4] = {"No AO", "SSAO", "SAO", "CORTAO"};
                     int aoIdx = static_cast<int>(m_aoMode);
-                    if (ImGui::Combo("AO mode (O)", &aoIdx, kAoNames, 3))
-                        m_aoMode = static_cast<AoMode>(std::clamp(aoIdx, 0, 2));
-                    if (m_aoMode != AoMode::None) {
+                    if (ImGui::Combo("AO mode (O)", &aoIdx, kAoNames, 4))
+                        m_aoMode = static_cast<AoMode>(std::clamp(aoIdx, 0, 3));
+                    if (m_aoMode == AoMode::Ssao || m_aoMode == AoMode::Sao) {
                         ImGui::SliderFloat("AO radius (m)", &m_ssaoRadius, 0.05f, 2.0f);
                         ImGui::SliderFloat("AO bias", &m_ssaoBias, 0.0f, 0.1f);
                         ImGui::SliderFloat("AO intensity", &m_ssaoIntensity, 0.0f, 2.0f);
@@ -364,6 +364,12 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                             ImGui::SliderInt("SAO samples", &m_saoSamples, 1, 32);
                             ImGui::SliderInt("SAO spiral turns", &m_saoSpiralTurns, 1, 16);
                         }
+                    } else if (m_aoMode == AoMode::Cortao) {
+                        // CORTAO samples through a packed mip pyramid + a fixed
+                        // 3D occluder LUT; only the compose-side strength is a
+                        // live knob (the radius/bias/sample counts are baked
+                        // into the CORTAO configuration).
+                        ImGui::SliderFloat("AO intensity", &m_ssaoIntensity, 0.0f, 2.0f);
                     }
                     ImGui::Checkbox("Cubemap specular IBL", &m_cubemapEnabled);
                     ImGui::SliderFloat(
@@ -1858,7 +1864,7 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                                 (unsigned)m_giVolumes.size(),
                                 (unsigned)m_regVolumes.size());
                     const auto& ssgi = m_viewportResources.ssgi;
-                    if (m_aoMode != AoMode::None) {
+                    if (m_aoMode == AoMode::Ssao || m_aoMode == AoMode::Sao) {
                         if (!ssgi.Valid())
                             ImGui::TextDisabled("SSGI targets/shaders missing - no AO");
                         else if (!ssgi.hzb.Valid())
@@ -2045,8 +2051,9 @@ void WorldRenderer::DrawAppSettingsUi(const DebugUiFrame& frame) {
                 ImGui::TextDisabled("[I] %s  [ESC] quit",
                                     m_uiModeHint ? "UI (NORMAL) -> press I for FPS"
                                                  : "FPS (DISABLED) -> press I for UI");
-                ImGui::TextDisabled("Keys (toggles): TAB debug panel  M blur  O AO(No/SSAO/SAO)  B "
-                                    "bloom  X exposure  V vectors  C map");
+                ImGui::TextDisabled(
+                    "Keys (toggles): TAB debug panel  M blur  O AO(No/SSAO/SAO/CORTAO)  B "
+                    "bloom  X exposure  V vectors  C map");
                 ImGui::TextDisabled("      L LODs  F particles  Ctrl+F freeze cull  G filter  K "
                                     "sky  H shadows  T terrain");
                 ImGui::TextDisabled("      J blood splat at crosshair  TOURMALINE_DECALS=0/1");
@@ -2361,48 +2368,6 @@ void WorldRenderer::DrawDebugViewHint() {
     }
     ImGui::End();
     ImGui::PopStyleVar();
-}
-
-void WorldRenderer::DrawPanicOverlay() {
-    // Collect the render-degradation conditions. Anything here means the
-    // canonical GPU path degraded or is about to fail — show it loudly and
-    // unconditionally (no Ctrl+T, no panel).
-    std::vector<std::string> panic;
-    if (!m_gpuSceneTaskMeshActive) {
-        if (m_gpuSceneRasterDrawActive)
-            panic.emplace_back("FALLBACK: indexed raster (task/mesh not engaged)");
-        else
-            panic.emplace_back("FALLBACK: direct legacy (no GPU scene)");
-    }
-    if (m_gpuSceneRasterLegacyCount > 0)
-        panic.emplace_back("LEGACY: " + std::to_string(m_gpuSceneRasterLegacyCount) +
-                           " direct instance(s)");
-    // Oversubscription: the static vertex/index monoblocks near capacity.
-    {
-        const auto& h = smvk::staticVertexFmtHeap;
-        const uint64_t vCap = h.m_staticVertexBlock.Capacity();
-        const uint64_t vUsed = h.m_staticVertexBlock.Used();
-        const uint64_t iCap = h.m_staticIndexBlock.Capacity();
-        const uint64_t iUsed = h.m_staticIndexBlock.Used();
-        if ((vCap != 0 && vUsed >= vCap * 90u / 100u) || (iCap != 0 && iUsed >= iCap * 90u / 100u))
-            panic.emplace_back("OVERSUBSCRIBED: static heap near capacity");
-    }
-    if (panic.empty())
-        return; // nothing wrong — no legend
-    // Crude bright-red text pinned to the top-left corner (no window, no
-    // background, no interaction) — the old centered "RENDER PANIC" window
-    // occluded the view and stole focus. Scales with the UI scale so it stays
-    // legible at any UI resolution.
-    ImDrawList* dl = ImGui::GetForegroundDrawList();
-    ImFont* font = ImGui::GetFont();
-    const float fs = ImGui::GetFontSize() * m_uiScale;
-    float y = 6.0f;
-    dl->AddText(font, fs, ImVec2(6.0f, y), IM_COL32(255, 22, 22, 255), "RENDER PANIC");
-    y += fs * 1.45f;
-    for (const std::string& p : panic) {
-        dl->AddText(font, fs, ImVec2(6.0f, y), IM_COL32(255, 82, 82, 255), p.c_str());
-        y += fs * 1.05f;
-    }
 }
 
 void WorldRenderer::DrawHudOverlay() {
@@ -3386,10 +3351,6 @@ void WorldRenderer::DrawAppDebugUi(const DebugUiFrame& frame) {
     // Debug-view hint (top-center, auto): the active view's name +
     // its color coding while a debug visualization is on.
     DrawDebugViewHint();
-
-    // Panic legend (always visible, red, top): fallback/oversubscription/
-    // render-failure conditions — drawn last so it sits above the stats.
-    DrawPanicOverlay();
 
     // Frame-time histogram (View-menu / programmatic toggle): SEPARATE UI
     // from the debug panel - a full-width bottom strip (see
